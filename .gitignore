@@ -4,6 +4,7 @@ __pycache__/
 .venv/
 venv/
 research_output/
+eval/runs/
 .env
 *.log
 .DS_Store
