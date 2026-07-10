@@ -1323,9 +1323,31 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
         # only actually retrying does. Otherwise a success on the final allowed
         # attempt is never recognized as a success (it just falls through silently).
         if not delegated:
+            is_last_chance = (attempt + 1) >= MAX_COMPLETION_CHECK_ATTEMPTS
+            todos_used = (quotas or {}).get("write_todos", {}).get("used", 0)
+            # A real, live-observed failure mode distinct from every other one fixed so far: the
+            # Planner writes/rewrites _todos.md across every nudge (satisfying "take an action" with
+            # write_todos instead of delegate_tasks) and answers from its own memory — sometimes
+            # explicitly narrating fake delegation that never happened, e.g. literally writing
+            # "After delegating the tasks to a human Searcher, here's what I've found:" despite
+            # delegate_tasks never once appearing in the tool-call log. Generic "you must verify"
+            # wording didn't stop this in testing; naming the specific wrong action (rewriting the
+            # plan, fabricating delegation narration) does, per the same pattern that fixed the
+            # missing_artifact re-delegation loop.
+            repeated_planning = todos_used >= 2
+            escalation = ""
+            if repeated_planning:
+                escalation = (
+                    f" You have called write_todos {todos_used} times but delegate_tasks ZERO times — "
+                    f"rewriting the plan is not research and does not satisfy this requirement. Do NOT "
+                    f"call write_todos again. Do NOT write a report claiming you delegated or received "
+                    f"results from a Searcher when delegate_tasks was never actually called — that is "
+                    f"fabrication, not synthesis."
+                )
+            last_chance_prefix = "THIS IS YOUR FINAL ATTEMPT. " if is_last_chance else ""
             problem, warning_msg, inject_msg = "not_delegated", \
                 "No `delegate_tasks` call was ever made — this looks like an answer from memory, not real research. Forcing verification.", \
-                f"SYSTEM WARNING: You are attempting to finish the task, but you never called delegate_tasks. Your training data can be stale or wrong — you MUST verify any facts with a real Searcher delegation before finishing. Call delegate_tasks now, then write (or overwrite) '{req_artifact}' with the verified findings, replacing any previous unverified guess."
+                f"SYSTEM WARNING: {last_chance_prefix}You are attempting to finish the task, but you never called delegate_tasks. Your training data can be stale or wrong — you MUST verify any facts with a real Searcher delegation before finishing.{escalation} Your ONLY next tool call must be delegate_tasks, with a real task_name/instructions/agent_id for each research angle. Only after receiving real results should you write (or overwrite) '{req_artifact}'."
         elif req_artifact not in files:
             is_last_chance = (attempt + 1) >= MAX_COMPLETION_CHECK_ATTEMPTS
             # A model that already has real delegated research results in its own context but still
