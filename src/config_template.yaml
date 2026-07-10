@@ -59,6 +59,13 @@ settings:
     enabled: true
     live_http_verify: true       # also HEAD-request each cited URL to confirm it still resolves
     live_http_timeout: 5
+    # Second, deeper layer beyond URL-presence: for a citation that WAS actually fetched, does its
+    # content share any checkable fact (number, version, proper noun) with what the report claims?
+    # Catches "cited a real fetched source without actually reading it" — inspired by CYC2002tommy's
+    # SKILL.md claim-grounding phase, scoped to a cheap deterministic check rather than another LLM
+    # call (see engine/tui.py::_claim_grounding_problem). Deliberately conservative (zero-overlap
+    # only) to keep false positives rare — set false to disable if it proves too noisy in practice.
+    content_level_check: true
   # Persists verified (grounded, real-research) answers across runs so an exact repeat query
   # doesn't need to re-research from scratch. Deterministic, engine-driven — not an agent tool.
   knowledge_cache:
