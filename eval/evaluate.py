@@ -72,6 +72,34 @@ def append_result(results_path: str, entry: dict) -> None:
         f.write(json.dumps(entry) + "\n")
 
 
+def _resolve_base_config_path(base_config_path: str | None, project_root: str) -> str:
+    """Determine base: explicit --config arg, or project's config_template.yaml. Shared by
+    write_eval_config and read_agent_model so they can never disagree about which file is the
+    actual source of truth for this eval run's agent config."""
+    if base_config_path and os.path.exists(base_config_path):
+        base_path = base_config_path
+    else:
+        base_path = os.path.join(project_root, "src", "config_template.yaml")
+
+    if not os.path.exists(base_path):
+        raise FileNotFoundError(
+            f"No agent config found at '{base_path}'. "
+            "Pass --config <path> or ensure src/config_template.yaml exists."
+        )
+    return base_path
+
+
+def read_agent_model(base_config_path: str | None, project_root: str) -> str:
+    """Read the model the agent will ACTUALLY run with, straight from the same config file
+    write_eval_config uses as its base — not a guess from Ollama's full model list (which lists
+    every locally available model, not the one this eval run is actually configured to use; that
+    mismatch produced a wrong 'model' label in results.jsonl until this was added)."""
+    base_path = _resolve_base_config_path(base_config_path, project_root)
+    with open(base_path) as f:
+        cfg = yaml.safe_load(f) or {}
+    return cfg.get("api", {}).get("openai_model", "unknown")
+
+
 def write_eval_config(base_config_path: str | None, project_root: str, tmp_dir: str) -> tuple[str, str]:
     """
     Write a complete, explicit agent config for one eval run.
@@ -85,17 +113,7 @@ def write_eval_config(base_config_path: str | None, project_root: str, tmp_dir: 
     workspace_dir = os.path.join(tmp_dir, "workspace")
     os.makedirs(workspace_dir, exist_ok=True)
 
-    # Determine base: explicit --config arg, or project's config_template.yaml
-    if base_config_path and os.path.exists(base_config_path):
-        base_path = base_config_path
-    else:
-        base_path = os.path.join(project_root, "src", "config_template.yaml")
-
-    if not os.path.exists(base_path):
-        raise FileNotFoundError(
-            f"No agent config found at '{base_path}'. "
-            "Pass --config <path> or ensure src/config_template.yaml exists."
-        )
+    base_path = _resolve_base_config_path(base_config_path, project_root)
 
     with open(base_path) as f:
         cfg = yaml.safe_load(f) or {}
@@ -296,20 +314,6 @@ def evaluate_item(query: str, output: str, criteria: list[dict],
 # Main harness
 # ---------------------------------------------------------------------------
 
-def detect_model(base_url: str) -> str:
-    """Query /v1/models to auto-detect the loaded model name."""
-    try:
-        import urllib.request
-        req = urllib.request.Request(f"{base_url}/models")
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read().decode())
-        models = data.get("data", [])
-        if models:
-            return models[0].get("id", "unknown")
-    except Exception:
-        pass
-    return "unknown"
-
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluation harness for DeepDelve")
@@ -328,12 +332,13 @@ def main() -> None:
     eval_cfg = load_eval_config(args.eval_config)
     dataset = load_dataset(args.dataset, limit=args.limit)
     existing = load_existing_keys(args.output)
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-    # Auto-detect model from eval config's base_url if not provided
-    model_name = args.model
-    if not model_name:
-        base_url = eval_cfg.get("api", {}).get("openai_base_url", "http://localhost:11434/v1")
-        model_name = detect_model(base_url)
+    # Read the model straight from the actual agent config this run will use — NOT a guess from
+    # Ollama's full model list, which lists every locally available model regardless of what this
+    # eval run is actually configured to use (see read_agent_model's docstring for the mismatch
+    # this used to produce in results.jsonl).
+    model_name = args.model or read_agent_model(args.config, project_root)
 
     print(f"\nEval harness ready")
     print(f"  dataset   : {args.dataset} ({len(dataset)} items)")
@@ -343,7 +348,6 @@ def main() -> None:
     print(f"  timeout   : {args.timeout}s (agent)  {args.judge_timeout}s (judge)")
     print(f"  results   : {args.output}\n")
 
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     agent_script = os.path.join(project_root, AGENT_ENTRY)
 
     # Persistent runs directory — workspace files are kept for inspection

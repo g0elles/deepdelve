@@ -107,16 +107,46 @@ a description of the work — so this doc can be checked against reality later, 
   a live Planner-role trial. *Acceptance met*: all 4 tested, none beat `mistral-nemo:12b`; two failed the
   isolated test outright, the other two passed it but failed the live role test — see README "Model choice".
   ✅ 2026-07-10.
-- [x] **Run the comparative and academic eval items** (`eval/dataset.jsonl` items 2 and 3).
-  *Acceptance met*: `eval/results.jsonl` has real scores for both — comparative scored **0.000**
-  (`not_delegated` on all 4 attempts — the Planner wrote a 3-slot plan but never actually called
-  `delegate_tasks` even once), academic scored **0.500** (the `AcademicSearcher` found two genuinely
-  correct, real URLs — the paper's actual HuggingFace page and its actual GitHub repo, both verified
-  against the paper's own text — via search snippets, but never fetched them; the grounding check
-  correctly quarantined the resulting report, and the Planner failed to recover a valid final report
-  afterward, so a partially-correct answer only survived in stdout narration the LLM judge could see, not
-  in an actual deliverable file). ✅ 2026-07-10, but see the two new items directly below — this run
-  surfaced two *new* failure modes, not just confirmed the existing "doesn't fetch" one.
+- [x] **Run the comparative and academic eval items** (`eval/dataset.jsonl` items 2 and 3) — run twice,
+  before and after this session's structural fixes, for a real before/after comparison.
+  *First run (pre-fix)*: comparative scored **0.000** (`not_delegated` on all 4 attempts — the Planner
+  wrote a 3-slot plan but never actually called `delegate_tasks` even once), academic scored **0.500** (the
+  `AcademicSearcher` found two genuinely correct, real URLs via search snippets but never fetched them;
+  quarantined correctly, Planner never recovered a valid final report afterward). This run surfaced the
+  no-dispatch and narrated-report failure modes documented above.
+  *Second run (2026-07-10, after auto-fetch fusion + content-level grounding + no-dispatch fix)*:
+  comparative improved to **0.500** — for the first time, the Searcher fetched *real, correct sources for
+  both sides* (elastic.co's actual vector-search page, pgvector's actual GitHub repo); still salvaged
+  rather than directly written (the narrated-but-never-written pattern persists even with better research
+  underneath, see below). Academic held at **0.500** with a different profile: correctly fetched the real
+  DelveAgent paper itself, but for "related papers" produced one plausible-but-unverified title and, more
+  concerning, cited a **Facebook group post** as a "related paper" — a new, distinct flavor of hallucination
+  on the related-work discovery task specifically (fabricating what counts as related, not fabricating a
+  known paper's metadata). Correctly quarantined by the grounding check; nothing was recovered afterward,
+  so this eval's 0.5 came only from the harness's stdout-fallback scoring, which a real interactive user
+  wouldn't benefit from the same way. **Net read**: real, verified progress on the fetch-reliability side;
+  the "narrates but doesn't persist a corrected report after quarantine" gap remains open (see the original
+  "Recovery-after-quarantine" fix above — it covers the missing_artifact case via salvage, but a
+  quarantine-then-nothing outcome specifically on a *second* correction attempt isn't fully covered yet).
+  Also found and fixed while re-running this: `evaluate.py`'s model auto-detection queried Ollama's full
+  model list (picking an arbitrary locally-available tag) instead of reading the actual per-run agent
+  config — `results.jsonl` had logged the wrong model name. Fixed with `read_agent_model()`, which reads
+  straight from the same config file the agent run actually uses.
+- [ ] **New, not yet root-caused: salvage doesn't fire on a *second* quarantine.** The narrated-report
+  salvage fix covers a `missing_artifact` problem with substantial narrated text — but on the re-run
+  academic eval item, after a `not_grounded` quarantine, the run ended with the rejected file and nothing
+  else (no live `final_report.md`, no salvage triggered). Unknown yet whether the model's follow-up
+  narration was simply too short to clear the salvage's 200-char threshold, or something else entirely.
+  *Acceptance*: reproduce deliberately, inspect the actual turn text after a quarantine nudge, and either
+  extend the salvage path to also cover a quarantined-then-abandoned case, or document precisely why it's
+  a distinct failure mode that needs its own fix.
+- [ ] **New hallucination pattern: fabricated "related work" on the discovery task specifically.** Distinct
+  from earlier-observed patterns (fabricating a known paper's authors, fabricating a version number): here
+  the `AcademicSearcher` correctly identified and fetched the real primary paper, but for "related/citing
+  papers" produced one unverified-but-plausible title and cited a **Facebook group post** as a "related
+  paper" — a category error a domain-aware model shouldn't make regardless of factual accuracy. Worth its
+  own targeted test battery once picked up (multiple different papers' "find related work" queries) rather
+  than assuming this one instance generalizes.
 - [x] **"Wrote a plan, never dispatched it" failure mode — fixed.** Root cause: the Planner treated
   rewriting `_todos.md` as if it satisfied "take an action," and on the eval run had confabulated fake
   delegation narration ("After delegating the tasks to a human Searcher, here's what I've found:") despite
