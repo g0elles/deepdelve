@@ -1,0 +1,64 @@
+api:
+  openai_base_url: http://localhost:11434/v1   # Ollama's OpenAI-compatible endpoint
+  # Re-tested against the NEW domain-specialized tool schemas (see README "Model Re-Test") —
+  # do not assume the old project's single-generic-Searcher ranking still applies here.
+  openai_model: deepdelve-mistral-nemo
+settings:
+  enable_thinking: false
+  temperature: 0.2
+  concurrency:
+    max_concurrent_tasks: 3
+  quotas:
+    # Quotas are GLOBAL — shared cumulatively across the Planner and every dispatched specialist
+    # (WebSearcher, AcademicSearcher, DocumentAnalyzer, DataAnalyzer). Each key becomes a prompt
+    # format variable {key_quota}.
+    delegate_tasks: 15
+    web_search: 15
+    fetch_url_to_workspace: 15
+    write_workspace_file: 10
+    list_workspace_files: 10
+    write_todos: 10
+    read_todos: 10
+    think_tool: 30
+    read_workspace_file:
+      limit: 30
+      rules:
+        max_lines: 300
+    grep_workspace_file:
+      limit: 30
+      rules:
+        max_matches: 10
+  # How much extra headroom a completion-check retry gets on top of whatever's left in the shared
+  # pool, per tool. Fixes the old project's bug where all 3 retries drew from the same
+  # already-exhausted budget as the failed first attempt (see README "Completion Checks").
+  retry_quota_topup:
+    delegate_tasks: 3
+    web_search: 3
+    fetch_url_to_workspace: 3
+  enable_conversational_memory: true
+  enable_session_persistence: true
+  workspace:
+    type: disk
+    dir: "./research_output"
+    session_isolation: true
+    required_artifact: "final_report.md"
+  # Real grounding check: cross-references every URL cited in final_report.md against the URLs the
+  # engine actually saw fetch_url_to_workspace fetch this run (logged centrally, not model-reported).
+  grounding_check:
+    enabled: true
+    live_http_verify: true       # also HEAD-request each cited URL to confirm it still resolves
+    live_http_timeout: 5
+  # Persists verified (grounded, real-research) answers across runs so an exact repeat query
+  # doesn't need to re-research from scratch. Deterministic, engine-driven — not an agent tool.
+  knowledge_cache:
+    enabled: true
+    max_age_days: 7
+    path: "~/.{APP_NAME}/knowledge_cache.json"
+  # Experience store: successful run plans keyed by a coarse query "shape" (e.g. simple-factual,
+  # comparative, academic-deep-dive), so a structurally similar future query can seed its plan from
+  # a past success instead of planning from zero. Deterministic, engine-driven, same pattern as
+  # knowledge_cache.
+  experience_cache:
+    enabled: true
+    max_entries_per_shape: 5
+    path: "~/.{APP_NAME}/experience_cache.json"
