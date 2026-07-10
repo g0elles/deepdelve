@@ -112,3 +112,44 @@ Same global, cumulative-across-all-agents quota model as the reference pattern (
 python eval/evaluate.py --runs 3
 python eval/results_viewer.py
 ```
+
+## References
+
+What was actually used, and how — distinguishing paper-backed claims from our own adaptations (see
+"Design rationale" for the specific mapping):
+
+**Primary architecture source**
+- Jiang, Yang, Cui, et al. *Deep Research in Physical Sciences: A Multi-Agent Framework and
+  Comprehensive Benchmark* (DelveAgent / PhySciBench). [arXiv:2606.18648](https://arxiv.org/abs/2606.18648).
+  Source of the Adaptive Planning Loop, Dual-Granularity Memory, and Hierarchical Reflection concepts,
+  and the real evidence that a Planner-dispatches-to-named-specialists structure is a validated
+  pattern (verified by extracting the paper's actual PDF text, not an automated summary — see below).
+
+**Cross-validation surveys** (pulled specifically to check DelveAgent's ideas weren't just one paper's
+idiosyncratic design, since it's a single domain-specific study):
+- Huang, Chen, Zhang, et al. *Deep Research Agents: A Systematic Examination and Roadmap*. [arXiv:2506.18096](https://arxiv.org/abs/2506.18096).
+- Xu, Peng. *A Comprehensive Survey of Deep Research: Systems, Methodologies, and Applications* (reviews 80+ implementations). [arXiv:2506.12594](https://arxiv.org/abs/2506.12594).
+- Xi, Lin, Xiao, et al. *A Survey of LLM-based Deep Search Agents: Paradigm, Optimization, Evaluation, and Challenges*. [arXiv:2508.05668](https://arxiv.org/abs/2508.05668).
+
+**Reference implementations**
+- [`kyuz0/deep-research-agent`](https://github.com/kyuz0/deep-research-agent) — the base architecture
+  (Orchestrator/Searcher/Analyzer chain, Microsoft Agent Framework + Textual) that the prior prototype
+  (`../deep-research`) was built from. Confirmed via its commit history to be a small, lightly-tested
+  demo scaffold (3 commits, no completion-check or memory system) rather than a proven reference —
+  which is why this rebuild treats its tier structure as a starting point to fix, not a solved problem.
+- [`CYC2002tommy/Deep-Research-Agent`](https://github.com/CYC2002tommy/Deep-Research-Agent) — not a
+  local-model agent (a Claude-Code skill requiring Scopus/NotebookLM MCP servers), but its live-HTTP
+  source-verification idea ("Zero-Hallucination" phase) is echoed in `settings.grounding_check.live_http_verify`.
+- [`nashsu/llm_wiki`](https://github.com/nashsu/llm_wiki) — a mature desktop app (Rust/Tauri, not
+  portable code here), source of the two-step "analyze, then generate" pattern behind the Planner's
+  `findings.md` → `final_report.md` split, and the source-traceability idea behind the structured
+  run-state (`utils/run_state.py`).
+
+**Considered and set aside**
+- Three arXiv IDs originally supplied (2607.08027, 2607.07984, 2607.08740) turned out on inspection to
+  be about LLM structured pruning, agentic neural architecture search, and a "workflow-as-knowledge"
+  persistence framework, respectively — not deep research agents. The first was left out entirely; the
+  other two's *transferable ideas* (bounded/"slotted" planning from the NAS paper; persisting run state
+  as inspectable, resumable objects from the workflow-as-knowledge paper) were still adopted where they
+  fit, and are called out explicitly wherever they show up in the code (`prompts.py`'s bounded-slot
+  planning rule, `utils/run_state.py`).
