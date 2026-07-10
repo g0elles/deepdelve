@@ -2,7 +2,7 @@
 
 A locally-run, multi-agent deep research assistant built on the **Microsoft Agent Framework** and the **Textual** TUI library, targeting local OpenAI-compatible model servers (defaults to **Ollama**, `http://localhost:11434/v1`).
 
-This is a from-scratch rebuild of an earlier prototype (`../deep-research`), not an incremental patch. That prototype worked end-to-end but was unreliable on anything beyond simple lookups — see "Design rationale" below for the specific bugs found in its retry/grounding logic and what changed here.
+This is a from-scratch rebuild of an earlier prototype (`../deep-research`), not an incremental patch. That prototype worked end-to-end but was unreliable on anything beyond simple lookups — see "Design rationale" below for the specific bugs found in its retry/grounding logic and what changed here. See [`ROADMAP.md`](ROADMAP.md) for what's done, what's open, and the acceptance criteria for each.
 
 ## Architecture
 
@@ -108,16 +108,19 @@ By default, targets Ollama's OpenAI-compatible API (`http://localhost:11434/v1`)
 > pick as before, but now verified against the actual schema this project uses, not inherited from the
 > old project's test.
 >
-> **Caveat on `devstral:24b`, found via live Planner-role testing (not just the isolated curl test
-> above)**: despite passing the isolated 3/3 tool-call test, one live end-to-end trial as the actual
-> Planner (full system prompt, not a single isolated task) produced *zero* tool calls across all 3
-> completion-check attempts — it repeatedly claimed "I don't have the capability to perform web
-> searches or access specific tools" despite `delegate_tasks` being present in its tool list. A second,
-> independent trial on a different query worked correctly. This inconsistency was tested *before* the
-> malformed-`delegate_tasks`-schema and `children_token` crash fixes above landed, so it should be
-> re-tested now that those are fixed rather than treated as settled — but until re-confirmed, don't
-> assume the isolated curl test is sufficient evidence a model will behave reliably in the full
-> multi-agent role; test the actual role, not just raw tool-call capability.
+> **`devstral:24b` is not recommended for the Planner role, based on 3 independent live trials** (not
+> just the isolated curl test above, which it passes 3/3). Despite passing that isolated test:
+> trial 1 produced *zero* tool calls across all 3 completion-check attempts, repeatedly claiming
+> "I don't have the capability to perform web searches" despite `delegate_tasks` being available;
+> trial 2 (re-run after the malformed-schema and `children_token` crash fixes landed) worked correctly
+> end-to-end and produced a real, if still ungrounded, report; trial 3 delegated correctly and got real
+> results back from its WebSearcher sub-agents, but then wrote `final_report.md` containing literal
+> `[Placeholder: Insert the result from the WebSearcher task here]` text instead of the actual findings
+> — twice, across two nudges — and the run ended with no report ever persisted. 1-of-3 fully functional
+> is a worse track record than `mistral-nemo:12b`'s, which failed the same way (missing full source
+> verification) but never failed to delegate or synthesize. **Conclusion: passing an isolated tool-call
+> test is not sufficient evidence a model will behave reliably in the full multi-agent role — test the
+> actual role with multiple independent trials, not a single isolated task.**
 
 ### 3. Run
 
