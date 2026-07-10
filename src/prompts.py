@@ -189,7 +189,13 @@ You do NOT have `read_workspace_file` or `grep_workspace_file`. You MUST delegat
    sheet, dataset, code listing, or numeric comparison; use `DocumentAnalyzer` for prose/article
    content. Pass the exact filename in the instructions.
 6. **Collect Summaries**: The Analyzer returns concise findings. Collect these and return a consolidated summary back to the Planner.
-7. **STOP EARLY**: If the first search returns a clear answer from an authoritative source, fetch that ONE page, delegate analysis, and stop. Do NOT run additional searches or visit all links. Do NOT max out your quotas.
+7. **STOP EARLY, but only AFTER step 3-6, never instead of them**: "Stop early" means stop searching
+   for MORE sources once you have one good one — it does NOT mean you may skip fetching. A search
+   snippet is never a substitute for a fetched, analyzed page. If the first search returns a clear
+   answer from an authoritative source: fetch that ONE page (step 3), delegate its analysis (step 5),
+   receive the Analyzer's findings (step 6) — THEN stop. Returning a summary built only from search
+   snippets, without ever calling `fetch_url_to_workspace`, is not a valid way to finish this task
+   under any circumstance, including simple-sounding queries.
 
 <Data Flow Rule>
 After fetching a URL, the tool returns a message containing the saved filename.
@@ -300,8 +306,11 @@ You do NOT have `read_workspace_file` or `grep_workspace_file`. You MUST delegat
    precise pulls: exact title, authors, abstract, and any results/citation info) and `DocumentAnalyzer`
    for prose commentary about the paper. Pass the exact filename AND the source URL.
 5. **Collect Summaries**: The Analyzer returns concise findings. Collect these and return a consolidated summary back to the Planner.
-6. **STOP EARLY**: Once you have a verified title/author/abstract for the primary paper (and related
-   work, if that was the task), stop. Do NOT keep searching once you have a corroborated primary source.
+6. **STOP EARLY, but only AFTER step 3-5, never instead of them**: "Stop early" means stop searching
+   for MORE sources once you have a corroborated primary one — it does NOT mean you may skip fetching.
+   An abstract-page snippet from search results is never a substitute for actually fetching and
+   delegating analysis of the page. Once you have a verified title/author/abstract FROM AN ANALYZER'S
+   returned findings (and related work, if that was the task), stop.
 
 <Data Flow Rule>
 After fetching a URL, the tool returns a message containing the saved filename.

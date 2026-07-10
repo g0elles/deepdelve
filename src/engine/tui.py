@@ -1319,9 +1319,23 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                 "No `delegate_tasks` call was ever made — this looks like an answer from memory, not real research. Forcing verification.", \
                 f"SYSTEM WARNING: You are attempting to finish the task, but you never called delegate_tasks. Your training data can be stale or wrong — you MUST verify any facts with a real Searcher delegation before finishing. Call delegate_tasks now, then write (or overwrite) '{req_artifact}' with the verified findings, replacing any previous unverified guess."
         elif req_artifact not in files:
+            is_last_chance = (attempt + 1) >= MAX_COMPLETION_CHECK_ATTEMPTS
+            # A model that already has real delegated research results in its own context but still
+            # hasn't written the artifact tends to respond to a generic nudge by re-delegating again
+            # (a real failure mode observed in testing: it satisfies "take a real action" with
+            # delegate_tasks instead of write_workspace_file). Naming and forbidding that specific
+            # wrong action, rather than only naming the right one, measurably changes behavior on
+            # small models — same principle as the existing Anti-Looping prompt rules, applied
+            # structurally here since the prompt-level rule alone didn't hold under a nudge.
+            forbid_redelegate = (
+                " You already have research results above from your delegated task(s) — do NOT call "
+                "delegate_tasks again. Your ONLY next action must be write_workspace_file."
+                if delegated else ""
+            )
+            last_chance_prefix = "THIS IS YOUR FINAL ATTEMPT. " if is_last_chance else ""
             problem, warning_msg, inject_msg = "missing_artifact", \
                 f"Required artifact `{req_artifact}` is missing from the workspace. Pushing agent to create it.", \
-                f"SYSTEM WARNING: You are attempting to finish the task, but the required final artifact '{req_artifact}' is missing from the workspace. Writing your answer as a chat message does NOT complete the task. Your next action MUST be a real call to the tool that writes '{req_artifact}' to the workspace — not another text reply."
+                f"SYSTEM WARNING: {last_chance_prefix}You are attempting to finish the task, but the required final artifact '{req_artifact}' is missing from the workspace. Writing your answer as a chat message does NOT complete the task.{forbid_redelegate} Call write_workspace_file(filename='{req_artifact}', content=...) right now, using whatever findings you already have — an imperfect report that exists beats a perfect one that doesn't."
         else:
             grounding_problem = await _real_grounding_problem(content or "")
             if grounding_problem:
@@ -1366,6 +1380,15 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                 plan = get_workspace_file_content("_todos.md") or ""
                 slot_count = plan.count("- [")
                 save_experience(query, plan, slot_count, outcome="success", max_entries_per_shape=exp_cfg.get("max_entries_per_shape", 5))
+        elif problem:
+            # Retry budget is exhausted and a real problem still exists (e.g. the report cites URLs
+            # that were never actually fetched this run). The old project silently accepted whatever
+            # was left at this point with no indication to the user that the output is unverified —
+            # a genuinely observed failure mode in testing, not a hypothetical one. Surface it
+            # explicitly instead of letting a report that looks clean read as trustworthy.
+            notify(f"**System (final):** Retry budget exhausted with an unresolved issue ({problem}). "
+                   f"`{req_artifact}` was written but could NOT be fully verified this run — treat its "
+                   f"claims as unconfirmed. This was not silently accepted.")
 
         run_state.set_plan(get_workspace_file_content("_todos.md") or "")
         run_state.save()

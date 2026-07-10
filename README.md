@@ -40,6 +40,11 @@ The full reasoning — including the exact code-level bugs found in the prototyp
 4. **Domain specialization (added)**: tiers 2 and 3 became named panels instead of one-size-fits-all agents, informed by a real paper on multi-agent deep research (DelveAgent, arXiv:2606.18648) and cross-checked against three independent field surveys before being adopted — not taken from a single source.
 5. **Dual-granularity memory (added)**: `utils/knowledge_cache.py` now persists both verified Q&A facts *and* successful past plans (keyed by a coarse query shape), so a structurally similar future query can seed its plan instead of starting from zero.
 6. **Two real interface bugs fixed while porting the TUI** (`engine/tui.py`): the interactive TUI path never reset its `session_dir_ctx` token (only the headless path did), and the ~150-line completion-check retry logic was duplicated near-verbatim between the TUI and headless entry points — any future fix had to be hand-applied twice. Both are now one shared `run_completion_check()` used by both paths.
+7. **Two more bugs found via a live end-to-end smoke test, not just code review (fixed)**: running an actual headless query (`"Who created the Python programming language?"`) surfaced that the Planner, when nudged about a missing artifact, would re-call `delegate_tasks` on the exact same task again instead of writing the report it already had content for — repeating the same call three times in a row, in direct violation of its own Anti-Looping rule, until the retry budget ran out with nothing written. Fixed by making the nudge explicitly name and forbid the wrong action ("do NOT call delegate_tasks again") rather than only naming the right one. Separately, when the retry budget ran out *while a real problem still existed* (e.g. an ungrounded citation), the engine silently accepted the output with zero indication to the user — fixed by emitting an explicit final disclosure (`run_completion_check`'s `elif problem:` branch) instead of failing silently.
+
+## Known limitation (found via live testing, not yet solved)
+
+Even after tightening the WebSearcher/AcademicSearcher prompts to explicitly forbid returning a summary without first calling `fetch_url_to_workspace`, a live test run still showed `mistral-nemo:12b` skipping the fetch step and answering from its own training knowledge, citing a plausible-looking but never-fetched URL. The grounding check catches this correctly every time it's been observed (source: `_run_state.json`'s `fetched_urls` staying empty despite cited sources) — it quarantines the artifact, forces a correction attempt, and if the retry budget runs out before it's resolved, now clearly discloses the report as unverified rather than presenting it as trustworthy. But it does not *prevent* the behavior, only catch and disclose it. This looks like a genuine instruction-following limit of this model class rather than a prompt-wording problem — further prompt iteration didn't change it in testing. The two real next steps, in order of effort: try `devstral:24b` (better instruction-following per the model reliability table, VRAM permitting) as the Planner/Searcher model; or the RL fine-tuning direction noted in the original plan doc, which targets this exact class of problem at its root instead of working around it.
 
 ## Setup Instructions
 
@@ -85,7 +90,22 @@ By default, targets Ollama's OpenAI-compatible API (`http://localhost:11434/v1`)
 
 > **Parallel-slot gotcha:** Ollama divides `num_ctx` across `OLLAMA_NUM_PARALLEL` parallel slots (often auto-set to 4), silently giving each real request a quarter of the context you configured. Verify via `journalctl -u ollama -f | grep n_ctx_slot` while sending a request. If it's smaller than expected, set `OLLAMA_NUM_PARALLEL=1` in `/etc/systemd/system/ollama.service.d/override.conf` and restart.
 
-> **Model choice — do not assume the old ranking holds.** The domain-specialized prompts here have different tool-call shapes than the prototype's single generic Searcher. Re-run the reliability curl test above against each candidate model before picking a default; results will be logged here once re-tested.
+> **Model choice — do not assume the old ranking holds, and it doesn't.** The domain-specialized
+> prompts here have a different tool-call shape than the prototype's flat 3-tool schema — specifically,
+> `delegate_tasks(tasks: [{task_name, instructions, agent_id: enum}])` is a nested array of objects with
+> a constrained `agent_id` field, not a flat argument list. Re-tested head-to-head (3 trials each,
+> `AcademicSearcher`-style delegation task) on 2026-07-10:
+>
+> | Model | Real, correctly-shaped `tool_calls`? |
+> |---|---|
+> | `mistral-nemo:12b` | **3/3** — unchanged from the old ranking |
+> | `devstral:24b` | **3/3** — unchanged from the old ranking |
+> | `hermes3:8b` | **0/3** — regressed hard. Was the *most* reliable tool caller on the old project's flat schema (even parallel calls); on this schema it either skipped tool calls entirely (narrated as text) or emitted a malformed, double-nested arguments object. Disqualified for this role on this schema, despite the old README's recommendation. |
+>
+> `mistral-nemo:12b` remains the default (`deepdelve-mistral-nemo` in `config_template.yaml`) — same
+> pick as before, but now verified against the actual schema this project uses, not inherited from the
+> old project's test. `devstral:24b` is an equally valid pick if VRAM allows (see the old project's
+> notes on 16GB-card VRAM pressure, which are hardware facts independent of this schema change).
 
 ### 3. Run
 
