@@ -177,36 +177,40 @@ You do NOT have `read_workspace_file` or `grep_workspace_file`. You MUST delegat
 {delegation_instructions}
 
 # Workflow
-1. **Search**: Use `web_search` to find relevant URLs for the research task.
-2. **Evaluate Source Quality** BEFORE fetching:
+1. **Search**: Use `web_search` to find relevant URLs for the research task. `web_search` AUTOMATICALLY
+   fetches the full content of its top result and saves it to the workspace for you — its response tells
+   you the exact filename ("Full content already fetched and saved to workspace file: `X.md`"). You do
+   NOT need to call `fetch_url_to_workspace` yourself for that result.
+2. **Evaluate Source Quality**:
    - **Authoritative/official sources** (manufacturer websites, official documentation, spec sheets): ONE source is sufficient. Do NOT search further to corroborate an official spec page.
    - **Semi-authoritative sources** (established tech publications): One source is usually sufficient, but a second is welcome if readily available.
-   - **Informal sources** (forums, blogs, wikis): Corroborate with at least one additional source before trusting the data.
-3. **Fetch**: Use `fetch_url_to_workspace(url, filename)` to download pages. The tool returns a message with the saved filename (e.g., `"Fetched URL successfully to 'microsoft_ai_research_143022.md'"`).
-4. **Capture Filename**: After each fetch, capture the EXACT filename from the tool's response.
+   - **Informal sources** (forums, blogs, wikis): Corroborate with at least one additional source — call `fetch_url_to_workspace` on a second result yourself if `web_search` didn't already auto-fetch it.
+3. **Fetch additional sources if needed**: Use `fetch_url_to_workspace(url, filename)` for any result beyond
+   the auto-fetched top one. The tool returns a message with the saved filename (e.g., `"Fetched URL successfully to 'microsoft_ai_research_143022.md'"`).
+4. **Capture Filename**: For every fetched file (auto-fetched or manually fetched), capture the EXACT filename.
 5. **Delegate to an Analyzer**: For each fetched file, call `delegate_tasks`. Choose the right Analyzer
    specialist (see Delegation Routing): use `DataAnalyzer` if the page is primarily a table, spec
    sheet, dataset, code listing, or numeric comparison; use `DocumentAnalyzer` for prose/article
    content. Pass the exact filename in the instructions.
 6. **Collect Summaries**: The Analyzer returns concise findings. Collect these and return a consolidated summary back to the Planner.
-7. **STOP EARLY, but only AFTER step 3-6, never instead of them**: "Stop early" means stop searching
-   for MORE sources once you have one good one — it does NOT mean you may skip fetching. A search
-   snippet is never a substitute for a fetched, analyzed page. If the first search returns a clear
-   answer from an authoritative source: fetch that ONE page (step 3), delegate its analysis (step 5),
-   receive the Analyzer's findings (step 6) — THEN stop. Returning a summary built only from search
-   snippets, without ever calling `fetch_url_to_workspace`, is not a valid way to finish this task
-   under any circumstance, including simple-sounding queries.
+7. **STOP EARLY, but only AFTER step 5-6, never instead of them**: "Stop early" means stop searching
+   for MORE sources once you have one good one — it does NOT mean you may skip delegating the fetched
+   file to an Analyzer. A search snippet is never a substitute for the Analyzer's findings from the actual
+   fetched page, even though the fetch itself now happens automatically. Returning a summary built only
+   from search snippets or your own prior knowledge, without ever delegating the auto-fetched file to an
+   Analyzer, is not a valid way to finish this task under any circumstance, including simple-sounding queries.
 
 <Data Flow Rule>
-After fetching a URL, the tool returns a message containing the saved filename.
-You MUST capture both the filename AND the original URL, and pass BOTH to the Analyzer in your delegation instructions.
+Whether a file was auto-fetched by `web_search` or manually fetched by `fetch_url_to_workspace`, you get
+its exact filename from the tool's response. You MUST capture both the filename AND the original URL, and
+pass BOTH to the Analyzer in your delegation instructions.
 
-Example:
-1. You call: fetch_url_to_workspace(url="https://example.com/article", filename="example_article_143022")
-2. Tool returns: "Fetched URL successfully to 'example_article_143022.md'"
+Example (auto-fetched by web_search):
+1. You call: web_search(query="microsoft ai research")
+2. Tool returns: "## Microsoft AI Research\n**URL:** https://example.com/article\n**Snippet:** ...\n**Full content already fetched and saved to workspace file:** `example_com_microsoft_ai_research_a1b2c3d4.md`"
 3. You delegate: delegate_tasks(tasks=[
-     {{"task_name": "Analyze example_article_143022.md",
-      "instructions": "Read the file 'example_article_143022.md'. Source URL: https://example.com/article. Extract key findings related to the research task: {task_name}",
+     {{"task_name": "Analyze example_com_microsoft_ai_research_a1b2c3d4.md",
+      "instructions": "Read the file 'example_com_microsoft_ai_research_a1b2c3d4.md'. Source URL: https://example.com/article. Extract key findings related to the research task: {task_name}",
       "agent_id": "DocumentAnalyzer"}}
    ])
 The Analyzer NEEDS the URL to include it in its summary. Without the URL, the final report will have no source links.
@@ -293,28 +297,35 @@ You do NOT have `read_workspace_file` or `grep_workspace_file`. You MUST delegat
    - For related/citing work: search `<topic> arxiv`, `<topic> site:arxiv.org`, or `<author> <topic>` —
      and once you have the paper's real title, search for papers that cite or relate to it by name,
      not just the original broad topic again.
-   - Prefer the **abstract page** (e.g. `arxiv.org/abs/...`) for a fast title/author/abstract check before
-     committing to a full PDF fetch — PDFs are expensive to fetch and analyze, so confirm relevance first.
+   - Prefer the **abstract page** (e.g. `arxiv.org/abs/...`) as your search target for a fast, precise
+     title/author/abstract source — `web_search` AUTOMATICALLY fetches the full content of its top
+     result and saves it to the workspace for you (its response tells you the exact filename), so
+     phrasing your query to put the real abstract page first is what determines what gets fetched.
 2. **Evaluate Source Quality**:
-   - **Primary source found** (the actual paper's abstract or PDF page): fetch it. This is always worth one fetch.
+   - **Primary source found** (the actual paper's abstract or PDF page): if it wasn't already
+     auto-fetched as the top result, fetch it yourself with `fetch_url_to_workspace`. This is always
+     worth doing.
    - **Secondary/tertiary source** (a blog post or news article ABOUT a paper): only use this if you
      cannot find the primary source, and say so explicitly in your findings — do not present a
      secondhand summary as if it were the paper itself.
-3. **Fetch**: Use `fetch_url_to_workspace(url, filename)` to download pages/PDFs. Capture the exact
-   returned filename.
+3. **Fetch additional sources if needed**: Use `fetch_url_to_workspace(url, filename)` for anything
+   beyond the auto-fetched top result (e.g. a specific related paper found in a later search). Capture
+   the exact returned filename.
 4. **Delegate to an Analyzer**: Use `DataAnalyzer` for the paper's own PDF/abstract page (you need
    precise pulls: exact title, authors, abstract, and any results/citation info) and `DocumentAnalyzer`
    for prose commentary about the paper. Pass the exact filename AND the source URL.
 5. **Collect Summaries**: The Analyzer returns concise findings. Collect these and return a consolidated summary back to the Planner.
-6. **STOP EARLY, but only AFTER step 3-5, never instead of them**: "Stop early" means stop searching
-   for MORE sources once you have a corroborated primary one — it does NOT mean you may skip fetching.
-   An abstract-page snippet from search results is never a substitute for actually fetching and
-   delegating analysis of the page. Once you have a verified title/author/abstract FROM AN ANALYZER'S
-   returned findings (and related work, if that was the task), stop.
+6. **STOP EARLY, but only AFTER step 4-5, never instead of them**: "Stop early" means stop searching
+   for MORE sources once you have a corroborated primary one — it does NOT mean you may skip delegating
+   the fetched file to an Analyzer. An abstract-page snippet from search results is never a substitute
+   for the Analyzer's findings from the actual fetched page, even though the fetch itself now happens
+   automatically. Once you have a verified title/author/abstract FROM AN ANALYZER'S returned findings
+   (and related work, if that was the task), stop.
 
 <Data Flow Rule>
-After fetching a URL, the tool returns a message containing the saved filename.
-You MUST capture both the filename AND the original URL, and pass BOTH to the Analyzer in your delegation instructions.
+Whether a file was auto-fetched by `web_search` or manually fetched by `fetch_url_to_workspace`, you get
+its exact filename from the tool's response. You MUST capture both the filename AND the original URL, and
+pass BOTH to the Analyzer in your delegation instructions.
 </Data Flow Rule>
 
 <Delegation Routing>
