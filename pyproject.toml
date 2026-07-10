@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deepdelve"
+version = "0.1.0"
+description = "A locally-run, multi-agent deep research assistant with domain-specialized Searcher/Analyzer panels (Planner -> {WebSearcher,AcademicSearcher} -> {DocumentAnalyzer,DataAnalyzer})."
+authors = [{name = "Local Agent Builder"}]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "agent-framework",
+    "python-dotenv",
+    "httpx",
+    "textual",
+    "beautifulsoup4",
+    "PyYAML",
+    "pyfiglet",
+    "ddgs",
+    "markitdown[all]",
+    "textual-serve"
+]
+
+[project.scripts]
+deepdelve = "src.app:cli_main"
+
+[tool.setuptools]
+packages = [
+    "src",
+    "src.tools",
+    "src.engine",
+    "src.utils"
+]
