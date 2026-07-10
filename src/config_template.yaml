@@ -1,7 +1,9 @@
 api:
   openai_base_url: http://localhost:11434/v1   # Ollama's OpenAI-compatible endpoint
-  # Re-tested against the NEW domain-specialized tool schemas (see README "Model Re-Test") —
-  # do not assume the old project's single-generic-Searcher ranking still applies here.
+  # Re-tested 2026-07-10 against this project's actual nested delegate_tasks(tasks:[{...,agent_id:enum}])
+  # schema, not inherited from the old project's flat-schema test — see README "Model choice" for the
+  # full 3-model result table. mistral-nemo:12b held at 3/3; hermes3:8b (the old project's top pick)
+  # regressed to 0/3 on this schema.
   openai_model: deepdelve-mistral-nemo
 settings:
   enable_thinking: false
