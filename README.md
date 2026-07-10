@@ -108,6 +108,27 @@ By default, targets Ollama's OpenAI-compatible API (`http://localhost:11434/v1`)
 > pick as before, but now verified against the actual schema this project uses, not inherited from the
 > old project's test.
 >
+> **Four more candidates from an external "16GB VRAM tool-calling" writeup were tested (2026-07-10) — none beat the default, and treating the writeup's claims as verified before testing would have wasted the pulls.**
+> Two of the four contradicted our *own prior findings* before even being re-tested: `Hermes-3-Llama-3.1-8B`
+> is the exact model already in this table as `hermes3:8b` (0/3 on this schema); `Qwen2.5-Coder-14B-Instruct`
+> was already ruled out by the reference project for narrating JSON as text instead of calling tools — retested
+> anyway on our schema for completeness, same result:
+>
+> | Model | Isolated curl test (3 trials) | Live Planner-role trial |
+> |---|---|---|
+> | `hermes3:8b` (= "Hermes-3-Llama-3.1-8B") | 0-1/3 (re-ran twice, variance between 0/3 and 1/3, still unreliable) | not re-tested live — already disqualified |
+> | `qwen2.5-coder:14b-instruct` | **0/3** — narrated JSON as text, confirming the reference project's prior finding on this exact model | not tested live — already disqualified |
+> | `llama3-groq-tool-use:8b` | **3/3** | **Failed** — total refusal ("I'm sorry but I do not have enough information to complete this task"), byte-for-byte identical across all 4 attempts, 5.8s total runtime (no real reasoning happened) |
+> | `mistral:7b-instruct-v0.3-q5_K_M` | **3/3** | **Failed** — narrated a perfectly-formatted `delegate_tasks(...)` call as a markdown Python code block instead of emitting a real structured tool call, word-for-word identical across all 4 attempts |
+>
+> Note the exact tag the writeup gave (`mistral:7b-instruct-v0.3`) doesn't exist in Ollama's library —
+> tags need an explicit quant suffix (`-q5_K_M` etc.); `ollama pull` fails outright on the bare form.
+>
+> **All 4 externally-recommended models failed once tested in the actual Planner role, despite half of
+> them passing the isolated schema test — reinforcing, not just repeating, the lesson below.**
+> `mistral-nemo:12b` remains the only model with a clean track record on both the isolated test and live
+> multi-trial Planner-role testing.
+>
 > **`devstral:24b` is not recommended for the Planner role, based on 3 independent live trials** (not
 > just the isolated curl test above, which it passes 3/3). Despite passing that isolated test:
 > trial 1 produced *zero* tool calls across all 3 completion-check attempts, repeatedly claiming

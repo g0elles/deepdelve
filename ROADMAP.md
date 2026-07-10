@@ -40,15 +40,40 @@ a description of the work — so this doc can be checked against reality later, 
   a live test showing 3/3 independent trials on a novel query actually fetching before answering, or
   (b) a documented decision that this is accepted as a disclosed-not-prevented limitation for this model
   class, with the RL fine-tuning path (see Stretch below) as the actual fix.
-- [ ] **Re-evaluate `devstral:24b` one more time** now that the schema-validation and crash fixes are in
-  place (2 of its 3 live trials happened *before* or *straddling* those fixes).
-  *Acceptance*: 3 fresh independent trials post-fix, same methodology as the existing table, results
-  recorded in README "Model choice" replacing the current tentative note.
-- [ ] **Run the comparative and academic eval items** (`eval/dataset.jsonl` items 2 and 3) — the
-  `AcademicSearcher` specialist has not yet been exercised end-to-end; it exists to fix the exact old-project
-  failure class ("research a paper + find related work") but that fix is currently unverified by a live run.
-  *Acceptance*: `python eval/evaluate.py --limit 3 --runs 2` completes, `eval/results.jsonl` has real
-  scores (not all-zero from timeouts/crashes) for all 3 dataset items, `results_viewer.py` output reviewed.
+- [x] **Re-evaluate `devstral:24b`** — done, 3 independent live trials post-fix, result: 1/3 fully
+  functional, not recommended for the Planner role (README "Model choice"). ✅ 2026-07-10.
+- [x] **Four externally-suggested models tested** (`hermes3:8b`, `qwen2.5-coder:14b-instruct`,
+  `llama3-groq-tool-use:8b`, `mistral:7b-instruct-v0.3-q5_K_M`) against both the isolated schema test and
+  a live Planner-role trial. *Acceptance met*: all 4 tested, none beat `mistral-nemo:12b`; two failed the
+  isolated test outright, the other two passed it but failed the live role test — see README "Model choice".
+  ✅ 2026-07-10.
+- [x] **Run the comparative and academic eval items** (`eval/dataset.jsonl` items 2 and 3).
+  *Acceptance met*: `eval/results.jsonl` has real scores for both — comparative scored **0.000**
+  (`not_delegated` on all 4 attempts — the Planner wrote a 3-slot plan but never actually called
+  `delegate_tasks` even once), academic scored **0.500** (the `AcademicSearcher` found two genuinely
+  correct, real URLs — the paper's actual HuggingFace page and its actual GitHub repo, both verified
+  against the paper's own text — via search snippets, but never fetched them; the grounding check
+  correctly quarantined the resulting report, and the Planner failed to recover a valid final report
+  afterward, so a partially-correct answer only survived in stdout narration the LLM judge could see, not
+  in an actual deliverable file). ✅ 2026-07-10, but see the two new items directly below — this run
+  surfaced two *new* failure modes, not just confirmed the existing "doesn't fetch" one.
+- [ ] **New failure mode: "wrote a plan, never dispatched it."** The comparative eval item's Planner wrote
+  a correct 3-slot `_todos.md` plan and then never called `delegate_tasks` at all across the full retry
+  budget — distinct from the previously-documented pattern (delegates, but doesn't fetch/ground). Not yet
+  root-caused.
+  *Acceptance*: reproduce on 3 independent trials of the same or a similar comparative query; either find
+  a prompt/structural fix that gets real dispatch happening, or document this as a second disclosed
+  limitation alongside the fetch-skipping one.
+- [ ] **Recovery-after-quarantine gap**: when the grounding check quarantines a bad artifact, the Planner
+  is nudged to write a fresh one, but on the academic eval item it never did — the run ended with no
+  `final_report.md` at all, discarding two genuinely correct URLs that were sitting right there in the
+  model's own prior turn. The disclosure-on-exhaustion fix means this is surfaced honestly rather than
+  hidden, but the *outcome* (throwing away correct partial findings) is still worse than it needs to be.
+  *Acceptance*: either the two-pass `findings.md` write actually gets exercised reliably (see the
+  `findings[]` item below — right now nothing confirms `findings.md` is even being written in practice)
+  so a quarantined `final_report.md` still leaves recoverable raw findings behind, or a structural fallback
+  that surfaces whatever's in `findings.md`/sub-agent results directly if the Planner can't produce a
+  final write within budget.
 - [ ] **`findings` array in `_run_state.json` is currently always empty** — `RunState.add_finding()` exists
   but nothing calls it; the structured run-state currently only tracks plan/fetched-URLs/attempts, not a
   parsed record of each finding. Not blocking anything today (the grounding check doesn't need it), but
