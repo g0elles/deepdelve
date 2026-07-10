@@ -28,13 +28,30 @@ a description of the work — so this doc can be checked against reality later, 
   project). *Acceptance: a live test with an invalid `agent_id` returns the clean "sub-agent does not
   exist" error instead of crashing.* ✅ verified live.
 - [x] **Private GitHub repo live**: https://github.com/g0elles/deepdelve, all work pushed to `main`.
+- [x] **Extensive live test battery across genuinely diverse, complex topics** (not repeats of the same
+  query): a factual lookup, two different real academic papers (DelveAgent and the LLM-based Deep Search
+  Agents survey — the latter's authors were confidently fabricated by the model while, separately, a real
+  related-paper citation it produced turned out correct, illustrating exactly why the grounding check
+  can't distinguish good from bad content without a real fetch), three current-event queries spanning
+  sports (2026 World Cup) and software releases (Rust), and a technical comparison (Elasticsearch vs.
+  pgvector) run twice for consistency. 8 live runs total, on top of the model-comparison trials. Found and
+  fixed 3 additional real bugs beyond the initial round (the grounding soft-pass, the malformed-schema
+  silent-degrade, the no-dispatch pattern, and the narrated-report salvage) — see entries throughout this
+  doc and README "Design rationale" for each. ✅ 2026-07-10.
 
 ## In progress / open (with acceptance criteria)
 
-- [ ] **Root-cause the fetch-skipping behavior**, not just catch it. Currently: the grounding check
-  reliably *catches* a Searcher that never called `fetch_url_to_workspace` and answered from snippets or
-  its own training knowledge, and now discloses this clearly instead of hiding it — but nothing prevents
-  it from happening in the first place, across every model tested so far.
+- [ ] **Root-cause the fetch-skipping behavior**, not just catch it — now the single highest-confidence
+  open item, reinforced by an extensive test battery (2026-07-10): 8 live end-to-end runs across factual,
+  comparative, academic, and current-event queries, on 5 different models. In every single run where a
+  citation was checked, `fetched_url_count` stayed at 0 — the Searcher never once called
+  `fetch_url_to_workspace`, regardless of model. One run (Rust version query) makes the causal chain
+  directly observable: real, live `web_search` results came back, but the snippet text didn't contain the
+  specific fact needed (only the actual release-notes page would) — since no fetch happened, the Planner
+  fell back to confidently fabricating a wrong version number and entirely invented release notes instead
+  of admitting the snippets were insufficient. The grounding check catches this every time and now
+  discloses it clearly (including salvaging narrated-but-unwritten reports, see below) — but nothing
+  prevents the underlying behavior.
   *Acceptance*: either (a) a structural fix — e.g. the engine refuses to let a Searcher return findings
   to the Planner unless at least one `fetch_url_to_workspace` call happened for non-trivial queries — with
   a live test showing 3/3 independent trials on a novel query actually fetching before answering, or
@@ -57,23 +74,26 @@ a description of the work — so this doc can be checked against reality later, 
   afterward, so a partially-correct answer only survived in stdout narration the LLM judge could see, not
   in an actual deliverable file). ✅ 2026-07-10, but see the two new items directly below — this run
   surfaced two *new* failure modes, not just confirmed the existing "doesn't fetch" one.
-- [ ] **New failure mode: "wrote a plan, never dispatched it."** The comparative eval item's Planner wrote
-  a correct 3-slot `_todos.md` plan and then never called `delegate_tasks` at all across the full retry
-  budget — distinct from the previously-documented pattern (delegates, but doesn't fetch/ground). Not yet
-  root-caused.
-  *Acceptance*: reproduce on 3 independent trials of the same or a similar comparative query; either find
-  a prompt/structural fix that gets real dispatch happening, or document this as a second disclosed
-  limitation alongside the fetch-skipping one.
-- [ ] **Recovery-after-quarantine gap**: when the grounding check quarantines a bad artifact, the Planner
-  is nudged to write a fresh one, but on the academic eval item it never did — the run ended with no
-  `final_report.md` at all, discarding two genuinely correct URLs that were sitting right there in the
-  model's own prior turn. The disclosure-on-exhaustion fix means this is surfaced honestly rather than
-  hidden, but the *outcome* (throwing away correct partial findings) is still worse than it needs to be.
-  *Acceptance*: either the two-pass `findings.md` write actually gets exercised reliably (see the
-  `findings[]` item below — right now nothing confirms `findings.md` is even being written in practice)
-  so a quarantined `final_report.md` still leaves recoverable raw findings behind, or a structural fallback
-  that surfaces whatever's in `findings.md`/sub-agent results directly if the Planner can't produce a
-  final write within budget.
+- [x] **"Wrote a plan, never dispatched it" failure mode — fixed.** Root cause: the Planner treated
+  rewriting `_todos.md` as if it satisfied "take an action," and on the eval run had confabulated fake
+  delegation narration ("After delegating the tasks to a human Searcher, here's what I've found:") despite
+  `delegate_tasks` never being called. Fixed with an escalating nudge that fires once `write_todos` has
+  been called ≥2 times with zero `delegate_tasks` calls, explicitly naming and forbidding the exact
+  observed pattern (same principle as the earlier missing_artifact/re-delegation fix).
+  *Acceptance met*: re-ran the exact query that previously never delegated across all 4 attempts — now
+  calls `delegate_tasks` by the 3rd attempt and returns real results. ✅ 2026-07-10.
+- [x] **Recovery-after-quarantine / narrated-but-never-written gap — fixed with a structural fallback.**
+  A second live run of the comparative query hit this exact pattern again, even with `delegate_tasks`
+  working correctly and real results in hand: the model narrated a complete, well-formatted report as
+  chat text but never called `write_workspace_file`, across the entire budget — a pattern that also
+  recurred in the *old* project despite multiple rounds of prompt-only fixes there. Rather than tune
+  wording further, added `_salvage_narrated_report()`: when the budget is exhausted on a `missing_artifact`
+  problem, the engine auto-persists the model's own last substantial narrated response into the artifact,
+  clearly marked as unverified salvage content that bypassed the grounding check entirely.
+  *Acceptance met*: re-ran the query that previously ended with "no report was produced this run" — now
+  produces a real (clearly disclaimed) `final_report.md` instead of nothing. ✅ 2026-07-10. This also
+  covers the original academic-eval-item scenario (two correct URLs discarded) going forward, though not
+  independently re-verified on that exact query yet.
 - [ ] **`findings` array in `_run_state.json` is currently always empty** — `RunState.add_finding()` exists
   but nothing calls it; the structured run-state currently only tracks plan/fetched-URLs/attempts, not a
   parsed record of each finding. Not blocking anything today (the grounding check doesn't need it), but
