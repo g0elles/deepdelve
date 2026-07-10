@@ -1077,8 +1077,10 @@ class BasicTuiAgent(App):
                         chat.scroll_end(animate=False)
                         log_stream_content("Agent", "text", {"text": msg})
 
+                    turn_msg = state.get("current_msg")
                     should_continue, current_input = await run_completion_check(
                         query=query, current_input=current_input, run_state=run_state, notify=_tui_notify,
+                        last_assistant_text=turn_msg.text if turn_msg else "",
                     )
                     if should_continue:
                         has_requests = True
@@ -1300,9 +1302,40 @@ def _quarantine_artifact(req_artifact: str, attempt: int) -> None:
         pass
 
 
-async def run_completion_check(query: str, current_input, run_state: "RunState", notify):
+def _salvage_narrated_report(req_artifact: str, last_assistant_text: str) -> bool:
+    """Structural fallback for a real, recurring pattern (documented in the reference project too,
+    surviving multiple rounds of prompt-only fixes there): the model narrates a complete,
+    well-formatted report as chat text instead of ever calling write_workspace_file, across the
+    entire retry budget. Rather than throw away real content because a specific tool call didn't
+    fire, auto-persist the model's own last substantial response — clearly marked as unverified
+    salvage, not a substitute for the grounding check. Returns True if a salvage write happened."""
+    if not last_assistant_text or len(last_assistant_text.strip()) < 200:
+        return False
+    try:
+        from tools.fs import _get_safe_path
+        path = _get_safe_path(req_artifact)
+        if not path:
+            return False
+        parent_dir = os.path.dirname(path)
+        if parent_dir:
+            os.makedirs(parent_dir, exist_ok=True)
+        salvage = (
+            "> **AUTO-RECOVERED DRAFT** — the model narrated this content as chat text instead of "
+            "calling `write_workspace_file`, across the full retry budget. This has NOT passed the "
+            "grounding check and its claims are UNVERIFIED. Review before trusting it.\n\n"
+            + last_assistant_text.strip()
+        )
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(salvage)
+        return True
+    except Exception:
+        return False
+
+
+async def run_completion_check(query: str, current_input, run_state: "RunState", notify, last_assistant_text: str = ""):
     """Runs the 3-tier completion check (delegated? artifact exists? really grounded?) plus the
-    structural fixes: per-attempt quota top-up, artifact quarantine, and run-state persistence.
+    structural fixes: per-attempt quota top-up, artifact quarantine, run-state persistence, and
+    (as a last resort) salvaging a narrated-but-never-written report instead of losing it.
 
     Returns (should_retry: bool, new_current_input). Caller is responsible for looping while
     should_retry is True, same as before.
@@ -1421,6 +1454,15 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                 notify(f"**System (final):** Retry budget exhausted with an unresolved issue ({problem}). "
                        f"`{req_artifact}` exists but could NOT be fully verified this run — treat its "
                        f"claims as unconfirmed. This was not silently accepted.")
+            elif problem == "missing_artifact" and _salvage_narrated_report(req_artifact, last_assistant_text):
+                # Structural fallback, not another prompt nudge — see _salvage_narrated_report's
+                # docstring for why: nudging alone has proven insufficient for this exact pattern
+                # across two independent projects now.
+                notify(f"**System (final):** The model never called write_workspace_file despite "
+                       f"repeated nudges, but had already narrated a substantial response. "
+                       f"Auto-recovered it into `{req_artifact}`, clearly marked as unverified salvage "
+                       f"content — this bypassed the grounding check entirely and MUST be reviewed "
+                       f"before trusting it.")
             else:
                 notify(f"**System (final):** Retry budget exhausted with an unresolved issue ({problem}). "
                        f"`{req_artifact}` was never written — no report was produced this run. This was "
@@ -1578,6 +1620,7 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
         while has_requests:
             has_requests = False
             user_input_requests = []
+            turn_text = ""
 
             try:
                 stream = agent.run(current_input, session=session, stream=True)
@@ -1587,6 +1630,7 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
                             log_stream_content("Agent", "text", {"text": content.text})
                             sys.stdout.write(content.text)
                             sys.stdout.flush()
+                            turn_text += content.text
                         elif content.type == "function_call":
                             call_id = getattr(content, "call_id", None)
                             name = getattr(content, "name", None)
@@ -1631,6 +1675,7 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
 
                 should_continue, current_input = await run_completion_check(
                     query=prompt, current_input=current_input, run_state=run_state, notify=_cli_notify,
+                    last_assistant_text=turn_text,
                 )
                 if should_continue:
                     has_requests = True
