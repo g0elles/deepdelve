@@ -63,6 +63,27 @@ a description of the work — so this doc can be checked against reality later, 
   detects a short, single-link "redirect" page and follows it one hop, recording *both* the original and
   resolved URL as fetched (a model may reasonably cite either). *Acceptance met*: isolated test confirmed
   the real announcement content (not the stub) is now retrieved; both URLs appear in `fetched_urls`. ✅ 2026-07-10.
+- [x] **Content-level claim grounding implemented**, per `CYC2002tommy`'s SKILL.md claim-grounding phase
+  ("cross-reference the specific claims made in the draft against the raw data collected"). The existing
+  grounding check only verified a cited URL was fetched, not that its content actually supports the claim
+  attached to it. Added a second, deeper layer (`engine/tui.py::_claim_grounding_problem`): for a citation
+  that passed the fetch-presence check, extract salient terms (numbers/versions/proper nouns) from both
+  the report's prose and the fetched source, and flag `claim_unsupported` if they share zero overlap.
+  Deliberately a cheap deterministic check, not another LLM call — this local model class has already
+  proven unreliable as a judge of its own output elsewhere in this project.
+  *Acceptance met, with a real bug found and fixed during verification*: a synthetic test (fetched source
+  about cooking pasta cited to support a Rust-version claim) initially passed uncaught — the first
+  implementation skipped the check entirely whenever the source had zero extractable terms, which
+  protected against penalizing thin pages but also let substantial-but-unrelated ones straight through.
+  Fixed by keying the skip on content *length* (a real too-thin-to-judge case) instead of term count, so
+  a substantial source with no matching terms is now correctly flagged. Re-verified with 3 synthetic
+  scenarios (unrelated source → flagged, genuinely supporting source → passes, thin/stub source → passes)
+  and 3 live runs confirming no regressions. **Live-trigger status, stated honestly**: it hasn't yet fired
+  in real traffic — every live run so far that had a citation problem was already caught earlier by the
+  URL-presence check (missing citations entirely, or citing a URL that was never fetched), meaning that
+  cheaper check is still the dominant real-world failure mode. This layer remains verified-correct via
+  direct testing but is a defense-in-depth addition, not yet proven to catch something the first layer
+  wouldn't have. ✅ 2026-07-10.
 - [ ] **New, smaller follow-up: blind top-1 auto-fetch sometimes fetches an irrelevant page.** Live-observed
   on the Colombia query: a sub-task named "Eliminating Team Identification" searched loosely and
   auto-fetched a Microsoft Teams/Office 365 documentation page as its (irrelevant) top DDGS result — a
@@ -125,15 +146,6 @@ a description of the work — so this doc can be checked against reality later, 
 
 ## Planned (not started)
 
-- [ ] **Content-level claim grounding**, inspired by `CYC2002tommy`'s SKILL.md ("cross-reference the
-  specific claims made in the draft against the raw data collected"). The current grounding check verifies
-  that a cited URL was actually fetched — it does NOT verify that the specific claim near that citation is
-  actually supported by that URL's content. A model could cite a real, actually-fetched URL next to a
-  claim the fetched page never said. This is a stronger, harder check than anything implemented so far
-  (semantic entailment between claim text and source text, not just URL-presence matching).
-  *Acceptance*: a live test where a report cites a real fetched URL but attaches a claim contradicted by
-  or absent from that page's actual content is flagged as a distinct problem type (e.g. `claim_unsupported`),
-  separate from the existing `not_grounded` (URL never fetched) case.
 - [ ] **Constrain the Planner's replanning action space**, inspired by `nashsu/llm_wiki`'s review-queue
   design ("predefined action types: Create Page, Deep Research, Skip — constrained to prevent LLM
   hallucination of arbitrary actions"). Currently the adaptive planning loop's replanning step is

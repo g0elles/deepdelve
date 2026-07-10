@@ -1252,6 +1252,84 @@ def _extract_cited_urls(text: str) -> list[str]:
     return [u.rstrip('.,;:\'")]}') for u in urls]
 
 
+_PROPER_NOUN_STOPWORDS = {
+    "The", "A", "An", "This", "That", "These", "Those", "It", "In", "On", "At", "For", "With",
+    "Source", "Sources", "Reference", "References", "Final", "Report", "Summary", "Note", "System",
+}
+
+
+def _extract_salient_terms(text: str) -> set:
+    """Extract checkable, hard-to-coincidentally-reproduce tokens: numbers/versions/years/percentages,
+    and multi-word capitalized phrases (proper nouns/titles). Used by the content-level claim
+    grounding check below — deliberately cheap and deterministic rather than another LLM call, since
+    this local model class has already proven unreliable as a judge of its own output elsewhere in
+    this project."""
+    if not text:
+        return set()
+    terms = set(re.findall(r'\b\d+(?:\.\d+)+\b|\b\d{4}\b|\b\d+%\b', text))
+    for m in re.finditer(r'\b[A-Z][a-zA-Z0-9]*(?:\s+[A-Z][a-zA-Z0-9]*){1,4}\b', text):
+        phrase = m.group(0)
+        if phrase.split()[0] not in _PROPER_NOUN_STOPWORDS:
+            terms.add(phrase)
+    return terms
+
+
+def _split_prose_from_sources(report: str) -> str:
+    """Best-effort strip of a trailing Sources/References section, so the content-level check
+    compares against what the report actually CLAIMS rather than its own citation list (which
+    would trivially share terms like titles/URLs with itself)."""
+    m = re.search(r'^#{0,3}\s*(sources|references)\s*:?\s*$', report or "", re.IGNORECASE | re.MULTILINE)
+    return report[:m.start()] if m else (report or "")
+
+
+def _claim_grounding_problem(report: str) -> str | None:
+    """Content-level check beyond URL-presence (inspired by CYC2002tommy's SKILL.md claim-grounding
+    phase: "cross-reference the specific claims made in the draft against the raw data collected").
+    Only runs on URLs that already passed the fetch-presence check in _real_grounding_problem — this
+    is a second, deeper layer, not a replacement for it.
+
+    A cited source that was genuinely fetched but shares NOT ONE checkable term (number, version,
+    proper noun) with the report's own prose is a real signal the model name-dropped a real URL
+    without the report's claims actually coming from it. Deliberately conservative (zero overlap
+    only, not a similarity threshold) to keep false positives — which would burn a retry attempt on
+    an already-good report — rare; this errs toward under-triggering, not over-triggering."""
+    prose = _split_prose_from_sources(report)
+    report_terms = _extract_salient_terms(prose)
+    if not report_terms:
+        return None  # Nothing checkable (e.g. a very short factual answer) — don't manufacture a problem.
+
+    cited = _extract_cited_urls(report)
+    fetched_list = get_fetched_urls()
+    fetched = {entry["url"].rstrip('/'): entry["filename"] for entry in fetched_list}
+
+    unsupported = []
+    for u in cited:
+        key = u.rstrip('/')
+        filename = fetched.get(key)
+        if not filename:
+            filename = next((f for orig, f in fetched.items() if key.startswith(orig) or orig.startswith(key)), None)
+        if not filename:
+            continue  # Not fetched at all — already caught by the URL-presence check, don't double-flag.
+
+        source_content = get_workspace_file_content(filename) or ""
+        if len(source_content.strip()) < 50:
+            continue  # Too little content to judge either way (e.g. a near-empty fetch) — not this check's job.
+
+        source_terms = _extract_salient_terms(source_content)
+        # No special-case skip for "source has zero extractable terms": that used to let a
+        # substantial-but-unrelated page through untouched (found via a synthetic test — a fetched
+        # page about cooking pasta cited to support a Rust version claim had zero salient terms of
+        # its own and was incorrectly waved through). A real, substantial source about the right
+        # topic will almost always contain at least one checkable number or proper noun; one that
+        # doesn't is itself a signal worth flagging, not a reason to skip the check.
+        if not (report_terms & source_terms):
+            unsupported.append(u)
+
+    if not unsupported:
+        return None
+    return f"claim_unsupported:{', '.join(unsupported[:3])}"
+
+
 async def _real_grounding_problem(content: str) -> str | None:
     """Cross-references every URL cited in the report against URLs the engine actually saw
     fetch_url_to_workspace fetch this run, or that came from a reused knowledge-cache hit
@@ -1274,19 +1352,24 @@ async def _real_grounding_problem(content: str) -> str | None:
     fetched = {entry["url"].rstrip('/') for entry in get_fetched_urls()}
     unverified = [u for u in cited if u.rstrip('/') not in fetched and not any(u.rstrip('/').startswith(f) or f.startswith(u.rstrip('/')) for f in fetched)]
 
-    if not unverified:
-        return None
-
     gc_cfg = config.cfg.get("settings", {}).get("grounding_check", {})
-    detail = f"unverified_urls:{', '.join(unverified[:3])}"
-    if gc_cfg.get("live_http_verify", False):
-        from tools.web import verify_url_live
-        timeout = gc_cfg.get("live_http_timeout", 5)
-        dead = [u for u in unverified if not await verify_url_live(u, timeout=timeout)]
-        if dead:
-            detail += f" (also unreachable: {', '.join(dead[:3])})"
 
-    return detail
+    if unverified:
+        detail = f"unverified_urls:{', '.join(unverified[:3])}"
+        if gc_cfg.get("live_http_verify", False):
+            from tools.web import verify_url_live
+            timeout = gc_cfg.get("live_http_timeout", 5)
+            dead = [u for u in unverified if not await verify_url_live(u, timeout=timeout)]
+            if dead:
+                detail += f" (also unreachable: {', '.join(dead[:3])})"
+        return detail
+
+    # Every citation is backed by a real fetch — now check whether the fetched content actually
+    # supports what's claimed, not just that a file exists for the URL (see _claim_grounding_problem).
+    if gc_cfg.get("content_level_check", True):
+        return _claim_grounding_problem(content)
+
+    return None
 
 
 def _quarantine_artifact(req_artifact: str, attempt: int) -> None:
@@ -1401,7 +1484,15 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                 f"SYSTEM WARNING: {last_chance_prefix}You are attempting to finish the task, but the required final artifact '{req_artifact}' is missing from the workspace. Writing your answer as a chat message does NOT complete the task.{forbid_redelegate} Call write_workspace_file(filename='{req_artifact}', content=...) right now, using whatever findings you already have — an imperfect report that exists beats a perfect one that doesn't."
         else:
             grounding_problem = await _real_grounding_problem(content or "")
-            if grounding_problem:
+            if grounding_problem and grounding_problem.startswith("claim_unsupported"):
+                # Distinct from "not_grounded": the URL WAS actually fetched — the problem is that
+                # the report's claims don't appear to come from what that source actually says. The
+                # right correction is different too: re-read the source and use what it actually
+                # says, not re-delegate for a new URL (which the not_grounded message would suggest).
+                problem, warning_msg, inject_msg = "claim_unsupported", \
+                    f"`{req_artifact}` cites a source that was fetched, but the claims near it don't appear to come from that source's actual content ({grounding_problem}). Pushing agent to re-check.", \
+                    f"SYSTEM WARNING: '{req_artifact}' cites at least one source that WAS actually fetched ({grounding_problem}), but the specific claims attributed to it don't share any checkable fact (number, name, or figure) with what that source actually contains. This looks like the source was cited without being read, or the claim was written from memory and a real citation was attached to it afterward. The previous draft has been moved aside. Before rewriting: delegate re-reading of that exact fetched file to an Analyzer if you haven't already, and only state what the Analyzer's findings actually say — do not keep the same claim and just hope the citation makes it look sourced."
+            elif grounding_problem:
                 problem, warning_msg, inject_msg = "not_grounded", \
                     f"`{req_artifact}` cites a URL that was never actually fetched this run ({grounding_problem}) — this looks ungrounded or hallucinated. Pushing agent to fix citations.", \
                     f"SYSTEM WARNING: '{req_artifact}' cites at least one URL that does not match anything your Searcher(s) actually fetched this run ({grounding_problem}). This is a strong signal of a hallucinated source. The previous draft has been moved aside — write a fresh '{req_artifact}' using ONLY URLs your Searcher(s) actually returned in their findings. If you don't have a real source for a claim, delegate again and use exactly what comes back, not your own prior knowledge."
@@ -1416,7 +1507,7 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
 
             notify(f"**System ({attempt + 1}/{MAX_COMPLETION_CHECK_ATTEMPTS}):** {warning_msg}")
 
-            if problem == "not_grounded":
+            if problem in ("not_grounded", "claim_unsupported"):
                 _quarantine_artifact(req_artifact, attempt + 1)
 
             # Per-attempt quota top-up: without this, a retry shares the same already-exhausted
