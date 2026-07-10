@@ -125,6 +125,14 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
             parent_depth = delegation_depth_ctx.get()
             depth_token = delegation_depth_ctx.set(parent_depth + 1)
             token_setter = holds_token.set(True)
+            # Pre-declared so the `finally` block's reset is always safe even on an early return
+            # below (bad agent_id) — found via a real end-to-end test: a model invented a fictional
+            # agent_id ("AI-3") not matching any real specialist, hit the early-return error path,
+            # and finally's `available_sub_agents_ctx.reset(children_token)` crashed with
+            # UnboundLocalError since children_token was never assigned on that path. This bug was
+            # latent in the reference project this was forked from too — never previously observed
+            # because bad agent_id values apparently never came up in its own testing.
+            children_token = None
             try:
                 current_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -219,7 +227,8 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
 
                 return f"## Result for {task_name}\n{final_text}\n---"
             finally:
-                available_sub_agents_ctx.reset(children_token)
+                if children_token is not None:
+                    available_sub_agents_ctx.reset(children_token)
                 holds_token.reset(token_setter)
                 delegation_depth_ctx.reset(depth_token)
 
@@ -233,10 +242,39 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
     @tool(name="delegate_tasks", description="Delegate multiple independent tasks to specialized sub-agents to be executed concurrently. Pass a list of dictionaries, each with 'task_name', 'instructions', and 'agent_id' (see your Delegation Routing block for valid agent_id values).")
     @with_quota
     async def delegate_tasks(tasks: list[dict]) -> str:
+        # -------------------------------------------------------------
+        # Validate BEFORE dispatching anything. Found via a real end-to-end test: a model emitted
+        # tasks shaped like {"due": 1, "task": "..."} instead of {"task_name", "instructions",
+        # "agent_id"} — completely wrong field names. The old code silently defaulted to
+        # task_name="Unknown_Task", instructions="" and dispatched it anyway, so the sub-agent
+        # searched for the literal string "Unknown_Task" and got garbage, unrelated results, which
+        # then poisoned everything downstream (the Planner had nothing real to report). A malformed
+        # call must fail loudly and immediately, not silently degrade into wasted quota on garbage
+        # work — this lets the model see exactly what was wrong and retry with the correct shape.
+        # -------------------------------------------------------------
+        errors = []
+        for i, t in enumerate(tasks):
+            if not isinstance(t, dict):
+                errors.append(f"Task {i}: not an object — got {type(t).__name__}.")
+                continue
+            missing = [k for k in ("task_name", "instructions") if not t.get(k)]
+            if missing:
+                errors.append(
+                    f"Task {i} {t!r}: missing or empty required field(s) {missing}. "
+                    f"Each task MUST be shaped exactly as "
+                    f"{{\"task_name\": \"...\", \"instructions\": \"...\", \"agent_id\": \"...\"}}."
+                )
+        if errors:
+            return (
+                "Error: delegate_tasks call rejected — none of these tasks were dispatched (no quota "
+                "was consumed on wasted work). Fix the shape and call delegate_tasks again with valid "
+                "tasks:\n" + "\n".join(errors)
+            )
+
         coroutines = []
         for t in tasks:
-            name = t.get("task_name", "Unknown_Task")
-            instr = t.get("instructions", "")
+            name = t.get("task_name")
+            instr = t.get("instructions")
             aid = t.get("agent_id", None)
             coroutines.append(_run_single_task(name, instr, aid))
 

@@ -19,7 +19,7 @@ import argparse
 from pathlib import Path
 import pyfiglet
 from tools import tool_quotas_ctx, WORKSPACE_TOOLS, get_workspace_files, get_workspace_file_content
-from utils.run_state import reset_fetched_urls, get_fetched_urls, RunState
+from utils.run_state import reset_fetched_urls, get_fetched_urls, record_fetched_url, RunState
 
 AGENT_NAME = config.APP_TITLE
 AGENT_DESCRIPTION = config.APP_DESCRIPTION
@@ -1227,6 +1227,11 @@ def _apply_cache_note(query: str, current_input):
         cache_hit = _cache_lookup(query, max_age_days=cache_cfg.get("max_age_days", 7))
         if cache_hit:
             note += f"\n\nNOTE: A previously-verified answer for this exact question already exists (cached {(_time.time() - cache_hit['timestamp']) / 3600:.1f}h ago): {cache_hit['answer']}\nIf this still answers the question, write it to final_report.md as-is (it already includes real sources). If you believe fresher research is needed, delegate as normal instead."
+            # The grounding check below requires every cited URL to have been fetched THIS run — a
+            # cache-hit reused verbatim would otherwise always fail that check, defeating the whole
+            # point of the cache. Pre-register the cached answer's own URLs as verified for this run.
+            for u in _extract_cited_urls(cache_hit.get("answer", "")):
+                record_fetched_url(u, filename="<from_knowledge_cache>")
 
     exp_cfg = config.cfg.get("settings", {}).get("experience_cache", {})
     if exp_cfg.get("enabled", False):
@@ -1247,9 +1252,19 @@ def _extract_cited_urls(text: str) -> list[str]:
 
 async def _real_grounding_problem(content: str) -> str | None:
     """Cross-references every URL cited in the report against URLs the engine actually saw
-    fetch_url_to_workspace fetch this run (utils/run_state.get_fetched_urls()) — replacing the old
-    project's `"http" in content` substring check, which a model could pass by writing a single
-    fully hallucinated URL. Returns a human-readable problem description, or None if grounded."""
+    fetch_url_to_workspace fetch this run, or that came from a reused knowledge-cache hit
+    (utils/run_state.get_fetched_urls()) — replacing the old project's `"http" in content` substring
+    check, which a model could pass by writing a single fully hallucinated URL.
+
+    A URL not in that verified set is ALWAYS a grounding problem, full stop — this is the primary,
+    hard gate. It is NOT soft-passed just because the URL happens to resolve live: a live-but-never-
+    fetched URL (e.g. citing Wikipedia's general article on a topic without ever having fetched it)
+    is exactly the subtle hallucination pattern this check exists to catch, and a live-reachability
+    check alone cannot distinguish "the model actually read this" from "the model guessed a plausible
+    real URL." (An earlier version of this function used live-verify as a bypass and was caught doing
+    so via a real end-to-end test — see README "Known limitation" / git history.) `live_http_verify`
+    is used only to enrich the diagnostic message with whether the unverified URL is also dead.
+    Returns a human-readable problem description, or None if every citation is verified."""
     cited = _extract_cited_urls(content)
     if not cited:
         return "no_urls"
@@ -1261,22 +1276,15 @@ async def _real_grounding_problem(content: str) -> str | None:
         return None
 
     gc_cfg = config.cfg.get("settings", {}).get("grounding_check", {})
+    detail = f"unverified_urls:{', '.join(unverified[:3])}"
     if gc_cfg.get("live_http_verify", False):
         from tools.web import verify_url_live
         timeout = gc_cfg.get("live_http_timeout", 5)
-        still_dead = []
-        for u in unverified:
-            alive = await verify_url_live(u, timeout=timeout)
-            if not alive:
-                still_dead.append(u)
-        if not still_dead:
-            # Not fetched by us this run, but genuinely live — treat as a soft pass rather than
-            # blocking a run over e.g. a source the model correctly cited from a cached knowledge
-            # answer. Still worth surfacing to the report writer implicitly via not failing here.
-            return None
-        unverified = still_dead
+        dead = [u for u in unverified if not await verify_url_live(u, timeout=timeout)]
+        if dead:
+            detail += f" (also unreachable: {', '.join(dead[:3])})"
 
-    return f"unverified_urls:{', '.join(unverified[:3])}"
+    return detail
 
 
 def _quarantine_artifact(req_artifact: str, attempt: int) -> None:
@@ -1381,14 +1389,20 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                 slot_count = plan.count("- [")
                 save_experience(query, plan, slot_count, outcome="success", max_entries_per_shape=exp_cfg.get("max_entries_per_shape", 5))
         elif problem:
-            # Retry budget is exhausted and a real problem still exists (e.g. the report cites URLs
-            # that were never actually fetched this run). The old project silently accepted whatever
-            # was left at this point with no indication to the user that the output is unverified —
-            # a genuinely observed failure mode in testing, not a hypothetical one. Surface it
-            # explicitly instead of letting a report that looks clean read as trustworthy.
-            notify(f"**System (final):** Retry budget exhausted with an unresolved issue ({problem}). "
-                   f"`{req_artifact}` was written but could NOT be fully verified this run — treat its "
-                   f"claims as unconfirmed. This was not silently accepted.")
+            # Retry budget is exhausted and a real problem still exists. The old project silently
+            # accepted whatever was left at this point with no indication to the user that the output
+            # is unverified or even absent — a genuinely observed failure mode in testing (both
+            # "wrote something ungrounded" and, separately, "never wrote anything at all" have been
+            # seen live), not a hypothetical one. Surface exactly which case this is instead of
+            # asserting a file exists when it might not.
+            if req_artifact in get_workspace_files():
+                notify(f"**System (final):** Retry budget exhausted with an unresolved issue ({problem}). "
+                       f"`{req_artifact}` exists but could NOT be fully verified this run — treat its "
+                       f"claims as unconfirmed. This was not silently accepted.")
+            else:
+                notify(f"**System (final):** Retry budget exhausted with an unresolved issue ({problem}). "
+                       f"`{req_artifact}` was never written — no report was produced this run. This was "
+                       f"not silently accepted as a success.")
 
         run_state.set_plan(get_workspace_file_content("_todos.md") or "")
         run_state.save()
