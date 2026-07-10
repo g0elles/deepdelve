@@ -41,22 +41,44 @@ a description of the work — so this doc can be checked against reality later, 
 
 ## In progress / open (with acceptance criteria)
 
-- [ ] **Root-cause the fetch-skipping behavior**, not just catch it — now the single highest-confidence
-  open item, reinforced by an extensive test battery (2026-07-10): 8 live end-to-end runs across factual,
-  comparative, academic, and current-event queries, on 5 different models. In every single run where a
-  citation was checked, `fetched_url_count` stayed at 0 — the Searcher never once called
-  `fetch_url_to_workspace`, regardless of model. One run (Rust version query) makes the causal chain
-  directly observable: real, live `web_search` results came back, but the snippet text didn't contain the
-  specific fact needed (only the actual release-notes page would) — since no fetch happened, the Planner
-  fell back to confidently fabricating a wrong version number and entirely invented release notes instead
-  of admitting the snippets were insufficient. The grounding check catches this every time and now
-  discloses it clearly (including salvaging narrated-but-unwritten reports, see below) — but nothing
-  prevents the underlying behavior.
-  *Acceptance*: either (a) a structural fix — e.g. the engine refuses to let a Searcher return findings
-  to the Planner unless at least one `fetch_url_to_workspace` call happened for non-trivial queries — with
-  a live test showing 3/3 independent trials on a novel query actually fetching before answering, or
-  (b) a documented decision that this is accepted as a disclosed-not-prevented limitation for this model
-  class, with the RL fine-tuning path (see Stretch below) as the actual fix.
+- [x] **Root-cause the fetch-skipping behavior — fixed structurally, not by nudging.** Researched how
+  three reference sources handle exactly this ("don't let the model stop at a summary/snippet") before
+  building anything: `nashsu/llm_wiki`'s search always extracts full content, never truncates or leaves a
+  snippet-only path; `CYC2002tommy/Deep-Research-Agent`'s SKILL.md has an explicit, all-caps
+  **"FULL-TEXT READING IS MANDATORY — NO ABSTRACT-ONLY SHORTCUTS"** rule (same principle, applied to
+  papers instead of web pages) plus a content-level claim-grounding check. Independently arriving at the
+  same conclusion across 3 sources (this repo included) is strong signal the fix has to be structural:
+  **`web_search` now auto-fetches the full content of its top result itself** (`settings.web_search.auto_fetch_top`,
+  default 1) — there is no snippet-only path left for a model to stop at. Refactored `tools/web.py` so
+  `fetch_url_to_workspace` and the new auto-fetch share one fetch/save implementation instead of drifting.
+  *Acceptance met, verified live*: re-ran the exact Rust-version query that previously fabricated a wrong
+  version from memory with zero real fetches — this time `web_search` auto-fetched a real page and the
+  Colombia/World-Cup query's Searcher went on to call `fetch_url_to_workspace` **5 times** in one run
+  (first real, repeated fetching observed in the entire test campaign, including a genuinely correct ESPN
+  squad page). ✅ 2026-07-10.
+- [x] **Bonus bug found and fixed while verifying the above**: auto-fetching Rust's official
+  `blog.rust-lang.org/releases/latest/` returned a client-side ("click here to be redirected") landing
+  page — not a real HTTP redirect, so `httpx`'s `follow_redirects=True` didn't catch it — with the actual
+  answer (`Rust-1.97.0`) sitting unused in the stub's link target. Added `_looks_like_redirect_stub()`:
+  detects a short, single-link "redirect" page and follows it one hop, recording *both* the original and
+  resolved URL as fetched (a model may reasonably cite either). *Acceptance met*: isolated test confirmed
+  the real announcement content (not the stub) is now retrieved; both URLs appear in `fetched_urls`. ✅ 2026-07-10.
+- [ ] **New, smaller follow-up: blind top-1 auto-fetch sometimes fetches an irrelevant page.** Live-observed
+  on the Colombia query: a sub-task named "Eliminating Team Identification" searched loosely and
+  auto-fetched a Microsoft Teams/Office 365 documentation page as its (irrelevant) top DDGS result — a
+  real trade-off of fetching automatically rather than the model judging relevance first. Not harmful (just
+  a wasted quota unit; the other sub-task's auto-fetch found the correct ESPN squad page), but worth
+  tracking. *Acceptance*: either tune search query construction in the WebSearcher/AcademicSearcher prompts
+  to reduce this, or accept it as a bounded, low-cost trade-off (each occurrence costs exactly one
+  `fetch_url_to_workspace` quota unit, already capped).
+- [ ] **New observation, not yet investigated**: the same Colombia run also produced a framework-level
+  message — `"Maximum consecutive function call errors reached (3). Stopping further function calls for
+  this request."` — after the model emitted a couple of invalid `agent_id` values (`agent-34`, `agent-51`)
+  in quick succession. This looks like an `agent_framework` library circuit-breaker, not code in this
+  repo, and the run recovered fine afterward (delegation succeeded on the next attempt), but it's an
+  unfamiliar failure surface worth understanding before it's dismissed as harmless.
+  *Acceptance*: reproduce deliberately (e.g. force 3+ consecutive bad `agent_id` values) and confirm
+  whether this circuit-breaker can strand a run with no recovery path, or document why it can't.
 - [x] **Re-evaluate `devstral:24b`** — done, 3 independent live trials post-fix, result: 1/3 fully
   functional, not recommended for the Planner role (README "Model choice"). ✅ 2026-07-10.
 - [x] **Four externally-suggested models tested** (`hermes3:8b`, `qwen2.5-coder:14b-instruct`,
@@ -103,6 +125,15 @@ a description of the work — so this doc can be checked against reality later, 
 
 ## Planned (not started)
 
+- [ ] **Content-level claim grounding**, inspired by `CYC2002tommy`'s SKILL.md ("cross-reference the
+  specific claims made in the draft against the raw data collected"). The current grounding check verifies
+  that a cited URL was actually fetched — it does NOT verify that the specific claim near that citation is
+  actually supported by that URL's content. A model could cite a real, actually-fetched URL next to a
+  claim the fetched page never said. This is a stronger, harder check than anything implemented so far
+  (semantic entailment between claim text and source text, not just URL-presence matching).
+  *Acceptance*: a live test where a report cites a real fetched URL but attaches a claim contradicted by
+  or absent from that page's actual content is flagged as a distinct problem type (e.g. `claim_unsupported`),
+  separate from the existing `not_grounded` (URL never fetched) case.
 - [ ] **Constrain the Planner's replanning action space**, inspired by `nashsu/llm_wiki`'s review-queue
   design ("predefined action types: Create Page, Deep Research, Skip — constrained to prevent LLM
   hallucination of arbitrary actions"). Currently the adaptive planning loop's replanning step is

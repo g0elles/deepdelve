@@ -10,6 +10,15 @@ settings:
   temperature: 0.2
   concurrency:
     max_concurrent_tasks: 3
+  # Structural fix for the #1 unresolved reliability issue found via extensive live testing
+  # (README "Known limitation" / ROADMAP.md): across every model tried, the Searcher would
+  # reliably stop at search snippets and never call fetch_url_to_workspace, then fabricate
+  # specifics the snippets didn't contain. web_search now auto-fetches the full content of its
+  # top N results itself — there is no snippet-only path left to take. Costs one
+  # fetch_url_to_workspace quota unit per auto-fetch (skipped gracefully if that quota is
+  # exhausted). Set to 0 to disable and restore the old search-then-optionally-fetch behavior.
+  web_search:
+    auto_fetch_top: 1
   quotas:
     # Quotas are GLOBAL — shared cumulatively across the Planner and every dispatched specialist
     # (WebSearcher, AcademicSearcher, DocumentAnalyzer, DataAnalyzer). Each key becomes a prompt
