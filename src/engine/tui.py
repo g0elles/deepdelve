@@ -1682,6 +1682,12 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
         run_state.save()
         return False, current_input
     except Exception:
+        # Deliberately non-fatal (a crashed CHECK must never kill a run that produced work), but
+        # never silent again — this bare swallow hid a real completion-check crash on a live
+        # benchmark run (2026-07-11), which then looked like a model that just stopped retrying.
+        import traceback
+        notify(f"**System:** completion check itself crashed — run ends unverified. This is an "
+               f"engine bug, not a model failure:\n```\n{traceback.format_exc()}\n```")
         return False, current_input
 
 
