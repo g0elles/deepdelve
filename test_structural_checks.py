@@ -157,6 +157,26 @@ def main():
     contextvars.copy_context().run(_scope_scenario)
     assert _scope_warning("anything") == ""  # outside any task -> silent
 
+    # --- pre-run search health probe (patched ddgs, no network) ---
+    import ddgs as _ddgs
+    from tools.web import probe_search_health
+
+    class _HealthyDDGS:
+        def text(self, *a, **k): return [{"href": "https://x", "title": "t", "body": "b"}]
+
+    class _ThrottledDDGS:
+        def text(self, *a, **k): raise RuntimeError("202 Ratelimit")
+
+    _real_ddgs = _ddgs.DDGS
+    try:
+        _ddgs.DDGS = _HealthyDDGS
+        assert probe_search_health(retry_delay=0) is None
+        _ddgs.DDGS = _ThrottledDDGS
+        err = probe_search_health(retry_delay=0)
+        assert err and "Ratelimit" in err, err
+    finally:
+        _ddgs.DDGS = _real_ddgs
+
     print("All structural-check assertions passed.")
 
 
