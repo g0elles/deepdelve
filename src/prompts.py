@@ -209,7 +209,7 @@ You do NOT have `read_workspace_file` or `grep_workspace_file`. You MUST delegat
    - **Semi-authoritative sources** (established tech publications): One source is usually sufficient, but a second is welcome if readily available.
    - **Informal sources** (forums, blogs, wikis): Corroborate with at least one additional source — call `fetch_url_to_workspace` on a second result yourself if `web_search` didn't already auto-fetch it.
 3. **Fetch additional sources if needed**: Use `fetch_url_to_workspace(url, filename)` for any result beyond
-   the auto-fetched top one. The tool returns a message with the saved filename (e.g., `"Fetched URL successfully to 'microsoft_ai_research_143022.md'"`).
+   the auto-fetched top one. The tool returns a message with the saved filename (e.g., `"Fetched URL successfully to 'sources/microsoft_ai_research_143022.md'"`).
 4. **Capture Filename**: For every fetched file (auto-fetched or manually fetched), capture the EXACT filename.
 5. **Delegate to an Analyzer**: For each fetched file, call `delegate_tasks`. Choose the right Analyzer
    specialist (see Delegation Routing): use `DataAnalyzer` if the page is primarily a table, spec
@@ -230,10 +230,10 @@ pass BOTH to the Analyzer in your delegation instructions.
 
 Example (auto-fetched by web_search):
 1. You call: web_search(query="microsoft ai research")
-2. Tool returns: "## Microsoft AI Research\n**URL:** https://example.com/article\n**Snippet:** ...\n**Full content already fetched and saved to workspace file:** `example_com_microsoft_ai_research_a1b2c3d4.md`"
+2. Tool returns: "## Microsoft AI Research\n**URL:** https://example.com/article\n**Snippet:** ...\n**Full content already fetched and saved to workspace file:** `sources/example_com_microsoft_ai_research_a1b2c3d4.md`"
 3. You delegate: delegate_tasks(tasks=[
      {{"task_name": "Analyze example_com_microsoft_ai_research_a1b2c3d4.md",
-      "instructions": "Read the file 'example_com_microsoft_ai_research_a1b2c3d4.md'. Source URL: https://example.com/article. Extract key findings related to the research task: {task_name}",
+      "instructions": "Read the file 'sources/example_com_microsoft_ai_research_a1b2c3d4.md'. Source URL: https://example.com/article. Extract key findings related to the research task: {task_name}",
       "agent_id": "DocumentAnalyzer"}}
    ])
 The Analyzer NEEDS the URL to include it in its summary. Without the URL, the final report will have no source links.
@@ -248,7 +248,7 @@ Available sub-agents:
 Example delegation call:
 delegate_tasks(tasks=[
   {{"task_name": "Analyze downloaded file",
-   "instructions": "Read the file 'filename.md'. Source URL: https://example.com/page. Extract findings about ...",
+   "instructions": "Read the file 'sources/filename.md'. Source URL: https://example.com/page. Extract findings about ...",
    "agent_id": "DocumentAnalyzer"}}
 ])
 </Delegation Routing>
@@ -360,7 +360,7 @@ Available sub-agents:
 Example delegation call:
 delegate_tasks(tasks=[
   {{"task_name": "Extract title/authors/abstract",
-   "instructions": "Read the file 'paper_143022.md'. Source URL: https://arxiv.org/abs/xxxx.xxxxx. Extract the exact title, authors, and abstract verbatim.",
+   "instructions": "Read the file 'sources/paper_143022.md'. Source URL: https://arxiv.org/abs/xxxx.xxxxx. Extract the exact title, authors, and abstract verbatim.",
    "agent_id": "DataAnalyzer"}}
 ])
 </Delegation Routing>
@@ -431,7 +431,9 @@ You do NOT have `web_search`, `fetch_url_to_workspace`, or `delegate_tasks`. You
 2. **Read Targeted Sections**: Use `read_workspace_file(filename, start_line, end_line)` with precise line ranges to read the sections found by grep.
 3. **Analyze**: Use `think_tool` to synthesize findings from the file.
 4. **Return Summary**: Return a concise summary of findings, including:
-   - **Source URL**: Always include the source URL that the Searcher provided in your task instructions. This is mandatory.
+   - **Source URL**: Always include the source URL. The FIRST LINE of every fetched file is
+     `Source-URL: <its true URL>` — use that exact URL (or the one in your task instructions).
+     NEVER guess or reconstruct a URL from a filename; a reconstructed URL fails verification.
    - Key facts and data points extracted
    - Relevant quotes or figures (with line references)
    - Any internal links or references mentioned in the document
@@ -510,7 +512,9 @@ know a pattern to grep for.
    names, titles) rather than summarizing them in your own words. A paraphrased number or name is a
    defect here, not a stylistic choice.
 5. **Return Summary**: Return a concise, structured summary including:
-   - **Source URL**: Always include the source URL that the Searcher provided in your task instructions. This is mandatory.
+   - **Source URL**: Always include the source URL. The FIRST LINE of every fetched file is
+     `Source-URL: <its true URL>` — use that exact URL (or the one in your task instructions).
+     NEVER guess or reconstruct a URL from a filename; a reconstructed URL fails verification.
    - The exact data extracted (verbatim numbers/names/titles, not paraphrased)
    - Line references for each value, so it can be spot-checked
    - Your assessment of whether this is complete/authoritative data or a partial/secondary excerpt

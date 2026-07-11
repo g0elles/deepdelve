@@ -135,12 +135,29 @@ def _fetch_raw(url: str, convert_to_md: bool = True, _redirect_depth: int = 0):
         return md_content, [url]
 
 
+def _fetched_filename(filename: str, convert_to_md: bool = True) -> str:
+    """Canonical workspace path for fetched content: everything goes under sources/ so the run
+    root stays readable (final_report.md, findings.md, _todos.md, _run_state.json only) —
+    previously ~20 fetched-page dumps buried the two files a human actually reads."""
+    if convert_to_md and not filename.endswith('.md'):
+        filename += '.md'
+    if not filename.startswith("sources/"):
+        filename = "sources/" + filename
+    return filename
+
+
 def _save_fetched(urls_fetched: list[str], filename: str, data, convert_to_md: bool = True) -> str:
     """Persist already-fetched content to the workspace and record ALL of urls_fetched (original
     plus any redirect target actually followed) as real fetches. Shared by fetch_url_to_workspace
     and web_search's auto-fetch."""
-    if convert_to_md and not filename.endswith('.md'):
-        filename += '.md'
+    filename = _fetched_filename(filename, convert_to_md)
+
+    # The file's true URL travels INSIDE the file. Root-cause fix for a confirmed live failure
+    # (qwen3.6, 2026-07-11): Analyzers reading slugified filenames had no way to know a file's
+    # real URL, so they reconstructed plausible-looking fake ones from the filename — 0 of 22
+    # cited URLs in that run's findings.md were real.
+    if convert_to_md and isinstance(data, str):
+        data = "Source-URL: " + " | ".join(urls_fetched) + "\n\n" + data
 
     path = _get_safe_path(filename)
     if not path:
@@ -286,15 +303,33 @@ async def web_search(
         return results
 
     from utils.run_state import record_search_health
+    from tools.core import refund_quota
+    results, err = [], None
     try:
         results = await asyncio.to_thread(_do_search)
     except Exception as e:
-        import traceback
+        err = e
+    if not results:
+        # Throttling is transient — one short backoff retry before giving up. Confirmed live
+        # (2026-07-11): 13/30 searches failed in a single end-of-day run, each burning a quota
+        # unit and returning nothing.
+        await asyncio.sleep(3)
+        try:
+            results = await asyncio.to_thread(_do_search)
+            err = None
+        except Exception as e:
+            err = e
+    if err is not None:
         record_search_health(ok=False)
-        return f"Search failed: {str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+        # An environmental failure must not burn the model's research budget on top of failing.
+        refund_quota("web_search")
+        import traceback
+        return f"Search failed: {err}\n\nTraceback:\n{''.join(traceback.format_exception(err))}"
     # Zero results counts as a failure: under provider throttling ddgs often returns empty rather
     # than raising, and an all-empty run is indistinguishable from a fabrication-prone one.
     record_search_health(ok=bool(results))
+    if not results:
+        refund_quota("web_search")
 
     # -------------------------------------------------------------
     # Auto-fetch fusion: search and fetch used to be two separate tools, which meant a model could
@@ -325,7 +360,7 @@ async def web_search(
         try:
             data, urls_fetched = await asyncio.to_thread(_fetch_raw, r["url"], True)
             save_msg = await asyncio.to_thread(_save_fetched, urls_fetched, filename, data, True)
-            r["auto_fetched_filename"] = filename if filename.endswith(".md") else filename + ".md"
+            r["auto_fetched_filename"] = _fetched_filename(filename)
             r["auto_fetch_status"] = save_msg
         except Exception as e:
             r["auto_fetch_status"] = f"Auto-fetch failed ({e}) — snippet only for this result."
