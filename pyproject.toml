@@ -11,17 +11,14 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "agent-framework",
-    "python-dotenv",
     "httpx",
     "textual",
     "beautifulsoup4",
     "PyYAML",
-    "pyfiglet",
     "ddgs",
     # [all] is unresolvable on Windows/Python 3.14 (onnxruntime + youtube-transcript-api pins) and
     # silently falls back to the useless 0.0.2 stub; these doc extras are all this agent uses.
     "markitdown[pdf,docx,xlsx,pptx]>=0.1.6",
-    "textual-serve",
     # Imported directly in engine/sdk.py (SubAgentConfig/AgentBuilder). Currently only installed
     # transitively via agent-framework, which is fragile — declare it explicitly so this doesn't
     # silently break if agent-framework ever drops or reshuffles its own pydantic dependency.

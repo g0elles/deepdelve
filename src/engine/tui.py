@@ -17,13 +17,24 @@ import uuid
 import sys
 import argparse
 from pathlib import Path
-import pyfiglet
 from tools import tool_quotas_ctx, WORKSPACE_TOOLS, get_workspace_files, get_workspace_file_content
 from tools.fs import _get_workspace_type, _get_workspace_dir
 from utils.run_state import reset_fetched_urls, get_fetched_urls, record_fetched_url, RunState, run_state_ctx
 
 AGENT_NAME = config.APP_TITLE
 AGENT_DESCRIPTION = config.APP_DESCRIPTION
+
+# ponytail: pyfiglet rendered this once (font="doom"); regenerate and re-paste if APP_TITLE changes.
+BANNER_ASCII = r"""
+______               ______     _
+|  _  \              |  _  \   | |
+| | | |___  ___ _ __ | | | |___| |_   _____
+| | | / _ \/ _ \ '_ \| | | / _ \ \ \ / / _ \
+| |/ /  __/  __/ |_) | |/ /  __/ |\ V /  __/
+|___/ \___|\___| .__/|___/ \___|_| \_/ \___|
+               | |
+               |_|
+"""
 
 _session_events = []
 _current_call_by_source = {}
@@ -500,10 +511,7 @@ class BasicTuiAgent(App):
         yield PromptInput(id="prompt-input", placeholder="Type a message or /command...")
 
     def _banner_widget(self) -> Static:
-        try:
-            ascii_art = pyfiglet.figlet_format(AGENT_NAME, font="doom")
-        except Exception:
-            ascii_art = AGENT_NAME + "\n"
+        ascii_art = BANNER_ASCII
 
         endpoint = config.cfg["api"]["openai_base_url"]
         model = config.cfg["api"]["openai_model"]
@@ -1034,7 +1042,6 @@ class BasicTuiAgent(App):
             run_state = RunState(_current_run_dir(run_dir_name))
             run_state.set_query(query)
             run_state_token = run_state_ctx.set(run_state)
-            current_input = _apply_cache_note(query, current_input)
 
             while has_requests:
                 has_requests = False
@@ -1296,36 +1303,6 @@ def _current_run_dir(run_dir_name: str | None) -> str:
     return base
 
 
-def _apply_cache_note(query: str, current_input):
-    """Deterministic, engine-driven knowledge-cache lookup — injected into the input text, not a
-    prompt/tool the model has to remember to call (see utils/knowledge_cache.py header comment).
-    Also injects the experience-store's best matching past plan, if any, as a seeding hint."""
-    cache_cfg = config.cfg.get("settings", {}).get("knowledge_cache", {})
-    note = ""
-    if cache_cfg.get("enabled", False):
-        import time as _time
-        from utils.knowledge_cache import lookup as _cache_lookup
-        cache_hit = _cache_lookup(query, max_age_days=cache_cfg.get("max_age_days", 7))
-        if cache_hit:
-            note += f"\n\nNOTE: A previously-verified answer for this exact question already exists (cached {(_time.time() - cache_hit['timestamp']) / 3600:.1f}h ago): {cache_hit['answer']}\nIf this still answers the question, write it to final_report.md as-is (it already includes real sources). If you believe fresher research is needed, delegate as normal instead."
-            # The grounding check below requires every cited URL to have been fetched THIS run — a
-            # cache-hit reused verbatim would otherwise always fail that check, defeating the whole
-            # point of the cache. Pre-register the cached answer's own URLs as verified for this run.
-            for u in _extract_cited_urls(cache_hit.get("answer", "")):
-                record_fetched_url(u, filename="<from_knowledge_cache>")
-
-    exp_cfg = config.cfg.get("settings", {}).get("experience_cache", {})
-    if exp_cfg.get("enabled", False):
-        from utils.knowledge_cache import lookup_experience
-        past = lookup_experience(query, max_entries=1)
-        if past:
-            note += f"\n\nNOTE: A structurally similar past query succeeded with this plan: {past[0]['plan_used']}\nYou may use it as a starting point, but verify it still fits this exact query before following it."
-
-    if note and isinstance(current_input, str):
-        return current_input + note
-    return current_input
-
-
 # Grounding-check logic (URL-presence gate + content-level claim gate) now lives in
 # utils/grounding.py, shared with engine/orchestrator.py's upstream per-specialist check — see that
 # module's header comment for why it isn't defined here.
@@ -1337,32 +1314,6 @@ from utils.grounding import (
     real_grounding_problem as _real_grounding_problem,
     fully_ungrounded as _fully_ungrounded,
 )
-
-
-def _update_wiki_index(query: str, req_artifact: str, run_dir: str) -> None:
-    """Deterministically maintain a persistent, cross-run index.md at the workspace root when
-    settings.workspace.wiki_index is enabled — a living table of contents linking every completed
-    run's report, independent of session_isolation (which still isolates each run's own files so
-    reports don't overwrite each other). Engine-driven rather than agent-maintained, same pattern
-    as knowledge_cache/experience_cache: the Planner shouldn't need to remember an extra
-    bookkeeping step for a persistent index to work reliably — see comparative_analysis.md's
-    "Wiki Mode" proposal, scoped here to the index/table-of-contents part specifically, not a full
-    rewrite of the single-required-artifact-per-run system the completion check depends on."""
-    try:
-        if _get_workspace_type() != "disk":
-            return  # In-memory workspaces don't persist across process runs anyway.
-        base_dir = _get_workspace_dir()
-        index_path = os.path.join(base_dir, "index.md")
-        rel_link = os.path.relpath(os.path.join(run_dir, req_artifact), base_dir).replace("\\", "/")
-        entry = f"- [{query.strip()[:120]}]({rel_link}) — {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
-        os.makedirs(base_dir, exist_ok=True)
-        if not os.path.exists(index_path):
-            with open(index_path, "w", encoding="utf-8") as f:
-                f.write("# DeepDelve Research Index\n\nAuto-maintained log of every completed research run.\n\n")
-        with open(index_path, "a", encoding="utf-8") as f:
-            f.write(entry)
-    except Exception:
-        pass
 
 
 def _quarantine_artifact(req_artifact: str, attempt: int) -> None:
@@ -1637,22 +1588,7 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
             run_state.save()
             return True, new_inputs
 
-        if not problem:
-            cache_cfg = config.cfg.get("settings", {}).get("knowledge_cache", {})
-            if cache_cfg.get("enabled", False):
-                from utils.knowledge_cache import save as _cache_save
-                _cache_save(query, content or "")
-
-            exp_cfg = config.cfg.get("settings", {}).get("experience_cache", {})
-            if exp_cfg.get("enabled", False):
-                from utils.knowledge_cache import save_experience
-                plan = get_workspace_file_content("_todos.md") or ""
-                slot_count = plan.count("- [")
-                save_experience(query, plan, slot_count, outcome="success", max_entries_per_shape=exp_cfg.get("max_entries_per_shape", 5))
-
-            if config.cfg.get("settings", {}).get("workspace", {}).get("wiki_index", False):
-                _update_wiki_index(query, req_artifact, run_state.run_dir)
-        elif problem:
+        if problem:
             # Retry budget is exhausted and a real problem still exists. The old project silently
             # accepted whatever was left at this point with no indication to the user that the output
             # is unverified or even absent — a genuinely observed failure mode in testing (both
@@ -1839,7 +1775,7 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
     run_state = None
     try:
         from agent_framework import Message
-        current_input = _apply_cache_note(prompt, prompt)
+        current_input = prompt
         has_requests = True
         run_state = RunState(_current_run_dir(run_dir_name))
         run_state.set_query(prompt)
@@ -1940,8 +1876,6 @@ def cli_main(builder):
     parser.add_argument("--config", "-c", type=str, help="Path to config.yaml", default=None)
     parser.add_argument("--prompt", "-p", type=str, help="Run non-interactively with a specific prompt (headless mode)", default=None)
     parser.add_argument("--prompt-file", "-f", type=str, help="Run non-interactively reading a JSON context file", default=None)
-    parser.add_argument("--web", "-w", action="store_true", help="Serve the TUI as a web application")
-    parser.add_argument("--port", "-P", type=int, default=8000, help="Port for --web mode (default: 8000)")
     parser.add_argument("--auto-approve", action="store_true", help="Automatically approve all tool execution requests")
     parser.add_argument("--list-sessions", action="store_true", help="List saved sessions and exit")
     parser.add_argument("--resume", type=str, help="Resume a specific session by ID. Works in headless mode if --prompt is given, or in TUI mode otherwise.", default=None)
@@ -1976,28 +1910,6 @@ def cli_main(builder):
         asyncio.run(run_cli(builder, prompt_file=args.prompt_file, session_id=args.resume))
     elif args.prompt:
         asyncio.run(run_cli(builder, prompt=args.prompt, session_id=args.resume))
-    elif args.web:
-        try:
-            from textual_serve.server import Server
-        except ImportError:
-            sys.stdout.write("Error: 'textual-serve' is not installed. Please install it with 'pip install textual-serve' to use the --web mode.\n")
-            sys.exit(1)
-
-        import shlex
-        # Remove the web flag to avoid recursive server spawning
-        child_args = [arg for arg in sys.argv if arg not in ("--web", "-w")]
-
-        # Ensure we run by executable if we are running as a direct py script
-        if not child_args[0].endswith("local-agent") and not child_args[0].endswith(".exe"):
-            child_args.insert(0, sys.executable)
-
-        command_str = shlex.join(child_args)
-
-        sys.stdout.write(f"Starting Textual Web Server on http://localhost:{args.port} ...\n")
-        sys.stdout.write("Press Ctrl+C to stop.\n")
-
-        server = Server(command_str, port=args.port)
-        server.serve()
     else:
         BasicTuiAgent(builder, session_to_resume=args.resume).run()
 

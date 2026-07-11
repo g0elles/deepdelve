@@ -239,7 +239,6 @@ async def web_search(
 
     def _do_search():
         from ddgs import DDGS
-        import config as app_config
 
         def _sanitize_snippet(text: str) -> str:
             """Strip CSS, SVG, and HTML artifacts from search snippets."""

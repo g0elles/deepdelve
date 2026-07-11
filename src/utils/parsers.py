@@ -1,6 +1,3 @@
-import subprocess
-import shutil
-import httpx
 try:
     from markitdown import MarkItDown
     _markitdown_available = True
@@ -26,19 +23,3 @@ def convert_to_markdown(url_or_filepath: str) -> str:
         return None
     except Exception as e:
         return None
-
-def extract_advanced_pdf(filepath: str) -> str:
-    """
-    Utilizes Liteparse for layout comprehension of complex PDFs.
-    Requires system-level installation: `npm install -g @llamaindex/liteparse`.
-    """
-    if not shutil.which("liteparse"):
-        raise EnvironmentError("liteparse is missing. Run: npm install -g @llamaindex/liteparse")
-
-    result = subprocess.run(
-        ["liteparse", filepath],
-        capture_output=True,
-        text=True,
-        check=True
-    )
-    return result.stdout

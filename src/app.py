@@ -18,7 +18,6 @@ from tools import (
     write_todos,
     read_todos,
     think_tool,
-    replan_action,
     extract_structured_data,
 )
 from prompts import (
@@ -88,7 +87,7 @@ app = AgentBuilder(
     name=config.APP_TITLE,
     description=config.APP_DESCRIPTION,
     instructions=PLANNER_INSTRUCTIONS,
-    tools=[write_workspace_file, list_workspace_files, write_todos, read_todos, think_tool, replan_action],
+    tools=[write_workspace_file, list_workspace_files, write_todos, read_todos, think_tool],
     sub_agents=[web_searcher, academic_searcher, peer_reviewer]
 )
 
