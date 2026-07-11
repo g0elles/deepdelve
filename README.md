@@ -58,9 +58,34 @@ source venv/bin/activate
 pip install -e .
 ```
 
-### 2. Model
+### 2. Model & Endpoint
 
-Targets Ollama's OpenAI-compatible API by default. Default model: `deepdelve-mistral-nemo` (a `mistral-nemo:12b` derived tag — see below). Two things that will silently break tool-calling if skipped:
+DeepDelve talks to any **OpenAI-compatible chat-completions endpoint** — it isn't Ollama-specific, that's just the default. Three ways to point it elsewhere, in order of precedence (later overrides earlier):
+
+1. **Edit `~/.deepdelve/config.yaml`** (created on first run from `src/config_template.yaml`):
+   ```yaml
+   api:
+     openai_base_url: https://api.openai.com/v1   # or any other OpenAI-compatible URL
+     openai_model: gpt-4.1                          # or your provider's model name
+   ```
+2. **Environment variables** (override the config file, no edit needed):
+   ```bash
+   export OPENAI_API_BASE="https://api.openai.com/v1"
+   export OPENAI_MODEL="gpt-4.1"
+   export OPENAI_API_KEY="sk-..."     # required by real providers; defaults to "dummy" for
+                                       # unauthenticated local servers (Ollama, LM Studio, vLLM, etc.)
+   python src/app.py
+   ```
+3. **A separate config file entirely** via `--config`/`-c`:
+   ```bash
+   python src/app.py --config /path/to/other-config.yaml
+   ```
+
+This works for any local server that speaks the OpenAI chat-completions API (Ollama, LM Studio, vLLM, llama.cpp's server, text-generation-webui) or any hosted provider that does (OpenAI itself, OpenRouter, Together, Groq, etc.) — just set the base URL, model name, and API key accordingly. The one hard requirement, regardless of provider, is real structured tool-calling support (see below) — this agent is 100% tool-call driven, and a model/endpoint that only narrates JSON as text will not work.
+
+The rest of this section documents the **Ollama default** and its specific gotchas — skip it if you're pointing at a different provider.
+
+Default model: `deepdelve-mistral-nemo` (a `mistral-nemo:12b` derived tag — see below). Two things that will silently break tool-calling if skipped:
 
 > **Tool-call support:** this agent is 100% tool-call driven — if a model never emits a structured `tool_calls` response, every agent just narrates instead of acting. Models from the official Ollama library ship with a maintainer-verified tool-call parser; `hf.co/...` GGUF imports often don't. Verify with:
 > ```bash
