@@ -8,3 +8,4 @@ eval/runs/
 .env
 *.log
 .DS_Store
+feedback/

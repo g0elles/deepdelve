@@ -19,6 +19,11 @@ settings:
   # exhausted). Set to 0 to disable and restore the old search-then-optionally-fetch behavior.
   web_search:
     auto_fetch_top: 1
+  # "light" (default): behavior unchanged. "heavy": web_search searches deeper (max_results >= 8)
+  # and auto-fetches more of the top results (>= 3) per call — a larger verified data pool per
+  # search, for queries where thoroughness matters more than tool-call/token economy. Costs more
+  # fetch_url_to_workspace quota per call; raise that quota if you enable this.
+  search_mode: light
   quotas:
     # Quotas are GLOBAL — shared cumulatively across the Planner and every dispatched specialist
     # (WebSearcher, AcademicSearcher, DocumentAnalyzer, DataAnalyzer). Each key becomes a prompt
@@ -46,6 +51,11 @@ settings:
     delegate_tasks: 3
     web_search: 3
     fetch_url_to_workspace: 3
+  # When true, the Planner's write_todos call requires human approval before it commits (TUI mode
+  # shows the plan content in an interactive approve/deny widget; headless/--prompt mode falls back
+  # to the existing --auto-approve flag). Lets you review/reject the research plan before quota is
+  # spent on delegate_tasks, reusing the same tool-approval machinery as settings.permissions.
+  human_in_the_loop: false
   enable_conversational_memory: true
   enable_session_persistence: true
   workspace:
@@ -53,6 +63,13 @@ settings:
     dir: "./research_output"
     session_isolation: true
     required_artifact: "final_report.md"
+    # When true, every completed run appends a link to a persistent index.md at the workspace
+    # root (query + timestamp + link to that run's report) — a living table of contents across
+    # runs instead of throwaway isolated output. Requires workspace.type: disk. Most useful
+    # together with session_isolation: true (otherwise every run's final_report.md overwrites the
+    # last one, and the index just re-links the same file). Deterministic/engine-maintained, not
+    # reliant on the model remembering to update it — see engine/tui.py::_update_wiki_index.
+    wiki_index: false
   # Real grounding check: cross-references every URL cited in final_report.md against the URLs the
   # engine actually saw fetch_url_to_workspace fetch this run (logged centrally, not model-reported).
   grounding_check:
@@ -66,6 +83,11 @@ settings:
     # call (see engine/tui.py::_claim_grounding_problem). Deliberately conservative (zero-overlap
     # only) to keep false positives rare — set false to disable if it proves too noisy in practice.
     content_level_check: true
+    # Runs the same URL-presence + content-level check on each Searcher specialist's summary
+    # before it reaches the Planner, not just on the final report — catches a hallucinated
+    # citation at the source instead of letting it poison findings.md first (see
+    # engine/orchestrator.py::_run_single_task). Set false to restore final-report-only checking.
+    verify_specialist_output: true
   # Persists verified (grounded, real-research) answers across runs so an exact repeat query
   # doesn't need to re-research from scratch. Deterministic, engine-driven — not an agent tool.
   knowledge_cache:
@@ -80,3 +102,26 @@ settings:
     enabled: true
     max_entries_per_shape: 5
     path: "~/.{APP_NAME}/experience_cache.json"
+  # External MCP servers, scoped to specific sub-agents by name (omit 'agents' to expose to all).
+  # Connected only for the lifetime of each delegated task (see
+  # engine/orchestrator.py::_run_single_task). Empty by default — none of this runs unless you add
+  # an entry AND install the corresponding server yourself. Two concretely researched options
+  # (not guessed) rather than building bespoke API clients from scratch:
+  #   - Semantic Scholar MCP for AcademicSearcher (200M+ papers, citations, authors — no API key
+  #     needed for the public tier): https://github.com/xiuyechen/semantic-scholar-mcp
+  #     mcp_servers:
+  #       - name: semantic-scholar
+  #         transport: stdio
+  #         command: uvx
+  #         args: ["semantic-scholar-mcp"]
+  #         agents: ["AcademicSearcher"]
+  #   - Brave Search MCP for WebSearcher (a real search index instead of DDGS scraping — needs a
+  #     free-tier API key from https://brave.com/search/api/):
+  #     mcp_servers:
+  #       - name: brave-search
+  #         transport: stdio
+  #         command: npx
+  #         args: ["-y", "@modelcontextprotocol/server-brave-search"]
+  #         env: { BRAVE_API_KEY: "your-key-here" }
+  #         agents: ["WebSearcher"]
+  mcp_servers: []

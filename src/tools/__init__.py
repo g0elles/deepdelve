@@ -10,7 +10,8 @@ from tools.fs import (
 )
 from tools.web import fetch_url_to_workspace, web_search, verify_url_live
 from tools.todos import write_todos, read_todos
-from tools.meta import think_tool
+from tools.meta import think_tool, replan_action
+from tools.data import extract_structured_data
 
 # -------------------------------------------------------------
 # [!CAUTION] RULES FOR LLM CODING ASSISTANTS EDITING THIS:
@@ -48,7 +49,9 @@ __all__ = [
     "write_todos",
     "read_todos",
     "think_tool",
+    "replan_action",
     "verify_url_live",
+    "extract_structured_data",
     # TUI helpers (not agent tools)
     "get_workspace_files",
     "get_workspace_file_content",

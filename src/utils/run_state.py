@@ -21,6 +21,11 @@ from typing import Optional
 
 fetched_urls_ctx = contextvars.ContextVar('fetched_urls', default=None)
 
+# Exposes the current run's RunState to orchestrator.py's _run_single_task, which lives in a
+# different module and previously had no way to record specialist findings into the structured
+# store — the reason RunState.add_finding() existed but was dead code until this wiring.
+run_state_ctx = contextvars.ContextVar('run_state_ctx', default=None)
+
 
 def reset_fetched_urls() -> None:
     fetched_urls_ctx.set([])
