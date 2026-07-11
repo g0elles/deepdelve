@@ -4,7 +4,7 @@ import re
 from agent_framework.openai import OpenAIChatCompletionClient
 from agent_framework import tool, AgentSession
 from tools import WORKSPACE_TOOLS, tool_quotas_ctx, with_quota, think_tool, QuotaAbortException
-from utils.run_state import run_state_ctx, get_fetched_urls
+from utils.run_state import run_state_ctx, get_fetched_urls, task_fetched_urls_ctx
 from prompts import PLANNER_INSTRUCTIONS, SUBAGENT_INSTRUCTIONS, SUBAGENT_DELEGATION_INSTRUCTIONS
 import datetime
 import config
@@ -29,6 +29,30 @@ def apply_tool_permissions(tools: list) -> list:
 def _sanitize_name(name: str) -> str:
     """Ensure the name matches ^[a-zA-Z0-9_-]+$ for OpenAI API."""
     return re.sub(r'[^a-zA-Z0-9_-]', '_', name)
+
+_SCOPE_STOPWORDS = {
+    # Common sentence-initial instruction verbs — without filtering these, an instruction like
+    # "Compare X and Y in Colombia" would treat "Compare" as a required scope entity too, and
+    # since the relevance check is OR-across-entities, a common English word like "compare"
+    # appearing ANYWHERE in a fetched page would silently make every check pass, defeating it.
+    "Find", "Research", "Assess", "Investigate", "Analyze", "Analyse", "Evaluate", "Search",
+    "Determine", "Identify", "Explore", "Review", "Examine", "Report", "Summarize", "Summarise",
+    "Include", "Compare", "Check", "Verify", "Confirm", "List", "Describe", "Extract",
+    "Prioritize", "Prioritise", "Map", "Document", "Provide", "Give", "Discuss", "Outline",
+    "Detail", "Consider", "Look", "Locate", "Gather", "Collect", "Explain", "Show", "Get",
+    "Ensure", "Estimate", "Calculate", "Measure", "Trace", "Track", "Note", "Verify",
+    "The", "This", "That", "These", "Those", "Please", "For", "With", "Using", "Based",
+}
+
+def _extract_scope_entities(instructions: str) -> set:
+    """Single- or multi-word capitalized proper-noun-looking terms from a delegated task's own
+    instructions (e.g. 'Colombia') — the specific entity the caller explicitly required this task
+    to be about. Deliberately looser than utils/grounding.py's extract_salient_terms (which
+    requires 2+ capitalized words), since a country name is often a single word and that's exactly
+    the case this check exists for.  Filters common instruction-verb words that would otherwise
+    false-positive as "the entity" (e.g. the first word of "Find neglected markets...")."""
+    words = re.findall(r'\b[A-Z][a-zA-Z]{2,}\b', instructions or "")
+    return {w for w in words if w not in _SCOPE_STOPWORDS}
 
 def _get_quota_format_vars() -> dict:
     """Extract all quotas from config as {tool_name_quota: int} format variables.
@@ -134,7 +158,10 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
             # latent in the reference project this was forked from too — never previously observed
             # because bad agent_id values apparently never came up in its own testing.
             children_token = None
-            urls_before = len(get_fetched_urls())
+            # Per-task-scoped fetch tracking (see utils/run_state.py's task_fetched_urls_ctx
+            # header comment) — NOT a before/after length delta on the shared run-wide list, which
+            # races under concurrent delegate_tasks dispatch.
+            task_urls_token = task_fetched_urls_ctx.set([])
             try:
                 current_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -239,13 +266,16 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                 if subagent_callback:
                     await subagent_callback(None, is_subagent=True, agent_name=f"SubAgent_{task_name}", is_done=True)
 
+                new_urls = task_fetched_urls_ctx.get() or []
+
                 # Upstream verification (Tier-2 Searcher output only, detected generically via
                 # target_children rather than hardcoded agent names — Analyzers are leaf nodes with
                 # no children). Catches a hallucinated citation in a specialist's summary before it
                 # ever reaches the Planner's context, instead of only at final-report time — error
                 # propagation into the Planner's findings.md was previously undetectable until the
                 # very end of the run, by which point the retry budget was already partly spent.
-                if target_children and config.cfg.get("settings", {}).get("grounding_check", {}).get("verify_specialist_output", True):
+                gc_cfg = config.cfg.get("settings", {}).get("grounding_check", {})
+                if target_children and gc_cfg.get("verify_specialist_output", True):
                     from utils.grounding import real_grounding_problem
                     problem = await real_grounding_problem(final_text)
                     if problem and problem != "no_urls":
@@ -255,6 +285,31 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                             f"treat the associated claim as sourced when writing findings.md.]"
                         )
 
+                    # Topical-relevance check: an instruction requiring "Colombia" is not the same
+                    # as a fetched source actually BEING about Colombia — confirmed live, forcing
+                    # the scope entity into every sub-task's instructions still let a US article, a
+                    # Mexico-specific paper, and a generic global page through, because search
+                    # result ranking and blind top-1 auto-fetch don't check relevance either. This
+                    # is a cheap, deterministic substitute: does anything actually fetched for THIS
+                    # task even mention the entity the instructions said it must be about?
+                    if gc_cfg.get("verify_scope_relevance", True):
+                        scope_entities = _extract_scope_entities(instructions)
+                        if scope_entities and new_urls:
+                            from tools.fs import get_workspace_file_content
+                            matched = any(
+                                any(term in (get_workspace_file_content(u["filename"]) or "") for term in scope_entities)
+                                for u in new_urls
+                            )
+                            if not matched:
+                                entities_str = "/".join(sorted(scope_entities))
+                                final_text += (
+                                    f"\n\n[SYSTEM RELEVANCE WARNING: none of the sources fetched for "
+                                    f"this task actually mention {entities_str}, despite the task "
+                                    f"instructions requiring it. This may be an off-topic or "
+                                    f"wrong-country source — verify before presenting these findings "
+                                    f"as being about {entities_str}.]"
+                                )
+
                 # Populate the structured findings store (previously dead code — RunState.add_finding
                 # was defined but never called) so a completion-check retry or later debugging has real
                 # {source_url, summary} records instead of only the model's own narration. Preferring
@@ -263,7 +318,6 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                 # themselves, so they fall back to the task name as the record's identifier.
                 run_state = run_state_ctx.get()
                 if run_state is not None:
-                    new_urls = get_fetched_urls()[urls_before:]
                     if new_urls:
                         for u in new_urls:
                             run_state.add_finding(u["url"], final_text[:1500])
@@ -276,6 +330,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                     available_sub_agents_ctx.reset(children_token)
                 holds_token.reset(token_setter)
                 delegation_depth_ctx.reset(depth_token)
+                task_fetched_urls_ctx.reset(task_urls_token)
 
     # -------------------------------------------------------------
     # [!CAUTION] CONCURRENCY ARCHITECTURE FOR LLM CODING ASSISTANTS:
@@ -297,6 +352,32 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
         # call must fail loudly and immediately, not silently degrade into wasted quota on garbage
         # work — this lets the model see exactly what was wrong and retry with the correct shape.
         # -------------------------------------------------------------
+        # Numbered-placeholder detector: found live, a model planning "12 candidate sectors"
+        # dispatched tasks literally named/instructed around "sector 1", "sector 2", etc. instead
+        # of naming the real sectors first — every resulting web_search query was the literal,
+        # meaningless phrase "market size of sector 1 in colombia", returning garbage (a currency
+        # site, an energy-agency report, unrelated Wikipedia pages) across all 12. Same principle
+        # as the malformed-schema check below: reject loudly before wasting quota on it, rather
+        # than relying on the prompt rule alone (see prompts.py's DISPATCH step for the prompt-side
+        # half of this fix).
+        # Matches "sector 1" / "sector_1" (post-normalization) / "sector #4" AND "sector X" /
+        # "item Y" — a bare capital letter is as common a placeholder as a number (confirmed
+        # live). The keyword itself stays case-insensitive; the single-letter placeholder stays
+        # case-SENSITIVE (only a bare capital, e.g. "sector X") so this doesn't false-positive on
+        # a keyword incidentally followed by a lowercase word-initial letter in real prose.
+        _placeholder_re = re.compile(
+            r'\b(?:[Ss]ector|[Ii]tem|[Mm]arket|[Tt]opic|[Oo]ption|[Cc]andidate|[Cc]ategory|'
+            r'[Pp]roduct|[Ss]ervice|[Aa]rea)\s*(?:#?\d+\b|[A-Z]\b)'
+        )
+        # Catches the OTHER half of the same real failure: a task instructed to act "for each
+        # identified sector" (or similar) inside a batch dispatched via asyncio.gather — but
+        # delegate_tasks runs every task in a batch CONCURRENTLY, so a sibling "identify the
+        # sectors" task's results don't exist yet when this one runs. This is exactly the
+        # sequential-vs-concurrent rule already in SUBAGENT_DELEGATION_INSTRUCTIONS, just not
+        # being followed — confirmed live, a real run's web_search literally queried "Evaluate
+        # competition level for sector X" because of this.
+        _cross_task_dependency_re = re.compile(r'\bfor each\b.{0,40}\bidentif', re.IGNORECASE)
+
         errors = []
         for i, t in enumerate(tasks):
             if not isinstance(t, dict):
@@ -308,6 +389,32 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                     f"Task {i} {t!r}: missing or empty required field(s) {missing}. "
                     f"Each task MUST be shaped exactly as "
                     f"{{\"task_name\": \"...\", \"instructions\": \"...\", \"agent_id\": \"...\"}}."
+                )
+                continue
+            # Normalize underscores/hyphens to spaces first — "sector_1" (a real observed
+            # task_name) otherwise never matches \bsector\b, since '_' counts as a word
+            # character and leaves no boundary between "analyze_" and "sector".
+            placeholder_text = " ".join(str(t.get(k, "")) for k in ("task_name", "instructions")).replace("_", " ").replace("-", " ")
+            m = _placeholder_re.search(placeholder_text)
+            if m:
+                errors.append(
+                    f"Task {i} ({t.get('task_name')!r}): looks like an unresolved placeholder "
+                    f"({m.group(0)!r}), not a real research topic — a Searcher given this will "
+                    f"search for that literal meaningless phrase. If you're enumerating multiple "
+                    f"items, you must know and use each item's REAL name (e.g. 'fintech for gig "
+                    f"workers', not 'sector 3' or 'sector X') before dispatching. If you don't "
+                    f"know the real names yet, delegate a background task to identify them first."
+                )
+                continue
+            dep_m = _cross_task_dependency_re.search(" ".join(str(t.get(k, "")) for k in ("task_name", "instructions")))
+            if dep_m:
+                errors.append(
+                    f"Task {i} ({t.get('task_name')!r}): says \"{dep_m.group(0)}\" — this task "
+                    f"depends on another task's output, but ALL tasks in one delegate_tasks call "
+                    f"run CONCURRENTLY, so a sibling 'identify X' task's results do not exist yet "
+                    f"when this one runs. Split this into two SEQUENTIAL delegate_tasks calls: "
+                    f"first the identification task alone, wait for its real result, THEN a second "
+                    f"call with one task per REAL item it found."
                 )
         if errors:
             return (

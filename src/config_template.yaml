@@ -51,6 +51,13 @@ settings:
     delegate_tasks: 3
     web_search: 3
     fetch_url_to_workspace: 3
+  # How many completion-check attempts a run gets before giving up with an unresolved issue
+  # (missing_artifact / not_grounded / etc.) instead of continuing to retry. The old fixed default
+  # of 3 could cut a run off with real sources already sitting in findings.md, well before any
+  # real hardware constraint — raise this if you have compute/time to spare and would rather the
+  # agent keep revising than stop early. Each extra attempt costs wall-clock time and the
+  # retry_quota_topup allowance above, not memory — this is not a resource-limited setting.
+  max_completion_check_attempts: 3
   # When true, the Planner's write_todos call requires human approval before it commits (TUI mode
   # shows the plan content in an interactive approve/deny widget; headless/--prompt mode falls back
   # to the existing --auto-approve flag). Lets you review/reject the research plan before quota is
@@ -88,6 +95,13 @@ settings:
     # citation at the source instead of letting it poison findings.md first (see
     # engine/orchestrator.py::_run_single_task). Set false to restore final-report-only checking.
     verify_specialist_output: true
+    # For each Searcher-tier task, checks whether anything it actually fetched even mentions the
+    # scope entity (e.g. a country name) required by the task's own delegation instructions —
+    # confirmed live that instruction wording alone ("...in Colombia") doesn't stop search+fetch
+    # from surfacing an off-topic or wrong-country source anyway (see engine/orchestrator.py::
+    # _extract_scope_entities). A soft warning appended to the specialist's summary, not a hard
+    # block — the Planner still decides what to do with it.
+    verify_scope_relevance: true
   # Persists verified (grounded, real-research) answers across runs so an exact repeat query
   # doesn't need to re-research from scratch. Deterministic, engine-driven — not an agent tool.
   knowledge_cache:
