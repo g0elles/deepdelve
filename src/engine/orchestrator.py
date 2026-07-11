@@ -365,6 +365,15 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
         # live). The keyword itself stays case-insensitive; the single-letter placeholder stays
         # case-SENSITIVE (only a bare capital, e.g. "sector X") so this doesn't false-positive on
         # a keyword incidentally followed by a lowercase word-initial letter in real prose.
+        # Checked against `instructions` ONLY, not `task_name` — found live, a real 12-task batch
+        # ("Analyze market 1: Logistics and supply chain management in Colombia", ...) was rejected
+        # wholesale because task_name used "market 1"/"market 2" as an ordinary numbered list label
+        # while instructions fully named the real, specific topic ("Assess the needs of logistics
+        # and supply chain management in Colombia..."). task_name is never what actually drives a
+        # Searcher's search query (only instructions is — see WEB_SEARCHER_INSTRUCTIONS' Workflow),
+        # so a numbered task_name label is harmless; the original documented failure case (the
+        # literal garbage query "market size of sector 1 in colombia") had the placeholder in
+        # instructions itself, which this narrower check still catches.
         _placeholder_re = re.compile(
             r'\b(?:[Ss]ector|[Ii]tem|[Mm]arket|[Tt]opic|[Oo]ption|[Cc]andidate|[Cc]ategory|'
             r'[Pp]roduct|[Ss]ervice|[Aa]rea)\s*(?:#?\d+\b|[A-Z]\b)'
@@ -392,9 +401,9 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                 )
                 continue
             # Normalize underscores/hyphens to spaces first — "sector_1" (a real observed
-            # task_name) otherwise never matches \bsector\b, since '_' counts as a word
+            # instructions string) otherwise never matches \bsector\b, since '_' counts as a word
             # character and leaves no boundary between "analyze_" and "sector".
-            placeholder_text = " ".join(str(t.get(k, "")) for k in ("task_name", "instructions")).replace("_", " ").replace("-", " ")
+            placeholder_text = str(t.get("instructions", "")).replace("_", " ").replace("-", " ")
             m = _placeholder_re.search(placeholder_text)
             if m:
                 errors.append(
