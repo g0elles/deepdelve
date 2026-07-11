@@ -195,6 +195,29 @@ def _save_fetched(urls_fetched: list[str], filename: str, data, convert_to_md: b
         return f"Fetched URL successfully to '{filename}' in memory."
 
 
+def _scope_warning(query: str) -> str:
+    """Soft warning when a search query drops the delegated task's own scope entity (e.g. a
+    Colombia-scoped task searching "predictive maintenance offshore wind turbine" — confirmed
+    live 2026-07-11, an entire quota's worth of off-continent results). Same philosophy as the
+    post-fetch verify_scope_relevance check: warn, never block — the model decides."""
+    import config as app_config
+    if not app_config.cfg.get("settings", {}).get("grounding_check", {}).get("verify_scope_relevance", True):
+        return ""
+    from utils.run_state import scope_entities_ctx
+    entities = scope_entities_ctx.get()
+    if not entities:
+        return ""
+    q = query.lower()
+    if any(e.lower() in q for e in entities):
+        return ""
+    ent_list = ", ".join(sorted(entities)[:5])
+    return (
+        f"\n\n[SCOPE WARNING: your task's instructions are explicitly about {ent_list}, but this "
+        f"search query never mentions any of them — these results may be about the wrong "
+        f"country/subject entirely. Re-search with the scope term included unless this was deliberate.]"
+    )
+
+
 def _slugify_for_filename(url: str, query: str) -> str:
     """Deterministic, collision-resistant filename for an auto-fetched search result."""
     import hashlib
@@ -378,7 +401,7 @@ async def web_search(
             block += f"\n**Note:** {r['auto_fetch_status']}"
         result_texts.append(block + "\n")
 
-    return f"🔍 Found {len(result_texts)} result(s) for '{query}':\n\n{chr(10).join(result_texts)}{auto_fetch_note}"
+    return f"🔍 Found {len(result_texts)} result(s) for '{query}':\n\n{chr(10).join(result_texts)}{auto_fetch_note}{_scope_warning(query)}"
 
 
 async def verify_url_live(url: str, timeout: float = 5.0) -> bool:

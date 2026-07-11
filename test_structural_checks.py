@@ -143,6 +143,20 @@ def main():
             _config.cfg["settings"]["workspace"] = _orig_ws
         reset_fetched_urls()
 
+    # --- query-level scope warning (live case: Colombia task searching offshore wind turbines) ---
+    from tools.web import _scope_warning
+    from utils.run_state import scope_entities_ctx
+
+    def _scope_scenario():
+        scope_entities_ctx.set({"Colombia"})
+        assert "SCOPE WARNING" in _scope_warning("predictive maintenance offshore wind turbine")
+        assert _scope_warning("mantenimiento predictivo industrial colombia") == ""
+        scope_entities_ctx.set(set())
+        assert _scope_warning("anything at all") == ""  # no scope entities -> silent
+
+    contextvars.copy_context().run(_scope_scenario)
+    assert _scope_warning("anything") == ""  # outside any task -> silent
+
     print("All structural-check assertions passed.")
 
 

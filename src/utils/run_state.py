@@ -39,6 +39,13 @@ task_fetched_urls_ctx = contextvars.ContextVar('task_fetched_urls_ctx', default=
 # store — the reason RunState.add_finding() existed but was dead code until this wiring.
 run_state_ctx = contextvars.ContextVar('run_state_ctx', default=None)
 
+# Scope entities of the CURRENT delegated task (e.g. {"Colombia"}), set by orchestrator's
+# _run_single_task so web_search can warn when a search query drops the task's own required
+# scope — live case: a Colombia-scoped task searched "predictive maintenance offshore wind
+# turbine" and burned quota on another continent's industry. Lives here (not orchestrator) so
+# tools/web.py can read it without a circular import.
+scope_entities_ctx = contextvars.ContextVar('scope_entities', default=None)
+
 
 def reset_fetched_urls() -> None:
     fetched_urls_ctx.set([])
