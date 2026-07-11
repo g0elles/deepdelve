@@ -138,6 +138,21 @@ def _get_default_options():
         }
     return options
 
+def malformed_tool_call_nudge(e: BaseException) -> str | None:
+    """One-turn recovery message for a model emitting syntactically invalid tool-call JSON.
+    Confirmed live (2026-07-11, gpt-oss on Ollama): a bad backslash escape inside think_tool
+    arguments made the runtime return HTTP 500 ('error parsing tool call'), which killed an
+    otherwise-successful 16-minute run at the report-rewrite stage. The model's NEXT sample very
+    often parses fine — dying on the first one throws the whole run away for a transient slip."""
+    if "error parsing tool call" in str(e).lower():
+        return (
+            "SYSTEM: your last tool call was rejected by the runtime because its arguments were "
+            "not valid JSON (typically a stray backslash escape). Re-issue the tool call with "
+            "plain, valid JSON string arguments — avoid backslashes except \\\\, \\\", and \\n."
+        )
+    return None
+
+
 def _build_client():
     # Injected AsyncOpenAI so the SDK's own exponential backoff (which honors Retry-After) covers
     # 429/5xx. Confirmed live 2026-07-11: NIM's free-tier rate limit 429-crashed an entire
@@ -296,6 +311,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                     final_text = ""
                     current_input = instructions
                     has_requests = True
+                    malformed_retries = 0
                     while has_requests:
                         has_requests = False
                         user_input_requests = []
@@ -313,6 +329,17 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                                     user_input_requests.extend(update.user_input_requests)
                         except QuotaAbortException as e:
                             return f"## Error for {task_name}\nTask forcefully aborted: {str(e)}\n---"
+                        except Exception as e:
+                            nudge = malformed_tool_call_nudge(e)
+                            if nudge and malformed_retries < 2:
+                                malformed_retries += 1
+                                from agent_framework import Message
+                                new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
+                                new_inputs.append(Message("user", [{"type": "text", "text": nudge}]))
+                                current_input = new_inputs
+                                has_requests = True
+                                continue
+                            raise
 
                         if user_input_requests:
                             has_requests = True

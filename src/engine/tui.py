@@ -1785,6 +1785,7 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
         # live 2026-07-11: a NIM 429 killed a run 10 minutes in and left 15 fetched files with no
         # state record at all, making the run unscoreable.
         run_state.save()
+        malformed_retries = 0
 
         while has_requests:
             has_requests = False
@@ -1822,6 +1823,16 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
                 if isinstance(e, QuotaAbortException) or type(e).__name__ == "QuotaAbortException":
                     sys.stdout.write(f"\n\033[91m[System] Task forcefully aborted: {str(e)}\033[0m\n")
                     break
+                from engine.orchestrator import malformed_tool_call_nudge
+                nudge = malformed_tool_call_nudge(e)
+                if nudge and malformed_retries < 2:
+                    malformed_retries += 1
+                    sys.stdout.write(f"\n\033[93m[System] Model emitted a malformed tool call — retrying the turn ({malformed_retries}/2).\033[0m\n")
+                    new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
+                    new_inputs.append(Message("user", [{"type": "text", "text": nudge}]))
+                    current_input = new_inputs
+                    has_requests = True
+                    continue
                 raise
 
             if user_input_requests:

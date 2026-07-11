@@ -102,6 +102,47 @@ def main():
     assert fully_ungrounded("- claim (https://example.com/report/2026?utm_source=x)") is None
     reset_fetched_urls()
 
+    # --- quota refund on environmental failure ---
+    from tools.core import refund_quota
+
+    def _refund_scenario():
+        from tools.core import tool_quotas_ctx as q_ctx, check_quota
+        q_ctx.set({"web_search": {"used": 0, "limit": 2}})
+        check_quota("web_search")
+        refund_quota("web_search")
+        assert q_ctx.get()["web_search"]["used"] == 0
+        refund_quota("web_search")  # never goes negative
+        assert q_ctx.get()["web_search"]["used"] == 0
+
+    contextvars.copy_context().run(_refund_scenario)
+
+    # --- malformed-tool-call recovery predicate (live case: gpt-oss bad escape -> Ollama 500) ---
+    from engine.orchestrator import malformed_tool_call_nudge
+    assert malformed_tool_call_nudge(Exception(
+        "Error code: 500 - {'error': {'message': 'error parsing tool call: raw=...'}}"))
+    assert malformed_tool_call_nudge(Exception("Connection error.")) is None
+
+    # --- fetched files live under sources/ and carry their true URL as line 1 ---
+    from tools.web import _fetched_filename, _save_fetched
+    from tools.fs import _IN_MEMORY_FS
+    import config as _config
+    assert _fetched_filename("foo") == "sources/foo.md"
+    assert _fetched_filename("sources/foo.md") == "sources/foo.md"
+    _orig_ws = _config.cfg.get("settings", {}).get("workspace")
+    _config.cfg.setdefault("settings", {})["workspace"] = {"type": "memory"}
+    try:
+        reset_fetched_urls()
+        _save_fetched(["https://example.com/page"], "foo", "body text")
+        assert _IN_MEMORY_FS["sources/foo.md"].startswith("Source-URL: https://example.com/page\n\n")
+        from utils.run_state import get_fetched_urls
+        assert get_fetched_urls()[0]["filename"] == "sources/foo.md"
+    finally:
+        if _orig_ws is None:
+            _config.cfg["settings"].pop("workspace", None)
+        else:
+            _config.cfg["settings"]["workspace"] = _orig_ws
+        reset_fetched_urls()
+
     print("All structural-check assertions passed.")
 
 

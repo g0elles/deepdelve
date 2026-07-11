@@ -27,6 +27,15 @@ def check_quota(tool_name: str) -> str | None:
         ctx[tool_name]["used"] += 1
     return None
 
+def refund_quota(tool_name: str) -> None:
+    """Give back one quota unit when a tool call failed for environmental reasons (provider
+    throttling/outage) rather than model misuse — the budget exists to stop model loops, not to
+    punish the model for infrastructure weather."""
+    ctx = tool_quotas_ctx.get()
+    if ctx and tool_name in ctx and ctx[tool_name]["used"] > 0:
+        ctx[tool_name]["used"] -= 1
+
+
 def _get_tool_rule(tool_name: str, rule_key: str, default_val: int) -> int:
     """Extract custom quota rules (like max_lines) for a specific tool."""
     ctx = tool_quotas_ctx.get()
