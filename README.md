@@ -125,6 +125,7 @@ python src/app.py --prompt "..." --auto-approve          # headless
 - `settings.workspace.wiki_index` — maintain a persistent cross-run `index.md` at the workspace root.
 - `settings.search_mode: heavy` — search deeper and auto-fetch more top results per call.
 - `settings.human_in_the_loop` — require approval on the Planner's `write_todos` before research proceeds.
+- `settings.permissions` — per-tool approval gate (`<tool_name>: require_approval`). Defaults to gating `remove_workspace_file`, since deleting a file is the one destructive workspace action.
 - `settings.mcp_servers` — wire in external MCP tools (e.g. Semantic Scholar, Brave Search), scoped per sub-agent. See the file's inline comments for ready-to-uncomment examples.
 
 ## Eval Harness

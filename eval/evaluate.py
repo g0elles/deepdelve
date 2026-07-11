@@ -148,13 +148,23 @@ def write_eval_config(base_config_path: str | None, project_root: str, tmp_dir: 
 
 
 def find_latest_session(workspace_dir: str) -> str | None:
-    """Return the most recently created run_* folder under workspace_dir."""
+    """Return the most recently created run folder under workspace_dir.
+
+    Run folders are named `<slugified-query>_<timestamp>` (see tui.py's
+    _slugify_run_dir_name), not `run_*` — this used to filter on a `run_`
+    prefix left over from before that rename, which meant it never matched
+    anything and every eval run silently fell back to scoring raw stdout
+    instead of the actual artifact. Each eval run gets its own freshly
+    created, isolated workspace_dir (see write_eval_config), so there's at
+    most one real candidate here regardless of its name — no prefix
+    filtering needed, just take whatever directory is actually there.
+    """
     if not os.path.isdir(workspace_dir):
         return None
     run_dirs = [
         os.path.join(workspace_dir, d)
         for d in os.listdir(workspace_dir)
-        if d.startswith("run_") and os.path.isdir(os.path.join(workspace_dir, d))
+        if os.path.isdir(os.path.join(workspace_dir, d))
     ]
     if not run_dirs:
         return None
