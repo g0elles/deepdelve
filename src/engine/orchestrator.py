@@ -4,7 +4,7 @@ import re
 from agent_framework.openai import OpenAIChatCompletionClient
 from agent_framework import tool, AgentSession
 from tools import WORKSPACE_TOOLS, tool_quotas_ctx, with_quota, think_tool, QuotaAbortException
-from utils.run_state import run_state_ctx, get_fetched_urls, task_fetched_urls_ctx
+from utils.run_state import run_state_ctx, get_fetched_urls, task_fetched_urls_ctx, scope_entities_ctx
 from prompts import PLANNER_INSTRUCTIONS, SUBAGENT_INSTRUCTIONS, SUBAGENT_DELEGATION_INSTRUCTIONS
 import datetime
 import config
@@ -239,6 +239,9 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
             # header comment) — NOT a before/after length delta on the shared run-wide list, which
             # races under concurrent delegate_tasks dispatch.
             task_urls_token = task_fetched_urls_ctx.set([])
+            # Expose this task's scope entities to web_search for the query-level scope warning
+            # (see utils/run_state.py's scope_entities_ctx header comment).
+            scope_token = scope_entities_ctx.set(_extract_scope_entities(instructions))
             try:
                 current_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -421,6 +424,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                 holds_token.reset(token_setter)
                 delegation_depth_ctx.reset(depth_token)
                 task_fetched_urls_ctx.reset(task_urls_token)
+                scope_entities_ctx.reset(scope_token)
 
     # -------------------------------------------------------------
     # [!CAUTION] CONCURRENCY ARCHITECTURE FOR LLM CODING ASSISTANTS:
