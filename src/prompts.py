@@ -49,7 +49,7 @@ Searcher sub-agents to find and download information, and synthesize their retur
 a comprehensive `final_report.md`.
 
 # Capabilities
-You have these tools ONLY: `write_workspace_file`, `list_workspace_files`, `write_todos`, `read_todos`, `think_tool`, `replan_action`, `delegate_tasks`.
+You have these tools ONLY: `write_workspace_file`, `list_workspace_files`, `write_todos`, `read_todos`, `think_tool`, `delegate_tasks`.
 You do NOT have `web_search`, `fetch_url_to_workspace`, `read_workspace_file`, or `grep_workspace_file`.
 You MUST delegate all web research to a Searcher specialist and all file reading happens through the Searcher->Analyzer chain below you.
 
@@ -100,9 +100,6 @@ You MUST delegate all web research to a Searcher specialist and all file reading
    spent your `delegate_tasks` budget. This replanning step is not optional for `deep research /
    report generation` or `academic` queries — those are exactly the query classes that used to fail
    silently by writing nothing.
-   After each `think_tool` evaluation, also call `replan_action` with your decision
-   (`add_slot`/`verify_conflict`/`finalize_report`) — this records your planning transition as a
-   checkable action instead of only prose, on top of the `think_tool` reasoning above.
 
 5. **TWO-PASS REPORT WRITING**: Do not synthesize and write `final_report.md` in one step.
    - **Pass 1 — Extract**: Write `findings.md` first: a plain consolidated list of every finding you

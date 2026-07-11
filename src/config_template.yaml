@@ -87,13 +87,6 @@ settings:
     dir: "./research_output"
     session_isolation: true
     required_artifact: "final_report.md"
-    # When true, every completed run appends a link to a persistent index.md at the workspace
-    # root (query + timestamp + link to that run's report) — a living table of contents across
-    # runs instead of throwaway isolated output. Requires workspace.type: disk. Most useful
-    # together with session_isolation: true (otherwise every run's final_report.md overwrites the
-    # last one, and the index just re-links the same file). Deterministic/engine-maintained, not
-    # reliant on the model remembering to update it — see engine/tui.py::_update_wiki_index.
-    wiki_index: false
   # Real grounding check: cross-references every URL cited in final_report.md against the URLs the
   # engine actually saw fetch_url_to_workspace fetch this run (logged centrally, not model-reported).
   grounding_check:
@@ -132,20 +125,6 @@ settings:
     # writes Pass 1 from memory — confirmed live). Laxer than the final-report check on purpose:
     # Pass-1 notes may legitimately mention extra search-snippet URLs that were never fetched.
     check_findings: true
-  # Persists verified (grounded, real-research) answers across runs so an exact repeat query
-  # doesn't need to re-research from scratch. Deterministic, engine-driven — not an agent tool.
-  knowledge_cache:
-    enabled: true
-    max_age_days: 7
-    path: "~/.{APP_NAME}/knowledge_cache.json"
-  # Experience store: successful run plans keyed by a coarse query "shape" (e.g. simple-factual,
-  # comparative, academic-deep-dive), so a structurally similar future query can seed its plan from
-  # a past success instead of planning from zero. Deterministic, engine-driven, same pattern as
-  # knowledge_cache.
-  experience_cache:
-    enabled: true
-    max_entries_per_shape: 5
-    path: "~/.{APP_NAME}/experience_cache.json"
   # External MCP servers, scoped to specific sub-agents by name (omit 'agents' to expose to all).
   # Connected only for the lifetime of each delegated task (see
   # engine/orchestrator.py::_run_single_task). Empty by default — none of this runs unless you add

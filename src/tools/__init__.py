@@ -10,7 +10,7 @@ from tools.fs import (
 )
 from tools.web import fetch_url_to_workspace, web_search, verify_url_live
 from tools.todos import write_todos, read_todos
-from tools.meta import think_tool, replan_action
+from tools.meta import think_tool
 from tools.data import extract_structured_data
 
 # -------------------------------------------------------------
@@ -49,7 +49,6 @@ __all__ = [
     "write_todos",
     "read_todos",
     "think_tool",
-    "replan_action",
     "verify_url_live",
     "extract_structured_data",
     # TUI helpers (not agent tools)
