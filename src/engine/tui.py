@@ -1829,6 +1829,7 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
     sys.stdout.write(f"\n\033[1mStarting task:\033[0m {prompt[:100]}...\n\n")
     start_time = datetime.now()
 
+    run_state = None
     try:
         from agent_framework import Message
         current_input = _apply_cache_note(prompt, prompt)
@@ -1836,6 +1837,11 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
         run_state = RunState(_current_run_dir(run_dir_name))
         run_state.set_query(prompt)
         run_state_token = run_state_ctx.set(run_state)
+        # Written immediately (not only at the first completion check / clean run end) so a crash
+        # or power loss mid-research still leaves a forensic _run_state.json behind — confirmed
+        # live 2026-07-11: a NIM 429 killed a run 10 minutes in and left 15 fetched files with no
+        # state record at all, making the run unscoreable.
+        run_state.save()
 
         while has_requests:
             has_requests = False
@@ -1906,6 +1912,14 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
         sys.stdout.write(f"\n\n\033[1mTask completed in {elapsed.total_seconds():.1f} seconds.\033[0m\n")
     except Exception as e:
         sys.stdout.write(f"\n\033[91mError:\033[0m {e}\n")
+        # A dead run must still leave its evidence behind and be detectable by exit code —
+        # previously this path skipped run_state.save()/_write_log() and exited 0, so automation
+        # couldn't tell a crashed run from a clean one (live case: the 2026-07-11 NIM 429 crash).
+        if run_state is not None:
+            run_state.sync_fetched_urls()
+            run_state.save()
+        _write_log()
+        sys.exit(1)
     finally:
         tool_quotas_ctx.reset(quota_token)
         if run_state_token is not None:

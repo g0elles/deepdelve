@@ -51,19 +51,44 @@ def main():
 
     # --- search-health counter (persists into _run_state.json via RunState) ---
     import contextvars
+    import json
+    import tempfile
     from utils.run_state import RunState, run_state_ctx, record_search_health, get_search_health
 
-    def _health_scenario():
-        rs = RunState.__new__(RunState)
-        rs.data = {}
-        run_state_ctx.set(rs)
-        record_search_health(ok=True)
-        record_search_health(ok=False)
-        record_search_health(ok=False)
-        assert get_search_health() == {"calls": 3, "failures": 2}, get_search_health()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        def _health_scenario():
+            rs = RunState(tmpdir)
+            rs.set_query("q")
+            run_state_ctx.set(rs)
+            record_search_health(ok=True)
+            record_search_health(ok=False)
+            record_search_health(ok=False)
+            assert get_search_health() == {"calls": 3, "failures": 2}, get_search_health()
+            # A fetch mid-run persists state immediately (crash forensics), atomically (no .tmp left)
+            record_fetched_url("https://real.example.com/page", filename="real_page.md")
 
-    contextvars.copy_context().run(_health_scenario)  # isolated so the ctx var doesn't leak
-    assert get_search_health() == {"calls": 0, "failures": 0}  # no run state -> zeros, no crash
+        contextvars.copy_context().run(_health_scenario)  # isolated so the ctx var doesn't leak
+        assert get_search_health() == {"calls": 0, "failures": 0}  # no run state -> zeros, no crash
+
+        state_path = os.path.join(tmpdir, "_run_state.json")
+        assert os.path.exists(state_path), "state not persisted before run end"
+        assert not os.path.exists(state_path + ".tmp"), "atomic-write temp file left behind"
+        with open(state_path, encoding="utf-8") as f:
+            persisted = json.load(f)
+        assert persisted["search_health"] == {"calls": 3, "failures": 2}, persisted
+        assert persisted["fetched_urls"][0]["url"] == "https://real.example.com/page", persisted
+    reset_fetched_urls()
+
+    # --- exclusion gate must not fire on a task's own restated exclusion clause ---
+    # (live case 2026-07-11: a discovery task quoting "Exclude fintech, last-mile delivery..."
+    # was skipped twice, burning delegate_tasks quota and turns)
+    from engine.orchestrator import _EXCLUSION_CUE_RE
+    excluded = _extract_excluded_topics("Find niches. Exclude fintech, last-mile delivery and legaltech.")
+    assert "fintech" in excluded, excluded
+    restated = _EXCLUSION_CUE_RE.sub(" ", "discover regulated niches in colombia. exclude fintech, last-mile delivery and legaltech.")
+    assert not any(t in restated for t in excluded), restated
+    on_topic = _EXCLUSION_CUE_RE.sub(" ", "research fintech opportunities for gig workers in colombia")
+    assert any(t in on_topic for t in excluded), on_topic
 
     print("All structural-check assertions passed.")
 
