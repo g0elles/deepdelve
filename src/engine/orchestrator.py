@@ -280,9 +280,10 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                     problem = await real_grounding_problem(final_text)
                     if problem and problem != "no_urls":
                         final_text += (
-                            f"\n\n[SYSTEM VERIFICATION WARNING: this summary cites a source that "
-                            f"does not match anything actually fetched this run ({problem}). Do not "
-                            f"treat the associated claim as sourced when writing findings.md.]"
+                            f"\n\n[SYSTEM VERIFICATION WARNING: this summary attributes a claim to "
+                            f"a source that does not match anything actually fetched this run, or to "
+                            f"something that isn't a real URL at all ({problem}). Do not treat the "
+                            f"associated claim as sourced when writing findings.md.]"
                         )
 
                     # Topical-relevance check: an instruction requiring "Colombia" is not the same
