@@ -1275,7 +1275,7 @@ class BasicTuiAgent(App):
 # both the TUI and headless paths.
 # =================================================================================
 
-MAX_COMPLETION_CHECK_ATTEMPTS = 3
+DEFAULT_MAX_COMPLETION_CHECK_ATTEMPTS = 3
 
 
 def _slugify_run_dir_name(query: str) -> str:
@@ -1443,6 +1443,15 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
     if not req_artifact:
         return False, current_input
 
+    # Configurable, not hardcoded — the fixed default of 3 was cutting runs off with real sources
+    # sitting unused in findings.md, well before hardware was anywhere near a real constraint
+    # (confirmed live: an 11-source run exhausted its budget at ~11% system memory usage while the
+    # model still hadn't complied with two explicit "add real citation links" nudges in a row).
+    # Raising this trades wall-clock time and tool-call quota for more chances to self-correct.
+    MAX_COMPLETION_CHECK_ATTEMPTS = config.cfg.get("settings", {}).get(
+        "max_completion_check_attempts", DEFAULT_MAX_COMPLETION_CHECK_ATTEMPTS
+    )
+
     attempt = run_state.attempt
 
     try:
@@ -1500,6 +1509,28 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                 f"SYSTEM WARNING: {last_chance_prefix}You are attempting to finish the task, but the required final artifact '{req_artifact}' is missing from the workspace. Writing your answer as a chat message does NOT complete the task.{forbid_redelegate} Call write_workspace_file(filename='{req_artifact}', content=...) right now, using whatever findings you already have — an imperfect report that exists beats a perfect one that doesn't."
         else:
             grounding_problem = await _real_grounding_problem(content or "")
+
+            # Structural signal for a real, confirmed failure mode: a model makes ONE
+            # delegate_tasks call early on (satisfying "you must delegate"), then — after a
+            # grounding-check rejection — just rewrites the SAME report from memory with different
+            # fake citations instead of ever delegating again, because the existing nudges all
+            # phrase the fix as "rewrite using what you have," which quietly assumes enough real
+            # findings already exist. Confirmed live: a 9-attempt run with fetched_url_count stuck
+            # at 2 the entire time, one delegate_tasks call total, ending in salvage. Detected here
+            # deterministically (no new fetches since the last completion check) rather than
+            # guessed from wording, and used below to make the redelegation instruction explicit
+            # instead of implicit.
+            prior_attempts = run_state.data.get("completion_check_attempts", [])
+            no_new_fetches = bool(prior_attempts) and prior_attempts[-1].get("fetched_url_count") == len(get_fetched_urls())
+            redelegate_directive = (
+                " You have NOT fetched any new sources since your last attempt — rewriting the "
+                "report with the same information will fail the exact same way again. Your ONLY "
+                "next tool call must be delegate_tasks, with real research tasks covering the "
+                "specific claims or sectors that don't have a grounded source yet. Do NOT call "
+                "write_workspace_file again until you have new, real findings to write from."
+                if no_new_fetches else ""
+            )
+
             if grounding_problem and grounding_problem.startswith("claim_unsupported"):
                 # Distinct from "not_grounded": the URL WAS actually fetched — the problem is that
                 # the report's claims don't appear to come from what that source actually says. The
@@ -1508,10 +1539,41 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                 problem, warning_msg, inject_msg = "claim_unsupported", \
                     f"`{req_artifact}` cites a source that was fetched, but the claims near it don't appear to come from that source's actual content ({grounding_problem}). Pushing agent to re-check.", \
                     f"SYSTEM WARNING: '{req_artifact}' cites at least one source that WAS actually fetched ({grounding_problem}), but the specific claims attributed to it don't share any checkable fact (number, name, or figure) with what that source actually contains. This looks like the source was cited without being read, or the claim was written from memory and a real citation was attached to it afterward. The previous draft has been moved aside. Before rewriting: delegate re-reading of that exact fetched file to an Analyzer if you haven't already, and only state what the Analyzer's findings actually say — do not keep the same claim and just hope the citation makes it look sourced."
+            elif grounding_problem == "no_urls":
+                # Distinct from "cited a URL that wasn't fetched": here there are no citations AT
+                # ALL, not a wrong one — the generic "cites at least one URL that does not match"
+                # message doesn't even make sense for this case, and a live test showed a model
+                # get this generic nudge 3 times in a row without ever adapting (it kept naming
+                # sources in prose without ever hyperlinking them). Escalates on repeat, same
+                # pattern as the not_delegated/missing_artifact escalations.
+                no_urls_count = run_state.data.get("no_urls_count", 0) + 1
+                run_state.data["no_urls_count"] = no_urls_count
+                escalation = ""
+                if no_urls_count >= 2:
+                    # Words alone didn't work the first time ("add real citation links" was
+                    # already said once) — handing back the exact URL list removes any excuse to
+                    # keep failing the same way. Confirmed live: a model that failed this same
+                    # check twice in a row, both times with real sources already sitting in its
+                    # own findings, never once copied one in on its own.
+                    real_urls = get_fetched_urls()
+                    url_list = "\n".join(f"- {u['url']}" for u in real_urls[:20]) or "(none fetched yet)"
+                    escalation = (
+                        f" This is the {no_urls_count}th time in a row you have written this report "
+                        f"with ZERO hyperlinked sources. Naming a source in prose (e.g. \"(World Bank, "
+                        f"2020)\") does NOT count as a citation. Here are the EXACT URLs actually "
+                        f"fetched this run — use these, copied verbatim, do not paraphrase or "
+                        f"invent your own:\n{url_list}\nEvery single claim must end with a real "
+                        f"markdown link `[Title](URL)` using one of the URLs above."
+                    )
+                is_last_chance = (attempt + 1) >= MAX_COMPLETION_CHECK_ATTEMPTS
+                last_chance_prefix = "THIS IS YOUR FINAL ATTEMPT. " if is_last_chance else ""
+                problem, warning_msg, inject_msg = "not_grounded", \
+                    f"`{req_artifact}` contains zero hyperlinked sources — no citations at all. Pushing agent to add real ones.", \
+                    f"SYSTEM WARNING: {last_chance_prefix}'{req_artifact}' does not contain a single `[Title](URL)` link anywhere — you named sources in prose but never actually cited them. The previous draft has been moved aside. Rewrite '{req_artifact}' using the exact format `- **[Title](URL)**` for every source, with real URLs your Searcher(s) actually returned in their findings.{escalation}{redelegate_directive}"
             elif grounding_problem:
                 problem, warning_msg, inject_msg = "not_grounded", \
                     f"`{req_artifact}` cites a URL that was never actually fetched this run ({grounding_problem}) — this looks ungrounded or hallucinated. Pushing agent to fix citations.", \
-                    f"SYSTEM WARNING: '{req_artifact}' cites at least one URL that does not match anything your Searcher(s) actually fetched this run ({grounding_problem}). This is a strong signal of a hallucinated source. The previous draft has been moved aside — write a fresh '{req_artifact}' using ONLY URLs your Searcher(s) actually returned in their findings. If you don't have a real source for a claim, delegate again and use exactly what comes back, not your own prior knowledge."
+                    f"SYSTEM WARNING: '{req_artifact}' cites at least one URL that does not match anything your Searcher(s) actually fetched this run ({grounding_problem}). This is a strong signal of a hallucinated source. The previous draft has been moved aside — write a fresh '{req_artifact}' using ONLY URLs your Searcher(s) actually returned in their findings. If you don't have a real source for a claim, delegate again and use exactly what comes back, not your own prior knowledge.{redelegate_directive}"
             else:
                 problem = None
 

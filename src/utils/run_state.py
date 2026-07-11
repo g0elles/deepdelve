@@ -21,6 +21,17 @@ from typing import Optional
 
 fetched_urls_ctx = contextvars.ContextVar('fetched_urls', default=None)
 
+# Per-task-scoped fetch tracking, separate from fetched_urls_ctx above. fetched_urls_ctx is one
+# list shared for the whole run (correct for the run-wide grounding check, which wants every URL
+# ever fetched). But engine/orchestrator.py's _run_single_task used to derive "URLs fetched by
+# THIS task" via a before/after length delta on that SAME shared list — which races under
+# concurrent delegate_tasks dispatch: confirmed live, a 3-task concurrent run produced 9 findings
+# entries (3 tasks x 3 URLs) instead of 3, because each task's "new since my snapshot" slice
+# picked up sibling tasks' fetches too, not just its own. task_fetched_urls_ctx.set([]) at the
+# start of _run_single_task gives each task (each a separate asyncio Task, so each gets its own
+# copied context) a genuinely independent list to append to — no shared-list race.
+task_fetched_urls_ctx = contextvars.ContextVar('task_fetched_urls_ctx', default=None)
+
 # Exposes the current run's RunState to orchestrator.py's _run_single_task, which lives in a
 # different module and previously had no way to record specialist findings into the structured
 # store — the reason RunState.add_finding() existed but was dead code until this wiring.
@@ -32,11 +43,17 @@ def reset_fetched_urls() -> None:
 
 
 def record_fetched_url(url: str, filename: str) -> None:
+    entry = {"url": url, "filename": filename, "timestamp": time.time()}
+
     lst = fetched_urls_ctx.get()
     if lst is None:
         lst = []
         fetched_urls_ctx.set(lst)
-    lst.append({"url": url, "filename": filename, "timestamp": time.time()})
+    lst.append(entry)
+
+    task_lst = task_fetched_urls_ctx.get()
+    if task_lst is not None:
+        task_lst.append(entry)
 
 
 def get_fetched_urls() -> list[dict]:
