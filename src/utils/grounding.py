@@ -130,6 +130,25 @@ def claim_grounding_problem(report: str) -> str | None:
     return f"claim_unsupported:{', '.join(unsupported[:3])}"
 
 
+def fully_ungrounded(content: str) -> str | None:
+    """Wholesale-fabrication gate for findings.md (Pass 1): 'no_urls' if it cites nothing at all,
+    'all_cited_urls_unverified' if not a single cited URL matches anything actually fetched this
+    run; None if at least one citation is real. Deliberately laxer than real_grounding_problem —
+    Pass-1 notes legitimately mention extra search-snippet URLs a Searcher never fetched, and the
+    final report (which may only cite URLs already in findings.md) still gets the strict per-URL
+    check. This only has to catch the confirmed live failure: a Planner that abandons delegation
+    and fabricates the ENTIRE Pass-1 file from memory, which Pass 2 then treats as ground truth."""
+    cited = extract_cited_urls(content)
+    if not cited:
+        return "no_urls"
+    fetched = {entry["url"].rstrip('/') for entry in get_fetched_urls()}
+    for u in cited:
+        key = u.rstrip('/')
+        if key in fetched or any(key.startswith(f) or f.startswith(key) for f in fetched):
+            return None
+    return "all_cited_urls_unverified"
+
+
 async def real_grounding_problem(content: str) -> str | None:
     """Cross-references every URL cited in `content` against URLs the engine actually saw
     fetch_url_to_workspace fetch this run. A URL not in that verified set is ALWAYS a grounding
