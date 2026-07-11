@@ -19,7 +19,11 @@ dependencies = [
     "pyfiglet",
     "ddgs",
     "markitdown[all]",
-    "textual-serve"
+    "textual-serve",
+    # Imported directly in engine/sdk.py (SubAgentConfig/AgentBuilder). Currently only installed
+    # transitively via agent-framework, which is fragile — declare it explicitly so this doesn't
+    # silently break if agent-framework ever drops or reshuffles its own pydantic dependency.
+    "pydantic"
 ]
 
 [project.scripts]

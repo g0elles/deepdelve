@@ -63,6 +63,13 @@ settings:
   # to the existing --auto-approve flag). Lets you review/reject the research plan before quota is
   # spent on delegate_tasks, reusing the same tool-approval machinery as settings.permissions.
   human_in_the_loop: false
+  # Per-tool approval gate (engine/orchestrator.py::apply_tool_permissions). remove_workspace_file's
+  # own docstring calls it "a destructive action that mandates human oversight" — that claim is only
+  # actually true if it's listed here. No agent currently has this tool wired in (see app.py), but
+  # it's in the shared WORKSPACE_TOOLS/tools/__init__.py export list for future use, so the default
+  # config gates it now rather than leaving a documented-but-unenforced safety guarantee.
+  permissions:
+    remove_workspace_file: require_approval
   enable_conversational_memory: true
   enable_session_persistence: true
   workspace:
