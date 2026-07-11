@@ -90,6 +90,18 @@ def main():
     on_topic = _EXCLUSION_CUE_RE.sub(" ", "research fintech opportunities for gig workers in colombia")
     assert any(t in on_topic for t in excluded), on_topic
 
+    # --- bare-origin fetch must not prefix-ground fabricated deep links ---
+    # (live case 2026-07-11, qwen3.6: fetching mercadolibre.com's root waved a fully fabricated
+    # findings.md through fully_ungrounded via one reconstructed deep URL on that domain)
+    record_fetched_url("https://www.mercadolibre.com/", filename="root.md")
+    assert fully_ungrounded(
+        "- claim (https://www.mercadolibre.com/mercado-software-b2b-colombia-2025-tamano-inversion/)"
+    ) == "all_cited_urls_unverified"
+    # A real deep-URL fetch still prefix-grounds its variants (query string, stripped chars).
+    record_fetched_url("https://example.com/report/2026", filename="r.md")
+    assert fully_ungrounded("- claim (https://example.com/report/2026?utm_source=x)") is None
+    reset_fetched_urls()
+
     print("All structural-check assertions passed.")
 
 
