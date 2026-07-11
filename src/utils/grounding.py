@@ -52,7 +52,17 @@ def split_prose_from_sources(report: str) -> str:
     return report[:m.start()] if m else (report or "")
 
 
-_SOURCE_LABEL_RE = re.compile(r'\bSource:?\b', re.IGNORECASE)
+# Line-anchored citation-label shape ("Source: ..." / "- **Fuentes:** ..."), NOT any line merely
+# containing the word "source" — confirmed live (2026-07-11 Colombia benchmark, qwen3.6): a
+# heading "## Methodology & Source Quality Notes" and the prose "No claims were made without
+# source attribution" were flagged as pseudo-citations on the FINAL attempt, quarantining a
+# well-grounded 6-niche report that then could never be rewritten. The colon is required; a
+# mid-line "(Source: X)" is now missed, which the parenthetical (Org, Year) regex below and the
+# URL-presence gate still largely cover — conservative beats report-destroying.
+# Trailing [^\s*_] requires real content (not markdown decoration) after the colon, so a bare
+# "**Sources:**" section header (URLs on the FOLLOWING lines, which the http-skip exempts
+# individually) isn't flagged.
+_SOURCE_LABEL_RE = re.compile(r'^[\s>*_\-#]*(?:sources?|fuentes?)\s*:[\s*_]*[^\s*_]', re.IGNORECASE)
 # A bare "(Org Name, 2020)"-style attribution — e.g. "(DANE, 2020)", "(Ministry of Environment,
 # 2021)", "(World Bank, 2020)". Requires a real 4-digit 19xx/20xx year so it doesn't false-positive
 # on something like "(Figure 2)"; deliberately does NOT match markdown link syntax (`[Title](url)`

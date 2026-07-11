@@ -7,7 +7,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 
 from engine.orchestrator import _extract_excluded_topics, _lacks_concrete_subject
-from utils.grounding import fully_ungrounded
+from utils.grounding import find_non_url_citations, fully_ungrounded
 from utils.run_state import record_fetched_url, reset_fetched_urls
 
 
@@ -40,6 +40,14 @@ def main():
         "- claim (https://real.example.com/page)\n- extra (https://never-fetched.example.com/y)"
     ) is None
     reset_fetched_urls()
+
+    # --- non-URL citation label: pseudo-citations flagged, prose/headers not ---
+    # (live case 2026-07-11: a heading with the word "Source" quarantined a grounded report)
+    assert find_non_url_citations("Source: Expert opinion from a facility manager in Colombia")
+    assert find_non_url_citations("- **Fuente:** Ministerio de Salud, informe interno")
+    assert not find_non_url_citations("## Methodology & Source Quality Notes")
+    assert not find_non_url_citations("No claims were made without source attribution.")
+    assert not find_non_url_citations("**Sources:**\n- **[Title](https://x.org/a)**")
 
     print("All structural-check assertions passed.")
 
