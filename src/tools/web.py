@@ -250,42 +250,39 @@ async def web_search(
             text = re.sub(r'%3[CEce][^%\s]{10,}', '', text)
             return re.sub(r'\s+', ' ', text).strip()
 
-        provider = app_config.cfg.get("settings", {}).get("search_provider", "duckduckgo")
         results = []
 
-        if provider == "duckduckgo" or provider not in ("duckduckgo", "tavily"):
-            # Default/fallback: DuckDuckGo (free, no API key required). A fresh, short-lived
-            # client per call rather than a shared singleton — concurrent specialists search in
-            # parallel via asyncio.gather (see engine/orchestrator.py's delegate_tasks), and the
-            # duckduckgo_search/ddgs library is not documented as safe for concurrent calls on one
-            # shared client instance. DDGS() itself is lightweight to construct.
-            from ddgs import DDGS
-            client = DDGS()
-            # ddgs 9.x is a metasearcher over 10+ engines (google, bing, brave, yahoo, startpage,
-            # mojeek, ...) — "auto" rotates/falls back across them instead of pinning every call
-            # to DuckDuckGo. Confirmed live (2026-07-11): DDG throttling after a search-heavy day
-            # made two models' runs fail in ways that looked like model fabrication. A comma list
-            # (e.g. "google,brave,duckduckgo") pins specific engines in order.
-            backend = app_config.cfg.get("settings", {}).get("search_backend", "auto")
+        # ddgs (free, no API key required) is the only provider — the old search_provider config
+        # key had a dead "tavily" branch that silently returned zero results and recorded every
+        # search as a health failure. A fresh, short-lived client per call rather than a shared
+        # singleton — concurrent specialists search in parallel via asyncio.gather (see
+        # engine/orchestrator.py's delegate_tasks), and the duckduckgo_search/ddgs library is not
+        # documented as safe for concurrent calls on one shared client instance. DDGS() itself is
+        # lightweight to construct.
+        client = DDGS()
+        # ddgs 9.x is a metasearcher over 10+ engines (google, bing, brave, yahoo, startpage,
+        # mojeek, ...) — "auto" rotates/falls back across them instead of pinning every call
+        # to DuckDuckGo. Confirmed live (2026-07-11): DDG throttling after a search-heavy day
+        # made two models' runs fail in ways that looked like model fabrication. A comma list
+        # (e.g. "google,brave,duckduckgo") pins specific engines in order.
+        backend = app_config.cfg.get("settings", {}).get("search_backend", "auto")
 
-            if topic == "news":
-                search_results = client.news(query, max_results=max_results, backend=backend)
-                for result in search_results:
-                    results.append({
-                        "url": result.get("url", ""),
-                        "title": result.get("title", ""),
-                        "snippet": _sanitize_snippet(result.get("body", "No snippet available")),
-                    })
-            else:
-                search_results = client.text(query, max_results=max_results, backend=backend)
-                for result in search_results:
-                    results.append({
-                        "url": result.get("href", ""),
-                        "title": result.get("title", ""),
-                        "snippet": _sanitize_snippet(result.get("body", "No snippet available")),
-                    })
-        elif provider == "tavily":
-            pass  # Removed Tavily placeholder to avoid undefined get_tavily_client() error in scaffold
+        if topic == "news":
+            search_results = client.news(query, max_results=max_results, backend=backend)
+            for result in search_results:
+                results.append({
+                    "url": result.get("url", ""),
+                    "title": result.get("title", ""),
+                    "snippet": _sanitize_snippet(result.get("body", "No snippet available")),
+                })
+        else:
+            search_results = client.text(query, max_results=max_results, backend=backend)
+            for result in search_results:
+                results.append({
+                    "url": result.get("href", ""),
+                    "title": result.get("title", ""),
+                    "snippet": _sanitize_snippet(result.get("body", "No snippet available")),
+                })
 
         return results
 

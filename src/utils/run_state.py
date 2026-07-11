@@ -1,6 +1,8 @@
 import contextvars
 import json
 import os
+import sys
+import threading
 import time
 from typing import Optional
 
@@ -55,6 +57,14 @@ def record_fetched_url(url: str, filename: str) -> None:
     if task_lst is not None:
         task_lst.append(entry)
 
+    # Persist immediately: fetched_urls is the grounding check's source of truth, and a run can
+    # die (crash, rate limit, power loss) long before the first completion-check save. ≤ the
+    # fetch quota (~30) tiny JSON writes per run.
+    rs = run_state_ctx.get()
+    if rs is not None:
+        rs.sync_fetched_urls()
+        rs.save()
+
 
 def get_fetched_urls() -> list[dict]:
     return fetched_urls_ctx.get() or []
@@ -72,6 +82,10 @@ def record_search_health(ok: bool) -> None:
     health["calls"] += 1
     if not ok:
         health["failures"] += 1
+    # Persisted per call: a throttled run makes many failed searches and zero fetches, so the
+    # fetch-driven save above never fires — the environmental-failure signal must not be lost
+    # if the run dies before its first completion check.
+    rs.save()
 
 
 def get_search_health() -> dict:
@@ -86,6 +100,9 @@ class RunState:
 
     def __init__(self, run_dir: str):
         self.run_dir = run_dir
+        # save() is called from worker threads too (record_fetched_url runs inside
+        # asyncio.to_thread for web_search's auto-fetch) — serialize writers.
+        self._lock = threading.Lock()
         # Completion-check attempt counter lives on the instance, not a module-level dict keyed
         # by id(run_state) — id() can be reused after garbage collection between runs, which would
         # let a stale attempt count leak into an unrelated later run.
@@ -123,7 +140,14 @@ class RunState:
         try:
             os.makedirs(self.run_dir, exist_ok=True)
             path = os.path.join(self.run_dir, "_run_state.json")
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(self.data, f, indent=2)
-        except Exception:
-            pass
+            with self._lock:
+                # Write-then-rename so a crash mid-write can't leave a truncated/corrupt file
+                # (os.replace is atomic on Windows and POSIX).
+                tmp = path + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(self.data, f, indent=2)
+                os.replace(tmp, path)
+        except Exception as e:
+            # Never crash the run over its own bookkeeping, but never lose the failure silently
+            # either — this file is the forensic record the whole scoring methodology relies on.
+            print(f"[run_state] WARNING: failed to write _run_state.json: {e}", file=sys.stderr)

@@ -519,6 +519,13 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
             instr = t.get("instructions")
             aid = t.get("agent_id", None)
             task_text = f"{name} {instr}".lower()
+            # A task may legitimately restate the query's own exclusions ("... exclude fintech,
+            # last-mile delivery ..."), which would substring-match every excluded topic and skip
+            # a perfectly in-scope task — confirmed live 2026-07-11: a Planner's discovery task was
+            # rejected twice for quoting the exclusion list, burning delegate_tasks quota and turns.
+            # Strip exclusion clauses from the task's text before matching, so the gate only fires
+            # when an excluded topic is the task's actual subject.
+            task_text = _EXCLUSION_CUE_RE.sub(" ", task_text)
             hit = next((topic for topic in excluded_topics if topic in task_text), None)
             if hit:
                 skipped.append(
