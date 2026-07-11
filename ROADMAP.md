@@ -45,9 +45,18 @@ Status as of 2026-07-10.
 
 ## Planned (not started)
 
+- **Documentation update pass** — README/config docs lag the 2026-07-11 changes: caches +
+  wiki_index + replan_action + `--web` mode were deleted, fetched files moved to `sources/` with
+  `Source-URL:` first-line provenance, new failure semantics (exit 1 + always-present
+  `_run_state.json`, pre-run search health probe, malformed-tool-call retries, search quota
+  refunds, query-level scope warnings). Also fold the model verdicts into README "Model choice"
+  (gpt-oss default at 7/10 best; qwen3.6 fails at research scale; NIM free tier incompatible).
+- **findings.md-before-final_report gate** — run 10's live failure: Planner skipped Pass 1, then
+  wrote an empty report claiming "nothing was retrieved" with 29 fetched files in the workspace;
+  4 nudges couldn't recover it. Require the findings artifact to exist before final_report.md is
+  accepted, so the two-pass discipline is structural instead of prompt-level.
 - **Address the grounding check's topical-relevance gap** — some form of "is this source actually about the claimed subject," not just "was it fetched and does it share terms." Unclear whether this needs an LLM judge (this local model class has proven unreliable as its own judge elsewhere in this project) or a cheaper heuristic.
 - **Headless-browser fetch fallback** for JS-gated pages that return bot-challenge stubs to a plain HTTP GET.
-- **Thread-safe session-log refactor** — investigated, not implemented: `--web` mode spawns a subprocess per client (`textual_serve.Server`), so there's no actual cross-user state leak to fix. Only worth doing as hygiene, not a bug fix.
 
 ## Stretch
 
