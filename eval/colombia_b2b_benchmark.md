@@ -40,6 +40,18 @@ capacidad de pago, al menos un competidor existente, y una cifra de tamaño de m
 exportaciones. Cada afirmación debe citar la URL real de la fuente que consultaste.
 ```
 
+## Benchmark hygiene (learned the hard way, 2026-07-11)
+
+- **Disable `knowledge_cache` and `experience_cache` and delete their JSON files before each
+  round.** Any model's PASSING run saves its answer to the cache; every later model then gets a
+  "previously-verified answer exists, write it as-is" note and produces a derivative report —
+  confirmed live: a qwen run reproduced a gpt-oss report almost verbatim (same niches, same
+  figures, same sources) while looking like independent research.
+- **Space rounds out or verify `search_health` in `_run_state.json`** — provider throttling after
+  a search-heavy day makes failures look like model fabrication. With `search_backend: auto`
+  (engine rotation) this is largely mitigated but still worth checking per run.
+- **Run models sequentially, never concurrently** — they share search egress and (locally) GPU.
+
 ## Scoring rubric (manual, against the gold reference)
 
 Score each tier 0–2 (0 = fail, 1 = partial, 2 = pass). Max 10.
