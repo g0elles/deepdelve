@@ -36,7 +36,7 @@ Tool access is withheld from each parent so it's structurally forced to delegate
 
 The full history (with live-test evidence for each) is in `ROADMAP.md`. The headline ones:
 
-- **Real grounding check**: cross-references every cited URL against URLs actually fetched this run (`utils/grounding.py`), not a substring check. A second, content-level layer flags a citation whose source shares zero checkable facts with the claim next to it. Runs both on the final report and on each specialist's summary before it reaches the Planner.
+- **Real grounding check**: cross-references every cited URL against URLs actually fetched this run (`utils/grounding.py`), not a substring check. A second, content-level layer flags a citation whose source shares zero checkable facts with the claim next to it. A third layer catches a claim attributed to something that isn't a URL at all (a bare `(DANE, 2020)` parenthetical, a `Source: <prose>` line) — unverifiable in exactly the same way a fabricated URL is, but invisible to a check that only looks for `https?://`. Runs both on the final report and on each specialist's summary before it reaches the Planner.
 - **`web_search` auto-fetches its top result's full content** — there's no snippet-only path left for a model to stop at (`settings.web_search.auto_fetch_top`), which was the single biggest lever on real answer quality.
 - **Per-attempt quota top-up, artifact quarantine before nudging, and history-scanning salvage** for a narrated-but-never-written report — all structural fixes, not prompt tuning, for failure modes that prompt tuning alone didn't resolve in testing.
 - **`RunState`** (`utils/run_state.py`) persists fetched URLs, findings, and completion-check attempts per run as `_run_state.json`, independent of the model's own narration.
@@ -120,7 +120,7 @@ python src/app.py --prompt "..." --auto-approve          # headless
 ## Config highlights (`config_template.yaml`)
 
 - `settings.quotas` / `settings.retry_quota_topup` — global, cumulative-across-all-agents tool-call budgets, with extra headroom on a completion-check retry.
-- `settings.grounding_check` — `content_level_check`, `verify_specialist_output`, `live_http_verify`.
+- `settings.grounding_check` — `content_level_check`, `non_url_citation_check`, `verify_specialist_output`, `live_http_verify`.
 - `settings.knowledge_cache` / `settings.experience_cache` — persist verified `{question -> answer}` pairs and successful `{query_shape -> plan}` pairs across runs, deterministically (not agent tools the model has to remember to call).
 - `settings.workspace.wiki_index` — maintain a persistent cross-run `index.md` at the workspace root.
 - `settings.search_mode: heavy` — search deeper and auto-fetch more top results per call.

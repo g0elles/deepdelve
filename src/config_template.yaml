@@ -97,6 +97,13 @@ settings:
     # call (see engine/tui.py::_claim_grounding_problem). Deliberately conservative (zero-overlap
     # only) to keep false positives rare — set false to disable if it proves too noisy in practice.
     content_level_check: true
+    # Catches a claim attributed to something that isn't a URL at all — a bare "(DANE, 2020)"
+    # parenthetical or a "Source: <prose>" line — which extract_cited_urls never sees since it only
+    # recognizes https?:// patterns. Confirmed live: a report can have real, fetched-and-verified
+    # URL citations for most claims while smuggling in an unverifiable non-URL attribution for
+    # others (see utils/grounding.py::find_non_url_citations). Set false to disable if a legitimate
+    # report style trips it too often.
+    non_url_citation_check: true
     # Runs the same URL-presence + content-level check on each Searcher specialist's summary
     # before it reaches the Planner, not just on the final report — catches a hallucinated
     # citation at the source instead of letting it poison findings.md first (see

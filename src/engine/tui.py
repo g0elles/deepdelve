@@ -1570,6 +1570,17 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                 problem, warning_msg, inject_msg = "not_grounded", \
                     f"`{req_artifact}` contains zero hyperlinked sources — no citations at all. Pushing agent to add real ones.", \
                     f"SYSTEM WARNING: {last_chance_prefix}'{req_artifact}' does not contain a single `[Title](URL)` link anywhere — you named sources in prose but never actually cited them. The previous draft has been moved aside. Rewrite '{req_artifact}' using the exact format `- **[Title](URL)**` for every source, with real URLs your Searcher(s) actually returned in their findings.{escalation}{redelegate_directive}"
+            elif grounding_problem and grounding_problem.startswith("non_url_citation"):
+                # Distinct from "no_urls": the report DOES have real hyperlinked citations
+                # elsewhere (that's why it reached this branch instead of "no_urls" above), but at
+                # least one OTHER claim is attributed to something that isn't a URL at all — a bare
+                # "(DANE, 2020)"-style parenthetical or a "Source: <prose>" line. This evades the
+                # URL-presence check entirely (extract_cited_urls never sees a non-URL attribution),
+                # so a report can look grounded overall while still smuggling in an unverifiable
+                # claim — confirmed live (SESSION_STATUS.md's tracked #1 open item at the time).
+                problem, warning_msg, inject_msg = "non_url_citation", \
+                    f"`{req_artifact}` attributes at least one claim to something that isn't a real URL ({grounding_problem}) — pushing agent to fix it.", \
+                    f"SYSTEM WARNING: '{req_artifact}' attributes at least one claim to a non-URL citation ({grounding_problem}) — e.g. a bare parenthetical like \"(DANE, 2020)\" or a \"Source: <description>\" line with no link. This is exactly as unverifiable as a fabricated URL — there is nothing to check it against. The previous draft has been moved aside. Every single claim must end with a real, hyperlinked `[Title](URL)` using a URL your Searcher(s) actually returned this run. If you don't have a real fetched URL for a specific claim, either delegate to get one or remove the claim entirely — do not attribute it to an organization name, a year, or a vague description instead.{redelegate_directive}"
             elif grounding_problem:
                 problem, warning_msg, inject_msg = "not_grounded", \
                     f"`{req_artifact}` cites a URL that was never actually fetched this run ({grounding_problem}) — this looks ungrounded or hallucinated. Pushing agent to fix citations.", \
@@ -1585,7 +1596,7 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
 
             notify(f"**System ({attempt + 1}/{MAX_COMPLETION_CHECK_ATTEMPTS}):** {warning_msg}")
 
-            if problem in ("not_grounded", "claim_unsupported"):
+            if problem in ("not_grounded", "claim_unsupported", "non_url_citation"):
                 _quarantine_artifact(req_artifact, attempt + 1)
 
             # Per-attempt quota top-up: without this, a retry shares the same already-exhausted

@@ -49,6 +49,52 @@ def split_prose_from_sources(report: str) -> str:
     return report[:m.start()] if m else (report or "")
 
 
+_SOURCE_LABEL_RE = re.compile(r'\bSource:?\b', re.IGNORECASE)
+# A bare "(Org Name, 2020)"-style attribution — e.g. "(DANE, 2020)", "(Ministry of Environment,
+# 2021)", "(World Bank, 2020)". Requires a real 4-digit 19xx/20xx year so it doesn't false-positive
+# on something like "(Figure 2)"; deliberately does NOT match markdown link syntax (`[Title](url)`
+# uses brackets for the title, not parens, and a URL never starts with a capital letter followed by
+# more word characters and a comma).
+_PARENTHETICAL_CITATION_RE = re.compile(r'\((?:[A-Z][\w.&\'-]*\s?){1,6},\s*(?:19|20)\d{2}\)')
+
+
+def find_non_url_citations(text: str) -> list[str]:
+    """Find claim-supporting attributions that aren't a real URL at all — a bare parenthetical
+    like `(DANE, 2020)` or a `Source: Expert opinion from...` line — and so evade
+    extract_cited_urls entirely, since it only recognizes `https?://` patterns. Confirmed live
+    (ROADMAP.md "Findings from live testing", SESSION_STATUS.md's tracked #1 open item): a report
+    can have real, correctly-fetched URL citations for MOST claims while still smuggling in an
+    unverifiable non-URL attribution for others (e.g. "Expert opinion from a cold storage facility
+    manager in Colombia") — the URL-presence gate in real_grounding_problem only runs when there's
+    at least one non-URL-shaped citation to check in the first place, so a report that already has
+    some real URLs elsewhere never even reaches a check for this.
+
+    Line-scoped, not whole-report: this project's own required report format keeps a claim and its
+    citation on one line (`- **[Title](URL)**`), so if a URL appears ANYWHERE on the same line as a
+    "Source" label or a parenthetical org/year, it's treated as satisfied rather than flagging a
+    real citation on the same line just because a separate unrelated pseudo-citation exists
+    elsewhere in the report — keeps this conservative, matching claim_grounding_problem's own
+    "keep false positives rare" design.
+    """
+    if not text:
+        return []
+    hits = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if "http" in line:
+            continue
+        # Skip the engine's own injected nudges (e.g. "[SYSTEM RELEVANCE WARNING: ... source ...]")
+        # — confirmed live, a salvaged report can carry one of these across a turn boundary (see
+        # _find_last_substantial_text), and its own use of the word "source" inside a warning ABOUT
+        # sourcing would otherwise get misread as the model's own pseudo-citation.
+        if stripped.startswith("[SYSTEM"):
+            continue
+        m = _SOURCE_LABEL_RE.search(line) or _PARENTHETICAL_CITATION_RE.search(line)
+        if m:
+            hits.append(line.strip()[:120])
+    return hits
+
+
 def claim_grounding_problem(report: str) -> str | None:
     """Content-level check beyond URL-presence: for a citation that WAS actually fetched, does its
     content share any checkable fact (number, version, proper noun) with what the report claims?
@@ -107,6 +153,11 @@ async def real_grounding_problem(content: str) -> str | None:
             if dead:
                 detail += f" (also unreachable: {', '.join(dead[:3])})"
         return detail
+
+    if gc_cfg.get("non_url_citation_check", True):
+        non_url = find_non_url_citations(content)
+        if non_url:
+            return f"non_url_citation:{'; '.join(non_url[:3])}"
 
     if gc_cfg.get("content_level_check", True):
         return claim_grounding_problem(content)
