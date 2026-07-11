@@ -195,6 +195,27 @@ def _save_fetched(urls_fetched: list[str], filename: str, data, convert_to_md: b
         return f"Fetched URL successfully to '{filename}' in memory."
 
 
+def probe_search_health(retry_delay: float = 3.0) -> str | None:
+    """One trivial search before a headless run starts — a throttled or blocked search layer
+    turns a 20-minute unattended run into garbage that looks like model failure (confirmed live
+    2026-07-11: 13/30 searches failed in one end-of-day run). Returns None when healthy, else a
+    short error description so the caller can abort in seconds instead. Deliberately lean: no
+    tool quota, no workspace writes, one retry."""
+    from ddgs import DDGS
+    import time
+    last = None
+    for attempt in (1, 2):
+        try:
+            if DDGS().text("wikipedia", max_results=1):
+                return None
+            last = "search returned zero results (provider throttling usually presents this way)"
+        except Exception as e:
+            last = str(e)
+        if attempt == 1:
+            time.sleep(retry_delay)
+    return last
+
+
 def _scope_warning(query: str) -> str:
     """Soft warning when a search query drops the delegated task's own scope entity (e.g. a
     Colombia-scoped task searching "predictive maintenance offshore wind turbine" — confirmed

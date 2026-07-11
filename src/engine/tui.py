@@ -1785,6 +1785,24 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
         # live 2026-07-11: a NIM 429 killed a run 10 minutes in and left 15 fetched files with no
         # state record at all, making the run unscoreable.
         run_state.save()
+
+        # Pre-run search health probe (headless only — an unattended run can't notice a sick
+        # search layer until 20 wasted minutes later; a TUI user sees failures live). Aborting
+        # here costs ~5 seconds and leaves an explicit environmental verdict instead of a
+        # doomed run that looks like model failure.
+        from tools.web import probe_search_health
+        from utils.run_state import record_search_health
+        probe_err = await asyncio.to_thread(probe_search_health)
+        if probe_err:
+            record_search_health(ok=False)
+            sys.stdout.write(
+                f"\n\033[91m[System] ENVIRONMENT UNHEALTHY — aborting before research starts: "
+                f"the search layer failed a trivial probe ({probe_err}). This is not a model "
+                f"problem; re-run when search egress recovers.\033[0m\n"
+            )
+            _write_log()
+            sys.exit(1)
+
         malformed_retries = 0
 
         while has_requests:
