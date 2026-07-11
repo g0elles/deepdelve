@@ -28,6 +28,12 @@ settings:
   # search, for queries where thoroughness matters more than tool-call/token economy. Costs more
   # fetch_url_to_workspace quota per call; raise that quota if you enable this.
   search_mode: light
+  # Search engine(s) for web_search. "auto" lets the ddgs metasearcher rotate/fall back across
+  # its 10+ engines (google, bing, brave, yahoo, startpage, mojeek, duckduckgo, ...) — a single
+  # pinned provider is a single point of failure: DDG throttling after a search-heavy day made
+  # whole runs fail in ways that looked like model fabrication (see search_health in
+  # _run_state.json). A comma list pins specific engines in order, e.g. "google,brave,duckduckgo".
+  search_backend: auto
   quotas:
     # Quotas are GLOBAL — shared cumulatively across the Planner and every dispatched specialist
     # (WebSearcher, AcademicSearcher, DocumentAnalyzer, DataAnalyzer). Each key becomes a prompt
