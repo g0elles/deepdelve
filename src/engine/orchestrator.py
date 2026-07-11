@@ -139,10 +139,22 @@ def _get_default_options():
     return options
 
 def _build_client():
+    # Injected AsyncOpenAI so the SDK's own exponential backoff (which honors Retry-After) covers
+    # 429/5xx. Confirmed live 2026-07-11: NIM's free-tier rate limit 429-crashed an entire
+    # multi-agent run when the default 2 retries ran out — hosted endpoints throttle far below
+    # what concurrent sub-agents generate. api.max_retries in config.yaml overrides the default.
+    from openai import AsyncOpenAI
+    api_cfg = config.cfg["api"]
+    api_key = os.getenv("OPENAI_API_KEY", "dummy")
     return OpenAIChatCompletionClient(
-        base_url=config.cfg["api"]["openai_base_url"],
-        api_key=os.getenv("OPENAI_API_KEY", "dummy"),
-        model=config.cfg["api"]["openai_model"]
+        base_url=api_cfg["openai_base_url"],
+        api_key=api_key,
+        model=api_cfg["openai_model"],
+        async_client=AsyncOpenAI(
+            base_url=api_cfg["openai_base_url"],
+            api_key=api_key,
+            max_retries=api_cfg.get("max_retries", 6),
+        ),
     )
 
 
