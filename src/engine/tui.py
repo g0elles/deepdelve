@@ -155,6 +155,44 @@ class PromptInput(Input):
         super().__init__(*args, **kwargs)
         self._history: list[str] = []
         self._history_index: int = -1
+        self._last_paste_text: str | None = None
+        self._last_paste_time: float = 0.0
+
+    def _on_paste(self, event: events.Paste) -> None:
+        # Textual's base Input._on_paste does `event.text.splitlines()[0]` — it silently keeps
+        # only the FIRST line of a paste and discards the rest, with no error or truncation
+        # notice. Since this box is a single-line query input (not a multi-line editor), a
+        # multi-line paste is flattened into one line instead of losing everything after line 1.
+        #
+        # Debounce guard: some terminal/tmux paste paths deliver the same paste twice in quick
+        # succession, and the second delivery isn't always byte-identical — confirmed live, a
+        # large pasted prompt showed up with the FULL text followed by a truncated repeat of its
+        # own opening (i.e. the second delivery was a strict prefix of the first, not an exact
+        # duplicate — consistent with the terminal re-sending a paste that got interrupted
+        # mid-stream). insert_text_at_cursor is not idempotent, so a double-fire duplicates
+        # content instead of being a harmless no-op. Treat two pastes within 0.5s where one is a
+        # prefix of the other as the same event delivered twice, and skip the second.
+        if event.text:
+            import time
+            now = time.monotonic()
+            prev = self._last_paste_text
+            is_redelivery = (
+                prev is not None and (now - self._last_paste_time) < 0.5
+                and (event.text == prev or prev.startswith(event.text) or event.text.startswith(prev))
+            )
+            if is_redelivery:
+                event.stop()
+                return
+            self._last_paste_text = event.text
+            self._last_paste_time = now
+
+            text = " ".join(line.strip() for line in event.text.splitlines() if line.strip())
+            selection = self.selection
+            if selection.is_empty:
+                self.insert_text_at_cursor(text)
+            else:
+                self.replace(text, *selection)
+        event.stop()
 
     def on_key(self, event: events.Key) -> None:
         try:
