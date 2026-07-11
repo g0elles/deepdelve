@@ -19,7 +19,8 @@ import argparse
 from pathlib import Path
 import pyfiglet
 from tools import tool_quotas_ctx, WORKSPACE_TOOLS, get_workspace_files, get_workspace_file_content
-from utils.run_state import reset_fetched_urls, get_fetched_urls, record_fetched_url, RunState
+from tools.fs import _get_workspace_type, _get_workspace_dir
+from utils.run_state import reset_fetched_urls, get_fetched_urls, record_fetched_url, RunState, run_state_ctx
 
 AGENT_NAME = config.APP_TITLE
 AGENT_DESCRIPTION = config.APP_DESCRIPTION
@@ -287,6 +288,25 @@ class AgentMessageWidget(Static):
         self.text += new_text
         self.update(Markdown(f"**{self.author}:**\n{self.text}"))
 
+def _copy_to_system_clipboard(text: str) -> bool:
+    """Best-effort direct clipboard write via system tools (Wayland/X11), tried before falling
+    back to Textual's OSC52-based App.copy_to_clipboard(). OSC52 depends on the terminal emulator
+    (and any multiplexer in between) actually implementing the escape sequence — when it doesn't,
+    the write silently no-ops with no exception, so the UI can report success while nothing
+    actually reaches the clipboard. Returns True only if a real clipboard tool was found and ran
+    without error."""
+    import subprocess
+    import shutil
+    for cmd in (["wl-copy"], ["xclip", "-selection", "clipboard"]):
+        if shutil.which(cmd[0]):
+            try:
+                subprocess.run(cmd, input=text.encode("utf-8"), timeout=2, check=True)
+                return True
+            except Exception:
+                continue
+    return False
+
+
 class UserMessageWidget(Static):
     def __init__(self, query: str):
         super().__init__(Markdown(f"**User (Click to Copy):**\n{query}"), classes="user-bubble")
@@ -294,8 +314,15 @@ class UserMessageWidget(Static):
 
     def on_click(self) -> None:
         try:
-            self.app.copy_to_clipboard(self.query)
-            self.app.notify("Copied prompt to clipboard!")
+            if _copy_to_system_clipboard(self.query):
+                self.app.notify("Copied prompt to clipboard!")
+            else:
+                self.app.copy_to_clipboard(self.query)
+                self.app.notify(
+                    "Copied via terminal escape sequence (OSC52) — no xclip/wl-copy found. "
+                    "If it didn't actually land in your clipboard, install xclip (X11) or "
+                    "wl-clipboard (Wayland)."
+                )
         except Exception as e:
             self.app.notify(f"Copy failed: {e}", severity="error")
 
@@ -872,20 +899,21 @@ class BasicTuiAgent(App):
     async def run_agent(self, query: str):
         self._is_agent_running = True
 
-        # Session directory isolation: when enabled, ALL workspace file operations
-        # for this run are transparently mapped to a timestamped subfolder (e.g. run_1748192400/).
-        # Toggle via config.yaml: settings.workspace.session_isolation: true
+        # Session directory isolation: when enabled, ALL workspace file operations for this run
+        # are transparently mapped to a subfolder named from the query + timestamp (e.g.
+        # 'grasshopper_optimization_algorithm_20260710_192335/'), not a bare unix timestamp — see
+        # _slugify_run_dir_name. Toggle via config.yaml: settings.workspace.session_isolation: true
         session_token = None
         run_dir_name = None
         if config.cfg.get("settings", {}).get("workspace", {}).get("session_isolation", False):
-            import time
             from tools.fs import session_dir_ctx
-            run_dir_name = f"run_{int(time.time())}"
+            run_dir_name = _slugify_run_dir_name(query)
             session_token = session_dir_ctx.set(run_dir_name)
 
         # Initialize tool quotas from config
         quota_token = tool_quotas_ctx.set(build_quota_pool())
         reset_fetched_urls()
+        run_state_token = None
 
         chat = self.query_one("#chat-container", VerticalScroll)
         chat.mount(UserMessageWidget(query))
@@ -967,7 +995,7 @@ class BasicTuiAgent(App):
             state = {"calls": {}, "current_call_id": None, "current_msg": None}
             run_state = RunState(_current_run_dir(run_dir_name))
             run_state.set_query(query)
-
+            run_state_token = run_state_ctx.set(run_state)
             current_input = _apply_cache_note(query, current_input)
 
             while has_requests:
@@ -1088,6 +1116,8 @@ class BasicTuiAgent(App):
             run_state.save()
         finally:
             tool_quotas_ctx.reset(quota_token)
+            if run_state_token is not None:
+                run_state_ctx.reset(run_state_token)
             if session_token is not None:
                 from tools.fs import session_dir_ctx
                 session_dir_ctx.reset(session_token)
@@ -1210,6 +1240,17 @@ class BasicTuiAgent(App):
 MAX_COMPLETION_CHECK_ATTEMPTS = 3
 
 
+def _slugify_run_dir_name(query: str) -> str:
+    """Short, human-readable run folder name instead of a bare unix timestamp — e.g.
+    'grasshopper_optimization_algorithm_used_on_20260710_192335' instead of 'run_1783729333',
+    which gave no hint what a given run's output folder was actually about. Purely deterministic
+    from the query text already available at run start (no LLM call needed)."""
+    slug = re.sub(r'[^a-z0-9]+', '_', (query or "").lower()).strip('_')
+    slug = re.sub(r'_+', '_', slug)[:50].strip('_') or "query"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"{slug}_{timestamp}"
+
+
 def _current_run_dir(run_dir_name: str | None) -> str:
     base = config.cfg.get("settings", {}).get("workspace", {}).get("dir", ".")
     if run_dir_name:
@@ -1247,129 +1288,42 @@ def _apply_cache_note(query: str, current_input):
     return current_input
 
 
-def _extract_cited_urls(text: str) -> list[str]:
-    urls = re.findall(r'https?://[^\s\)\]\}"\'>]+', text or "")
-    return [u.rstrip('.,;:\'")]}') for u in urls]
+# Grounding-check logic (URL-presence gate + content-level claim gate) now lives in
+# utils/grounding.py, shared with engine/orchestrator.py's upstream per-specialist check — see that
+# module's header comment for why it isn't defined here.
+from utils.grounding import (
+    extract_cited_urls as _extract_cited_urls,
+    extract_salient_terms as _extract_salient_terms,
+    split_prose_from_sources as _split_prose_from_sources,
+    claim_grounding_problem as _claim_grounding_problem,
+    real_grounding_problem as _real_grounding_problem,
+)
 
 
-_PROPER_NOUN_STOPWORDS = {
-    "The", "A", "An", "This", "That", "These", "Those", "It", "In", "On", "At", "For", "With",
-    "Source", "Sources", "Reference", "References", "Final", "Report", "Summary", "Note", "System",
-}
-
-
-def _extract_salient_terms(text: str) -> set:
-    """Extract checkable, hard-to-coincidentally-reproduce tokens: numbers/versions/years/percentages,
-    and multi-word capitalized phrases (proper nouns/titles). Used by the content-level claim
-    grounding check below — deliberately cheap and deterministic rather than another LLM call, since
-    this local model class has already proven unreliable as a judge of its own output elsewhere in
-    this project."""
-    if not text:
-        return set()
-    terms = set(re.findall(r'\b\d+(?:\.\d+)+\b|\b\d{4}\b|\b\d+%\b', text))
-    for m in re.finditer(r'\b[A-Z][a-zA-Z0-9]*(?:\s+[A-Z][a-zA-Z0-9]*){1,4}\b', text):
-        phrase = m.group(0)
-        if phrase.split()[0] not in _PROPER_NOUN_STOPWORDS:
-            terms.add(phrase)
-    return terms
-
-
-def _split_prose_from_sources(report: str) -> str:
-    """Best-effort strip of a trailing Sources/References section, so the content-level check
-    compares against what the report actually CLAIMS rather than its own citation list (which
-    would trivially share terms like titles/URLs with itself)."""
-    m = re.search(r'^#{0,3}\s*(sources|references)\s*:?\s*$', report or "", re.IGNORECASE | re.MULTILINE)
-    return report[:m.start()] if m else (report or "")
-
-
-def _claim_grounding_problem(report: str) -> str | None:
-    """Content-level check beyond URL-presence (inspired by CYC2002tommy's SKILL.md claim-grounding
-    phase: "cross-reference the specific claims made in the draft against the raw data collected").
-    Only runs on URLs that already passed the fetch-presence check in _real_grounding_problem — this
-    is a second, deeper layer, not a replacement for it.
-
-    A cited source that was genuinely fetched but shares NOT ONE checkable term (number, version,
-    proper noun) with the report's own prose is a real signal the model name-dropped a real URL
-    without the report's claims actually coming from it. Deliberately conservative (zero overlap
-    only, not a similarity threshold) to keep false positives — which would burn a retry attempt on
-    an already-good report — rare; this errs toward under-triggering, not over-triggering."""
-    prose = _split_prose_from_sources(report)
-    report_terms = _extract_salient_terms(prose)
-    if not report_terms:
-        return None  # Nothing checkable (e.g. a very short factual answer) — don't manufacture a problem.
-
-    cited = _extract_cited_urls(report)
-    fetched_list = get_fetched_urls()
-    fetched = {entry["url"].rstrip('/'): entry["filename"] for entry in fetched_list}
-
-    unsupported = []
-    for u in cited:
-        key = u.rstrip('/')
-        filename = fetched.get(key)
-        if not filename:
-            filename = next((f for orig, f in fetched.items() if key.startswith(orig) or orig.startswith(key)), None)
-        if not filename:
-            continue  # Not fetched at all — already caught by the URL-presence check, don't double-flag.
-
-        source_content = get_workspace_file_content(filename) or ""
-        if len(source_content.strip()) < 50:
-            continue  # Too little content to judge either way (e.g. a near-empty fetch) — not this check's job.
-
-        source_terms = _extract_salient_terms(source_content)
-        # No special-case skip for "source has zero extractable terms": that used to let a
-        # substantial-but-unrelated page through untouched (found via a synthetic test — a fetched
-        # page about cooking pasta cited to support a Rust version claim had zero salient terms of
-        # its own and was incorrectly waved through). A real, substantial source about the right
-        # topic will almost always contain at least one checkable number or proper noun; one that
-        # doesn't is itself a signal worth flagging, not a reason to skip the check.
-        if not (report_terms & source_terms):
-            unsupported.append(u)
-
-    if not unsupported:
-        return None
-    return f"claim_unsupported:{', '.join(unsupported[:3])}"
-
-
-async def _real_grounding_problem(content: str) -> str | None:
-    """Cross-references every URL cited in the report against URLs the engine actually saw
-    fetch_url_to_workspace fetch this run, or that came from a reused knowledge-cache hit
-    (utils/run_state.get_fetched_urls()) — replacing the old project's `"http" in content` substring
-    check, which a model could pass by writing a single fully hallucinated URL.
-
-    A URL not in that verified set is ALWAYS a grounding problem, full stop — this is the primary,
-    hard gate. It is NOT soft-passed just because the URL happens to resolve live: a live-but-never-
-    fetched URL (e.g. citing Wikipedia's general article on a topic without ever having fetched it)
-    is exactly the subtle hallucination pattern this check exists to catch, and a live-reachability
-    check alone cannot distinguish "the model actually read this" from "the model guessed a plausible
-    real URL." (An earlier version of this function used live-verify as a bypass and was caught doing
-    so via a real end-to-end test — see README "Known limitation" / git history.) `live_http_verify`
-    is used only to enrich the diagnostic message with whether the unverified URL is also dead.
-    Returns a human-readable problem description, or None if every citation is verified."""
-    cited = _extract_cited_urls(content)
-    if not cited:
-        return "no_urls"
-
-    fetched = {entry["url"].rstrip('/') for entry in get_fetched_urls()}
-    unverified = [u for u in cited if u.rstrip('/') not in fetched and not any(u.rstrip('/').startswith(f) or f.startswith(u.rstrip('/')) for f in fetched)]
-
-    gc_cfg = config.cfg.get("settings", {}).get("grounding_check", {})
-
-    if unverified:
-        detail = f"unverified_urls:{', '.join(unverified[:3])}"
-        if gc_cfg.get("live_http_verify", False):
-            from tools.web import verify_url_live
-            timeout = gc_cfg.get("live_http_timeout", 5)
-            dead = [u for u in unverified if not await verify_url_live(u, timeout=timeout)]
-            if dead:
-                detail += f" (also unreachable: {', '.join(dead[:3])})"
-        return detail
-
-    # Every citation is backed by a real fetch — now check whether the fetched content actually
-    # supports what's claimed, not just that a file exists for the URL (see _claim_grounding_problem).
-    if gc_cfg.get("content_level_check", True):
-        return _claim_grounding_problem(content)
-
-    return None
+def _update_wiki_index(query: str, req_artifact: str, run_dir: str) -> None:
+    """Deterministically maintain a persistent, cross-run index.md at the workspace root when
+    settings.workspace.wiki_index is enabled — a living table of contents linking every completed
+    run's report, independent of session_isolation (which still isolates each run's own files so
+    reports don't overwrite each other). Engine-driven rather than agent-maintained, same pattern
+    as knowledge_cache/experience_cache: the Planner shouldn't need to remember an extra
+    bookkeeping step for a persistent index to work reliably — see comparative_analysis.md's
+    "Wiki Mode" proposal, scoped here to the index/table-of-contents part specifically, not a full
+    rewrite of the single-required-artifact-per-run system the completion check depends on."""
+    try:
+        if _get_workspace_type() != "disk":
+            return  # In-memory workspaces don't persist across process runs anyway.
+        base_dir = _get_workspace_dir()
+        index_path = os.path.join(base_dir, "index.md")
+        rel_link = os.path.relpath(os.path.join(run_dir, req_artifact), base_dir).replace("\\", "/")
+        entry = f"- [{query.strip()[:120]}]({rel_link}) — {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+        os.makedirs(base_dir, exist_ok=True)
+        if not os.path.exists(index_path):
+            with open(index_path, "w", encoding="utf-8") as f:
+                f.write("# DeepDelve Research Index\n\nAuto-maintained log of every completed research run.\n\n")
+        with open(index_path, "a", encoding="utf-8") as f:
+            f.write(entry)
+    except Exception:
+        pass
 
 
 def _quarantine_artifact(req_artifact: str, attempt: int) -> None:
@@ -1383,6 +1337,30 @@ def _quarantine_artifact(req_artifact: str, attempt: int) -> None:
             os.rename(path, path + f".rejected_attempt_{attempt}")
     except Exception:
         pass
+
+
+def _find_last_substantial_text(min_len: int = 200) -> str:
+    """Scans the full session event history backward for the most recent substantial narrated
+    text block from the main agent (not a sub-agent), stripping any System nudge messages that
+    get coalesced into the same event by log_stream_content's per-source text merging.
+
+    Fixes a real, confirmed bug: passing only the immediately-preceding turn's text to salvage
+    loses a good narrated report from an earlier turn when a later retry's turn produces no text
+    at all. Traced end-to-end against a live session log (session_ffe5dbc7-...json): the model
+    narrated a complete, well-formed ~1000-char report on the second-to-last attempt, but the
+    final attempt's turn was empty, so the old single-turn-lookback salvage saw "" and gave up —
+    discarding a report that was sitting right there in the event history the whole time."""
+    for event in reversed(_session_events):
+        if event.get("source") != "Agent" or event.get("type") != "text":
+            continue
+        if event.get("depth", 0):
+            continue
+        text = event.get("data", {}).get("text", "")
+        text = re.sub(r'System \(\d+/\d+\):.*', '', text, flags=re.DOTALL).strip()
+        text = re.sub(r'System \(final\):.*', '', text, flags=re.DOTALL).strip()
+        if len(text) >= min_len:
+            return text
+    return ""
 
 
 def _salvage_narrated_report(req_artifact: str, last_assistant_text: str) -> bool:
@@ -1534,6 +1512,9 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                 plan = get_workspace_file_content("_todos.md") or ""
                 slot_count = plan.count("- [")
                 save_experience(query, plan, slot_count, outcome="success", max_entries_per_shape=exp_cfg.get("max_entries_per_shape", 5))
+
+            if config.cfg.get("settings", {}).get("workspace", {}).get("wiki_index", False):
+                _update_wiki_index(query, req_artifact, run_state.run_dir)
         elif problem:
             # Retry budget is exhausted and a real problem still exists. The old project silently
             # accepted whatever was left at this point with no indication to the user that the output
@@ -1545,7 +1526,7 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                 notify(f"**System (final):** Retry budget exhausted with an unresolved issue ({problem}). "
                        f"`{req_artifact}` exists but could NOT be fully verified this run — treat its "
                        f"claims as unconfirmed. This was not silently accepted.")
-            elif problem == "missing_artifact" and _salvage_narrated_report(req_artifact, last_assistant_text):
+            elif problem == "missing_artifact" and _salvage_narrated_report(req_artifact, _find_last_substantial_text() or last_assistant_text):
                 # Structural fallback, not another prompt nudge — see _salvage_narrated_report's
                 # docstring for why: nudging alone has proven insufficient for this exact pattern
                 # across two independent projects now.
@@ -1570,14 +1551,10 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
     """Run the agent in headless mode, streaming results to stdout."""
     quota_token = tool_quotas_ctx.set(build_quota_pool())
     reset_fetched_urls()
+    run_state_token = None
 
     session_token = None
     run_dir_name = None
-    if config.cfg.get("settings", {}).get("workspace", {}).get("session_isolation", False):
-        import time
-        from tools.fs import session_dir_ctx
-        run_dir_name = f"run_{int(time.time())}"
-        session_token = session_dir_ctx.set(run_dir_name)
 
     async def cli_subagent_callback(update, is_subagent=True, is_done=False, **kwargs):
         agent_name = kwargs.get("agent_name") or getattr(update, "author_name", None) or "Sub-Agent"
@@ -1668,6 +1645,13 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
             sys.stdout.write(f"\n\033[91mError reading prompt file: {e}\033[0m\n")
             return
 
+    # Deferred until here (not right at function start) so a --prompt-file run's folder name is
+    # slugified from the actual resolved prompt text, not generated before it's known.
+    if config.cfg.get("settings", {}).get("workspace", {}).get("session_isolation", False):
+        from tools.fs import session_dir_ctx
+        run_dir_name = _slugify_run_dir_name(prompt or prompt_file or "query")
+        session_token = session_dir_ctx.set(run_dir_name)
+
     # Print Headless Configuration Banner
     config_path = getattr(config, "_CONFIG_PATH", "Unknown")
     workspace_type = config.cfg.get("settings", {}).get("workspace", {}).get("type", "memory")
@@ -1707,6 +1691,7 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
         has_requests = True
         run_state = RunState(_current_run_dir(run_dir_name))
         run_state.set_query(prompt)
+        run_state_token = run_state_ctx.set(run_state)
 
         while has_requests:
             has_requests = False
@@ -1779,6 +1764,8 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
         sys.stdout.write(f"\n\033[91mError:\033[0m {e}\n")
     finally:
         tool_quotas_ctx.reset(quota_token)
+        if run_state_token is not None:
+            run_state_ctx.reset(run_state_token)
         if session_token is not None:
             from tools.fs import session_dir_ctx
             session_dir_ctx.reset(session_token)

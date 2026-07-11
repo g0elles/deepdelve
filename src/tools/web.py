@@ -2,28 +2,11 @@ import httpx
 import os
 import re
 import asyncio
-import threading
 from bs4 import BeautifulSoup
 from agent_framework import tool
 from tools.core import with_quota
 from tools.fs import _get_safe_path, _get_workspace_type, _get_workspace_dir, _IN_MEMORY_FS
 from utils.run_state import record_fetched_url
-
-_ddgs_lock = threading.Lock()
-_ddgs_client = None
-
-def get_ddgs_client():
-    """Thread-safe lazy initialization of the DDGS client."""
-    global _ddgs_client
-    with _ddgs_lock:
-        if _ddgs_client is None:
-            from ddgs import DDGS
-            _ddgs_client = DDGS()
-            # Pre-warm the internal engine cache to prevent PyO3 deadlocks
-            # when multiple threads initialize primp.Client concurrently later.
-            _ddgs_client._get_engines("text", "auto")
-            _ddgs_client._get_engines("news", "auto")
-    return _ddgs_client
 
 
 def _looks_like_redirect_stub(md_content: str) -> str | None:
@@ -38,6 +21,26 @@ def _looks_like_redirect_stub(md_content: str) -> str | None:
     if len(links) == 1 and re.search(r'redirect', md_content, re.IGNORECASE):
         return links[0]
     return None
+
+
+def _strip_boilerplate_html(html_bytes: bytes) -> bytes:
+    """Remove common non-article chrome (nav, footer, script, style, ads, cookie banners) before
+    markdown conversion, so a fetched page doesn't burn an Analyzer's context budget on chrome
+    that was never going to contain a real finding. Applied to BOTH the markitdown path and the
+    BeautifulSoup fallback below — previously only the fallback path stripped anything, so the
+    primary (markitdown) path passed raw nav/footer/script content straight through untouched."""
+    try:
+        soup = BeautifulSoup(html_bytes, "html.parser")
+        for tag in soup(["script", "style", "nav", "footer", "header", "aside", "noscript", "iframe", "svg"]):
+            tag.extract()
+        boilerplate = re.compile(r'cookie|consent|advert|sidebar|popup|newsletter|subscribe-banner|site-header|site-footer', re.IGNORECASE)
+        for tag in soup.find_all(attrs={"class": boilerplate}):
+            tag.extract()
+        for tag in soup.find_all(attrs={"id": boilerplate}):
+            tag.extract()
+        return soup.encode()
+    except Exception:
+        return html_bytes
 
 
 def _fetch_raw(url: str, convert_to_md: bool = True, _redirect_depth: int = 0):
@@ -92,13 +95,16 @@ def _fetch_raw(url: str, convert_to_md: bool = True, _redirect_depth: int = 0):
         finally:
             os.unlink(tmp_path)
     else:
-        # HTML path: try markitdown on local temp file first, then BeautifulSoup fallback
+        # HTML path: try markitdown on local temp file first, then BeautifulSoup fallback.
+        # Boilerplate (nav/footer/script/ads/cookie banners) is stripped from the HTML BEFORE
+        # either path runs, not after — see _strip_boilerplate_html.
+        cleaned_html = _strip_boilerplate_html(resp.content)
         md_content = None
         try:
             from utils.parsers import convert_to_markdown
             import tempfile
             with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="wb") as tmp:
-                tmp.write(resp.content)
+                tmp.write(cleaned_html)
                 tmp_path = tmp.name
             try:
                 md_content = convert_to_markdown(tmp_path)
@@ -109,8 +115,7 @@ def _fetch_raw(url: str, convert_to_md: bool = True, _redirect_depth: int = 0):
 
         if not md_content:
             # BeautifulSoup fallback for HTML
-            soup = BeautifulSoup(resp.text, "html.parser")
-            for script in soup(["script", "style", "nav", "footer"]): script.extract()
+            soup = BeautifulSoup(cleaned_html, "html.parser")
             md_content = '\n'.join(line for line in (l.strip() for l in soup.get_text(separator='\n').splitlines()) if line)
 
         # Follow a client-side redirect stub one hop (real HTTP redirects are already handled by
@@ -222,6 +227,16 @@ async def web_search(
     if quota_error:
         return quota_error
 
+    import config as app_config
+    search_mode = app_config.cfg.get("settings", {}).get("search_mode", "light")
+    if search_mode == "heavy":
+        # Test-time search scaling (inspired by Tongyi DeepResearch's "Heavy Mode"): search deeper
+        # and auto-fetch more of the top results per call, rather than fabricating fake
+        # query-variant strings via heuristics — that would likely just return near-duplicate
+        # results under a different label. A larger verified data pool per call is the real goal,
+        # achieved deterministically instead of with a fragile string-rewriting trick.
+        max_results = max(max_results, 8)
+
     def _do_search():
         from ddgs import DDGS
         import config as app_config
@@ -239,8 +254,13 @@ async def web_search(
         results = []
 
         if provider == "duckduckgo" or provider not in ("duckduckgo", "tavily"):
-            # Default/fallback: DuckDuckGo (free, no API key required)
-            client = get_ddgs_client()
+            # Default/fallback: DuckDuckGo (free, no API key required). A fresh, short-lived
+            # client per call rather than a shared singleton — concurrent specialists search in
+            # parallel via asyncio.gather (see engine/orchestrator.py's delegate_tasks), and the
+            # duckduckgo_search/ddgs library is not documented as safe for concurrent calls on one
+            # shared client instance. DDGS() itself is lightweight to construct.
+            from ddgs import DDGS
+            client = DDGS()
 
             if topic == "news":
                 search_results = client.news(query, max_results=max_results)
@@ -283,8 +303,9 @@ async def web_search(
     # model not to take it — the same category of fix as the delegate_tasks schema validation and
     # the narrated-report salvage.
     # -------------------------------------------------------------
-    import config as app_config
     auto_fetch_top = app_config.cfg.get("settings", {}).get("web_search", {}).get("auto_fetch_top", 1)
+    if search_mode == "heavy":
+        auto_fetch_top = max(auto_fetch_top, 3)
     auto_fetch_note = ""
     for i, r in enumerate(results[:max(auto_fetch_top, 0)]):
         if not r["url"]:

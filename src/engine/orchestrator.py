@@ -4,6 +4,7 @@ import re
 from agent_framework.openai import OpenAIChatCompletionClient
 from agent_framework import tool, AgentSession
 from tools import WORKSPACE_TOOLS, tool_quotas_ctx, with_quota, think_tool, QuotaAbortException
+from utils.run_state import run_state_ctx, get_fetched_urls
 from prompts import PLANNER_INSTRUCTIONS, SUBAGENT_INSTRUCTIONS, SUBAGENT_DELEGATION_INSTRUCTIONS
 import datetime
 import config
@@ -133,6 +134,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
             # latent in the reference project this was forked from too — never previously observed
             # because bad agent_id values apparently never came up in its own testing.
             children_token = None
+            urls_before = len(get_fetched_urls())
             try:
                 current_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -184,46 +186,89 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                         **_get_quota_format_vars()
                     )
 
-                sub_agent = client.as_agent(
-                    name=_sanitize_name(f"SubAgent_{task_name}"),
-                    instructions=sub_instr,
-                    tools=sub_tools,
-                    default_options=_get_default_options()
-                )
-                final_text = ""
-                current_input = instructions
-                has_requests = True
-                while has_requests:
-                    has_requests = False
-                    user_input_requests = []
+                # MCP tools (settings.mcp_servers, scoped per sub-agent name — see
+                # tools/mcp_loader.py) are connected only for the lifetime of this one delegated
+                # task and closed automatically on exit, success or failure. No-op when
+                # mcp_servers is unconfigured (the default) — AsyncExitStack does nothing.
+                from contextlib import AsyncExitStack
+                from tools.mcp_loader import build_mcp_tools_for_agent
+                mcp_tools = build_mcp_tools_for_agent(target_config.name if target_config else "SubAgent")
 
-                    try:
-                        stream = sub_agent.run(current_input, stream=True)
-                        async for update in stream:
+                async with AsyncExitStack() as mcp_stack:
+                    for mt in mcp_tools:
+                        await mcp_stack.enter_async_context(mt)
+
+                    sub_agent = client.as_agent(
+                        name=_sanitize_name(f"SubAgent_{task_name}"),
+                        instructions=sub_instr,
+                        tools=sub_tools + mcp_tools,
+                        default_options=_get_default_options()
+                    )
+                    final_text = ""
+                    current_input = instructions
+                    has_requests = True
+                    while has_requests:
+                        has_requests = False
+                        user_input_requests = []
+
+                        try:
+                            stream = sub_agent.run(current_input, stream=True)
+                            async for update in stream:
+                                if subagent_callback:
+                                    await subagent_callback(update, is_subagent=True, agent_name=f"SubAgent_{task_name}")
+                                for c in update.contents:
+                                    if c.type == "text" and c.text:
+                                        final_text += c.text
+
+                                if getattr(update, "user_input_requests", None):
+                                    user_input_requests.extend(update.user_input_requests)
+                        except QuotaAbortException as e:
+                            return f"## Error for {task_name}\nTask forcefully aborted: {str(e)}\n---"
+
+                        if user_input_requests:
+                            has_requests = True
+                            responses = []
                             if subagent_callback:
-                                await subagent_callback(update, is_subagent=True, agent_name=f"SubAgent_{task_name}")
-                            for c in update.contents:
-                                if c.type == "text" and c.text:
-                                    final_text += c.text
+                                responses = await subagent_callback(None, is_subagent=True, agent_name=f"SubAgent_{task_name}", approval_requests=user_input_requests)
 
-                            if getattr(update, "user_input_requests", None):
-                                user_input_requests.extend(update.user_input_requests)
-                    except QuotaAbortException as e:
-                        return f"## Error for {task_name}\nTask forcefully aborted: {str(e)}\n---"
-
-                    if user_input_requests:
-                        has_requests = True
-                        responses = []
-                        if subagent_callback:
-                            responses = await subagent_callback(None, is_subagent=True, agent_name=f"SubAgent_{task_name}", approval_requests=user_input_requests)
-
-                        new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
-                        if responses:
-                            new_inputs.extend(responses)
-                        current_input = new_inputs
+                            new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
+                            if responses:
+                                new_inputs.extend(responses)
+                            current_input = new_inputs
 
                 if subagent_callback:
                     await subagent_callback(None, is_subagent=True, agent_name=f"SubAgent_{task_name}", is_done=True)
+
+                # Upstream verification (Tier-2 Searcher output only, detected generically via
+                # target_children rather than hardcoded agent names — Analyzers are leaf nodes with
+                # no children). Catches a hallucinated citation in a specialist's summary before it
+                # ever reaches the Planner's context, instead of only at final-report time — error
+                # propagation into the Planner's findings.md was previously undetectable until the
+                # very end of the run, by which point the retry budget was already partly spent.
+                if target_children and config.cfg.get("settings", {}).get("grounding_check", {}).get("verify_specialist_output", True):
+                    from utils.grounding import real_grounding_problem
+                    problem = await real_grounding_problem(final_text)
+                    if problem and problem != "no_urls":
+                        final_text += (
+                            f"\n\n[SYSTEM VERIFICATION WARNING: this summary cites a source that "
+                            f"does not match anything actually fetched this run ({problem}). Do not "
+                            f"treat the associated claim as sourced when writing findings.md.]"
+                        )
+
+                # Populate the structured findings store (previously dead code — RunState.add_finding
+                # was defined but never called) so a completion-check retry or later debugging has real
+                # {source_url, summary} records instead of only the model's own narration. Preferring
+                # URLs actually fetched during THIS task over the task name keeps findings traceable to
+                # a real source when one exists (Searcher-tier calls); Analyzer-tier calls fetch nothing
+                # themselves, so they fall back to the task name as the record's identifier.
+                run_state = run_state_ctx.get()
+                if run_state is not None:
+                    new_urls = get_fetched_urls()[urls_before:]
+                    if new_urls:
+                        for u in new_urls:
+                            run_state.add_finding(u["url"], final_text[:1500])
+                    else:
+                        run_state.add_finding(task_name, final_text[:1500])
 
                 return f"## Result for {task_name}\n{final_text}\n---"
             finally:
@@ -305,6 +350,16 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
     # -------------------------------------------------------------
     # Planner retains full access to its declared tools, gains `delegate_tasks` if it has sub_agents
     tools_list = apply_tool_permissions(builder.tools.copy())
+    # Human-in-the-loop plan-approval gate: reuses the SAME approval infrastructure already built
+    # for settings.permissions (ApprovalWidget in TUI mode, the AUTO_APPROVE flag in headless mode)
+    # rather than inventing new pause logic. Scoped to write_todos specifically (not delegate_tasks,
+    # which is a single closure shared across every tier — gating it there would pause EVERY
+    # delegation at every depth, not just the Planner's initial one). Only the Planner holds
+    # write_todos (see app.py), so this can't accidentally gate a sub-agent's tool calls.
+    if config.cfg.get("settings", {}).get("human_in_the_loop", False):
+        for t in tools_list:
+            if getattr(t, "name", None) == "write_todos" and hasattr(t, "approval_mode"):
+                t.approval_mode = "always_require"
     if builder.sub_agents:
         tools_list.append(delegate_tasks)
     # Set the Planner's available sub-agents for scoped delegation

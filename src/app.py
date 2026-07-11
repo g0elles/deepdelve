@@ -12,6 +12,8 @@ from tools import (
     write_todos,
     read_todos,
     think_tool,
+    replan_action,
+    extract_structured_data,
 )
 from prompts import (
     PLANNER_INSTRUCTIONS,
@@ -19,6 +21,7 @@ from prompts import (
     ACADEMIC_SEARCHER_INSTRUCTIONS,
     DOCUMENT_ANALYZER_INSTRUCTIONS,
     DATA_ANALYZER_INSTRUCTIONS,
+    PEER_REVIEWER_INSTRUCTIONS,
 )
 import config
 
@@ -41,7 +44,10 @@ document_analyzer = SubAgentConfig(
 data_analyzer = SubAgentConfig(
     name="DataAnalyzer",
     instructions=DATA_ANALYZER_INSTRUCTIONS,
-    tools=[read_workspace_file, grep_workspace_file, think_tool]
+    # extract_structured_data is the one tool DocumentAnalyzer does NOT have — a real, structural
+    # (not just prompt-driven) distinction between the two Analyzer roles: table/code/JSON/CSV
+    # extraction vs. prose reading.
+    tools=[read_workspace_file, grep_workspace_file, extract_structured_data, think_tool]
 )
 
 # Tier 2 — web search + fetch only. No file-reading tools, which forces delegation of analysis
@@ -61,14 +67,23 @@ academic_searcher = SubAgentConfig(
     sub_agents=[document_analyzer, data_analyzer]
 )
 
+# Planner-tier delegate (not Tier 2/3) — an independent critique pass on findings.md, run by a
+# fresh context rather than the same conversation that produced the findings. See
+# PEER_REVIEWER_INSTRUCTIONS and PLANNER_INSTRUCTIONS Pass 2 for how it's used.
+peer_reviewer = SubAgentConfig(
+    name="PeerReviewer",
+    instructions=PEER_REVIEWER_INSTRUCTIONS,
+    tools=[read_workspace_file, grep_workspace_file, think_tool]
+)
+
 # Tier 1 — plans, tracks todos, writes the final report. No web tools and no file-reading tools,
 # which forces it to delegate all research to a Tier 2 specialist, routed by query type.
 app = AgentBuilder(
     name=config.APP_TITLE,
     description=config.APP_DESCRIPTION,
     instructions=PLANNER_INSTRUCTIONS,
-    tools=[write_workspace_file, list_workspace_files, write_todos, read_todos, think_tool],
-    sub_agents=[web_searcher, academic_searcher]
+    tools=[write_workspace_file, list_workspace_files, write_todos, read_todos, think_tool, replan_action],
+    sub_agents=[web_searcher, academic_searcher, peer_reviewer]
 )
 
 def cli_main():
