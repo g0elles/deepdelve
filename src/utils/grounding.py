@@ -18,6 +18,19 @@ _PROPER_NOUN_STOPWORDS = {
 }
 
 
+def _urls_prefix_match(a: str, b: str) -> bool:
+    """Prefix-match fallback for URL grounding (handles stripped trailing chars, redirect
+    variants, added query strings) — but a bare-origin URL (no path) never prefix-grounds a deep
+    link. Confirmed live (2026-07-11, qwen3.6 Colombia run): one fetch of mercadolibre.com's ROOT
+    let a fully fabricated deep URL on that domain pass fully_ungrounded, which waved the whole
+    fabricated findings.md through. A domain root only matches itself exactly."""
+    if not (a.startswith(b) or b.startswith(a)):
+        return False
+    from urllib.parse import urlparse
+    shorter = a if len(a) <= len(b) else b
+    return bool(urlparse(shorter).path.strip("/"))
+
+
 def extract_cited_urls(text: str) -> list[str]:
     # Fullwidth 【】 brackets included: gpt-oss habitually cites as 【URL】, and the closing 】 was
     # observed leaking into the knowledge cache's pre-registered URLs (grounding still passed, but
@@ -126,7 +139,7 @@ def claim_grounding_problem(report: str) -> str | None:
         key = u.rstrip('/')
         filename = fetched.get(key)
         if not filename:
-            filename = next((f for orig, f in fetched.items() if key.startswith(orig) or orig.startswith(key)), None)
+            filename = next((f for orig, f in fetched.items() if _urls_prefix_match(key, orig)), None)
         if not filename:
             continue
 
@@ -157,7 +170,7 @@ def fully_ungrounded(content: str) -> str | None:
     fetched = {entry["url"].rstrip('/') for entry in get_fetched_urls()}
     for u in cited:
         key = u.rstrip('/')
-        if key in fetched or any(key.startswith(f) or f.startswith(key) for f in fetched):
+        if key in fetched or any(_urls_prefix_match(key, f) for f in fetched):
             return None
     return "all_cited_urls_unverified"
 
@@ -172,7 +185,7 @@ async def real_grounding_problem(content: str) -> str | None:
         return "no_urls"
 
     fetched = {entry["url"].rstrip('/') for entry in get_fetched_urls()}
-    unverified = [u for u in cited if u.rstrip('/') not in fetched and not any(u.rstrip('/').startswith(f) or f.startswith(u.rstrip('/')) for f in fetched)]
+    unverified = [u for u in cited if u.rstrip('/') not in fetched and not any(_urls_prefix_match(u.rstrip('/'), f) for f in fetched)]
 
     gc_cfg = config.cfg.get("settings", {}).get("grounding_check", {})
 
