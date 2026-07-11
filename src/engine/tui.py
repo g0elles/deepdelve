@@ -1335,6 +1335,7 @@ from utils.grounding import (
     split_prose_from_sources as _split_prose_from_sources,
     claim_grounding_problem as _claim_grounding_problem,
     real_grounding_problem as _real_grounding_problem,
+    fully_ungrounded as _fully_ungrounded,
 )
 
 
@@ -1489,8 +1490,24 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
             problem, warning_msg, inject_msg = "not_delegated", \
                 "No `delegate_tasks` call was ever made — this looks like an answer from memory, not real research. Forcing verification.", \
                 f"SYSTEM WARNING: {last_chance_prefix}You are attempting to finish the task, but you never called delegate_tasks. Your training data can be stale or wrong — you MUST verify any facts with a real Searcher delegation before finishing.{escalation} Your ONLY next tool call must be delegate_tasks, with a real task_name/instructions/agent_id for each research angle. Only after receiving real results should you write (or overwrite) '{req_artifact}'."
-        elif req_artifact not in files:
-            is_last_chance = (attempt + 1) >= MAX_COMPLETION_CHECK_ATTEMPTS
+        elif (
+            config.cfg.get("settings", {}).get("grounding_check", {}).get("check_findings", True)
+            and "findings.md" in files
+            and (findings_problem := _fully_ungrounded(get_workspace_file_content("findings.md") or ""))
+        ):
+            # findings.md (Pass 1) was previously never grounding-checked at all — only
+            # final_report.md was. Confirmed live: a Planner that abandons real delegation partway
+            # through a run can fabricate the ENTIRE Pass-1 file from memory, and Pass 2 then
+            # treats it as ground truth (SESSION_STATUS.md tracked item #2). Checked BEFORE the
+            # missing-artifact/final-report gates because fabricated findings poison everything
+            # downstream — a final report rewritten from fabricated findings can never become
+            # grounded. Uses the wholesale-fabrication gate (fully_ungrounded), not the strict
+            # per-URL one, so legitimately-mixed Pass-1 notes don't hard-fail a run.
+            problem, warning_msg, inject_msg = "findings_ungrounded", \
+                f"`findings.md` (Pass 1) fails the grounding check ({findings_problem}) — nothing in it traces to a source actually fetched this run. Pushing agent to rebuild it from real delegated results.", \
+                f"SYSTEM WARNING: your Pass-1 'findings.md' is not grounded in real research ({findings_problem}) — " + \
+                ("it contains no source URLs at all" if findings_problem == "no_urls" else "not one URL it cites matches anything your Searcher(s) actually fetched this run") + \
+                f". findings.md must be a verbatim consolidation of what your delegated Searchers/Analyzers actually returned, never written from your own memory. The fabricated file has been moved aside. Delegate real research tasks now if you haven't, then rebuild findings.md strictly from those real results — only after that, write '{req_artifact}' from it."
             # A model that already has real delegated research results in its own context but still
             # hasn't written the artifact tends to respond to a generic nudge by re-delegating again
             # (a real failure mode observed in testing: it satisfies "take a real action" with
@@ -1598,6 +1615,8 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
 
             if problem in ("not_grounded", "claim_unsupported", "non_url_citation"):
                 _quarantine_artifact(req_artifact, attempt + 1)
+            elif problem == "findings_ungrounded":
+                _quarantine_artifact("findings.md", attempt + 1)
 
             # Per-attempt quota top-up: without this, a retry shares the same already-exhausted
             # pool as the failed attempt it's correcting (see plan doc diagnosis point 2) and

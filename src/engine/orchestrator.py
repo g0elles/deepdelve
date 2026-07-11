@@ -54,6 +54,56 @@ def _extract_scope_entities(instructions: str) -> set:
     words = re.findall(r'\b[A-Z][a-zA-Z]{2,}\b', instructions or "")
     return {w for w in words if w not in _SCOPE_STOPWORDS}
 
+# Only unambiguous exclusion phrasings — deliberately NOT "avoid"/"ignore", which appear inside
+# legitimate research topics themselves ("how to avoid mosquito bites") and would poison the
+# extracted set. Same keep-false-positives-rare principle as the grounding checks.
+_EXCLUSION_CUE_RE = re.compile(
+    r"\b(?:exclud\w+|except(?:\s+for)?|not\s+including|(?:do\s+not|don'?t)\s+"
+    r"(?:include|research|cover)|leave\s+out|other\s+than)\s*:?\s+([^.;\n]{2,200})",
+    re.IGNORECASE,
+)
+
+def _extract_excluded_topics(query: str) -> set:
+    """Topics the user's own query explicitly ruled out (e.g. '... excluding Agritech, HealthTech
+    and EdTech'), lowercased. Confirmed live three separate times: prompt wording alone does not
+    stop the Planner from delegating explicitly-excluded sectors anyway, so delegate_tasks enforces
+    this structurally by skipping any task whose topic matches one of these."""
+    topics = set()
+    for m in _EXCLUSION_CUE_RE.finditer(query or ""):
+        for part in re.split(r",|\band\b|\bor\b", m.group(1)):
+            part = part.strip(" .:;*-—\t").lower()
+            part = re.sub(r"^(?:the|any|all)\s+", "", part)
+            # ponytail: naive trailing-noun strip so "EdTech sectors" matches a task about "EdTech";
+            # a real noun-phrase parser if this misses too much in practice.
+            part = re.sub(r"\s+(?:sectors?|markets?|industr(?:y|ies)|topics?|areas?|fields?)$", "", part)
+            if len(part) >= 3:
+                topics.add(part)
+    return topics
+
+_BARE_REFERENT_RE = re.compile(
+    r"\b(?:it|its|they|them|the\s+(?:above|previous|aforementioned|same))\b", re.IGNORECASE
+)
+
+def _lacks_concrete_subject(instructions: str) -> bool:
+    """True when a short instruction leans on a pronoun with nothing anywhere to anchor it — the
+    sub-agent runs with NO shared context, so 'Summarize its headline feature' becomes a literal
+    web search for a referent that only existed in the caller's head. Confirmed live (2026-07-11):
+    that exact delegated task came back with Microsoft Research patent statistics presented as
+    Python's headline feature. Kept deliberately conservative (short instructions only, and any
+    proper noun / digit / quoted term counts as an anchor) — the placeholder detector's
+    false-positive history (see delegate_tasks) shows what an over-eager batch rejection costs."""
+    instr = (instructions or "").strip()
+    if len(instr) >= 120 or not _BARE_REFERENT_RE.search(instr):
+        return False
+    if re.search(r"\d", instr) or re.search(r"['\"“][^'\"”]+['\"”]", instr):
+        return False
+    # A capitalized word that isn't sentence-initial is a real subject ("its" then refers within).
+    for sentence in re.split(r"[.!?:;\n]+", instr):
+        for w in sentence.split()[1:]:
+            if re.match(r"[A-Z][a-zA-Z]{2,}", w):
+                return False
+    return True
+
 def _get_quota_format_vars() -> dict:
     """Extract all quotas from config as {tool_name_quota: int} format variables.
 
@@ -416,6 +466,16 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                     f"know the real names yet, delegate a background task to identify them first."
                 )
                 continue
+            if _lacks_concrete_subject(str(t.get("instructions", ""))):
+                errors.append(
+                    f"Task {i} ({t.get('task_name')!r}): instructions rely on a pronoun ('it'/'its'/"
+                    f"'them') with no concrete subject anywhere — the sub-agent executing this has "
+                    f"NO memory of your conversation or of sibling tasks, so it cannot know what "
+                    f"the pronoun refers to and will search for the literal phrase. Restate the "
+                    f"full subject explicitly in EVERY task's instructions (e.g. 'Summarize Python "
+                    f"3.14\\'s headline feature', not 'Summarize its headline feature')."
+                )
+                continue
             dep_m = _cross_task_dependency_re.search(" ".join(str(t.get(k, "")) for k in ("task_name", "instructions")))
             if dep_m:
                 errors.append(
@@ -433,12 +493,36 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                 "tasks:\n" + "\n".join(errors)
             )
 
+        # Structural enforcement of the user's own exclusion rules — confirmed live three times
+        # that the prompt-level rule alone doesn't hold (4 explicitly-excluded sectors researched
+        # and included anyway). Excluded tasks are SKIPPED individually, not batch-rejected: the
+        # sibling tasks are legitimate, and the placeholder-detector incident (see above) showed a
+        # wholesale rejection makes the model abandon delegation and fabricate instead.
+        run_state = run_state_ctx.get()
+        excluded_topics = _extract_excluded_topics(run_state.data.get("query", "")) if run_state else set()
+        skipped = []
         coroutines = []
         for t in tasks:
             name = t.get("task_name")
             instr = t.get("instructions")
             aid = t.get("agent_id", None)
+            task_text = f"{name} {instr}".lower()
+            hit = next((topic for topic in excluded_topics if topic in task_text), None)
+            if hit:
+                skipped.append(
+                    f"## Skipped {name}\nNot dispatched: this topic matches an explicit exclusion "
+                    f"in the original query ({hit!r}). Do not research it, do not include it in "
+                    f"findings.md or the final report, and do not re-delegate it.\n---"
+                )
+                continue
             coroutines.append(_run_single_task(name, instr, aid))
+
+        if skipped and not coroutines:
+            return (
+                "Error: every task in this call matches a topic the original query explicitly "
+                "excluded — none were dispatched. Re-read the query's exclusion list and delegate "
+                "only topics that are actually in scope.\n" + "\n".join(skipped)
+            )
 
         was_holding = holds_token.get()
         if was_holding:
@@ -450,7 +534,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
             if was_holding:
                 await sem.acquire()
 
-        final_output = []
+        final_output = list(skipped)
         for res in results:
             if isinstance(res, Exception):
                 final_output.append(f"## Error\nTask failed with exception: {res}\n---")
