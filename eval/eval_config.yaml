@@ -3,7 +3,9 @@ api:
   # Defaults to the same local Ollama endpoint as the agent itself.
   # Override this to use a smarter judge (e.g., a cloud model) for better scoring accuracy.
   openai_base_url: http://localhost:11434/v1
-  openai_model: deepdelve-mistral-nemo
+  # deepdelve-gpt-oss replaced deepdelve-mistral-nemo as judge 2026-07-11 — nemo is the model
+  # whose self-judging unreliability this project documented; gpt-oss passed the live pipeline.
+  openai_model: deepdelve-gpt-oss
   openai_api_key: ""
   # Example: use a cloud model for judging (requires OPENAI_API_KEY env var):
   # openai_base_url: https://api.openai.com/v1
