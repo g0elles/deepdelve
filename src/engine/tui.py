@@ -1508,6 +1508,13 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                 f"SYSTEM WARNING: your Pass-1 'findings.md' is not grounded in real research ({findings_problem}) — " + \
                 ("it contains no source URLs at all" if findings_problem == "no_urls" else "not one URL it cites matches anything your Searcher(s) actually fetched this run") + \
                 f". findings.md must be a verbatim consolidation of what your delegated Searchers/Analyzers actually returned, never written from your own memory. The fabricated file has been moved aside. Delegate real research tasks now if you haven't, then rebuild findings.md strictly from those real results — only after that, write '{req_artifact}' from it."
+        elif req_artifact not in files:
+            # This `elif` header (and its is_last_chance) was accidentally swallowed when the
+            # findings gate above was inserted (bd307f4), merging two branches: the
+            # findings_ungrounded assignment was silently overwritten by missing_artifact, and
+            # referencing is_last_chance crashed with UnboundLocalError — confirmed live
+            # 2026-07-11, it ended a benchmark run one nudge early.
+            is_last_chance = (attempt + 1) >= MAX_COMPLETION_CHECK_ATTEMPTS
             # A model that already has real delegated research results in its own context but still
             # hasn't written the artifact tends to respond to a generic nudge by re-delegating again
             # (a real failure mode observed in testing: it satisfies "take a real action" with
