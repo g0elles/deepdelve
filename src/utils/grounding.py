@@ -19,8 +19,11 @@ _PROPER_NOUN_STOPWORDS = {
 
 
 def extract_cited_urls(text: str) -> list[str]:
-    urls = re.findall(r'https?://[^\s\)\]\}"\'>]+', text or "")
-    return [u.rstrip('.,;:\'")]}') for u in urls]
+    # Fullwidth 【】 brackets included: gpt-oss habitually cites as 【URL】, and the closing 】 was
+    # observed leaking into the knowledge cache's pre-registered URLs (grounding still passed, but
+    # only via the prefix-match fallback).
+    urls = re.findall(r'https?://[^\s\)\]\}"\'>【】]+', text or "")
+    return [u.rstrip('.,;:\'")]}】') for u in urls]
 
 
 def extract_salient_terms(text: str) -> set:
