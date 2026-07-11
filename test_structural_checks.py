@@ -49,6 +49,22 @@ def main():
     assert not find_non_url_citations("No claims were made without source attribution.")
     assert not find_non_url_citations("**Sources:**\n- **[Title](https://x.org/a)**")
 
+    # --- search-health counter (persists into _run_state.json via RunState) ---
+    import contextvars
+    from utils.run_state import RunState, run_state_ctx, record_search_health, get_search_health
+
+    def _health_scenario():
+        rs = RunState.__new__(RunState)
+        rs.data = {}
+        run_state_ctx.set(rs)
+        record_search_health(ok=True)
+        record_search_health(ok=False)
+        record_search_health(ok=False)
+        assert get_search_health() == {"calls": 3, "failures": 2}, get_search_health()
+
+    contextvars.copy_context().run(_health_scenario)  # isolated so the ctx var doesn't leak
+    assert get_search_health() == {"calls": 0, "failures": 0}  # no run state -> zeros, no crash
+
     print("All structural-check assertions passed.")
 
 

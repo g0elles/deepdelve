@@ -60,6 +60,25 @@ def get_fetched_urls() -> list[dict]:
     return fetched_urls_ctx.get() or []
 
 
+def record_search_health(ok: bool) -> None:
+    """Engine-side web_search success/failure counter, persisted into _run_state.json, so a run
+    diagnosis can tell 'the model fabricated' apart from 'the search layer was down/throttled'
+    without re-reading transcripts. Confirmed live 2026-07-11: DuckDuckGo rate-throttling made
+    every model's Searchers loop and the resulting bad runs looked like model failures."""
+    rs = run_state_ctx.get()
+    if rs is None:
+        return
+    health = rs.data.setdefault("search_health", {"calls": 0, "failures": 0})
+    health["calls"] += 1
+    if not ok:
+        health["failures"] += 1
+
+
+def get_search_health() -> dict:
+    rs = run_state_ctx.get()
+    return (rs.data.get("search_health") if rs else None) or {"calls": 0, "failures": 0}
+
+
 class RunState:
     """Structured, JSON-persisted record of a single research run. Written to
     `_run_state.json` inside the run's workspace folder so it survives independently of the

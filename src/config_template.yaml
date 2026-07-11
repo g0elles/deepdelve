@@ -5,6 +5,10 @@ api:
   # full 3-model result table. mistral-nemo:12b held at 3/3; hermes3:8b (the old project's top pick)
   # regressed to 0/3 on this schema.
   openai_model: deepdelve-mistral-nemo
+  # OpenAI-SDK retry budget for 429/5xx (exponential backoff, honors Retry-After). Hosted
+  # endpoints (e.g. NVIDIA NIM's free tier) throttle far below what concurrent sub-agents
+  # generate — a run died to a single unretried 429 before this existed.
+  max_retries: 6
 settings:
   enable_thinking: false
   temperature: 0.2

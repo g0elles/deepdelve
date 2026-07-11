@@ -283,11 +283,16 @@ async def web_search(
 
         return results
 
+    from utils.run_state import record_search_health
     try:
         results = await asyncio.to_thread(_do_search)
     except Exception as e:
         import traceback
+        record_search_health(ok=False)
         return f"Search failed: {str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+    # Zero results counts as a failure: under provider throttling ddgs often returns empty rather
+    # than raising, and an all-empty run is indistinguishable from a fabrication-prone one.
+    record_search_health(ok=bool(results))
 
     # -------------------------------------------------------------
     # Auto-fetch fusion: search and fetch used to be two separate tools, which meant a model could

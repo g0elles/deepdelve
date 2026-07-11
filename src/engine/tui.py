@@ -1652,6 +1652,14 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
             # "wrote something ungrounded" and, separately, "never wrote anything at all" have been
             # seen live), not a hypothetical one. Surface exactly which case this is instead of
             # asserting a file exists when it might not.
+            # Name a sick search layer explicitly — confirmed live (2026-07-11): DDG throttling made
+            # two different models' runs fail in ways that looked exactly like model fabrication.
+            from utils.run_state import get_search_health
+            health = get_search_health()
+            if health["calls"] >= 4 and health["failures"] * 2 >= health["calls"]:
+                notify(f"**System (final):** ⚠️ web_search failed {health['failures']}/{health['calls']} "
+                       f"times this run (throttling or outage) — this failure is likely environmental, "
+                       f"not a model problem. Re-run later before drawing conclusions about the model.")
             if req_artifact in get_workspace_files():
                 notify(f"**System (final):** Retry budget exhausted with an unresolved issue ({problem}). "
                        f"`{req_artifact}` exists but could NOT be fully verified this run — treat its "
