@@ -261,9 +261,15 @@ async def web_search(
             # shared client instance. DDGS() itself is lightweight to construct.
             from ddgs import DDGS
             client = DDGS()
+            # ddgs 9.x is a metasearcher over 10+ engines (google, bing, brave, yahoo, startpage,
+            # mojeek, ...) — "auto" rotates/falls back across them instead of pinning every call
+            # to DuckDuckGo. Confirmed live (2026-07-11): DDG throttling after a search-heavy day
+            # made two models' runs fail in ways that looked like model fabrication. A comma list
+            # (e.g. "google,brave,duckduckgo") pins specific engines in order.
+            backend = app_config.cfg.get("settings", {}).get("search_backend", "auto")
 
             if topic == "news":
-                search_results = client.news(query, max_results=max_results)
+                search_results = client.news(query, max_results=max_results, backend=backend)
                 for result in search_results:
                     results.append({
                         "url": result.get("url", ""),
@@ -271,7 +277,7 @@ async def web_search(
                         "snippet": _sanitize_snippet(result.get("body", "No snippet available")),
                     })
             else:
-                search_results = client.text(query, max_results=max_results)
+                search_results = client.text(query, max_results=max_results, backend=backend)
                 for result in search_results:
                     results.append({
                         "url": result.get("href", ""),
