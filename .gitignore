@@ -9,3 +9,5 @@ eval/runs/
 *.log
 .DS_Store
 feedback/
+.codegraph/
+SESSION_STATUS.md
