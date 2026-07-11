@@ -1,5 +1,11 @@
+import sys
 import warnings
 warnings.filterwarnings("ignore", message=".*is experimental and may change.*")
+
+# Windows consoles/pipes default to cp1252, which can't encode the banner/report Unicode.
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from engine.sdk import AgentBuilder, SubAgentConfig
 from tools import (
