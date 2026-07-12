@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Exercises the packaging fix from 5dcc4d7 (pyproject.toml's package-dir/py-modules layout)
+      # as a side effect — a broken install here is exactly the bug that shipped silently before
+      # CI existed, caught by hand instead of automatically.
+      - name: Install project (editable, with dev extras)
+        run: pip install -e ".[dev]"
+
+      - name: ruff check
+        run: ruff check .
+
+      - name: Structural test suite
+        run: python test_structural_checks.py

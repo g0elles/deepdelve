@@ -21,5 +21,5 @@ def convert_to_markdown(url_or_filepath: str) -> str:
         if result and result.text_content:
             return result.text_content
         return None
-    except Exception as e:
+    except Exception:
         return None

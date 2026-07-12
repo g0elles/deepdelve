@@ -5,7 +5,7 @@ import asyncio
 from bs4 import BeautifulSoup
 from agent_framework import tool
 from tools.core import with_quota
-from tools.fs import _get_safe_path, _get_workspace_type, _get_workspace_dir, _IN_MEMORY_FS
+from tools.fs import _get_safe_path, _get_workspace_type, _IN_MEMORY_FS
 from utils.run_state import record_fetched_url
 
 
@@ -117,7 +117,6 @@ def _fetch_raw(url: str, convert_to_md: bool = True, _redirect_depth: int = 0):
         content = b"".join(chunks)
         resp_url = resp.url
         charset_encoding = resp.charset_encoding
-        content_type = resp.headers.get("content-type", "").lower()
 
     if not convert_to_md:
         return content, [url]  # Raw bytes

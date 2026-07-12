@@ -6,24 +6,38 @@ build-backend = "setuptools.build_meta"
 name = "deepdelve"
 version = "0.1.0"
 description = "A locally-run, multi-agent deep research assistant with domain-specialized Searcher/Analyzer panels (Planner -> {WebSearcher,AcademicSearcher} -> {DocumentAnalyzer,DataAnalyzer})."
-authors = [{name = "Local Agent Builder"}]
+authors = [{name = "Gabri Elles", email = "ellesgabry5@gmail.com"}]
 readme = "README.md"
+license = {text = "MIT"}
 requires-python = ">=3.10"
+# Floor+ceiling pins (second full audit item E12, 2026-07-12): previously only markitdown was
+# pinned. Floors are the versions actually verified working this session (`pip show` against the
+# dev venv); ceilings block the next major version, the boundary most likely to carry breaking
+# changes, without freezing out routine minor/patch updates. agent-framework was documented
+# elsewhere as "pre-1.0" — that was stale; it's 1.11.0 as of this pin, already past its 1.0
+# stability line, but still the dependency most likely to break this project's actual usage
+# (SubAgentConfig/AgentBuilder, ResponseStream's async iterator protocol) on a major bump.
 dependencies = [
-    "agent-framework",
-    "httpx",
-    "textual",
-    "beautifulsoup4",
-    "PyYAML",
-    "ddgs",
+    "agent-framework>=1.11.0,<2.0.0",
+    "httpx>=0.28.1,<0.29.0",
+    "textual>=8.2.8,<9.0.0",
+    "beautifulsoup4>=4.15.0,<5.0.0",
+    "PyYAML>=6.0.3,<7.0.0",
+    # A scraper, not a stable API — pinned tighter than the rest given how directly DDG-side
+    # HTML/engine changes have broken this project's search layer before (see README/ROADMAP
+    # search_backend notes).
+    "ddgs>=9.14.4,<10.0.0",
     # [all] is unresolvable on Windows/Python 3.14 (onnxruntime + youtube-transcript-api pins) and
     # silently falls back to the useless 0.0.2 stub; these doc extras are all this agent uses.
-    "markitdown[pdf,docx,xlsx,pptx]>=0.1.6",
+    "markitdown[pdf,docx,xlsx,pptx]>=0.1.6,<0.2.0",
     # Imported directly in engine/sdk.py (SubAgentConfig/AgentBuilder). Currently only installed
     # transitively via agent-framework, which is fragile — declare it explicitly so this doesn't
     # silently break if agent-framework ever drops or reshuffles its own pydantic dependency.
-    "pydantic"
+    "pydantic>=2.13.4,<3.0.0"
 ]
+
+[project.optional-dependencies]
+dev = ["ruff"]
 
 [project.scripts]
 deepdelve = "app:cli_main"
@@ -50,3 +64,17 @@ py-modules = ["app", "config", "prompts"]
 # [tool.setuptools.package-data], which only attaches data files to actual packages.
 [tool.setuptools.package-data]
 tools = ["config_template.yaml"]
+
+# Pragmatic rule set, not maximal (second full audit, 2026-07-12): pure pyflakes (F) — unused
+# imports/variables, undefined names, duplicate dict keys — catches real dead-code issues (the
+# same class the fresh audit turned up by hand in tools/web.py's PDF-detection branch) without
+# fighting this project's established style: dense, evidence-heavy comment lines well past 79/120
+# chars (CLAUDE.md/ROADMAP's own voice), and function-local imports used deliberately throughout
+# for lazy loading / avoiding circular imports (which E402/I001 would otherwise flag by the
+# hundreds — checked: 150 line-length + 39 import-sort hits on a first pragmatic-but-broader pass,
+# almost entirely style noise, not real issues). pycodestyle (E) intentionally left out.
+[tool.ruff]
+exclude = ["venv", "research_output", "build", "*.egg-info"]
+
+[tool.ruff.lint]
+select = ["F"]

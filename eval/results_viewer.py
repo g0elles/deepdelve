@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate an HTML results viewer from eval/results.jsonl."""
 
-import json, html, sys, os
+import json, sys, os
 from pathlib import Path
 from collections import defaultdict
 
