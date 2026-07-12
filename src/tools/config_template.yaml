@@ -191,12 +191,14 @@ settings:
   #         args: ["semantic-scholar-mcp"]
   #         agents: ["AcademicSearcher"]
   #   - Brave Search MCP for WebSearcher (a real search index instead of DDGS scraping — needs a
-  #     free-tier API key from https://brave.com/search/api/):
+  #     free-tier API key from https://brave.com/search/api/). Uses Brave's own maintained
+  #     @brave/brave-search-mcp-server (migrated 2026-07-12 from the reference implementation
+  #     @modelcontextprotocol/server-brave-search, which is npm-deprecated):
   #     mcp_servers:
   #       - name: brave-search
   #         transport: stdio
   #         command: npx
-  #         args: ["-y", "@modelcontextprotocol/server-brave-search"]
+  #         args: ["-y", "@brave/brave-search-mcp-server"]
   #         env: { BRAVE_API_KEY: "your-key-here" }
   #         agents: ["WebSearcher"]
   mcp_servers: []
