@@ -60,6 +60,26 @@ Status as of 2026-07-12.
 - **Address the grounding check's topical-relevance gap** — some form of "is this source actually about the claimed subject," not just "was it fetched and does it share terms." Unclear whether this needs an LLM judge (this local model class has proven unreliable as its own judge elsewhere in this project) or a cheaper heuristic.
 - **Headless-browser fetch fallback** for JS-gated pages that return bot-challenge stubs to a plain HTTP GET.
 
+## Candidates from the 2026-07-12 reference-repo review (see README References)
+
+- **Engine-driven iterative deepening** (from `dzhng/deep-research`): a STRUCTURAL refine loop —
+  each round's findings + the Searchers' FOLLOW-UP DIRECTIONS get composed by the ENGINE into the
+  next round's Planner input, with geometric narrowing (their `newBreadth = ceil(breadth/2)`,
+  depth counter). DeepDelve currently trusts the Planner model to loop, and local models
+  demonstrably under-loop (run 15: 1 niche of 4-6). Could integrate with `--depth`.
+- **Answer mode** (from `dzhng/deep-research`): a concise exact-answer output path for short
+  factual queries instead of the full report artifact (their `writeFinalAnswer`).
+- **Tongyi-DeepResearch-30B-A3B as a benchmark candidate** (from `Alibaba-NLP/DeepResearch`):
+  30B MoE / 3.3B active — same size class as deepdelve-qwen3.6, but trained specifically for
+  long-horizon research. Caveats before a benchmark round: it expects its OWN ReAct dialect
+  (`<tool_call>` XML, `<think>`, `<answer>` tags) and was trained as a SINGLE agent with
+  search/visit tools — the multi-agent delegate_tasks schema is out-of-distribution for it;
+  needs a community GGUF + Ollama chat-template check first.
+- **Context-budget endgame guard** (from Tongyi's `react_agent.py`): they count tokens and at
+  ~110K force "stop tool calls, give your best answer now". DeepDelve has NO context accounting
+  at num_ctx=16384 — Ollama silently truncates from the top on overflow, which can eat the
+  system prompt mid-run. An engine-side approximate budget check + forced-endgame nudge.
+
 ## Stretch
 
 - **RL fine-tuning for tool-call reliability** (GRPO/PPO on the actual Planner/Searcher schema) — targets the fetch-skipping/tool-call-reliability root cause directly instead of catching it after the fact. Needs real training infrastructure; not started.
