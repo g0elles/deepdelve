@@ -13,6 +13,15 @@ class QuotaAbortException(BaseException):
 def check_quota(tool_name: str) -> str | None:
     """Check if the specific tool has exceeded its per-invocation quota."""
     ctx = tool_quotas_ctx.get()
+    # DEEPDELVE_QUOTA_DEBUG=1: one line per quota check to stderr, with the pool's object id —
+    # the 'shared cumulative pool' design silently degrades to 'unlimited' for any tool call the
+    # framework happens to execute outside the run's context (ctx=None), and that is invisible
+    # without this. Found via run 12: 36 executed web_searches against a hard cap of 21.
+    import os as _os
+    if _os.environ.get("DEEPDELVE_QUOTA_DEBUG"):
+        import sys as _sys
+        state = f"pool_id={id(ctx)} used={ctx.get(tool_name, {}).get('used')}/{ctx.get(tool_name, {}).get('limit')}" if ctx else "ctx=None (UNLIMITED)"
+        print(f"[quota_debug] {tool_name}: {state}", file=_sys.stderr)
     if ctx and tool_name in ctx:
         if ctx[tool_name]["used"] >= ctx[tool_name]["limit"]:
             ctx[tool_name]["used"] += 1
