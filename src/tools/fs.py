@@ -19,7 +19,8 @@ def _get_workspace_dir() -> str:
 
 def _get_safe_path(filename: str) -> str:
     # Safely allow subdirectories while blocking traversal hacks
-    if ".." in filename or filename.startswith("/") or filename.startswith("\\"):
+    if (".." in filename or filename.startswith("/") or filename.startswith("\\")
+            or os.path.splitdrive(filename)[0]):  # "C:\evil" / "C:evil" / UNC
         return ""
 
     session_dir = session_dir_ctx.get()
@@ -27,7 +28,16 @@ def _get_safe_path(filename: str) -> str:
         filename = os.path.join(session_dir, filename)
 
     if _get_workspace_type() == "disk":
-        return os.path.join(_get_workspace_dir(), filename)
+        # os.path.join silently discards the base for drive-qualified ("C:\evil") and
+        # drive-relative ("C:evil") names on Windows — containment check catches those.
+        base = os.path.abspath(_get_workspace_dir())
+        target = os.path.abspath(os.path.join(base, filename))
+        try:
+            if os.path.commonpath([base, target]) != base:
+                return ""
+        except ValueError:  # different drives
+            return ""
+        return target
     return filename
 
 def get_workspace_files() -> List[str]:

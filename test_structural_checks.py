@@ -372,6 +372,27 @@ def main():
 
         contextvars.copy_context().run(_restore_scenario)
 
+    # --- _get_safe_path Windows escape (review #2 finding 1: os.path.join discards the base
+    # for drive-qualified/drive-relative names, letting write_workspace_file leave the workspace) ---
+    with tempfile.TemporaryDirectory() as tmpdir:
+        def _safe_path_scenario():
+            from tools.fs import _get_safe_path
+            _orig_ws7 = _config.cfg.get("settings", {}).get("workspace")
+            _config.cfg["settings"]["workspace"] = {"type": "disk", "dir": tmpdir}
+            try:
+                assert _get_safe_path("C:\\evil.md") == ""       # drive-qualified
+                assert _get_safe_path("C:evil.md") == ""          # drive-relative
+                assert _get_safe_path("..\\evil.md") == ""        # traversal (pre-existing guard)
+                ok = _get_safe_path("notes/sub.md")
+                assert ok and os.path.commonpath([os.path.abspath(tmpdir), ok]) == os.path.abspath(tmpdir), ok
+            finally:
+                if _orig_ws7 is None:
+                    _config.cfg["settings"].pop("workspace", None)
+                else:
+                    _config.cfg["settings"]["workspace"] = _orig_ws7
+
+        contextvars.copy_context().run(_safe_path_scenario)
+
     # --- intake verdict parsing (fail-open: the clarifier can never block research) ---
     assert _clarify_verdict("CLEAR") is None
     assert _clarify_verdict("  clear\n") is None
