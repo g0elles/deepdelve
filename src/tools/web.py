@@ -135,6 +135,57 @@ def _fetch_raw(url: str, convert_to_md: bool = True, _redirect_depth: int = 0):
         return md_content, [url]
 
 
+# Phrase-level soft-404/paywall markers (EN + ES — the flagship benchmark language), not single
+# loaded words in isolation: "404" alone appears in real articles about errors, so it's only
+# matched inside its not-found phrasings. Markers only ever fire together with the low-prose-mass
+# condition in _stub_reason below, so a real article that merely SAYS "subscribe" is never flagged.
+_STUB_MARKERS_RE = re.compile(
+    r'page not found|p[aá]gina no encontrada|error 404|404 not found|no longer available|'
+    r'suscr[ií]b|suscripci[oó]n|subscri(?:be|ption|ber)|sign in to continue|to continue reading|'
+    r'inicia sesi[oó]n|reg[ií]strate|contenido exclusivo|paywall',
+    re.IGNORECASE)
+
+
+def _stub_reason(md_content: str) -> str | None:
+    """Detect a soft-404/paywall stub: a fetch that returned HTTP 200 but no real article
+    content. Confirmed live (run 14, 2026-07-12): a model-INVENTED El Tiempo URL answered 200
+    with ~5KB of subscription chrome, got recorded as a real fetch, and the hard grounding gate
+    passed — an invented citation wearing a 'successful' fetch. Returns a short reason string
+    when the page looks like a stub, else None.
+
+    Prose mass = words in non-heading lines of >=15 words (URLs and markdown link syntax
+    stripped first): real articles are made of long paragraph lines, chrome is short
+    link/button lines. Heading lines never count — verified against run 14's live URL, whose
+    soft-404 is a "recommended headlines" shell whose only long lines are #### headline links
+    (183 words of them, all chrome). A page with real prose (>=150 words of it) is never a
+    stub no matter what markers it contains; below that, a not-found/paywall marker — or
+    near-zero prose at all — flags it."""
+    if not md_content or not md_content.strip():
+        return "empty page"
+    text = re.sub(r'https?://\S+', ' ', md_content)
+    text = re.sub(r'!\[[^\]]*\]\([^)]*\)', ' ', text)      # images
+    text = re.sub(r'\[([^\]]*)\]\([^)]*\)', r'\1', text)   # links -> their label text
+    prose_words = 0
+    for line in text.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        words = line.split()
+        if len(words) >= 15:
+            prose_words += len(words)
+    if prose_words >= 150:
+        return None
+    m = _STUB_MARKERS_RE.search(text)
+    if m:
+        return (f"paywall/not-found marker {m.group(0)!r} with almost no article text "
+                f"({prose_words} prose words)")
+    # No marker: flag only NEAR-ZERO prose (run 14's live shell scores 0). Threshold kept low
+    # (10, not e.g. 20) on purpose — a tiny but legitimate page (example.com is ~15 prose
+    # words) must not lose its citability without a paywall/not-found marker as evidence.
+    if prose_words < 10:
+        return f"no substantive text ({prose_words} prose words after boilerplate strip)"
+    return None
+
+
 def _fetched_filename(filename: str, convert_to_md: bool = True) -> str:
     """Canonical workspace path for fetched content: everything goes under sources/ so the run
     root stays readable (final_report.md, findings.md, _todos.md, _run_state.json only) —
@@ -151,6 +202,17 @@ def _save_fetched(urls_fetched: list[str], filename: str, data, convert_to_md: b
     plus any redirect target actually followed) as real fetches. Shared by fetch_url_to_workspace
     and web_search's auto-fetch."""
     filename = _fetched_filename(filename, convert_to_md)
+
+    # Stub detection runs on the raw converted markdown BEFORE the Source-URL header is
+    # prepended — the header's URL slug must never count as page content (see _stub_reason).
+    stub = _stub_reason(data) if (convert_to_md and isinstance(data, str)) else None
+    stub_warning = ""
+    if stub:
+        stub_warning = (
+            f"\nWARNING: this page looks like a stub/soft-404 ({stub}) — a paywall or "
+            f"not-found shell with no real article content. Do NOT cite this URL as a source; "
+            f"find a different source for whatever you hoped this page contained."
+        )
 
     # The file's true URL travels INSIDE the file. Root-cause fix for a confirmed live failure
     # (qwen3.6, 2026-07-11): Analyzers reading slugified filenames had no way to know a file's
@@ -186,13 +248,13 @@ def _save_fetched(urls_fetched: list[str], filename: str, data, convert_to_md: b
         # content — this is what the real grounding check cross-references, independent of what
         # the model later claims.
         for u in urls_fetched:
-            record_fetched_url(u, filename)
-        return f"Fetched URL successfully to '{filename}' on disk."
+            record_fetched_url(u, filename, stub=stub)
+        return f"Fetched URL successfully to '{filename}' on disk.{stub_warning}"
     else:
         _IN_MEMORY_FS[path] = chunk
         for u in urls_fetched:
-            record_fetched_url(u, filename)
-        return f"Fetched URL successfully to '{filename}' in memory."
+            record_fetched_url(u, filename, stub=stub)
+        return f"Fetched URL successfully to '{filename}' in memory.{stub_warning}"
 
 
 def probe_search_health(retry_delay: float = 3.0) -> str | None:

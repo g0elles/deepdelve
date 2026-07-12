@@ -18,9 +18,12 @@ def _get_workspace_dir() -> str:
     return cfg.get("settings", {}).get("workspace", {}).get("dir", ".")
 
 def _get_safe_path(filename: str) -> str:
-    # Safely allow subdirectories while blocking traversal hacks
+    # Safely allow subdirectories while blocking traversal hacks. Drive-letter names are matched
+    # by regex, not os.path.splitdrive — splitdrive only recognizes drives when running ON
+    # Windows, so the same guard silently stopped rejecting "C:\evil" after the Linux migration
+    # (caught by this suite's own verdict row going red cross-platform).
     if (".." in filename or filename.startswith("/") or filename.startswith("\\")
-            or os.path.splitdrive(filename)[0]):  # "C:\evil" / "C:evil" / UNC
+            or re.match(r'^[A-Za-z]:', filename)):  # "C:\evil" / "C:evil" / UNC
         return ""
 
     session_dir = session_dir_ctx.get()
