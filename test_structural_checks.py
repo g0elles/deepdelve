@@ -865,6 +865,48 @@ def main():
     q = "1. Which country?\n2. What timeframe?"
     assert _clarify_verdict(q) == q
 
+    # --- max_run_minutes wall-clock cutoff actually fires even when the stream goes silent ---
+    # (live bug, 2026-07-12): the old `async for update in stream: if deadline exceeded: break`
+    # only checked the deadline when an update actually arrived. A real run against
+    # deepdelve-tongyi blew 6+ minutes past its configured max_run_minutes=60 with the GPU still
+    # actively generating one silent multi-minute <think> block and zero cutoff message. Fixed in
+    # run_cli (engine/tui.py) by manually driving __anext__() through asyncio.wait_for(...,
+    # timeout=remaining) instead of a plain `async for` — this proves that exact mechanism cuts
+    # off a stream that goes silent past its deadline, on a real wall-clock timer, independent of
+    # whether the stream ever yields again.
+    import time
+
+    class _SlowStream:
+        def __aiter__(self):
+            return self
+        async def __anext__(self):
+            if not hasattr(self, "_given"):
+                self._given = True
+                return "first update"
+            await _asyncio.sleep(10)  # simulates a long silent <think> block past the deadline
+            return "never reached"
+
+    async def _cutoff_scenario():
+        deadline = time.monotonic() + 0.2
+        it = _SlowStream().__aiter__()
+        received = []
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return received, "pre_check"
+            try:
+                update = await _asyncio.wait_for(it.__anext__(), timeout=remaining)
+            except _asyncio.TimeoutError:
+                return received, "timeout"
+            received.append(update)
+
+    _start = time.monotonic()
+    _received, _how = _asyncio.run(_cutoff_scenario())
+    _elapsed = time.monotonic() - _start
+    assert _received == ["first update"], _received
+    assert _how == "timeout", _how
+    assert _elapsed < 2, f"cutoff must fire near the 0.2s deadline, not wait for the 10s stall ({_elapsed}s)"
+
     print("All structural-check assertions passed.")
 
 
