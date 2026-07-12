@@ -149,8 +149,24 @@ Status as of 2026-07-12.
   test round-tripped a 1000+ token thinking block for "15 + 27") — so a real benchmark round needs
   a longer time budget than the other local candidates, not a template fix. Config for testing:
   `~/.deepdelve/config-tongyi.yaml` (not in git, mirrors the live config with `openai_model:
-  deepdelve-tongyi`). Not yet run through the full Colombia B2B or sales-forecasting benchmark —
-  that's the next step, budgeting for its slower per-turn latency.
+  deepdelve-tongyi`).
+  - **Two real benchmark attempts, both inconclusive on quality — the model is not currently
+    usable at either quant tried, for two different reasons.** Q4_K_M: killed at 1h6min (the
+    `max_run_minutes` bug this exposed and fixed, see "Repo governance + CI" entry above) — GPU
+    was genuinely computing the whole time, real progress happened (delegate_tasks invoked, 2
+    fetches), just far too slow to be practical. Then tried `deepdelve-tongyi-iq3`
+    (`hf.co/mradermacher/Tongyi-DeepResearch-30B-A3B-i1-GGUF:IQ3_M`, 13.5GB — passed the same
+    isolated tool-call smoke test, and was noticeably faster/less verbose on that trivial test:
+    2.7s vs. 5.9s eval time for "15+27") expecting it to be the practical answer. **It was worse
+    on the real workload**: 37+ minutes against the actual Planner system prompt with ZERO
+    progress — no `write_todos`, no `delegate_tasks`, no run folder content at all (`_run_state.json`
+    stayed at its initialized empty state the whole time), unlike Q4_K_M which at least made real
+    tool calls in a comparable window. Killed manually. The isolated single-tool-call smoke test
+    (README's `curl .../api/chat` snippet) evidently does NOT predict real-workload viability at
+    this quant level — a real trial against the actual multi-thousand-token Planner prompt is the
+    only test that means anything, and neither quant has passed one yet. Not recommended for
+    further local benchmarking without a materially different quant or a context/prompt-length
+    investigation into why the full system prompt specifically breaks it.
 ## Stretch
 
 - **RL fine-tuning for tool-call reliability** (GRPO/PPO on the actual Planner/Searcher schema) — targets the fetch-skipping/tool-call-reliability root cause directly instead of catching it after the fact. Needs real training infrastructure; not started.
