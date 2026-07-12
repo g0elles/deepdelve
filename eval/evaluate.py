@@ -306,8 +306,52 @@ def score_llm_judge(query: str, output: str, criteria: list[dict], eval_cfg: dic
 
 
 
+def score_structural(session_dir: str | None, artifact_name: str | None) -> float:
+    """Rubric tier 1 (structural integrity) scored deterministically from the run's own forensic
+    record — `_run_state.json` + workspace files — never from the report's self-presentation,
+    which the benchmark protocol explicitly distrusts (eval/colombia_b2b_benchmark.md tier 1).
+    The other scorers never read `_run_state.json` at all, so the one tier an LLM judge cannot
+    verify was previously manual-only. Four equal-weight checks:
+      1. the report exists and carries no salvage/quarantine banner
+      2. every URL it cites appears in fetched_urls (same prefix rule as the live gate)
+      3. findings.md exists and cites at least one real fetch (Pass-1 discipline held)
+      4. the final completion-check attempt recorded no unresolved problem
+    Returns passed/4. Criteria are unused — the checks are fixed by construction."""
+    if not session_dir:
+        return 0.0
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
+    from utils.grounding import extract_cited_urls, _urls_prefix_match
+
+    report = read_artifact(session_dir, artifact_name or "final_report.md") or ""
+    state = {}
+    state_path = os.path.join(session_dir, "_run_state.json")
+    if os.path.exists(state_path):
+        try:
+            with open(state_path, encoding="utf-8") as f:
+                state = json.load(f)
+        except Exception:
+            state = {}
+    fetched = {e["url"].rstrip("/") for e in state.get("fetched_urls", []) if e.get("url")}
+
+    def _grounded(u: str) -> bool:
+        k = u.rstrip("/")
+        return k in fetched or any(_urls_prefix_match(k, f) for f in fetched)
+
+    cited = extract_cited_urls(report)
+    findings = read_artifact(session_dir, "findings.md") or ""
+    attempts = state.get("completion_check_attempts", [])
+    checks = [
+        bool(report.strip()) and "AUTO-RECOVERED DRAFT" not in report and "QUARANTINED DRAFT" not in report,
+        bool(cited) and all(_grounded(u) for u in cited),
+        any(_grounded(u) for u in extract_cited_urls(findings)),
+        bool(attempts) and attempts[-1].get("problem") is None,
+    ]
+    return round(sum(checks) / len(checks), 3)
+
+
 def evaluate_item(query: str, output: str, criteria: list[dict],
-                  eval_type: str, eval_cfg: dict, judge_timeout: int = 600) -> float:
+                  eval_type: str, eval_cfg: dict, judge_timeout: int = 600,
+                  session_dir: str | None = None, artifact: str | None = None) -> float:
     """Dispatch to the configured evaluation strategy."""
     if eval_type == "contains":
         return score_contains(output, criteria)
@@ -315,6 +359,8 @@ def evaluate_item(query: str, output: str, criteria: list[dict],
         return score_regex(output, criteria)
     elif eval_type == "llm_judge":
         return score_llm_judge(query, output, criteria, eval_cfg, judge_timeout)
+    elif eval_type == "structural":
+        return score_structural(session_dir, artifact)
     else:
         print(f"  [WARN] Unknown eval_type '{eval_type}', falling back to 'contains'")
         return score_contains(output, criteria)
@@ -434,15 +480,16 @@ def main() -> None:
             elapsed = time.time() - t0
 
             # Determine output to score
+            session_dir = find_latest_session(workspace_dir)
             output_text: str = ""
             if artifact:
-                session_dir = find_latest_session(workspace_dir)
                 output_text = (session_dir and read_artifact(session_dir, artifact)) or ""
             if not output_text:
                 output_text = stdout_capture or ""
 
             # Score
-            score = evaluate_item(query, output_text, criteria, eval_type, eval_cfg, args.judge_timeout)
+            score = evaluate_item(query, output_text, criteria, eval_type, eval_cfg, args.judge_timeout,
+                                  session_dir=session_dir, artifact=artifact)
             print(f"  score={score:.3f}  time={elapsed:.1f}s  eval={eval_type}")
 
             entry = {

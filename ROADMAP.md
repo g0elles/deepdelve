@@ -46,6 +46,9 @@ Status as of 2026-07-12.
 - **Non-URL "citations" evade the grounding check entirely.** A live report sourced several claims to `"Expert opinion from a cold storage facility manager in Colombia"` — not URL-shaped, so `extract_cited_urls` never sees it, even though it's exactly as ungrounded as a fabricated URL. The grounding check's whole model is "cross-reference cited URLs against fetched URLs" — a citation with no URL at all currently gets a free pass. **Fixed — see "Done" above (`non_url_citation_check`).**
 - **Scaling down scope (12 sectors → 5) improved surface polish, not actual grounding rate.** A 5-sector re-run produced far more plausible-looking, consistently-formatted citations than a 12-sector run, but cross-referencing against `_run_state.json`'s real `fetched_urls` showed most of them were still fabricated — only 5 URLs were ever fetched all run, while the final report cited well over twice that many distinct domains. Fewer sectors did not proportionally reduce the fabrication rate.
 
+- **Line-scoped claim grounding (2026-07-12):** `claim_grounding_problem` compared WHOLE-report terms against each source, so generic shared terms masked per-claim fabrication (run 12's flagship figure was absent from its cited source but passed via other lines' overlap). Now each line with a fetched citation is checked against its own source(s) — the regulation-check pattern generalized; conservative as before (≥1 checkable term + zero overlap only, URL slugs stripped).
+- **Structural eval scorer (2026-07-12):** new `eval_type: structural` in `eval/evaluate.py` — rubric tier 1 scored deterministically from `_run_state.json` + workspace files (cited⊆fetched, findings.md grounded, no salvage/quarantine banner, no unresolved final problem), which no other scorer read at all.
+
 ## Planned (not started)
 
 - **Documentation update pass** — README/config docs lag the 2026-07-11 changes: caches +
@@ -54,13 +57,6 @@ Status as of 2026-07-12.
   `_run_state.json`, pre-run search health probe, malformed-tool-call retries, search quota
   refunds, query-level scope warnings). Also fold the model verdicts into README "Model choice"
   (gpt-oss default at 7/10 best; qwen3.6 fails at research scale; NIM free tier incompatible).
-- **Line-scoped claim grounding** — `claim_grounding_problem` compares WHOLE-report terms vs each
-  source, so generic shared terms mask per-claim fabrication (how run 12's "Ley 1906" passed the
-  zero-overlap check). Generalize the regulation-check pattern: per line with a fetched citation,
-  that line's salient terms vs that source; flag only lines with ≥1 checkable term and zero overlap.
-- **Structural scorer for `eval/evaluate.py`** — currently contains/regex/llm_judge only, never
-  reads `_run_state.json`. New eval_type "structural": cited⊆fetched, findings.md exists, no
-  salvage/quarantine banner, no unresolved problems. Automates rubric tier 1 deterministically.
 - **Address the grounding check's topical-relevance gap** — some form of "is this source actually about the claimed subject," not just "was it fetched and does it share terms." Unclear whether this needs an LLM judge (this local model class has proven unreliable as its own judge elsewhere in this project) or a cheaper heuristic.
 - **Headless-browser fetch fallback** for JS-gated pages that return bot-challenge stubs to a plain HTTP GET.
 

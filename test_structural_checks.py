@@ -447,6 +447,44 @@ def main():
 
         contextvars.copy_context().run(_safe_path_scenario)
 
+    # --- structural eval scorer (review #2 item 5: rubric tier 1 from _run_state.json, which no
+    # other scorer reads — an LLM judge only ever sees the report's self-presentation) ---
+    import importlib.util as _ilu
+    import json as _json
+    _spec = _ilu.spec_from_file_location(
+        "eval_evaluate", os.path.join(os.path.dirname(os.path.abspath(__file__)), "eval", "evaluate.py"))
+    _ev = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_ev)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        _u = "https://gov.example.co/page"
+        def _write_run(report, findings, state):
+            for name, content in (("final_report.md", report), ("findings.md", findings)):
+                path = os.path.join(tmpdir, name)
+                if content is None:
+                    if os.path.exists(path): os.remove(path)
+                else:
+                    with open(path, "w", encoding="utf-8") as f: f.write(content)
+            with open(os.path.join(tmpdir, "_run_state.json"), "w", encoding="utf-8") as f:
+                _json.dump(state, f)
+
+        good_state = {"fetched_urls": [{"url": _u, "filename": "sources/p.md"}],
+                      "completion_check_attempts": [{"attempt": 0, "problem": None}]}
+        # Clean run: report + findings both cite the real fetch, no unresolved problem -> 4/4
+        _write_run(f"- x [g]({_u})", f"- f ({_u})", good_state)
+        assert _ev.score_structural(tmpdir, "final_report.md") == 1.0
+        # Salvaged report citing an unfetched URL, no findings, unresolved problem -> 0/4
+        _write_run("> **AUTO-RECOVERED DRAFT** —\n- x [g](https://fake.example.com/a)", None,
+                   {"fetched_urls": [{"url": _u, "filename": "sources/p.md"}],
+                    "completion_check_attempts": [{"attempt": 2, "problem": "missing_artifact"}]})
+        assert _ev.score_structural(tmpdir, "final_report.md") == 0.0
+        # Honest partial: clean report + grounded findings, but the run ended unresolved -> 3/4
+        _write_run(f"- x [g]({_u})", f"- f ({_u})",
+                   {"fetched_urls": [{"url": _u, "filename": "sources/p.md"}],
+                    "completion_check_attempts": [{"attempt": 3, "problem": "claim_unsupported"}]})
+        assert _ev.score_structural(tmpdir, "final_report.md") == 0.75
+        assert _ev.score_structural(None, "final_report.md") == 0.0
+
     # --- intake verdict parsing (fail-open: the clarifier can never block research) ---
     assert _clarify_verdict("CLEAR") is None
     assert _clarify_verdict("  clear\n") is None
