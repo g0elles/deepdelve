@@ -1,10 +1,11 @@
 api:
   openai_base_url: http://localhost:11434/v1   # Ollama's OpenAI-compatible endpoint
-  # Re-tested 2026-07-10 against this project's actual nested delegate_tasks(tasks:[{...,agent_id:enum}])
-  # schema, not inherited from the old project's flat-schema test — see README "Model choice" for the
-  # full 3-model result table. mistral-nemo:12b held at 3/3; hermes3:8b (the old project's top pick)
-  # regressed to 0/3 on this schema.
-  openai_model: deepdelve-mistral-nemo
+  # Default per the 13-run Colombia B2B benchmark (2026-07-11, manual rubric vs gold reference —
+  # see README "Model choice"): gpt-oss is the only model in the "usable with verification" band
+  # (best 7/10, high run-to-run variance but honest-empty on bad runs). mistral-nemo:12b passes the
+  # delegate_tasks schema test 3/3 but benchmarks at a 2/10 ceiling with loud fabrication;
+  # qwen3.6 researches well but fails synthesis at scale (1/10); hermes3:8b 0/3 on the schema.
+  openai_model: deepdelve-gpt-oss
   # OpenAI-SDK retry budget for 429/5xx (exponential backoff, honors Retry-After). Hosted
   # endpoints (e.g. NVIDIA NIM's free tier) throttle far below what concurrent sub-agents
   # generate — a run died to a single unretried 429 before this existed.
@@ -108,7 +109,7 @@ settings:
     # content share any checkable fact (number, version, proper noun) with what the report claims?
     # Catches "cited a real fetched source without actually reading it" — inspired by CYC2002tommy's
     # SKILL.md claim-grounding phase, scoped to a cheap deterministic check rather than another LLM
-    # call (see engine/tui.py::_claim_grounding_problem). Deliberately conservative (zero-overlap
+    # call (see utils/grounding.py::claim_grounding_problem). Deliberately conservative (zero-overlap
     # only) to keep false positives rare — set false to disable if it proves too noisy in practice.
     content_level_check: true
     # Catches a claim attributed to something that isn't a URL at all — a bare "(DANE, 2020)"
