@@ -1,7 +1,7 @@
 import os
 from agent_framework import tool
 from tools.core import with_quota
-from tools.fs import _get_workspace_type, _get_workspace_dir, get_workspace_file_content, _IN_MEMORY_FS
+from tools.fs import _get_workspace_type, get_workspace_file_content, _IN_MEMORY_FS
 
 @tool
 @with_quota

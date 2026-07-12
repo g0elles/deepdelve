@@ -46,6 +46,21 @@ Status as of 2026-07-12.
   second overshoot forces the completion check's final verdict. TUI Planner exempt. Verified live
   with a 3000-char budget: honest "budget exhausted" report, no silent truncation.
 - **Grounding-layer hardening batch (2026-07-12 evening, `7f0782f`..`5c24607`), every fix validated live in run 15:** stub-fetch detection (soft-404/paywall shells recorded as `stub` in `fetched_urls`, refused by all grounding checks, own `stub_source` verdict — closes run 14's invented-URL hole; 10/21 run-15 fetches flagged, zero false positives); Source-URL header self-grounding fix (the injected line-1 header's URL slug no longer counts as source content); charset fix (HTML decoded by real encoding — strict UTF-8 → header → meta → cp1252; stale meta tags scrubbed so markitdown can't re-mojibake; Spanish accents verified intact live); citation-format enforcement (`uncited_claims`: ≥3 figure-bearing lines with no citation in an h1-h3 section without URLs — run 14's table + detached "Source URLs" shape; section-scoped after run 15 caught the per-niche `#### Sources` false positive); URL prefix-boundary fix (fetched `.../article` no longer grounds fabricated `.../article-fake-2024`); `grounding_check.enabled` master switch actually honored; platform-independent drive-letter guard (splitdrive silently stopped rejecting `C:\evil` after the Linux migration).
+- **Repo governance + CI (2026-07-12)**, triggered by an external audit's one genuinely real
+  finding (the repo is public with no LICENSE): `LICENSE` (MIT), `.github/workflows/ci.yml`
+  (install + `ruff check` + `test_structural_checks.py` on push/PR to main, verified green in a
+  clean throwaway venv before ever touching GitHub), a pragmatic `[tool.ruff]` config
+  (pyflakes-only — `E`/`I` generated 189 line-length/import-sort hits that were pure style noise
+  against this codebase's established dense-comment/lazy-import conventions; narrowed to `F`,
+  which found 21 real issues: dead imports, an unused variable left over from this session's own
+  `_fetch_raw` rewrite, one f-string-without-placeholders). Floor+ceiling dependency pins
+  (`agent-framework`, `httpx`, `textual`, `beautifulsoup4`, `PyYAML`, `ddgs`, `markitdown`,
+  `pydantic` — E12, previously only `markitdown` was pinned) + `requirements.lock` (192-package
+  `pip freeze` snapshot from a clean install). The rest of that audit's "critical" findings
+  (no iterative loop, no token budgeting, TUI blocks on LLM calls, needs a DI rewrite, roadmap
+  "contradictions") were checked directly against the code and found false or already solved —
+  see the session's plan file for the full point-by-point rebuttal; not reproduced here since
+  none of it required a code change.
 - **Academic / literature-review output mode (2026-07-12), triggered by a real gap**: a live
   sales-forecasting query got a properly-structured literature-review paper from DeepSeek
   (`eval/reference/sales_forecasting_deepseek.md`, `(Author, Year)` citations + numbered

@@ -61,7 +61,7 @@ def with_quota(func):
             if err := check_quota(func.__name__): return err
             try:
                 return await func(*args, **kwargs)
-            except Exception as e:
+            except Exception:
                 return f"CRITICAL TOOL EXECUTION ERROR: {func.__name__} failed internally.\n\nException Details:\n{traceback.format_exc()}"
         return async_wrapper
     else:
@@ -70,6 +70,6 @@ def with_quota(func):
             if err := check_quota(func.__name__): return err
             try:
                 return func(*args, **kwargs)
-            except Exception as e:
+            except Exception:
                 return f"CRITICAL TOOL EXECUTION ERROR: {func.__name__} failed internally.\n\nException Details:\n{traceback.format_exc()}"
         return sync_wrapper

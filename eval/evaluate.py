@@ -19,7 +19,6 @@ import yaml
 import argparse
 import subprocess
 from datetime import datetime
-from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -402,7 +401,7 @@ def main() -> None:
     # this used to produce in results.jsonl).
     model_name = args.model or read_agent_model(args.config, project_root)
 
-    print(f"\nEval harness ready")
+    print("\nEval harness ready")
     print(f"  dataset   : {args.dataset} ({len(dataset)} items)")
     print(f"  model     : {model_name}")
     print(f"  hardware  : {args.hardware}")

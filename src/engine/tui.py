@@ -4,7 +4,7 @@ from textual.app import App, ComposeResult
 from textual.widgets import Input, OptionList, Static, Collapsible, RichLog, Button
 from textual.containers import VerticalScroll, Horizontal, Vertical
 from rich.markdown import Markdown
-from engine.orchestrator import create_local_agent, reset_session, delegation_depth_ctx, build_quota_pool, topup_quota_pool
+from engine.orchestrator import create_local_agent, reset_session, delegation_depth_ctx, build_quota_pool
 import engine.orchestrator as orchestrator_module
 import asyncio
 import json
@@ -18,9 +18,8 @@ import uuid
 import sys
 import argparse
 from pathlib import Path
-from tools import tool_quotas_ctx, WORKSPACE_TOOLS, get_workspace_files, get_workspace_file_content
-from tools.fs import _get_workspace_type, _get_workspace_dir
-from utils.run_state import reset_fetched_urls, get_fetched_urls, record_fetched_url, RunState, run_state_ctx
+from tools import tool_quotas_ctx, get_workspace_files, get_workspace_file_content
+from utils.run_state import reset_fetched_urls, get_fetched_urls, RunState, run_state_ctx
 
 AGENT_NAME = config.APP_TITLE
 AGENT_DESCRIPTION = config.APP_DESCRIPTION
@@ -1876,7 +1875,7 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
                         f"have, then stop. An incomplete but grounded report now beats a truncated "
                         f"context."
                     )
-                    sys.stdout.write(f"\n\033[93m[System] Context budget reached — forcing wrap-up turn.\033[0m\n")
+                    sys.stdout.write("\n\033[93m[System] Context budget reached — forcing wrap-up turn.\033[0m\n")
                     new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
                     new_inputs.append(Message("user", [{"type": "text", "text": endgame}]))
                     current_input = new_inputs
@@ -1932,7 +1931,7 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
         if os.path.exists(report_path):
             sys.stdout.write(f"\033[1;32mReport:\033[0m {report_path}\n")
         else:
-            sys.stdout.write(f"\033[1;31mReport: NOT WRITTEN\033[0m (see run folder for forensics)\n")
+            sys.stdout.write("\033[1;31mReport: NOT WRITTEN\033[0m (see run folder for forensics)\n")
         sys.stdout.write(
             f"\033[2mRun folder:\033[0m {os.path.abspath(_current_run_dir(run_dir_name))}\n"
             f"\033[2mSources fetched:\033[0m {len(get_fetched_urls())}  "

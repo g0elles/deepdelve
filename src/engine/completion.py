@@ -399,7 +399,7 @@ def _salvage_narrated_report(req_artifact: str, last_assistant_text: str) -> boo
         return False
 
 
-async def run_completion_check(query: str, current_input, run_state: "RunState", notify, last_assistant_text: str = ""):
+async def run_completion_check(query: str, current_input, run_state: "RunState", notify, last_assistant_text: str = ""):  # noqa: F821 — utils.run_state.RunState, annotation only
     """Runs the 3-tier completion check (delegated? artifact exists? really grounded?) plus the
     structural fixes: per-attempt quota top-up, artifact quarantine, run-state persistence, and
     (as a last resort) salvaging a narrated-but-never-written report instead of losing it.
