@@ -356,6 +356,18 @@ def main():
             assert find_unsupported_regulation_ids("Decreto 9999/2015 obliga a todos.") == []
             assert find_unsupported_regulation_ids(
                 "Decreto 9999/2015 ([x](https://never-fetched.example.com/y))") == []
+            # Run 14's self-grounding case: the regulation number exists ONLY inside our own
+            # injected Source-URL header line (the URL slug), not in the page content — the
+            # check must strip that header before matching, or it verifies against itself.
+            record_fetched_url("https://news.example.co/ley-1819-e-invoicing-dian",
+                               filename="sources/eltiempo.md")
+            _IN_MEMORY_FS["sources/eltiempo.md"] = (
+                "Source-URL: https://news.example.co/ley-1819-e-invoicing-dian\n\n"
+                "Suscríbete para leer el contenido completo de nuestras noticias y análisis del día."
+            )
+            bad2 = find_unsupported_regulation_ids(
+                "| Ley 1819 de 2016 | [ET](https://news.example.co/ley-1819-e-invoicing-dian) |")
+            assert bad2 and "1819" in bad2[0], (bad2, "Source-URL header slug must not self-ground")
         finally:
             _IN_MEMORY_FS.clear()
             _IN_MEMORY_FS.update(saved_fs)
