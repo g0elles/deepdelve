@@ -73,6 +73,12 @@ settings:
   # to the existing --auto-approve flag). Lets you review/reject the research plan before quota is
   # spent on delegate_tasks, reusing the same tool-approval machinery as settings.permissions.
   human_in_the_loop: false
+  # TUI only: before the first research run of a conversation, one tool-less intake call either
+  # replies CLEAR or asks up to 3 scoping questions (subject boundaries, geography, timeframe,
+  # deliverable focus) — a mis-scoped run costs its full 15-60 minutes, the intake call costs
+  # seconds. Fail-open by design: an error, empty reply, or rambling reply from the intake model
+  # falls straight through to research. Headless runs (--prompt/--resume-run) never clarify.
+  clarify_before_research: true
   # Per-tool approval gate (engine/orchestrator.py::apply_tool_permissions). remove_workspace_file's
   # own docstring calls it "a destructive action that mandates human oversight" — that claim is only
   # actually true if it's listed here. No agent currently has this tool wired in (see app.py), but

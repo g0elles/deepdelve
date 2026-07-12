@@ -177,6 +177,58 @@ def main():
     finally:
         _ddgs.DDGS = _real_ddgs
 
+    # --- run-resume helpers (--resume-run: reattach to an interrupted run instead of restarting) ---
+    from engine.tui import load_resume_state, build_resume_input, _clarify_verdict
+    from tools.fs import session_dir_ctx
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        run_dir = os.path.join(tmpdir, "my_interrupted_run")
+        os.makedirs(os.path.join(run_dir, "sources"))
+        prior = {
+            "query": "Research X in Colombia",
+            "fetched_urls": [{"url": "https://real.example.com/a", "filename": "sources/a.md", "timestamp": 1.0}],
+            "findings": [],
+        }
+        with open(os.path.join(run_dir, "_run_state.json"), "w", encoding="utf-8") as f:
+            json.dump(prior, f)
+        with open(os.path.join(run_dir, "_todos.md"), "w", encoding="utf-8") as f:
+            f.write("- [x] background\n- [ ] verification")
+        with open(os.path.join(run_dir, "findings.md"), "w", encoding="utf-8") as f:
+            f.write("## Findings so far\n- claim (https://real.example.com/a)")
+
+        _orig_ws2 = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "disk", "dir": tmpdir, "session_isolation": True}
+        try:
+            name, state = load_resume_state(run_dir)  # full path accepted
+            assert name == "my_interrupted_run" and state["query"] == "Research X in Colombia"
+            name2, _ = load_resume_state("my_interrupted_run")  # bare folder name accepted
+            assert name2 == name
+
+            def _resume_scenario():
+                session_dir_ctx.set(name)
+                text = build_resume_input(state["query"], state)
+                assert "RESUMED RUN" in text
+                assert "Research X in Colombia" in text
+                assert "https://real.example.com/a" in text
+                assert "verification" in text          # _todos.md injected
+                assert "Findings so far" in text       # findings.md injected
+
+            contextvars.copy_context().run(_resume_scenario)
+        finally:
+            if _orig_ws2 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws2
+
+    # --- intake verdict parsing (fail-open: the clarifier can never block research) ---
+    assert _clarify_verdict("CLEAR") is None
+    assert _clarify_verdict("  clear\n") is None
+    assert _clarify_verdict("") is None
+    assert _clarify_verdict(None) is None
+    assert _clarify_verdict("x" * 700) is None  # rambling => proceed
+    q = "1. Which country?\n2. What timeframe?"
+    assert _clarify_verdict(q) == q
+
     print("All structural-check assertions passed.")
 
 
