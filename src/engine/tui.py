@@ -1781,12 +1781,38 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
 
             try:
                 stream = agent.run(current_input, session=session, stream=True)
-                async for update in stream:
-                    if budget_deadline and time.monotonic() > budget_deadline:
+                # Manually driven __anext__ + asyncio.wait_for, NOT `async for update in stream`
+                # (found live, 2026-07-12): the plain async-for version only checks budget_deadline
+                # once it actually RECEIVES an update — if the underlying stream goes a very long
+                # time between updates (confirmed with Tongyi-DeepResearch: one single massive
+                # <think> block round-tripped 1h6min+ past a configured max_run_minutes: 60 with
+                # the GPU still actively generating and zero cutoff), the deadline check never gets
+                # a chance to run at all. Racing each __anext__() against the remaining budget via
+                # asyncio.wait_for fires the cutoff on a real wall-clock timer regardless of how
+                # long the stream goes quiet, and needs no assumption about how finely the
+                # underlying model/framework chunks its output.
+                stream_iter = stream.__aiter__()
+                while True:
+                    if budget_deadline:
+                        remaining = budget_deadline - time.monotonic()
+                        if remaining <= 0:
+                            sys.stdout.write(
+                                f"\n\033[91m[System] max_run_minutes ({max_run_minutes}) exceeded — "
+                                f"cutting the current turn short.\033[0m\n"
+                            )
+                            break
+                    else:
+                        remaining = None
+                    try:
+                        update = await asyncio.wait_for(stream_iter.__anext__(), timeout=remaining)
+                    except asyncio.TimeoutError:
                         sys.stdout.write(
                             f"\n\033[91m[System] max_run_minutes ({max_run_minutes}) exceeded — "
-                            f"cutting the current turn short.\033[0m\n"
+                            f"cutting the current turn short (stream produced no update before the "
+                            f"deadline).\033[0m\n"
                         )
+                        break
+                    except StopAsyncIteration:
                         break
                     run_stream_chars += stream_content_chars(update)
                     if context_budget and run_stream_chars > context_budget:
