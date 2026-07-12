@@ -13,6 +13,7 @@ from agent_framework import Message, Content
 from textual import events
 import os
 import re
+import time
 import uuid
 import sys
 import argparse
@@ -502,6 +503,11 @@ class BasicTuiAgent(App):
         super().__init__(*args, **kwargs)
         self.builder = builder
         self.session_to_resume = session_to_resume
+        # Pre-research intake state: _pending_clarify holds the original query while the user
+        # answers the intake questions; _clarify_done means this conversation's research already
+        # started, so follow-up turns skip intake entirely.
+        self._pending_clarify = None
+        self._clarify_done = False
 
     def compose(self) -> ComposeResult:
         yield VerticalScroll(id="chat-container")
@@ -615,6 +621,8 @@ class BasicTuiAgent(App):
             self._is_agent_running = False
             self.workers.cancel_all()
             reset_session()
+            self._pending_clarify = None
+            self._clarify_done = False
 
             global _current_session_id, _session_events, _current_call_by_source, _current_text_by_source
             _current_session_id = str(uuid.uuid4())
@@ -689,7 +697,15 @@ class BasicTuiAgent(App):
             chat.scroll_end(animate=False)
         elif query:
             log_prompt(query)
-            self.run_agent(query)
+            if self._pending_clarify:
+                original, self._pending_clarify = self._pending_clarify, None
+                self.run_agent(
+                    f"{original}\n\nUSER CLARIFICATIONS (answers to the intake questions above):\n{query}"
+                )
+            elif not self._clarify_done and config.cfg.get("settings", {}).get("clarify_before_research", True):
+                self.clarify_query(query)
+            else:
+                self.run_agent(query)
 
     async def _load_session_by_id(self, sid: str):
         chat = self.query_one("#chat-container", VerticalScroll)
@@ -941,9 +957,54 @@ class BasicTuiAgent(App):
 
         self._safe_scroll_end(chat)
 
-    @work(exclusive=True)
-    async def run_agent(self, query: str):
+    @work(exclusive=True, group="clarify")
+    async def clarify_query(self, query: str):
+        """Pre-research intake: one tool-less model call that either says CLEAR or asks up to 3
+        scoping questions before the run starts — a mis-scoped run costs its full 15-60 minutes,
+        the intake call costs seconds. Any failure falls through to research immediately: the
+        clarifier can never block a run (see _clarify_verdict)."""
         self._is_agent_running = True
+        chat = self.query_one("#chat-container", VerticalScroll)
+        chat.mount(UserMessageWidget(query))
+        processing = ProcessingWidget("Intake")
+        chat.mount(processing)
+        self._safe_scroll_end(chat)
+        text = ""
+        try:
+            from engine.orchestrator import _build_client, _get_default_options
+            from prompts import CLARIFY_INSTRUCTIONS
+            clarifier = _build_client().as_agent(
+                name="Clarifier", instructions=CLARIFY_INSTRUCTIONS,
+                default_options=_get_default_options(),
+            )
+            stream = clarifier.run(query, stream=True)
+            async for update in stream:
+                for c in update.contents:
+                    if c.type == "text" and c.text:
+                        text += c.text
+        except Exception:
+            text = ""
+        finally:
+            processing.remove()
+            self._is_agent_running = False
+
+        questions = _clarify_verdict(text)
+        if questions is None:
+            self.run_agent(query, mount_user=False)
+        else:
+            self._pending_clarify = query
+            chat.mount(Static(Markdown(
+                f"**Intake — before I start researching:**\n\n{questions}\n\n"
+                f"*Reply with answers, or say `proceed` to research as-is. "
+                f"Research starts with your next message.*"
+            ), classes="agent-bubble"))
+            self._safe_scroll_end(chat)
+            log_stream_content("Intake", "text", {"text": questions})
+
+    @work(exclusive=True)
+    async def run_agent(self, query: str, mount_user: bool = True):
+        self._is_agent_running = True
+        self._clarify_done = True
 
         # Session directory isolation: when enabled, ALL workspace file operations for this run
         # are transparently mapped to a subfolder named from the query + timestamp (e.g.
@@ -962,7 +1023,8 @@ class BasicTuiAgent(App):
         run_state_token = None
 
         chat = self.query_one("#chat-container", VerticalScroll)
-        chat.mount(UserMessageWidget(query))
+        if mount_user:
+            chat.mount(UserMessageWidget(query))
 
         # Set up subagent callback context dict
         subagent_states = {}
@@ -1303,6 +1365,57 @@ def _current_run_dir(run_dir_name: str | None) -> str:
     return base
 
 
+def load_resume_state(resume_run: str) -> tuple[str, dict]:
+    """Resolve --resume-run to (run_dir_name, prior _run_state.json contents). Accepts either a
+    bare run-folder name or a path to it; the folder must live under the configured workspace dir
+    and contain _run_state.json — guaranteed for any run since 497906c, which writes it at run
+    start and on every fetch, precisely so an interrupted run stays continuable."""
+    run_dir_name = os.path.basename(os.path.normpath(resume_run))
+    state_path = os.path.join(_current_run_dir(run_dir_name), "_run_state.json")
+    with open(state_path, "r", encoding="utf-8") as f:
+        return run_dir_name, json.load(f)
+
+
+def build_resume_input(query: str, prior_state: dict) -> str:
+    """Planner input for a resumed run: the original task plus everything the interrupted run
+    already established. Injected engine-side because the Planner deliberately has no
+    read_workspace_file tool and a fresh run starts with an empty context — without this it can
+    see that findings.md exists but never what's in it. Requires session_dir_ctx to already point
+    at the resumed run's folder."""
+    from tools.fs import get_workspace_file_content
+    fetched = prior_state.get("fetched_urls") or []
+    url_lines = "\n".join(f"- {u.get('url')} (saved as {u.get('filename')})" for u in fetched[:40])
+    todos_txt = (get_workspace_file_content("_todos.md") or "").strip()
+    findings_txt = (get_workspace_file_content("findings.md") or "").strip()
+    parts = [
+        "RESUMED RUN: a previous research run on this exact task was interrupted partway "
+        "through. Its workspace is intact — do NOT restart from scratch and do NOT re-fetch "
+        "sources listed below. Continue from where it stopped: delegate new research only for "
+        "the gaps, then complete findings.md and the final report as normal.",
+        f"ORIGINAL TASK:\n{query}",
+    ]
+    if todos_txt:
+        parts.append(f"PLAN LEFT BY THE PREVIOUS RUN (_todos.md):\n{todos_txt[:2000]}")
+    if url_lines:
+        parts.append(
+            f"SOURCES ALREADY FETCHED ({len(fetched)} total — they count as fetched for "
+            f"grounding purposes, cite them freely):\n{url_lines}"
+        )
+    if findings_txt:
+        parts.append(f"EXISTING findings.md (verbatim, possibly partial):\n{findings_txt[:8000]}")
+    return "\n\n".join(parts)
+
+
+def _clarify_verdict(text: str) -> str | None:
+    """None => proceed straight to research; a string => show it as clarifying questions first.
+    An empty, CLEAR-prefixed, or rambling reply (>600 chars — the intake prompt asked for at most
+    3 short questions) all mean 'proceed': the clarifier must never be able to block a run."""
+    v = (text or "").strip()
+    if not v or v.upper().startswith("CLEAR") or len(v) > 600:
+        return None
+    return v
+
+
 # Grounding-check logic (URL-presence gate + content-level claim gate) now lives in
 # utils/grounding.py, shared with engine/orchestrator.py's upstream per-specialist check — see that
 # module's header comment for why it isn't defined here.
@@ -1634,7 +1747,8 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
         return False, current_input
 
 
-async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_id: str = None):
+async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_id: str = None,
+                  resume_run: str = None):
     """Run the agent in headless mode, streaming results to stdout."""
     quota_token = tool_quotas_ctx.set(build_quota_pool())
     reset_fetched_urls()
@@ -1732,9 +1846,30 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
             sys.stdout.write(f"\n\033[91mError reading prompt file: {e}\033[0m\n")
             return
 
+    # --resume-run: reattach to an interrupted run's workspace instead of minting a new one.
+    # A run killed at minute 18 of 20 (throttle, 429, crash, power loss) previously lost every
+    # fetched source even though _run_state.json + sources/ held everything needed to continue.
+    prior_state = None
+    if resume_run:
+        try:
+            run_dir_name, prior_state = load_resume_state(resume_run)
+        except Exception as e:
+            sys.stdout.write(f"\n\033[91mError: --resume-run '{resume_run}': cannot load its _run_state.json ({e}).\033[0m\n")
+            sys.exit(1)
+        if not prompt:
+            prompt = prior_state.get("query")
+        if not prompt:
+            sys.stdout.write("\n\033[91mError: --resume-run: the previous run recorded no query — pass --prompt explicitly.\033[0m\n")
+            sys.exit(1)
+        from tools.fs import session_dir_ctx
+        session_token = session_dir_ctx.set(run_dir_name)
+        # The grounding check's source of truth: URLs the interrupted run actually fetched still
+        # count as fetched, otherwise every prior citation would be flagged as fabricated.
+        from utils.run_state import fetched_urls_ctx
+        fetched_urls_ctx.set(list(prior_state.get("fetched_urls") or []))
     # Deferred until here (not right at function start) so a --prompt-file run's folder name is
     # slugified from the actual resolved prompt text, not generated before it's known.
-    if config.cfg.get("settings", {}).get("workspace", {}).get("session_isolation", False):
+    elif config.cfg.get("settings", {}).get("workspace", {}).get("session_isolation", False):
         from tools.fs import session_dir_ctx
         run_dir_name = _slugify_run_dir_name(prompt or prompt_file or "query")
         session_token = session_dir_ctx.set(run_dir_name)
@@ -1769,15 +1904,35 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
         f"{auto_approve_warning}\n"
     )
 
+    if prior_state:
+        sys.stdout.write(
+            f"\033[93m[System] RESUMING run '{run_dir_name}' — "
+            f"{len(prior_state.get('fetched_urls') or [])} sources already fetched, "
+            f"{len(prior_state.get('findings') or [])} findings on record.\033[0m\n"
+        )
     sys.stdout.write(f"\n\033[1mStarting task:\033[0m {prompt[:100]}...\n\n")
     start_time = datetime.now()
 
     run_state = None
     try:
         from agent_framework import Message
-        current_input = prompt
+        current_input = build_resume_input(prompt, prior_state) if prior_state else prompt
         has_requests = True
         run_state = RunState(_current_run_dir(run_dir_name))
+        if prior_state:
+            # Carry the interrupted run's record forward — same _run_state.json, one continuous
+            # timeline. attempt stays 0: resume exists to finish the run, so it gets a fresh
+            # completion-check budget (and a fresh quota pool from the top of this function).
+            # ponytail: fresh quotas on resume — quotas exist to stop model loops, not to meter
+            # cross-run budgets; per-run carryover accounting if that ever proves too generous.
+            # "query" is included even though set_query() follows immediately: a crash between
+            # this merge and set_query must never save a query-less state file over the original
+            # (exactly that happened on this feature's first live smoke test).
+            for key in ("query", "findings", "fetched_urls", "completion_check_attempts",
+                        "search_health", "started_at", "plan"):
+                if key in prior_state:
+                    run_state.data[key] = prior_state[key]
+            run_state.data["resumed_at"] = time.time()
         run_state.set_query(prompt)
         run_state_token = run_state_ctx.set(run_state)
         # Written immediately (not only at the first completion check / clean run end) so a crash
@@ -1855,7 +2010,9 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
 
             if user_input_requests:
                 has_requests = True
-                new_inputs = [prompt] if isinstance(current_input, str) else list(current_input)
+                # current_input, not prompt: on a resumed run the two differ (resume preamble),
+                # and rebuilding from `prompt` here would silently drop it.
+                new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
                 for req in user_input_requests:
                     is_approved = getattr(config, 'AUTO_APPROVE', False)
                     if is_approved:
@@ -1908,6 +2065,11 @@ def cli_main(builder):
     parser.add_argument("--auto-approve", action="store_true", help="Automatically approve all tool execution requests")
     parser.add_argument("--list-sessions", action="store_true", help="List saved sessions and exit")
     parser.add_argument("--resume", type=str, help="Resume a specific session by ID. Works in headless mode if --prompt is given, or in TUI mode otherwise.", default=None)
+    parser.add_argument("--resume-run", type=str, default=None,
+                        help="Continue an interrupted research run from its output folder (name or "
+                             "path under the workspace dir). Reuses its fetched sources, findings "
+                             "and plan instead of restarting; uses the run's original recorded "
+                             "query unless --prompt is also given. Headless mode.")
     args, _ = parser.parse_known_args()
 
     import config
@@ -1935,10 +2097,9 @@ def cli_main(builder):
                 sys.stdout.write(f"- Invalid session file: {f.name}\n")
         sys.exit(0)
 
-    if args.prompt_file:
-        asyncio.run(run_cli(builder, prompt_file=args.prompt_file, session_id=args.resume))
-    elif args.prompt:
-        asyncio.run(run_cli(builder, prompt=args.prompt, session_id=args.resume))
+    if args.prompt_file or args.prompt or args.resume_run:
+        asyncio.run(run_cli(builder, prompt=args.prompt, prompt_file=args.prompt_file,
+                            session_id=args.resume, resume_run=args.resume_run))
     else:
         BasicTuiAgent(builder, session_to_resume=args.resume).run()
 

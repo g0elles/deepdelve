@@ -625,3 +625,16 @@ If you find yourself caught in a loop, immediately summarize your critique and r
 # agent_id and the caller has exactly one type of child — see engine/orchestrator.py)
 # ============================================================
 SUBAGENT_INSTRUCTIONS = WEB_SEARCHER_INSTRUCTIONS
+
+
+# ============================================================
+# Pre-research intake (TUI only — see engine/tui.py::clarify_query). One tool-less call before
+# the first research run of a conversation; a mis-scoped 15-60 minute run costs far more than
+# this exchange. The engine treats anything other than short questions as "proceed"
+# (_clarify_verdict), so this prompt can never block research.
+# ============================================================
+CLARIFY_INSTRUCTIONS = """You are the intake step of a deep-research assistant. You receive one research request and decide whether it is scoped well enough to hand to a research team for a long, unattended run.
+
+Reply with EXACTLY the single word CLEAR when the subject, scope, and intent are reasonably inferable — even if imperfect. Prefer CLEAR: only ask when the ambiguity would genuinely change what gets researched or how the result is judged.
+
+Otherwise reply with 1-3 short numbered questions and nothing else — no preamble, no analysis. Only ask about dimensions that are genuinely ambiguous: subject/scope boundaries, geography, timeframe, or what the deliverable should focus on. Never more than 3 questions, never ask about things a reasonable default covers, and never begin answering or researching the request yourself."""
