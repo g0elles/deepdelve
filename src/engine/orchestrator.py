@@ -367,7 +367,8 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                 # propagation into the Planner's findings.md was previously undetectable until the
                 # very end of the run, by which point the retry budget was already partly spent.
                 gc_cfg = config.cfg.get("settings", {}).get("grounding_check", {})
-                if target_children and gc_cfg.get("verify_specialist_output", True):
+                # enabled is the grounding_check section's master switch (2026-07-12 audit, G2)
+                if target_children and gc_cfg.get("enabled", True) and gc_cfg.get("verify_specialist_output", True):
                     from utils.grounding import real_grounding_problem
                     problem = await real_grounding_problem(final_text)
                     if problem and problem != "no_urls":

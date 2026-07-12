@@ -19,15 +19,22 @@ _PROPER_NOUN_STOPWORDS = {
 
 
 def _urls_prefix_match(a: str, b: str) -> bool:
-    """Prefix-match fallback for URL grounding (handles stripped trailing chars, redirect
-    variants, added query strings) — but a bare-origin URL (no path) never prefix-grounds a deep
-    link. Confirmed live (2026-07-11, qwen3.6 Colombia run): one fetch of mercadolibre.com's ROOT
-    let a fully fabricated deep URL on that domain pass fully_ungrounded, which waved the whole
-    fabricated findings.md through. A domain root only matches itself exactly."""
-    if not (a.startswith(b) or b.startswith(a)):
+    """Prefix-match fallback for URL grounding (handles redirect variants and added query
+    strings) — but a bare-origin URL (no path) never prefix-grounds a deep link. Confirmed live
+    (2026-07-11, qwen3.6 Colombia run): one fetch of mercadolibre.com's ROOT let a fully
+    fabricated deep URL on that domain pass fully_ungrounded, which waved the whole fabricated
+    findings.md through. A domain root only matches itself exactly.
+
+    The longer URL must continue at a path-segment boundary (/, ?, # or end) after the shorter
+    one: bare string-prefixing let a DECORATED fabrication ride a real fetch — a genuinely
+    fetched .../article grounded an invented .../article-fake-2024, so a model could dress up
+    any real fetched URL and pass the primary gate (2026-07-12 audit, G1)."""
+    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+    if not longer.startswith(shorter):
+        return False
+    if len(longer) > len(shorter) and longer[len(shorter)] not in "/?#":
         return False
     from urllib.parse import urlparse
-    shorter = a if len(a) <= len(b) else b
     return bool(urlparse(shorter).path.strip("/"))
 
 
