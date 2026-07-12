@@ -907,6 +907,22 @@ def main():
     assert _how == "timeout", _how
     assert _elapsed < 2, f"cutoff must fire near the 0.2s deadline, not wait for the 10s stall ({_elapsed}s)"
 
+    # --- TUI tool-call widget: an error RESULT must not render a green success checkmark ---
+    # (live bug, 2026-07-12): a read_workspace_file call that failed with 'Error: Requested
+    # function "read_workspace..." not found.' still showed a checkmark, because ToolCallWidget's
+    # set_result unconditionally used the success marker regardless of what the result text
+    # actually said — this project's tools return formatted error strings instead of raising, so
+    # "the call returned" and "the call succeeded" are NOT the same thing.
+    from engine.tui import _looks_like_tool_error
+    assert _looks_like_tool_error('Error: Requested function "read_workspace..." not found.')
+    assert _looks_like_tool_error("Error: 'foo.md' not found.")
+    assert _looks_like_tool_error("CRITICAL TOOL EXECUTION ERROR: web_search failed internally.")
+    assert _looks_like_tool_error("## Error for Analyze paper\nTask forcefully aborted: timeout\n---")
+    assert not _looks_like_tool_error("Wrote 'final_report.md' to disk.")
+    assert not _looks_like_tool_error("## Result for background\n**Findings**\n\n- real content")
+    assert not _looks_like_tool_error("")
+    assert not _looks_like_tool_error(None)
+
     print("All structural-check assertions passed.")
 
 
