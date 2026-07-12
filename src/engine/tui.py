@@ -1933,6 +1933,10 @@ def cli_main(builder):
     parser.add_argument("--depth", choices=["quick", "standard", "deep"], default=None,
                         help="Research depth preset: quick (~half quotas, light search, 2 retries), "
                              "standard (config as-is), deep (raised quotas, heavy search, 4 retries).")
+    parser.add_argument("--style", choices=["standard", "academic"], default=None,
+                        help="Report shape: standard (config as-is), academic (literature-review "
+                             "paper with (Author, Year) citations and a References list — see "
+                             "eval/sales_forecasting_benchmark.md). Orthogonal to --depth.")
     parser.add_argument("--seed-url", action="append", default=None, metavar="URL",
                         help="Pre-fetch this URL into the run's sources/ before research starts "
                              "(repeatable). Doesn't consume the agent's fetch quota. Headless mode.")
@@ -1945,6 +1949,9 @@ def cli_main(builder):
 
     if args.depth:
         apply_depth_preset(config.cfg, args.depth)
+
+    if args.style:
+        config.cfg.setdefault("settings", {})["report_style"] = args.style
 
     if args.list_runs:
         base = config.cfg.get("settings", {}).get("workspace", {}).get("dir", ".")

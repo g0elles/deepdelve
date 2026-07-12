@@ -65,6 +65,19 @@ def extract_salient_terms(text: str) -> set:
     return terms
 
 
+# Shared by split_prose_from_sources (everything BEFORE this heading) and extract_sources_section
+# (everything FROM this heading onward, used to parse academic-style References entries below).
+# Suffixes are a fixed allowlist, NOT any trailing words: a real content heading like "Sources of
+# growth in Colombia" must never be treated as the start of a citation section. Heading depth is
+# capped at h3 (see split_prose_from_sources docstring). Includes English "Bibliography" alongside
+# the Spanish "bibliografía" — added for the academic-style literature-review References/
+# Bibliography heading, which the Spanish-only pattern didn't cover.
+_SOURCES_HEADING_RE = re.compile(
+    r'^[\s>*_]*#{0,3}[\s>*_]*(?:sources?|references?|referencias?|fuentes?|bibliograph(?:y|ies)|bibliograf[ií]a)'
+    r'(?:\s+(?:urls?|list|used|cited|consultadas?|utilizadas?))?[\s*_:]*$',
+    re.IGNORECASE | re.MULTILINE)
+
+
 def split_prose_from_sources(report: str) -> str:
     """Best-effort strip of a trailing Sources/References section, so the content-level check
     compares against what the report actually CLAIMS rather than its own citation list.
@@ -77,11 +90,64 @@ def split_prose_from_sources(report: str) -> str:
     PER-SECTION citation list, not the report's trailing sources section — confirmed live
     (run 15): stripping at the first such block deleted the rest of the report including its
     own citations, and find_uncited_claim_lines then flagged a correctly-sourced report."""
-    m = re.search(
-        r'^[\s>*_]*#{0,3}[\s>*_]*(?:sources?|references?|referencias?|fuentes?|bibliograf[ií]a)'
-        r'(?:\s+(?:urls?|list|used|cited|consultadas?|utilizadas?))?[\s*_:]*$',
-        report or "", re.IGNORECASE | re.MULTILINE)
+    m = _SOURCES_HEADING_RE.search(report or "")
     return report[:m.start()] if m else (report or "")
+
+
+def extract_sources_section(report: str) -> str:
+    """Companion to split_prose_from_sources: returns the trailing Sources/References/
+    Bibliography section itself (heading onward), used to parse academic-style (Author, Year)
+    reference-list entries in parse_academic_references below."""
+    m = _SOURCES_HEADING_RE.search(report or "")
+    return report[m.start():] if m else ""
+
+
+# A numbered or bracket-numbered References-list entry in academic style, e.g. "1. Punati, S. B.,
+# et al. (2025). Temporal Fusion Transformer..." or "[1] Smith, J. (2024)...". Captures the first
+# author's surname and the publication year — together the same (surname, year) key an in-text
+# `(Author, Year)` citation uses, so a citation can be resolved against this entry without needing
+# full bibliographic parsing.
+_REFERENCE_ENTRY_RE = re.compile(r'^[\s>*_]*(?:\d+\.|\[\d+\])\s*([A-Z][\w\-\']+)[^\n(]{0,80}\(((?:19|20)\d{2})\)')
+
+# A bare `(Author, Year)` / `(Author et al., Year)` / `(Author & Other, Year)` in-text citation.
+# Shares its shape with _PARENTHETICAL_CITATION_RE below (both require a capitalized name-like
+# token followed by a real 19xx/20xx year) — kept as a separate compiled pattern only for the
+# distinct capture groups this one needs to build a resolution key.
+_ACADEMIC_KEY_RE = re.compile(r'\(([A-Z][\w\-\']+).*?,\s*((?:19|20)\d{2})\)')
+
+
+def _academic_citation_key(citation_text: str) -> str | None:
+    """Normalize an in-text `(Author, Year)`-shaped citation (or a References-entry's leading
+    `Author (Year)`) to a lookup key: lowercased first-author surname + year. Both sides of the
+    match (in-text citation, reference-list entry) go through this same function so "Punati et
+    al., 2025" and "Punati, S. B., et al. (2025)" resolve to the same key."""
+    m = _ACADEMIC_KEY_RE.search(citation_text) or _REFERENCE_ENTRY_RE.match(citation_text)
+    if not m:
+        return None
+    return f"{m.group(1).lower()},{m.group(2)}"
+
+
+def parse_academic_references(report: str) -> dict[str, str]:
+    """Map (surname, year) citation keys to the real URL on that References-list entry, for
+    reports using academic `(Author, Year)` in-text citations instead of the project's default
+    inline `- **[Title](URL)**` format (the literature-review output style modeled on
+    eval/reference/sales_forecasting_deepseek.md). Only entries that actually list a fetchable
+    URL resolve — a reference entry that cites a paper by title/arXiv-ID text alone with no URL
+    (a real risk: that's exactly how the DeepSeek reference itself writes its own References list)
+    is deliberately left unresolvable, so it still gets caught as an ungrounded citation by
+    find_non_url_citations/the hard URL-presence gate, same as a fabricated inline citation would."""
+    section = extract_sources_section(report)
+    if not section:
+        return {}
+    mapping = {}
+    for line in section.splitlines():
+        key = _academic_citation_key(line.strip())
+        if not key:
+            continue
+        urls = extract_cited_urls(line)
+        if urls:
+            mapping[key] = urls[0]
+    return mapping
 
 
 # Line-anchored citation-label shape ("Source: ..." / "- **Fuentes:** ..."), NOT any line merely
@@ -120,9 +186,17 @@ def find_non_url_citations(text: str) -> list[str]:
     real citation on the same line just because a separate unrelated pseudo-citation exists
     elsewhere in the report — keeps this conservative, matching claim_grounding_problem's own
     "keep false positives rare" design.
+
+    ACADEMIC style exception: a `(Author, Year)` parenthetical that resolves through
+    parse_academic_references to a real URL-bearing References entry is not a bare pseudo-citation
+    at all — it's this project's second supported citation dialect (see
+    utils.grounding.parse_academic_references), so it's excluded from the hits here rather than
+    flagged. An UNresolved `(Author, Year)` (no matching References entry, or an entry with no URL)
+    still gets flagged exactly as before — this only carves out the case that's actually grounded.
     """
     if not text:
         return []
+    ref_map = parse_academic_references(text)
     hits = []
     for line in text.splitlines():
         stripped = line.strip()
@@ -134,7 +208,15 @@ def find_non_url_citations(text: str) -> list[str]:
         # sourcing would otherwise get misread as the model's own pseudo-citation.
         if stripped.startswith("[SYSTEM"):
             continue
-        m = _SOURCE_LABEL_RE.search(line) or _PARENTHETICAL_CITATION_RE.search(line)
+        label_m = _SOURCE_LABEL_RE.search(line)
+        paren_ms = list(_PARENTHETICAL_CITATION_RE.finditer(line))
+        if paren_ms and not label_m:
+            # A line can carry more than one (Author, Year) citation — resolve EVERY match, not
+            # just the first, or a real citation earlier on the line would mask an unresolved
+            # (fabricated) one later on the same line.
+            if all(_academic_citation_key(m.group(0)) in ref_map for m in paren_ms):
+                continue
+        m = label_m or (paren_ms[0] if paren_ms else None)
         if m:
             hits.append(line.strip()[:120])
     return hits
@@ -158,6 +240,30 @@ def _fetched_url_files() -> dict:
     nothing. Citing a stub is caught upstream by real_grounding_problem's stub gate instead."""
     return {entry["url"].rstrip('/'): entry["filename"]
             for entry in get_fetched_urls() if not entry.get("stub")}
+
+
+def _line_cited_files(line: str, fetched: dict, ref_map: dict) -> list[str]:
+    """Resolve every citation on a line — inline `https://...` URLs AND academic-style
+    `(Author, Year)` citations resolved through ref_map — to the fetched source's workspace
+    filename. Shared by find_unsupported_regulation_ids and claim_grounding_problem so both
+    line-scoped checks see academic citations the same way the hard URL gate does."""
+    files = []
+    for u in extract_cited_urls(line):
+        key = u.rstrip('/')
+        fn = fetched.get(key) or next(
+            (f for orig, f in fetched.items() if _urls_prefix_match(key, orig)), None)
+        if fn:
+            files.append(fn)
+    for pm in _PARENTHETICAL_CITATION_RE.finditer(line):
+        rkey = _academic_citation_key(pm.group(0))
+        if not rkey or rkey not in ref_map:
+            continue
+        url = ref_map[rkey].rstrip('/')
+        fn = fetched.get(url) or next(
+            (f for orig, f in fetched.items() if _urls_prefix_match(url, orig)), None)
+        if fn and fn not in files:
+            files.append(fn)
+    return files
 
 
 # Regulation identifiers, ES + EN: "Ley 1906 de 2021", "Decreto 2242/2015", "Resolución
@@ -184,18 +290,13 @@ def find_unsupported_regulation_ids(text: str) -> list[str]:
     construction: only the identifier's primary number is required, as a whole word, anywhere in
     the source — absence is a strong signal, coincidental presence just means no flag."""
     fetched = _fetched_url_files()
+    ref_map = parse_academic_references(text or "")
     hits = []
     for line in (text or "").splitlines():
         ids = list(_REGULATION_ID_RE.finditer(line))
         if not ids:
             continue
-        files = []
-        for u in extract_cited_urls(line):
-            key = u.rstrip('/')
-            fn = fetched.get(key) or next(
-                (f for orig, f in fetched.items() if _urls_prefix_match(key, orig)), None)
-            if fn:
-                files.append(fn)
+        files = _line_cited_files(line, fetched, ref_map)
         if not files:
             continue
         content = "\n".join(_source_body(get_workspace_file_content(f) or "") for f in files)
@@ -231,7 +332,13 @@ def find_uncited_claim_lines(report: str) -> list[str]:
     not the run-14 decoupling this exists to catch. Any URL anywhere in a section (delimited
     by h1-h3 headings; h4+ subsections stay with their parent) exempts that whole section;
     run 14's shape (figure table in one section, every URL in a detached 'Source URLs'
-    section) still fires."""
+    section) still fires.
+
+    ACADEMIC style: a section is also exempt if it contains a `(Author, Year)`-shaped citation —
+    presence-only, same bar as the "http" exemption (whether it actually RESOLVES to a real
+    fetched source is find_non_url_citations/claim_grounding_problem's job, which both run before
+    this check in real_grounding_problem's ordering, so an unresolved academic citation is already
+    caught there and this exemption never masks it)."""
     sections: list[list[str]] = [[]]
     for raw in split_prose_from_sources(report or "").splitlines():
         if re.match(r'#{1,3}\s', raw):
@@ -239,7 +346,7 @@ def find_uncited_claim_lines(report: str) -> list[str]:
         sections[-1].append(raw)
     hits = []
     for section in sections:
-        if any("http" in l for l in section):
+        if any("http" in l or _PARENTHETICAL_CITATION_RE.search(l) for l in section):
             continue
         for raw in section:
             line = raw.strip()
@@ -263,30 +370,29 @@ def claim_grounding_problem(report: str) -> str | None:
     to keep false positives rare: only fires on a line with >=1 checkable term of its own and ZERO
     overlap with every fetched source it cites; lines with no checkable terms, unfetched citations
     (the hard gate's job), or thin sources (<50 chars) are skipped. URL text is stripped before
-    term extraction so a slug like 'ley_1819_2016' can neither support nor incriminate a claim."""
+    term extraction so a slug like 'ley_1819_2016' can neither support nor incriminate a claim.
+
+    ACADEMIC style: a line's `(Author, Year)` citation resolves through parse_academic_references
+    to the same fetched-source file a `- **[Title](URL)**` citation would (via _line_cited_files),
+    so an academic-style claim gets the identical term-overlap check as the default format."""
     prose = split_prose_from_sources(report)
     fetched = _fetched_url_files()
+    ref_map = parse_academic_references(report)
 
     unsupported = []
     source_terms_cache: dict = {}
     for line in prose.splitlines():
-        cited = extract_cited_urls(line)
-        if not cited:
+        display = (extract_cited_urls(line) + [m.group(0) for m in _PARENTHETICAL_CITATION_RE.finditer(line)])
+        if not display:
             continue
         line_terms = extract_salient_terms(re.sub(r'https?://[^\s\)\]\}"\'>【】]+', '', line))
         if not line_terms:
             continue
-        files = []
-        for u in cited:
-            key = u.rstrip('/')
-            fn = fetched.get(key) or next(
-                (f for orig, f in fetched.items() if _urls_prefix_match(key, orig)), None)
-            if fn:
-                files.append((u, fn))
+        files = _line_cited_files(line, fetched, ref_map)
         if not files:
             continue
         checkable, supported = False, False
-        for _, fn in files:
+        for fn in files:
             if fn not in source_terms_cache:
                 content = _source_body(get_workspace_file_content(fn) or "")
                 source_terms_cache[fn] = extract_salient_terms(content) if len(content.strip()) >= 50 else None
@@ -298,7 +404,7 @@ def claim_grounding_problem(report: str) -> str | None:
                 supported = True
                 break
         if checkable and not supported:
-            unsupported.append(files[0][0])
+            unsupported.append(display[0])
 
     if not unsupported:
         return None

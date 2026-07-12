@@ -29,6 +29,16 @@ settings:
   # search, for queries where thoroughness matters more than tool-call/token economy. Costs more
   # fetch_url_to_workspace quota per call; raise that quota if you enable this.
   search_mode: light
+  # "standard" (default): free-format report shape (short answer or generic structured sections,
+  # Planner's own judgment) with the default `- **[Title](URL)**` inline citation format.
+  # "academic": a literature-review paper shape (Abstract, Introduction, thematic sections,
+  # Cross-Cutting Synthesis, Quantitative Benchmarking, Challenges & Future Directions,
+  # Conclusion, References) with `(Author, Year)` in-text citations resolved against a numbered
+  # References list — see src/prompts.py's ACADEMIC_REPORT_STYLE_INSTRUCTIONS /
+  # ACADEMIC_CITATION_FORMAT_INSTRUCTIONS and utils/grounding.py's parse_academic_references.
+  # Orthogonal to --depth (that only changes tool budgets, this changes report SHAPE); set via
+  # --style on the CLI or this key directly.
+  report_style: standard
   # Search engine(s) for web_search. "auto" lets the ddgs metasearcher rotate/fall back across
   # its 10+ engines (google, bing, brave, yahoo, startpage, mojeek, duckduckgo, ...) — a single
   # pinned provider is a single point of failure: DDG throttling after a search-heavy day made

@@ -30,6 +30,64 @@ import datetime
 #   verify against.
 # -------------------------------------------------------------
 
+# ============================================================
+# REPORT STYLE VARIANTS (settings.report_style, --style CLI flag, default "standard")
+# Interpolated into PLANNER_INSTRUCTIONS as {report_style_instructions}/{citation_format_instructions}
+# by engine/orchestrator.py's _build_planner_agent. Orthogonal to --depth (which only changes tool
+# budgets) — this changes the SHAPE of the written report.
+#
+# ATTRIBUTION (academic style, 2026-07-12 review of imbad0202/academic-research-skills, see
+# README References): the section structure below is modeled on that repo's
+# literature_review_template.md; the "prefer session findings over parametric memory" framing in
+# the citation-format block is its Anti-Leakage Protocol ("Knowledge Isolation Directive"),
+# adapted from a multi-turn human-collaborative pipeline into a single-shot instruction. The
+# `(Author, Year)` + numbered References dialect is what utils/grounding.py's
+# parse_academic_references/find_non_url_citations/claim_grounding_problem resolve against — do
+# NOT change this format string without updating those in lockstep, they parse it structurally.
+# ============================================================
+
+STANDARD_REPORT_STYLE_INSTRUCTIONS = """Dynamically determine the report format based on query complexity:
+   - Simple queries: A concise answer with source attribution.
+   - Complex queries: Structured sections (Introduction, Findings, Analysis, Sources)."""
+
+ACADEMIC_REPORT_STYLE_INSTRUCTIONS = """Write a literature-review-style paper, not a market-research report:
+   - **Abstract** (5-6 sentences: background/rationale, scope, method, key findings, implications/gaps).
+   - **1. Introduction** — topic rationale, scope/boundaries, brief note on your search approach.
+   - **2-N. Thematic sections** — one section per major sub-topic the query implies (e.g. distinct
+     architectures, methods, or approaches), each citing specific empirical findings from `findings.md`.
+   - **Cross-Cutting Synthesis** — what do the sections agree on? Where do sources conflict?
+   - **Quantitative Benchmarking Summary** — a comparison table when multiple sources report
+     comparable figures (metric, context, source) — omit if the findings don't support one, do not
+     invent numbers to fill it.
+   - **Challenges and Future Directions** — gaps or limitations the findings themselves surface.
+   - **Conclusion** — 3-5 key takeaways.
+   - **References** — see the citation format below; this section is mandatory in this style."""
+
+STANDARD_CITATION_FORMAT_INSTRUCTIONS = """Use this exact format for sources: `- **[Title](URL)**`
+- Example: `- **[ChatGPT-4 Technical Report](https://openai.com/research/chatgpt-4)**`
+- For simple queries, a short factual answer is sufficient.
+- For complex queries, include methodology and source quality notes."""
+
+ACADEMIC_CITATION_FORMAT_INSTRUCTIONS = """## Knowledge Isolation Directive
+Write this paper from `findings.md` — the material your specialists actually fetched this run —
+not from your own training knowledge. Prefer a `findings.md` line over anything you recall about
+the topic for every factual claim. If a section the outline above calls for isn't covered by
+`findings.md`, write "Not covered by this run's research" for that section rather than filling it
+from memory — an invented-but-plausible citation is a worse outcome than an honest gap.
+
+## Citation format (academic style)
+- In-text: cite every claim parenthetically as `(Author, Year)` immediately after the claim, e.g.
+  "TFT achieved an R-squared of 0.9875 on 45 Walmart stores (Punati et al., 2025)." Use the first
+  author's surname; "et al." for 3+ authors is fine and does not change the resolution key.
+- **References** section at the end, numbered, one entry per source actually cited in-text:
+  `N. Author, A. (Year). Title. <the real URL you fetched>` — the URL is NON-NEGOTIABLE here too;
+  a reference entry that names a paper by title/arXiv-ID text alone with no URL is exactly as
+  unverifiable as inventing a fact, and will be rejected the same way a fabricated citation is.
+- Every `(Author, Year)` you write in-text MUST have a matching References entry with a real URL —
+  an in-text citation with no matching entry, or an entry with no URL, fails the same check a
+  fabricated `- **[Title](URL)**` citation would in the standard report style."""
+
+
 SUBAGENT_DELEGATION_INSTRUCTIONS = """# Sub-Agent Delegation
 
 Your context window is limited. Delegate complex or data-intensive tasks to your sub-agents to offload processing.
@@ -133,9 +191,7 @@ You MUST delegate all web research to a Searcher specialist and all file reading
      Skip this delegation for simple factual queries — it's not worth the quota there.
      Only after this check, write `final_report.md` from `findings.md`.
 
-6. **Report Structure**: Dynamically determine the report format based on query complexity:
-   - Simple queries: A concise answer with source attribution.
-   - Complex queries: Structured sections (Introduction, Findings, Analysis, Sources).
+6. **Report Structure**: {report_style_instructions}
 
 7. **STOP EARLY**: If you have sufficient information from returned summaries to confidently answer
    the query, stop immediately after the replanning check in step 4. Do NOT exhaust delegation quotas
@@ -168,12 +224,10 @@ When writing `final_report.md` (Pass 2 above):
 - Include clear source attribution for each finding.
 - **EVERY source MUST include its full URL.** This is non-negotiable — the engine will reject a
   report that cites a URL you did not actually receive from a specialist's findings.
-- Use this exact format for sources: `- **[Title](URL)**`
-- Example: `- **[ChatGPT-4 Technical Report](https://openai.com/research/chatgpt-4)**`
 - Mark any unverified claims from informal sources.
-- For simple queries, a short factual answer is sufficient.
-- For complex queries, include methodology and source quality notes.
 - Never omit URLs, and never introduce a URL that isn't already in `findings.md`.
+
+{citation_format_instructions}
 
 <Hard Limits>
 **Tool Call Budgets**:
