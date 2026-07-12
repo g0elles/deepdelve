@@ -121,6 +121,17 @@ def find_non_url_citations(text: str) -> list[str]:
     return hits
 
 
+def _source_body(content: str) -> str:
+    """Strip the engine-injected 'Source-URL: ...' line-1 header (tools/web.py::_save_fetched)
+    before any term/number matching against a source file. The header's URL slug contains the
+    very tokens being verified — confirmed live (run 14): the report's '1819' regulation number
+    existed in its cited stub file ONLY via this header, so the regulation check self-grounded
+    on our own injected provenance line."""
+    if content.startswith("Source-URL:"):
+        return content.split("\n", 1)[1] if "\n" in content else ""
+    return content
+
+
 def _fetched_url_files() -> dict:
     """url -> filename map for the LINE-SCOPED checks (regulation/claim), excluding stub fetches
     (soft-404/paywall shells flagged by tools/web.py's _stub_reason): a stub can neither support
@@ -168,7 +179,7 @@ def find_unsupported_regulation_ids(text: str) -> list[str]:
                 files.append(fn)
         if not files:
             continue
-        content = "\n".join(get_workspace_file_content(f) or "" for f in files)
+        content = "\n".join(_source_body(get_workspace_file_content(f) or "") for f in files)
         if len(content.strip()) < 50:
             continue
         for m in ids:
@@ -214,7 +225,7 @@ def claim_grounding_problem(report: str) -> str | None:
         checkable, supported = False, False
         for _, fn in files:
             if fn not in source_terms_cache:
-                content = get_workspace_file_content(fn) or ""
+                content = _source_body(get_workspace_file_content(fn) or "")
                 source_terms_cache[fn] = extract_salient_terms(content) if len(content.strip()) >= 50 else None
             source_terms = source_terms_cache[fn]
             if source_terms is None:
