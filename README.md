@@ -127,6 +127,7 @@ Earlier candidates (`devstral:24b`, `hermes3:8b`, `qwen2.5-coder:14b-instruct`, 
 python src/app.py                                        # TUI
 python src/app.py --prompt "..." --auto-approve          # headless
 python src/app.py --prompt "..." --depth deep            # quota/search/retry presets: quick|standard|deep
+python src/app.py --prompt "..." --style academic        # literature-review paper shape + (Author, Year) citations
 python src/app.py --prompt "..." --seed-url https://...  # pre-fetch known-good sources (repeatable)
 python src/app.py --resume-run <run_folder>              # reattach an interrupted run, fresh budget
 python src/app.py --list-runs                            # workspace runs + report status

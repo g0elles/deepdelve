@@ -5,7 +5,11 @@ from agent_framework.openai import OpenAIChatCompletionClient
 from agent_framework import tool, AgentSession
 from tools import WORKSPACE_TOOLS, tool_quotas_ctx, with_quota, think_tool, QuotaAbortException
 from utils.run_state import run_state_ctx, get_fetched_urls, task_fetched_urls_ctx, scope_entities_ctx
-from prompts import PLANNER_INSTRUCTIONS, SUBAGENT_INSTRUCTIONS, SUBAGENT_DELEGATION_INSTRUCTIONS
+from prompts import (
+    PLANNER_INSTRUCTIONS, SUBAGENT_INSTRUCTIONS, SUBAGENT_DELEGATION_INSTRUCTIONS,
+    STANDARD_REPORT_STYLE_INSTRUCTIONS, ACADEMIC_REPORT_STYLE_INSTRUCTIONS,
+    STANDARD_CITATION_FORMAT_INSTRUCTIONS, ACADEMIC_CITATION_FORMAT_INSTRUCTIONS,
+)
 import datetime
 import config
 import contextvars
@@ -682,6 +686,11 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
     available_sub_agents_ctx.set(builder.sub_agents)
     current_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     workspace_dir = config.cfg.get("settings", {}).get("workspace", {}).get("dir", ".")
+    # settings.report_style / --style CLI flag (tui.py): only PLANNER_INSTRUCTIONS actually
+    # contains these two placeholders, so passing them for a sub-agent build is a harmless no-op
+    # via _safe_format's "unknown keys stay literal" behavior.
+    report_style = config.cfg.get("settings", {}).get("report_style", "standard")
+    is_academic = report_style == "academic"
 
     agent = client.as_agent(
         name=_sanitize_name(builder.name),
@@ -691,6 +700,12 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
             workspace_dir=workspace_dir,
             delegation_instructions=SUBAGENT_DELEGATION_INSTRUCTIONS.format(
                 max_concurrency=config.cfg.get("settings", {}).get("concurrency", {}).get("max_concurrent_tasks", 1)
+            ),
+            report_style_instructions=(
+                ACADEMIC_REPORT_STYLE_INSTRUCTIONS if is_academic else STANDARD_REPORT_STYLE_INSTRUCTIONS
+            ),
+            citation_format_instructions=(
+                ACADEMIC_CITATION_FORMAT_INSTRUCTIONS if is_academic else STANDARD_CITATION_FORMAT_INSTRUCTIONS
             ),
             **_get_quota_format_vars()
         ),

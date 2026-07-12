@@ -46,6 +46,33 @@ Status as of 2026-07-12.
   second overshoot forces the completion check's final verdict. TUI Planner exempt. Verified live
   with a 3000-char budget: honest "budget exhausted" report, no silent truncation.
 - **Grounding-layer hardening batch (2026-07-12 evening, `7f0782f`..`5c24607`), every fix validated live in run 15:** stub-fetch detection (soft-404/paywall shells recorded as `stub` in `fetched_urls`, refused by all grounding checks, own `stub_source` verdict — closes run 14's invented-URL hole; 10/21 run-15 fetches flagged, zero false positives); Source-URL header self-grounding fix (the injected line-1 header's URL slug no longer counts as source content); charset fix (HTML decoded by real encoding — strict UTF-8 → header → meta → cp1252; stale meta tags scrubbed so markitdown can't re-mojibake; Spanish accents verified intact live); citation-format enforcement (`uncited_claims`: ≥3 figure-bearing lines with no citation in an h1-h3 section without URLs — run 14's table + detached "Source URLs" shape; section-scoped after run 15 caught the per-niche `#### Sources` false positive); URL prefix-boundary fix (fetched `.../article` no longer grounds fabricated `.../article-fake-2024`); `grounding_check.enabled` master switch actually honored; platform-independent drive-letter guard (splitdrive silently stopped rejecting `C:\evil` after the Linux migration).
+- **Academic / literature-review output mode (2026-07-12), triggered by a real gap**: a live
+  sales-forecasting query got a properly-structured literature-review paper from DeepSeek
+  (`eval/reference/sales_forecasting_deepseek.md`, `(Author, Year)` citations + numbered
+  References) while `deepdelve-mistral-nemo` collapsed on the same query through DeepDelve
+  (`eval/sales_forecasting_benchmark.md` — 9 completion-check attempts, no accepted artifact).
+  `settings.report_style` / `--style standard|academic` (orthogonal to `--depth`, which only
+  changes tool budgets): academic style rewrites `PLANNER_INSTRUCTIONS`' Report Structure step to
+  a literature-review shape (Abstract, Introduction, thematic sections, Cross-Cutting Synthesis,
+  Quantitative Benchmarking Summary, Challenges & Future Directions, Conclusion, References) —
+  modeled on `imbad0202/academic-research-skills`' `literature_review_template.md` (see README
+  References) — and swaps the citation-format instructions to `(Author, Year)` in-text + a
+  numbered References list, instead of the default inline `- **[Title](URL)**`. Also carries that
+  repo's **Anti-Leakage Protocol** ("Knowledge Isolation Directive": prefer `findings.md` over
+  parametric memory, write "Not covered by this run's research" instead of inventing a section).
+  `utils/grounding.py` gained `parse_academic_references` (maps `(surname, year)` keys to the
+  URL on that References entry — an entry with no real URL stays unresolvable, same failure mode
+  as a fabricated inline citation) and every line-scoped check
+  (`find_non_url_citations`/`find_uncited_claim_lines`/`claim_grounding_problem`/
+  `find_unsupported_regulation_ids`) now resolves academic citations through it alongside the
+  existing inline-URL format — same grounding guarantees, second citation dialect. A real bug was
+  caught building the test coverage: a line with TWO `(Author, Year)` citations only had its FIRST
+  one checked (regex `.search()` vs `.finditer()`), so a real citation earlier on a line could mask
+  a fabricated one later on the same line — fixed, pinned by a dedicated test row. 8 new assertions
+  in `test_structural_checks.py` (well-formed pass, fabricated in-text citation, URL-less
+  References entry, the two-citations-per-line bug). Not yet validated with a real model run
+  (nemo is too weak to be a fair test of a new feature; needs a `deepdelve-gpt-oss` run against
+  `eval/sales_forecasting_benchmark.md`).
 
 ## Findings from live testing (not yet acted on / informational)
 
@@ -75,26 +102,22 @@ Status as of 2026-07-12.
   factual queries instead of the full report artifact (their `writeFinalAnswer`).
 - **Tongyi-DeepResearch-30B-A3B as a benchmark candidate** (from `Alibaba-NLP/DeepResearch`):
   30B MoE / 3.3B active — same size class as deepdelve-qwen3.6, but trained specifically for
-  long-horizon research. Caveats before a benchmark round: it expects its OWN ReAct dialect
-  (`<tool_call>` XML, `<think>`, `<answer>` tags) and was trained as a SINGLE agent with
-  search/visit tools — the multi-agent delegate_tasks schema is out-of-distribution for it;
-  needs a community GGUF + Ollama chat-template check first.
-- **Academic / literature-review output mode** (from `imbad0202/academic-research-skills`,
-  reviewed 2026-07-12): a `--style academic` report shape modeled on that repo's
-  `literature_review_template.md` (Abstract w/ keywords → Introduction incl. scope/methodology/
-  organization → thematic sections with sub-themes → Cross-Cutting Synthesis → Research Gaps &
-  Future Directions → Conclusion → numbered References), triggered by a real gap: a live
-  sales-forecasting query produced a good result from DeepSeek in that shape
-  (`eval/reference/sales_forecasting_deepseek.md`) but DeepDelve's `PLANNER_INSTRUCTIONS` only
-  offers "simple answer" or generic structured sections. Needs a `utils/grounding.py` extension to
-  accept `(Author, Year)`/`[N]`-style citations resolved through a parsed References-section map,
-  alongside the existing inline `- **[Title](URL)**` format — see the approved session plan for
-  the citation-format design. Also worth adopting from the same repo: its **Anti-Leakage
-  Protocol** ("Knowledge Isolation Directive" — instruct the writer to prefer session findings
-  over parametric memory and flag `[MATERIAL GAP]` instead of filling gaps from training data).
-  That's a cheap prompt-level addition, independent of the citation-format work, and complements
-  DeepDelve's existing post-hoc grounding checks by discouraging fabrication at write time instead
-  of only catching it after.
+  long-horizon research. **Chat-template/tool-call compatibility check done, 2026-07-12 — the
+  flagged risk is resolved**: `deepdelve-tongyi` (built pre-outage from
+  `hf.co/mradermacher/Tongyi-DeepResearch-30B-A3B-GGUF:Q4_K_M`, 18.6GB, `num_ctx 16384`) reports
+  Ollama capabilities `['completion', 'tools', 'thinking']` — the community GGUF's chat template
+  parses the model's native `<tool_call>` XML into real structured `tool_calls` (verified live via
+  a direct `/api/chat` call with a tool schema: returned a proper `tool_calls` array, not raw XML
+  text). A real `--depth quick` trial run (`compare_the_vector_search_capabilities_of_elastics_...`)
+  confirmed `delegate_tasks` actually gets invoked with 2 real specialist tasks, 2 real fetches,
+  and `write_todos` populated correctly — passing the exact bar `devstral:24b` failed (README
+  "Model choice": zero real `delegate_tasks` calls, narrated JSON instead). The run didn't finish
+  within a 5-minute smoke-test window — Tongyi's `<think>` traces are verbose (one single-tool-call
+  test round-tripped a 1000+ token thinking block for "15 + 27") — so a real benchmark round needs
+  a longer time budget than the other local candidates, not a template fix. Config for testing:
+  `~/.deepdelve/config-tongyi.yaml` (not in git, mirrors the live config with `openai_model:
+  deepdelve-tongyi`). Not yet run through the full Colombia B2B or sales-forecasting benchmark —
+  that's the next step, budgeting for its slower per-turn latency.
 ## Stretch
 
 - **RL fine-tuning for tool-call reliability** (GRPO/PPO on the actual Planner/Searcher schema) — targets the fetch-skipping/tool-call-reliability root cause directly instead of catching it after the fact. Needs real training infrastructure; not started.

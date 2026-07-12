@@ -388,6 +388,88 @@ def main():
 
     contextvars.copy_context().run(_regulation_scenario)
 
+    # --- academic-style (Author, Year) citation dialect (eval/sales_forecasting_benchmark.md,
+    # ROADMAP.md "academic output mode") — same grounding guarantees as the default
+    # `- **[Title](URL)**` format, resolved through a parsed References-section map ---
+    from utils.grounding import parse_academic_references, real_grounding_problem as _rgp
+
+    def _academic_citation_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        _orig_ws6 = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory"}
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            _IN_MEMORY_FS.clear()
+            reset_fetched_urls()
+            record_fetched_url("https://arxiv.org/abs/2511.00552", filename="sources/tft.md")
+            _IN_MEMORY_FS["sources/tft.md"] = (
+                "Source-URL: https://arxiv.org/abs/2511.00552\n\n"
+                "Temporal Fusion Transformer achieves an R-squared of 0.9875 on 45 Walmart stores, "
+                "integrating holiday, CPI, fuel price and temperature signals into a single model."
+            )
+            well_formed = (
+                "## 3. Architectures\n\n"
+                "TFT achieved R-squared of 0.9875 on Walmart data (Punati et al., 2025).\n\n"
+                "## References\n\n"
+                "1. Punati, S. B., et al. (2025). Temporal Fusion Transformer. "
+                "https://arxiv.org/abs/2511.00552\n"
+            )
+            assert parse_academic_references(well_formed) == {
+                "punati,2025": "https://arxiv.org/abs/2511.00552"
+            }
+            # Well-formed academic report: real citation, real fetch, term overlap -> passes clean.
+            assert _asyncio.run(_rgp(well_formed)) is None, _asyncio.run(_rgp(well_formed))
+
+            # Fabricated in-text citation with no matching References entry -> non_url_citation,
+            # same failure class a bare (Org, Year) pseudo-citation already triggers.
+            fabricated = (
+                "## 3. Architectures\n\n"
+                "A DQN model achieves the highest accuracy in FMCG forecasting (Nobody, 2099).\n\n"
+                "## References\n\n"
+                "1. Punati, S. B., et al. (2025). Temporal Fusion Transformer. "
+                "https://arxiv.org/abs/2511.00552\n"
+            )
+            problem = _asyncio.run(_rgp(fabricated))
+            assert problem and problem.startswith("non_url_citation"), problem
+
+            # A References entry that cites a paper by title/arXiv-ID text alone, no real URL —
+            # exactly how the DeepSeek gold reference itself writes some entries — must NOT
+            # silently resolve; the in-text citation stays ungrounded until a URL is added.
+            no_url_entry = (
+                "## 3. Architectures\n\n"
+                "GA-DQN raised service level from 61% to 94% (Various Authors, 2025).\n\n"
+                "## References\n\n"
+                "1. Various Authors. (2025). GA-DQN hybrid. *Supply Chain Analytics Journal*.\n"
+            )
+            assert parse_academic_references(no_url_entry) == {}
+            # No http URL anywhere in the whole report (in-text citation is parenthetical, and
+            # the one References entry has none either) -> the hard "no_urls" gate fires first,
+            # before non_url_citation_check is ever reached — even more direct than that check.
+            problem2 = _asyncio.run(_rgp(no_url_entry))
+            assert problem2 == "no_urls", problem2
+
+            # Two citations on one line: an earlier REAL one must not mask a later FABRICATED
+            # one — the exact class of bug caught while building this feature (only the first
+            # regex match on a line was being resolved before this fix).
+            two_on_one_line = (
+                "TFT hit R-squared 0.9875 (Punati et al., 2025); a rival model claims higher "
+                "accuracy still (Nobody, 2099).\n\n"
+                "## References\n\n"
+                "1. Punati, S. B., et al. (2025). Temporal Fusion Transformer. "
+                "https://arxiv.org/abs/2511.00552\n"
+            )
+            assert find_non_url_citations(two_on_one_line), "unresolved 2nd citation must be caught"
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            if _orig_ws6 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws6
+
+    contextvars.copy_context().run(_academic_citation_scenario)
+
     # --- stub-fetch detection (live case run 14: a model-invented URL answered by a 200
     # soft-404 — 5KB of subscription chrome — was recorded as a real fetch and passed the
     # hard URL gate) ---
