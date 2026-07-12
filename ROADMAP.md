@@ -37,6 +37,14 @@ Status as of 2026-07-12.
 - **Completion-check refactor (2026-07-12):** the ~250-line if/elif verdict chain in `tui.py` — which shipped the swallowed-elif bug twice (bd307f4, run 13) — is now a data-driven check list in `src/engine/completion.py` (`check_<problem>(ctx) -> Verdict|None`, first verdict wins, no elif headers to swallow), pinned by a 10-row verdict matrix in `test_structural_checks.py` (mutation-verified) and a CLAUDE.md suite-before-commit rule.
 - **`_get_safe_path` Windows workspace escape, fixed (2026-07-12):** `os.path.join(base, "C:\evil")` discards the base entirely, so drive-qualified/drive-relative filenames escaped the workspace (Planner has `write_workspace_file`). Drive-lettered names now rejected outright + abspath containment check on disk workspaces. External review #2's one HIGH finding.
 - **Documentation update pass (2026-07-12, `a4d8380`):** config template default flipped to `deepdelve-gpt-oss`, README model-verdict table + new CLI flags + headless failure semantics + `sources/` provenance; ROADMAP synced.
+- **Context-budget endgame guard (`98ef24a`):** ROADMAP candidate from Tongyi's `react_agent.py`
+  — local models run at `num_ctx ~16384` with no context accounting, so on overflow Ollama
+  silently truncates from the TOP (eating the system prompt mid-run, indistinguishable from model
+  collapse). `settings.context_budget_chars` (template default 50000) counts text + tool args +
+  results per agent stream; on overshoot the turn is cut and the agent gets one forced wrap-up
+  turn (sub-agents return findings immediately, headless Planner writes from what it has), a
+  second overshoot forces the completion check's final verdict. TUI Planner exempt. Verified live
+  with a 3000-char budget: honest "budget exhausted" report, no silent truncation.
 - **Grounding-layer hardening batch (2026-07-12 evening, `7f0782f`..`5c24607`), every fix validated live in run 15:** stub-fetch detection (soft-404/paywall shells recorded as `stub` in `fetched_urls`, refused by all grounding checks, own `stub_source` verdict — closes run 14's invented-URL hole; 10/21 run-15 fetches flagged, zero false positives); Source-URL header self-grounding fix (the injected line-1 header's URL slug no longer counts as source content); charset fix (HTML decoded by real encoding — strict UTF-8 → header → meta → cp1252; stale meta tags scrubbed so markitdown can't re-mojibake; Spanish accents verified intact live); citation-format enforcement (`uncited_claims`: ≥3 figure-bearing lines with no citation in an h1-h3 section without URLs — run 14's table + detached "Source URLs" shape; section-scoped after run 15 caught the per-niche `#### Sources` false positive); URL prefix-boundary fix (fetched `.../article` no longer grounds fabricated `.../article-fake-2024`); `grounding_check.enabled` master switch actually honored; platform-independent drive-letter guard (splitdrive silently stopped rejecting `C:\evil` after the Linux migration).
 
 ## Findings from live testing (not yet acted on / informational)
@@ -71,11 +79,22 @@ Status as of 2026-07-12.
   (`<tool_call>` XML, `<think>`, `<answer>` tags) and was trained as a SINGLE agent with
   search/visit tools — the multi-agent delegate_tasks schema is out-of-distribution for it;
   needs a community GGUF + Ollama chat-template check first.
-- **Context-budget endgame guard** (from Tongyi's `react_agent.py`): they count tokens and at
-  ~110K force "stop tool calls, give your best answer now". DeepDelve has NO context accounting
-  at num_ctx=16384 — Ollama silently truncates from the top on overflow, which can eat the
-  system prompt mid-run. An engine-side approximate budget check + forced-endgame nudge.
-
+- **Academic / literature-review output mode** (from `imbad0202/academic-research-skills`,
+  reviewed 2026-07-12): a `--style academic` report shape modeled on that repo's
+  `literature_review_template.md` (Abstract w/ keywords → Introduction incl. scope/methodology/
+  organization → thematic sections with sub-themes → Cross-Cutting Synthesis → Research Gaps &
+  Future Directions → Conclusion → numbered References), triggered by a real gap: a live
+  sales-forecasting query produced a good result from DeepSeek in that shape
+  (`eval/reference/sales_forecasting_deepseek.md`) but DeepDelve's `PLANNER_INSTRUCTIONS` only
+  offers "simple answer" or generic structured sections. Needs a `utils/grounding.py` extension to
+  accept `(Author, Year)`/`[N]`-style citations resolved through a parsed References-section map,
+  alongside the existing inline `- **[Title](URL)**` format — see the approved session plan for
+  the citation-format design. Also worth adopting from the same repo: its **Anti-Leakage
+  Protocol** ("Knowledge Isolation Directive" — instruct the writer to prefer session findings
+  over parametric memory and flag `[MATERIAL GAP]` instead of filling gaps from training data).
+  That's a cheap prompt-level addition, independent of the citation-format work, and complements
+  DeepDelve's existing post-hoc grounding checks by discouraging fabrication at write time instead
+  of only catching it after.
 ## Stretch
 
 - **RL fine-tuning for tool-call reliability** (GRPO/PPO on the actual Planner/Searcher schema) — targets the fetch-skipping/tool-call-reliability root cause directly instead of catching it after the fact. Needs real training infrastructure; not started.
@@ -83,3 +102,17 @@ Status as of 2026-07-12.
 
 - Large/small model dispatcher: rejected 2026-07-11 — benchmark showed small models fail sub-agent reasoning (nemo 2/10); revisit only if a small model scores ≥5 on the Colombia rubric solo.
 - Knowledge cache (any backend): rejected — poisoned benchmarks/grounding; deleted in commit 929b987; do not reintroduce.
+- **Bibliographic-API citation verification** (Semantic Scholar/OpenAlex/Crossref/arXiv, from
+  `imbad0202/academic-research-skills`): rejected as a bundled default for the academic output
+  mode — a genuinely stronger check than DeepDelve's own fetch-based grounding for *published*
+  academic sources, but adds an external API dependency (rate limits, another failure mode to
+  handle) for a benefit that only applies to formal papers, not the market-research/general-web
+  sources most DeepDelve runs actually cite. Revisit as an opt-in flag specifically for
+  `--style academic` if that mode's own fetch-based grounding proves insufficient in practice.
+- **`SkyworkAI/DeepResearchAgent`** (reviewed 2026-07-12): a general self-evolution agent runtime
+  (RSPL/SEPL protocol layers, RL-based prompt/solution optimizers, versioned tracing) with example
+  agents for trading/ESG/mobile — not a deep-research-specialized project despite the name.
+  Rejected: same reasoning as the existing "no DI framework, no plugin system" stance above: its
+  tracing/versioning goal is already served by `_run_state.json`, and its optimizer/self-evolution
+  loop is out of scope for a project explicitly avoiding RL infrastructure outside the "Stretch"
+  item above.
