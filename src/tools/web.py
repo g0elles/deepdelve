@@ -338,6 +338,32 @@ def _scope_warning(query: str) -> str:
     )
 
 
+def _first_of_list_arg(value, arg_name: str, tool_name: str):
+    """Normalize a tool argument a model passed as a LIST when the schema says string. Confirmed
+    live (run 17, Tongyi-DeepResearch): the model's own native tools take `"query": [array]` and
+    `"url": [array]`, and under pressure it reverts to that trained schema — the framework then
+    rejects the call, the model retries the identical shape, and after 3 consecutive errors the
+    whole request is abandoned. Executing the FIRST element and telling the model exactly how to
+    get the rest degrades gracefully instead: quotas stay honest (one call, one unit) and the
+    model gets an actionable correction instead of an opaque validation error.
+
+    Returns (first_value, note) — note is "" when the value wasn't a list."""
+    if not isinstance(value, (list, tuple)):
+        return value, ""
+    items = [v for v in value if v]
+    if not items:
+        return "", ""
+    note = ""
+    if len(items) > 1:
+        rest = ", ".join(str(v) for v in items[1:5])
+        note = (
+            f"\n(NOTE: you passed {len(items)} values for '{arg_name}' in one {tool_name} call, "
+            f"but it accepts ONE per call — only the first was executed. Call {tool_name} again "
+            f"once per remaining value: {rest})"
+        )
+    return str(items[0]), note
+
+
 def _slugify_for_filename(url: str, query: str) -> str:
     """Deterministic, collision-resistant filename for an auto-fetched search result."""
     import hashlib
@@ -350,11 +376,12 @@ def _slugify_for_filename(url: str, query: str) -> str:
 
 @tool
 @with_quota
-async def fetch_url_to_workspace(url: str, filename: str, convert_to_md: bool = True) -> str:
-    """Fetch external web content and save it directly to the workspace. If convert_to_md is True, parses to Markdown."""
+async def fetch_url_to_workspace(url: str | list, filename: str, convert_to_md: bool = True) -> str:
+    """Fetch external web content and save it directly to the workspace. If convert_to_md is True, parses to Markdown. url takes ONE URL per call."""
+    url, list_note = _first_of_list_arg(url, "url", "fetch_url_to_workspace")
     try:
         data, urls_fetched = await asyncio.to_thread(_fetch_raw, url, convert_to_md)
-        return _save_fetched(urls_fetched, filename, data, convert_to_md)
+        return _save_fetched(urls_fetched, filename, data, convert_to_md) + list_note
     except Exception as e:
         import traceback
         return f"Failed: {e}\n\nTraceback:\n{traceback.format_exc()}"
@@ -362,11 +389,11 @@ async def fetch_url_to_workspace(url: str, filename: str, convert_to_md: bool = 
 
 @tool
 async def web_search(
-    query: str,
+    query: str | list,
     max_results: int = 5,
     topic: str = "general",
 ) -> str:
-    """Search the web for information on a given query.
+    """Search the web for information on a given query. Takes ONE query per call.
 
     Automatically fetches the FULL page content of the top result (not just its snippet) and
     saves it to the workspace — you do not need to call fetch_url_to_workspace separately for
@@ -382,6 +409,8 @@ async def web_search(
         Formatted search results with titles, URLs, and snippets. The top result also includes
         the workspace filename its full content was auto-saved to.
     """
+    query, list_note = _first_of_list_arg(query, "query", "web_search")
+
     from tools.core import check_quota
     quota_error = check_quota("web_search")
     if quota_error:
@@ -521,7 +550,7 @@ async def web_search(
             block += f"\n**Note:** {r['auto_fetch_status']}"
         result_texts.append(block + "\n")
 
-    return f"🔍 Found {len(result_texts)} result(s) for '{query}':\n\n{chr(10).join(result_texts)}{auto_fetch_note}{_scope_warning(query)}"
+    return f"🔍 Found {len(result_texts)} result(s) for '{query}':\n\n{chr(10).join(result_texts)}{auto_fetch_note}{_scope_warning(query)}{list_note}"
 
 
 async def verify_url_live(url: str, timeout: float = 5.0) -> bool:
