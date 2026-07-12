@@ -508,6 +508,13 @@ class BasicTuiAgent(App):
         # started, so follow-up turns skip intake entirely.
         self._pending_clarify = None
         self._clarify_done = False
+        # Conversation-scoped run continuity: follow-up turns reuse the first run's workspace,
+        # fetched-URL record, and _run_state.json instead of minting a fresh isolated folder per
+        # message — otherwise "expand on niche 2" runs blind in an empty workspace, unable to see
+        # the sources the conversation just gathered. Reset by /new.
+        self._active_run_dir = None
+        self._conv_fetched = None
+        self._conv_run_state = None
 
     def compose(self) -> ComposeResult:
         yield VerticalScroll(id="chat-container")
@@ -623,6 +630,9 @@ class BasicTuiAgent(App):
             reset_session()
             self._pending_clarify = None
             self._clarify_done = False
+            self._active_run_dir = None
+            self._conv_fetched = None
+            self._conv_run_state = None
 
             global _current_session_id, _session_events, _current_call_by_source, _current_text_by_source
             _current_session_id = str(uuid.uuid4())
@@ -1012,14 +1022,26 @@ class BasicTuiAgent(App):
         # _slugify_run_dir_name. Toggle via config.yaml: settings.workspace.session_isolation: true
         session_token = None
         run_dir_name = None
+        is_followup = self._active_run_dir is not None
         if config.cfg.get("settings", {}).get("workspace", {}).get("session_isolation", False):
             from tools.fs import session_dir_ctx
-            run_dir_name = _slugify_run_dir_name(query)
+            run_dir_name = self._active_run_dir if is_followup else _slugify_run_dir_name(query)
+            self._active_run_dir = run_dir_name
             session_token = session_dir_ctx.set(run_dir_name)
 
-        # Initialize tool quotas from config
+        # Initialize tool quotas from config (fresh pool per turn, including follow-ups)
         quota_token = tool_quotas_ctx.set(build_quota_pool())
-        reset_fetched_urls()
+        from utils.run_state import fetched_urls_ctx
+        if is_followup and self._conv_fetched is not None:
+            # Workers each get their own contextvars copy — carry the conversation's fetched-URL
+            # list across turns via the instance, so follow-up answers citing turn-1 sources
+            # still pass the grounding check.
+            fetched_urls_ctx.set(self._conv_fetched)
+        else:
+            reset_fetched_urls()
+        # The ctx list itself, NOT get_fetched_urls() — that helper returns a fresh [] when the
+        # record is empty, which would silently break the shared-object carry across turns.
+        self._conv_fetched = fetched_urls_ctx.get()
         run_state_token = None
 
         chat = self.query_one("#chat-container", VerticalScroll)
@@ -1101,9 +1123,26 @@ class BasicTuiAgent(App):
             current_input = query
             has_requests = True
             state = {"calls": {}, "current_call_id": None, "current_msg": None}
-            run_state = RunState(_current_run_dir(run_dir_name))
-            run_state.set_query(query)
+            if is_followup and self._conv_run_state is not None:
+                # Same conversation, same _run_state.json: one continuous forensic timeline.
+                # attempt resets so each turn gets its own nudge budget; the original query stays
+                # (it drives the exclusion gate — a follow-up rarely restates the exclusions).
+                run_state = self._conv_run_state
+                run_state.attempt = 0
+                run_state.data.setdefault("followup_queries", []).append(query)
+            else:
+                run_state = RunState(_current_run_dir(run_dir_name))
+                run_state.set_query(query)
+                self._conv_run_state = run_state
             run_state_token = run_state_ctx.set(run_state)
+            # A follow-up in a conversation whose report already exists is Q&A over the gathered
+            # research, not a new research run — the artifact/grounding contract was already
+            # enforced when the report was produced. ponytail: follow-up answers themselves are
+            # unverified chat; per-turn grounding of follow-ups if that ever proves insufficient.
+            skip_completion_check = is_followup and (
+                config.cfg.get("settings", {}).get("workspace", {}).get("required_artifact", "final_report.md")
+                in get_workspace_files()
+            )
 
             while has_requests:
                 has_requests = False
@@ -1206,7 +1245,7 @@ class BasicTuiAgent(App):
                     # Push back upstream and flush state
                     current_input = new_inputs
 
-                if not has_requests:
+                if not has_requests and not skip_completion_check:
                     def _tui_notify(msg: str):
                         chat.mount(Static(Markdown(msg), classes="agent-bubble"))
                         chat.scroll_end(animate=False)
@@ -1406,6 +1445,31 @@ def build_resume_input(query: str, prior_state: dict) -> str:
     return "\n\n".join(parts)
 
 
+# --depth presets: one flag instead of hand-editing quotas/search_mode per run. "standard" is a
+# deliberate no-op (whatever config.yaml says); quick/deep only touch the three quotas that govern
+# research volume plus search depth and the retry budget.
+_DEPTH_PRESETS = {
+    "quick": {"quotas": {"delegate_tasks": 8, "web_search": 8, "fetch_url_to_workspace": 8},
+              "search_mode": "light", "max_completion_check_attempts": 2},
+    "standard": {},
+    "deep": {"quotas": {"delegate_tasks": 25, "web_search": 30, "fetch_url_to_workspace": 30},
+             "search_mode": "heavy", "max_completion_check_attempts": 4},
+}
+
+
+def apply_depth_preset(cfg: dict, depth: str) -> None:
+    preset = _DEPTH_PRESETS.get(depth) or {}
+    quotas = cfg.setdefault("settings", {}).setdefault("quotas", {})
+    for k, v in (preset.get("quotas") or {}).items():
+        if isinstance(quotas.get(k), dict):
+            quotas[k]["limit"] = v
+        else:
+            quotas[k] = v
+    for k in ("search_mode", "max_completion_check_attempts"):
+        if k in preset:
+            cfg["settings"][k] = preset[k]
+
+
 def _clarify_verdict(text: str) -> str | None:
     """None => proceed straight to research; a string => show it as clarifying questions first.
     An empty, CLEAR-prefixed, or rambling reply (>600 chars — the intake prompt asked for at most
@@ -1572,6 +1636,21 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                 f"SYSTEM WARNING: your Pass-1 'findings.md' is not grounded in real research ({findings_problem}) — " + \
                 ("it contains no source URLs at all" if findings_problem == "no_urls" else "not one URL it cites matches anything your Searcher(s) actually fetched this run") + \
                 f". findings.md must be a verbatim consolidation of what your delegated Searchers/Analyzers actually returned, never written from your own memory. The fabricated file has been moved aside. Delegate real research tasks now if you haven't, then rebuild findings.md strictly from those real results — only after that, write '{req_artifact}' from it."
+        elif (
+            config.cfg.get("settings", {}).get("grounding_check", {}).get("check_findings", True)
+            and "findings.md" not in files
+        ):
+            # Pass-1 existence gate: the Planner's workflow is findings.md FIRST, final report
+            # second — but nothing structural enforced the first pass existing at all. Confirmed
+            # live twice (runs 10 and 11, 2026-07-11): the Planner skips findings.md, then
+            # "forgets" 29+ fetched files and writes an empty report claiming nothing was
+            # retrieved, or narrates the report as chat. Making Pass 1 structurally required
+            # gives the final report a real, on-disk substrate to be rewritten from.
+            is_last_chance = (attempt + 1) >= MAX_COMPLETION_CHECK_ATTEMPTS
+            last_chance_prefix = "THIS IS YOUR FINAL ATTEMPT. " if is_last_chance else ""
+            problem, warning_msg, inject_msg = "missing_findings", \
+                "`findings.md` (Pass 1) was never written — the two-pass discipline was skipped. Pushing agent to write it before the final report.", \
+                f"SYSTEM WARNING: {last_chance_prefix}You never wrote 'findings.md'. The workflow is two passes: FIRST write findings.md as a verbatim consolidation of everything your delegated Searchers/Analyzers actually returned (each claim with its real source URL), THEN write '{req_artifact}' from it. You have real delegated results in your context above — do NOT claim nothing was retrieved, and do NOT write '{req_artifact}' directly. Call write_workspace_file(filename='findings.md', content=...) right now."
         elif req_artifact not in files:
             # This `elif` header (and its is_last_chance) was accidentally swallowed when the
             # findings gate above was inserted (bd307f4), merging two branches: the
@@ -1748,7 +1827,7 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
 
 
 async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_id: str = None,
-                  resume_run: str = None):
+                  resume_run: str = None, seed_urls: list = None):
     """Run the agent in headless mode, streaming results to stdout."""
     quota_token = tool_quotas_ctx.set(build_quota_pool())
     reset_fetched_urls()
@@ -1913,6 +1992,13 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
     sys.stdout.write(f"\n\033[1mStarting task:\033[0m {prompt[:100]}...\n\n")
     start_time = datetime.now()
 
+    # Wall-clock budget (headless only — a TUI user can /stop; an unattended run can't). 0 = off.
+    # On expiry the run is not hard-killed: the current turn is cut, then the completion check is
+    # forced straight to its final-verdict path, so salvage/labeling still runs and the run ends
+    # with an explicit verdict instead of a silent overrun (a qwen run once ran 64 minutes).
+    max_run_minutes = config.cfg.get("settings", {}).get("max_run_minutes", 0) or 0
+    budget_deadline = (time.monotonic() + max_run_minutes * 60) if max_run_minutes else None
+
     run_state = None
     try:
         from agent_framework import Message
@@ -1958,6 +2044,29 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
             _write_log()
             sys.exit(1)
 
+        # --seed-url: the user often already has the 2-3 links (or the regulation PDF) the
+        # research should start from. Fetched through the normal pipeline, so they land in
+        # sources/ with Source-URL provenance and count as fetched for the grounding check —
+        # but refunded from the quota pool, since they're user-provided, not agent spend.
+        if seed_urls:
+            from tools.web import fetch_url_to_workspace, _slugify_for_filename
+            from tools.core import refund_quota
+            seeded = []
+            for u in seed_urls:
+                result = await fetch_url_to_workspace.func(url=u, filename=_slugify_for_filename(u, "seed"))
+                refund_quota("fetch_url_to_workspace")
+                ok = not str(result).lstrip().startswith("Failed")
+                sys.stdout.write(f"\033[93m[System] Seed {'fetched' if ok else 'FAILED'}: {u}\033[0m\n")
+                if ok:
+                    seeded.append(u)
+            if seeded:
+                current_input += (
+                    "\n\nSEED SOURCES (provided by the user, already fetched into the workspace "
+                    "under sources/ — have your Analyzers read these before searching the open "
+                    "web, and cite them like any fetched source):\n"
+                    + "\n".join(f"- {u}" for u in seeded)
+                )
+
         malformed_retries = 0
 
         while has_requests:
@@ -1968,6 +2077,12 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
             try:
                 stream = agent.run(current_input, session=session, stream=True)
                 async for update in stream:
+                    if budget_deadline and time.monotonic() > budget_deadline:
+                        sys.stdout.write(
+                            f"\n\033[91m[System] max_run_minutes ({max_run_minutes}) exceeded — "
+                            f"cutting the current turn short.\033[0m\n"
+                        )
+                        break
                     for content in update.contents:
                         if content.type == "text" and content.text:
                             log_stream_content("Agent", "text", {"text": content.text})
@@ -2028,6 +2143,13 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
                     sys.stdout.write(f"\n\033[91m[System] {plain}\033[0m\n")
                     log_stream_content("Agent", "text", {"text": plain})
 
+                if budget_deadline and time.monotonic() > budget_deadline:
+                    _cli_notify(f"max_run_minutes ({max_run_minutes}) exceeded — no more retries; "
+                                f"finishing with whatever exists (salvage still applies).")
+                    # Forces run_completion_check straight past its retry branch into the
+                    # final-verdict path (labeling + salvage), same as an exhausted attempt budget.
+                    run_state.attempt = 10**6
+
                 should_continue, current_input = await run_completion_check(
                     query=prompt, current_input=current_input, run_state=run_state, notify=_cli_notify,
                     last_assistant_text=turn_text,
@@ -2039,6 +2161,22 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
         _write_log()
         elapsed = datetime.now() - start_time
         sys.stdout.write(f"\n\n\033[1mTask completed in {elapsed.total_seconds():.1f} seconds.\033[0m\n")
+
+        # The one answer every headless run owes its user: which file to read, and whether the
+        # run's environment/grounding stats mean it can be trusted at a glance.
+        from utils.run_state import get_search_health
+        req_artifact = config.cfg.get("settings", {}).get("workspace", {}).get("required_artifact", "final_report.md")
+        report_path = os.path.join(os.path.abspath(_current_run_dir(run_dir_name)), req_artifact)
+        health = get_search_health()
+        if os.path.exists(report_path):
+            sys.stdout.write(f"\033[1;32mReport:\033[0m {report_path}\n")
+        else:
+            sys.stdout.write(f"\033[1;31mReport: NOT WRITTEN\033[0m (see run folder for forensics)\n")
+        sys.stdout.write(
+            f"\033[2mRun folder:\033[0m {os.path.abspath(_current_run_dir(run_dir_name))}\n"
+            f"\033[2mSources fetched:\033[0m {len(get_fetched_urls())}  "
+            f"\033[2mweb_search failures:\033[0m {health['failures']}/{health['calls']}\n"
+        )
     except Exception as e:
         sys.stdout.write(f"\n\033[91mError:\033[0m {e}\n")
         # A dead run must still leave its evidence behind and be detectable by exit code —
@@ -2070,10 +2208,42 @@ def cli_main(builder):
                              "path under the workspace dir). Reuses its fetched sources, findings "
                              "and plan instead of restarting; uses the run's original recorded "
                              "query unless --prompt is also given. Headless mode.")
+    parser.add_argument("--depth", choices=["quick", "standard", "deep"], default=None,
+                        help="Research depth preset: quick (~half quotas, light search, 2 retries), "
+                             "standard (config as-is), deep (raised quotas, heavy search, 4 retries).")
+    parser.add_argument("--seed-url", action="append", default=None, metavar="URL",
+                        help="Pre-fetch this URL into the run's sources/ before research starts "
+                             "(repeatable). Doesn't consume the agent's fetch quota. Headless mode.")
+    parser.add_argument("--list-runs", action="store_true",
+                        help="List research runs in the workspace dir (report status, date) and exit.")
     args, _ = parser.parse_known_args()
 
     import config
     config.AUTO_APPROVE = args.auto_approve
+
+    if args.depth:
+        apply_depth_preset(config.cfg, args.depth)
+
+    if args.list_runs:
+        base = config.cfg.get("settings", {}).get("workspace", {}).get("dir", ".")
+        req_artifact = config.cfg.get("settings", {}).get("workspace", {}).get("required_artifact", "final_report.md")
+        if not os.path.isdir(base):
+            sys.stdout.write(f"No runs found ({base} does not exist).\n")
+            sys.exit(0)
+        run_dirs = sorted(
+            (d for d in Path(base).iterdir() if d.is_dir() and (d / "_run_state.json").exists()),
+            key=os.path.getmtime, reverse=True,
+        )
+        if not run_dirs:
+            sys.stdout.write(f"No runs found in {base}.\n")
+            sys.exit(0)
+        sys.stdout.write(f"Research runs in {os.path.abspath(base)} (newest first):\n")
+        for d in run_dirs[:20]:
+            ts = datetime.fromtimestamp(os.path.getmtime(d)).strftime("%Y-%m-%d %H:%M")
+            has_report = (d / req_artifact).exists()
+            status = "\033[32mreport\033[0m   " if has_report else "\033[31mNO REPORT\033[0m"
+            sys.stdout.write(f"  {ts}  {status}  {d.name}\n")
+        sys.exit(0)
 
     if args.list_sessions:
         log_dir = Path.home() / f".{config.APP_NAME}" / "sessions"
@@ -2099,7 +2269,8 @@ def cli_main(builder):
 
     if args.prompt_file or args.prompt or args.resume_run:
         asyncio.run(run_cli(builder, prompt=args.prompt, prompt_file=args.prompt_file,
-                            session_id=args.resume, resume_run=args.resume_run))
+                            session_id=args.resume, resume_run=args.resume_run,
+                            seed_urls=args.seed_url))
     else:
         BasicTuiAgent(builder, session_to_resume=args.resume).run()
 
