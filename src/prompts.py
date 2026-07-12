@@ -18,6 +18,16 @@ import datetime
 # angle to WebSearcher or AcademicSearcher (tier 2), which in turn route extraction to
 # DocumentAnalyzer or DataAnalyzer (tier 3). This is the domain-specialization idea from DelveAgent
 # (arXiv:2606.18648), applied within the existing pipeline-stage separation rather than collapsing it.
+#
+# ATTRIBUTION (2026-07-12 review of two reference repos, see README References):
+# - dzhng/deep-research: the Searchers' FOLLOW-UP DIRECTIONS requirement (its schema-forced
+#   followUpQuestions feeding the next round's queries) and the information-density rule for
+#   findings ("include entities, exact metrics, numbers, dates"). Both target the benchmark's
+#   weakest tier — discovery depth (run 15: 1 niche found of 4-6 required).
+# - Alibaba-NLP/DeepResearch (Tongyi): DocumentAnalyzer's verbatim-evidence rule (its visit-tool
+#   extractor separates verbatim `evidence` from `summary`) — verbatim quotes carry the source's
+#   own numbers/terms into findings.md, which is exactly what the line-scoped grounding checks
+#   verify against.
 # -------------------------------------------------------------
 
 SUBAGENT_DELEGATION_INSTRUCTIONS = """# Sub-Agent Delegation
@@ -96,6 +106,10 @@ You MUST delegate all web research to a Searcher specialist and all file reading
    - Does anything here contradict another slot's findings? If so, dispatch one `verification` slot
      task to resolve the conflict before proceeding — do not silently pick one side.
    - Is a slot still missing that the query actually needs? If so, dispatch it now.
+   - Your Searchers end each summary with a "FOLLOW-UP DIRECTIONS" section — weigh those
+     directions when deciding the next dispatch: they are leads found IN the real sources, which
+     beat directions you generate cold. If a direction fills a gap the query needs (e.g. you need
+     4-6 items and have 2), dispatch it as its own task with the direction's specifics.
    Only proceed to writing once every dispatched slot has a real, source-backed answer or you've
    spent your `delegate_tasks` budget. This replanning step is not optional for `deep research /
    report generation` or `academic` queries — those are exactly the query classes that used to fail
@@ -103,7 +117,10 @@ You MUST delegate all web research to a Searcher specialist and all file reading
 
 5. **TWO-PASS REPORT WRITING**: Do not synthesize and write `final_report.md` in one step.
    - **Pass 1 — Extract**: Write `findings.md` first: a plain consolidated list of every finding you
-     received from your specialists, each with its source URL, unedited and unsynthesized.
+     received from your specialists, each with its source URL, unedited and unsynthesized. Keep each
+     finding's exact figures, entity names, dates, and identifiers verbatim as the specialist
+     reported them — do NOT round numbers, drop years, or generalize names while consolidating; a
+     finding stripped of its specifics cannot be verified against its source.
    - **Pass 2 — Global critic, then write**: Before writing `final_report.md`, use `think_tool` to
      review `findings.md` against the original query: Does every claim in what you're about to write
      trace back to a specific line in `findings.md`? Are you about to state anything from your own
@@ -261,6 +278,18 @@ Format each source like this:
 - **[Another Title](URL)**: Another finding summary here.
 
 Do NOT return source titles without their URLs. The Planner needs the URLs for the final report.
+
+Each finding must be information-DENSE: carry the checkable specifics — entity names, exact
+figures, dates, regulation/version identifiers — exactly as the source states them, never a vague
+summary ("a recent law", "significant growth"). A finding without its specifics cannot be verified
+and will be discarded downstream.
+
+End your consolidated summary with a short section:
+
+FOLLOW-UP DIRECTIONS:
+- 1-3 bullets naming what a NEXT research round should target and why (a gap you noticed, a lead a
+  source mentioned but you didn't have budget to chase, a claim that needs corroboration). These
+  guide the Planner's next dispatch — be specific enough to act on (a searchable topic, not "learn more").
 </Findings Format>
 
 <Show Your Thinking>
@@ -372,6 +401,11 @@ about the paper).
 
 - **[Exact Paper Title](arxiv URL)** [PRIMARY]: authors, verbatim abstract or key result.
 - **[Blog post title](URL)** [SECONDARY]: what it claims about the paper — flagged as secondhand.
+
+Each finding must be information-DENSE: exact titles, author names, years, venue, and any key
+numbers verbatim — never a vague paraphrase. End your consolidated summary with a short
+"FOLLOW-UP DIRECTIONS:" section (1-3 bullets: specific papers/topics a next round should chase —
+e.g. a highly-cited related work you found named but didn't fetch).
 </Findings Format>
 
 <Show Your Thinking>
@@ -435,7 +469,10 @@ You do NOT have `web_search`, `fetch_url_to_workspace`, or `delegate_tasks`. You
      `Source-URL: <its true URL>` — use that exact URL (or the one in your task instructions).
      NEVER guess or reconstruct a URL from a filename; a reconstructed URL fails verification.
    - Key facts and data points extracted
-   - Relevant quotes or figures (with line references)
+   - **Evidence, verbatim**: for each key finding, a short EXACT quote from the file (with line
+     reference) — copied, not paraphrased — kept distinct from your own summary of it. A verbatim
+     quote carries the source's own numbers/names, which is what lets the finding be verified
+     downstream; a paraphrase strips exactly the tokens verification needs.
    - Any internal links or references mentioned in the document
    - Your assessment of the source quality and reliability
 5. **STOP EARLY**: If you have extracted the relevant information, stop. Do NOT read the entire file line by line. Use grep to find what matters and read targeted sections.
