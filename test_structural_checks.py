@@ -7,7 +7,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 
 from engine.orchestrator import _extract_excluded_topics, _lacks_concrete_subject
-from utils.grounding import find_non_url_citations, fully_ungrounded
+from utils.grounding import find_non_url_citations, fully_ungrounded, find_uncited_claim_lines
 from utils.run_state import record_fetched_url, reset_fetched_urls
 
 
@@ -459,6 +459,56 @@ def main():
                 "https://arxiv.org/abs/2511.00552\n"
             )
             assert find_non_url_citations(two_on_one_line), "unresolved 2nd citation must be caught"
+
+            # Fresh audit, 2026-07-12: _PARENTHETICAL_CITATION_RE originally required every
+            # token before the comma to start with an ASCII capital, so it silently failed to
+            # even DETECT "et al."/"&"/"and"/accented-surname citations at all -- not a
+            # false-positive, a total miss that broke grounding in both directions (a fabricated
+            # multi-author citation went undetected; a genuinely well-formed one was wrongly
+            # quarantined). Pin every form the academic-mode prompt actually tells the model to
+            # use (prompts.py ACADEMIC_CITATION_FORMAT_INSTRUCTIONS: "et al. for 3+ authors").
+            record_fetched_url("https://example.com/drl", filename="sources/drl.md")
+            record_fetched_url("https://example.com/pso", filename="sources/pso.md")
+            record_fetched_url("https://example.com/rbfnn", filename="sources/rbfnn.md")
+            multi_author_forms = (
+                "DRL achieves the highest accuracy for FMCG demand forecasting "
+                "(Urgenc et al., 2025). PSO cut MAPE by 23 percent versus Transformer "
+                "(Smith and Jones, 2024). RBFNN generalization improved significantly "
+                "(Chen & Patel, 2020).\n\n"
+                "## References\n\n"
+                "1. Urgenc, S., et al. (2025). DRL Demand Forecasting. https://example.com/drl\n"
+                "2. Smith, J., and Jones, B. (2024). PSO Attention. https://example.com/pso\n"
+                "3. Chen, L., & Patel, R. (2020). RBFNN Hybrid. https://example.com/rbfnn\n"
+            )
+            assert find_non_url_citations(multi_author_forms) == [], (
+                "well-formed et al./and/& citations must all resolve, not be flagged")
+            assert find_uncited_claim_lines(multi_author_forms) == [], (
+                "sections carrying only et al./and/& citations must be exempted, same as http")
+            assert _asyncio.run(_rgp(multi_author_forms)) is None, _asyncio.run(_rgp(multi_author_forms))
+
+            # A fabricated multi-author citation with no matching References entry must still be
+            # caught now that the detector actually sees "et al." citations at all.
+            fabricated_multi_author = (
+                "A DQN model achieves the highest accuracy in FMCG forecasting "
+                "(Nobody et al., 2099).\n\n"
+                "## References\n\n"
+                "1. Urgenc, S., et al. (2025). DRL Demand Forecasting. https://example.com/drl\n"
+            )
+            assert find_non_url_citations(fabricated_multi_author), (
+                "fabricated et al. citation with no matching reference must be flagged")
+
+            # Fresh audit, 2026-07-12: _academic_citation_key tried the unanchored in-text regex
+            # BEFORE the anchored reference-entry regex, so a numbered reference whose own TITLE
+            # happens to contain a (Word, YYYY)-shaped substring got mis-keyed to that inner
+            # parenthetical instead of its real leading author/year.
+            title_collision = (
+                "## References\n\n"
+                "1. Urgenc, S., et al. (2025). A study of trends (Preliminary, 1998) in demand "
+                "forecasting. https://example.com/drl\n"
+            )
+            assert parse_academic_references(title_collision) == {
+                "urgenc,2025": "https://example.com/drl"
+            }, parse_academic_references(title_collision)
         finally:
             _IN_MEMORY_FS.clear()
             _IN_MEMORY_FS.update(saved_fs)
@@ -582,7 +632,7 @@ def main():
     contextvars.copy_context().run(_enabled_off_scenario)
 
     # --- A3 citation-format layer (run 14's format half: table + detached '### Source URLs') ---
-    from utils.grounding import split_prose_from_sources, find_uncited_claim_lines
+    from utils.grounding import split_prose_from_sources
 
     # The detached-source-section heading variants must be stripped from prose...
     for heading in ("### Source URLs", "## Sources", "**Fuentes:**", "## Fuentes consultadas",

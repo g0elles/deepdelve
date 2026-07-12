@@ -102,26 +102,44 @@ def extract_sources_section(report: str) -> str:
     return report[m.start():] if m else ""
 
 
+# Leading-capital character class shared by every academic-citation regex below: ASCII A-Z plus
+# Latin-1/Latin Extended-A uppercase (À-Ö, Ø-Þ — covers accented surnames like "Ürgenç"/"Özgüz").
+# Fresh audit, 2026-07-12: _REFERENCE_ENTRY_RE and _ACADEMIC_KEY_RE originally used bare [A-Z],
+# so even after _PARENTHETICAL_CITATION_RE (below) was fixed to DETECT a Unicode-capital citation,
+# resolving its (surname, year) key still silently failed for one starting with an accented
+# capital — detected as a citation, but never resolvable against any References entry.
+_CAP_CHAR = "A-ZÀ-ÖØ-Þ"
+
 # A numbered or bracket-numbered References-list entry in academic style, e.g. "1. Punati, S. B.,
 # et al. (2025). Temporal Fusion Transformer..." or "[1] Smith, J. (2024)...". Captures the first
 # author's surname and the publication year — together the same (surname, year) key an in-text
 # `(Author, Year)` citation uses, so a citation can be resolved against this entry without needing
 # full bibliographic parsing.
-_REFERENCE_ENTRY_RE = re.compile(r'^[\s>*_]*(?:\d+\.|\[\d+\])\s*([A-Z][\w\-\']+)[^\n(]{0,80}\(((?:19|20)\d{2})\)')
+_REFERENCE_ENTRY_RE = re.compile(rf'^[\s>*_]*(?:\d+\.|\[\d+\])\s*([{_CAP_CHAR}][\w\-\']+)[^\n(]{{0,80}}\(((?:19|20)\d{{2}})\)')
 
 # A bare `(Author, Year)` / `(Author et al., Year)` / `(Author & Other, Year)` in-text citation.
 # Shares its shape with _PARENTHETICAL_CITATION_RE below (both require a capitalized name-like
 # token followed by a real 19xx/20xx year) — kept as a separate compiled pattern only for the
 # distinct capture groups this one needs to build a resolution key.
-_ACADEMIC_KEY_RE = re.compile(r'\(([A-Z][\w\-\']+).*?,\s*((?:19|20)\d{2})\)')
+_ACADEMIC_KEY_RE = re.compile(rf'\(([{_CAP_CHAR}][\w\-\']+).*?,\s*((?:19|20)\d{{2}})\)')
 
 
 def _academic_citation_key(citation_text: str) -> str | None:
     """Normalize an in-text `(Author, Year)`-shaped citation (or a References-entry's leading
     `Author (Year)`) to a lookup key: lowercased first-author surname + year. Both sides of the
     match (in-text citation, reference-list entry) go through this same function so "Punati et
-    al., 2025" and "Punati, S. B., et al. (2025)" resolve to the same key."""
-    m = _ACADEMIC_KEY_RE.search(citation_text) or _REFERENCE_ENTRY_RE.match(citation_text)
+    al., 2025" and "Punati, S. B., et al. (2025)" resolve to the same key.
+
+    _REFERENCE_ENTRY_RE (anchored, numbered-entry-only) is tried FIRST — found live (fresh audit,
+    2026-07-12): trying the unanchored _ACADEMIC_KEY_RE first meant it could match a `(Word, YYYY)`
+    -shaped substring INSIDE a reference entry's own title (e.g. a paper titled "...analysis
+    (Preliminary, 1998)...") before ever reaching the entry's real leading author/year, silently
+    mis-keying that entry to the title's inner parenthetical instead of its actual citation key.
+    _REFERENCE_ENTRY_RE only ever matches a numbered/bracketed reference-list LINE (its leading
+    anchor plus required "N." / "[N]" prefix), so trying it first is always safe for a plain
+    in-text citation like "(Punati et al., 2025)" — it falls through to _ACADEMIC_KEY_RE unchanged.
+    """
+    m = _REFERENCE_ENTRY_RE.match(citation_text) or _ACADEMIC_KEY_RE.search(citation_text)
     if not m:
         return None
     return f"{m.group(1).lower()},{m.group(2)}"
@@ -162,11 +180,29 @@ def parse_academic_references(report: str) -> dict[str, str]:
 # individually) isn't flagged.
 _SOURCE_LABEL_RE = re.compile(r'^[\s>*_\-#]*(?:sources?|fuentes?)\s*:[\s*_]*[^\s*_]', re.IGNORECASE)
 # A bare "(Org Name, 2020)"-style attribution — e.g. "(DANE, 2020)", "(Ministry of Environment,
-# 2021)", "(World Bank, 2020)". Requires a real 4-digit 19xx/20xx year so it doesn't false-positive
+# 2021)", "(World Bank, 2020)" — AND an academic "(Author, Year)" in-text citation, including
+# "et al.", "&", "and", and accented surnames: "(Punati et al., 2025)", "(Ürgenç & Özgüz, 2025)",
+# "(Smith and Jones, 2024)". Requires a real 4-digit 19xx/20xx year so it doesn't false-positive
 # on something like "(Figure 2)"; deliberately does NOT match markdown link syntax (`[Title](url)`
 # uses brackets for the title, not parens, and a URL never starts with a capital letter followed by
 # more word characters and a comma).
-_PARENTHETICAL_CITATION_RE = re.compile(r'\((?:[A-Z][\w.&\'-]*\s?){1,6},\s*(?:19|20)\d{2}\)')
+#
+# Found live (fresh audit, 2026-07-12) that the original all-tokens-must-be-capitalized version
+# silently failed to match "et al."/"&"/"and"/non-ASCII-capital citations at all — not a
+# false-positive, a total MISS, which broke academic-mode grounding in BOTH directions: a
+# fabricated "(Nobody et al., 2099)" went undetected by find_non_url_citations (the check simply
+# never saw it as citation-shaped), while a genuinely well-formed "(Punati et al., 2025)" section
+# was NOT exempted by find_uncited_claim_lines' presence check, quarantining a correctly-cited
+# report. Every FIRST token must still start with a capital letter (ASCII or Latin-1/Extended-A
+# uppercase, À-ÖØ-Þ) to keep the original false-positive guard against
+# lowercase narrative parentheticals like "(and this happened, 2020)" — only "et al."/"and"/"&"
+# are allowed as SUBSEQUENT connector tokens, never as the sole/first token.
+_CITATION_NAME_TOKEN = rf"[{_CAP_CHAR}][\w.'-]*"
+_CITATION_CONNECTOR = r"(?:et\s+al\.?|and|&)"
+_PARENTHETICAL_CITATION_RE = re.compile(
+    rf'\({_CITATION_NAME_TOKEN}(?:\s+(?:{_CITATION_NAME_TOKEN}|{_CITATION_CONNECTOR})){{0,5}},'
+    rf'\s*(?:19|20)\d{{2}}\)'
+)
 
 
 def find_non_url_citations(text: str) -> list[str]:
