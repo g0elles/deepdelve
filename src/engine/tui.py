@@ -410,6 +410,26 @@ class ProcessingWidget(Static):
             self._timer.stop()
         self.update(f"[b]{self.agent_name}:[/b] [red]\N{CROSS MARK} Error: {error_msg}[/red]")
 
+def _looks_like_tool_error(text: str) -> bool:
+    """True when a tool call's own result string represents a failure, not a real result.
+    This project's tools never raise on expected failures — they return a formatted error
+    string instead (see tools/fs.py, tools/core.py's with_quota wrapper, orchestrator.py's
+    delegate_tasks error paths) — so a widget that only knows "the call returned" can't tell
+    success from failure without checking the text itself. Found live, 2026-07-12: a
+    read_workspace_file call that failed with 'Error: Requested function "read_workspace..."
+    not found.' still showed a green checkmark, misleading the user into treating a failed
+    sub-agent step as a successful one while reading the transcript. Covers every error-string
+    convention actually used across the codebase (checked via grep) rather than guessing one."""
+    if not text:
+        return False
+    stripped = text.lstrip("#").strip()
+    return (
+        stripped.startswith("Error:")
+        or stripped.startswith("CRITICAL TOOL EXECUTION ERROR")
+        or "forcefully aborted" in text
+    )
+
+
 class ToolCallWidget(Collapsible):
     """Widget to display a tool call and its result."""
     DOTS_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
@@ -466,7 +486,8 @@ class ToolCallWidget(Collapsible):
         self._done = True
         elapsed = datetime.now() - self._start_time
         agent_label = self.agent_name if self.agent_name else ("Sub-Agent" if self.is_subagent else "Agent")
-        self.title = f"\N{HAMMER AND WRENCH} \\[{agent_label}] {self.tool_name} \N{WHITE HEAVY CHECK MARK} ({elapsed.total_seconds():.1f}s)"
+        marker = "\N{WARNING SIGN}" if _looks_like_tool_error(text) else "\N{WHITE HEAVY CHECK MARK}"
+        self.title = f"\N{HAMMER AND WRENCH} \\[{agent_label}] {self.tool_name} {marker} ({elapsed.total_seconds():.1f}s)"
 
     def mark_stopped(self):
         self._done = True
