@@ -68,11 +68,29 @@ Status as of 2026-07-12.
   existing inline-URL format — same grounding guarantees, second citation dialect. A real bug was
   caught building the test coverage: a line with TWO `(Author, Year)` citations only had its FIRST
   one checked (regex `.search()` vs `.finditer()`), so a real citation earlier on a line could mask
-  a fabricated one later on the same line — fixed, pinned by a dedicated test row. 8 new assertions
-  in `test_structural_checks.py` (well-formed pass, fabricated in-text citation, URL-less
-  References entry, the two-citations-per-line bug). Not yet validated with a real model run
-  (nemo is too weak to be a fair test of a new feature; needs a `deepdelve-gpt-oss` run against
-  `eval/sales_forecasting_benchmark.md`).
+  a fabricated one later on the same line — fixed, pinned by a dedicated test row. A fresh audit
+  pass then caught a HIGHER-severity bug in the same feature before any live run: the citation
+  detector required every token before the comma to start with an ASCII capital, so it silently
+  failed to even DETECT "et al."/"&"/"and"/accented-surname citations at all — exactly the forms
+  the feature's own prompt tells the model to use — breaking grounding in both directions
+  (a fabricated multi-author citation went undetected; a well-formed one got wrongly quarantined).
+  Fixed, plus a related mis-keying bug (a reference entry's own title could shadow its real
+  author/year) and 5 more regression rows. 13 total assertions in `test_structural_checks.py`.
+  **Live-validated 2026-07-12** (`deepdelve-gpt-oss --style academic` against
+  `eval/sales_forecasting_benchmark.md`, 21.5 min,
+  `research_output/i_want_documentation_on_heuristic_algoritms_for_de_20260712_144216`): the
+  literature-review shape was produced correctly end to end (Abstract, Introduction, thematic
+  sections with tables, Cross-Cutting Synthesis, Challenges & Future Directions, Conclusion,
+  numbered References), org-style `(Wikipedia, 2026)`/`(Papaya Global, 2026)` citations all
+  resolved with zero false positives from the citation-format work. The run's one real failure —
+  quarantined at `not_grounded` (`unverified_urls:https://en.wikipedia.org/wiki/Heuristic`, cited
+  without its `_(computer_science)` disambiguator, vs. the actually-fetched
+  `.../wiki/Heuristic_(computer_science)`) — is the pre-existing hard URL-presence gate correctly
+  catching a genuine citation-accuracy slip, not a defect in academic mode. The subsequent
+  8-attempt `missing_artifact` stall (model never rewrote after quarantine) reproduces the
+  already-documented gpt-oss endgame-collapse weakness (runs 11/13); the quarantined-draft-restore
+  fix delivered the real, mostly-correct draft with a loud warning banner instead of losing it to
+  salvage narration, exactly as designed.
 
 ## Findings from live testing (not yet acted on / informational)
 
