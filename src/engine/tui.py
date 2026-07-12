@@ -1530,6 +1530,39 @@ def _find_last_substantial_text(min_len: int = 200) -> str:
     return ""
 
 
+def _restore_quarantined_draft(req_artifact: str, problem: str) -> bool:
+    """Final-verdict fallback, tried BEFORE narration salvage: if the run ends with the artifact
+    missing but a quarantined draft exists, restore the most recent draft with a loud header
+    naming the unresolved check. A quarantined draft is a REAL report that failed exactly one
+    known check — strictly more useful to a human than the model's meta-narration about rewriting
+    it. Confirmed pattern (runs 11 and 13, 2026-07-11): after quarantine, the model narrated
+    ABOUT the rewrite across the whole retry budget instead of doing it, so salvage kept
+    delivering deliberation monologue while a complete draft sat in .rejected_attempt_N."""
+    try:
+        from tools.fs import _get_safe_path
+        path = _get_safe_path(req_artifact)
+        if not path or os.path.exists(path):
+            return False
+        rejected = sorted(
+            (p for p in (f"{path}.rejected_attempt_{n}" for n in range(1, 10)) if os.path.exists(p)),
+        )
+        if not rejected:
+            return False
+        with open(rejected[-1], "r", encoding="utf-8") as f:
+            draft = f.read()
+        banner = (
+            f"> **QUARANTINED DRAFT (restored)** — this draft failed the completion check "
+            f"({problem}) and the model never produced a corrected rewrite. The flagged claims "
+            f"are UNVERIFIED and at least one citation was found not to support what it is "
+            f"attached to. Review before trusting.\n\n"
+        )
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(banner + draft)
+        return True
+    except Exception:
+        return False
+
+
 def _salvage_narrated_report(req_artifact: str, last_assistant_text: str) -> bool:
     """Structural fallback for a real, recurring pattern (documented in the reference project too,
     surviving multiple rounds of prompt-only fixes there): the model narrates a complete,
@@ -1737,7 +1770,20 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                 problem, warning_msg, inject_msg = "not_grounded", \
                     f"`{req_artifact}` contains zero hyperlinked sources — no citations at all. Pushing agent to add real ones.", \
                     f"SYSTEM WARNING: {last_chance_prefix}'{req_artifact}' does not contain a single `[Title](URL)` link anywhere — you named sources in prose but never actually cited them. The previous draft has been moved aside. Rewrite '{req_artifact}' using the exact format `- **[Title](URL)**` for every source, with real URLs your Searcher(s) actually returned in their findings.{escalation}{redelegate_directive}"
+            elif grounding_problem and grounding_problem.startswith("regulation_unsupported"):
+                # The URL is real and fetched, but the specific regulation number attributed to it
+                # doesn't exist anywhere in that source's content — a misattributed or invented law
+                # number wearing a legitimate citation. Confirmed live (run 12): 'Ley 1906 de 2021'
+                # cited to a fetched Mintic page about the 2025-2027 strategy, no '1906' in it.
+                problem, warning_msg, inject_msg = "regulation_unsupported", \
+                    f"`{req_artifact}` names a regulation whose own cited source never mentions that regulation's number ({grounding_problem}) — likely a misattributed or invented identifier.", \
+                    f"SYSTEM WARNING: '{req_artifact}' attributes a specific regulation ({grounding_problem}) to a source whose content never mentions that number anywhere. Naming a law the cited source does not contain is fabrication even when the URL itself is real and was fetched. The previous draft has been moved aside. Either delegate a Searcher to fetch the regulation's actual text or official page and cite THAT for the identifier, or rewrite the claim using only what the cited source actually says — without a law number you cannot support.{redelegate_directive}"
             elif grounding_problem and grounding_problem.startswith("non_url_citation"):
+                # This elif header was swallowed when the regulation_unsupported branch above was
+                # inserted (the same bd307f4 bug class this file already documents once): the
+                # orphaned assignment below silently overwrote the regulation branch's verdict
+                # from inside it — confirmed live on run 13, which recorded non_url_citation with
+                # a regulation_unsupported detail string and showed the wrong corrective nudge.
                 # Distinct from "no_urls": the report DOES have real hyperlinked citations
                 # elsewhere (that's why it reached this branch instead of "no_urls" above), but at
                 # least one OTHER claim is attributed to something that isn't a URL at all — a bare
@@ -1763,7 +1809,7 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
 
             notify(f"**System ({attempt + 1}/{MAX_COMPLETION_CHECK_ATTEMPTS}):** {warning_msg}")
 
-            if problem in ("not_grounded", "claim_unsupported", "non_url_citation"):
+            if problem in ("not_grounded", "claim_unsupported", "non_url_citation", "regulation_unsupported"):
                 _quarantine_artifact(req_artifact, attempt + 1)
             elif problem == "findings_ungrounded":
                 _quarantine_artifact("findings.md", attempt + 1)
@@ -1795,10 +1841,23 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                 notify(f"**System (final):** ⚠️ web_search failed {health['failures']}/{health['calls']} "
                        f"times this run (throttling or outage) — this failure is likely environmental, "
                        f"not a model problem. Re-run later before drawing conclusions about the model.")
+            # The check the quarantined draft actually failed (the final-turn problem is usually
+            # just missing_artifact — the model never rewrote after quarantine).
+            _QUARANTINE_PROBLEMS = ("not_grounded", "claim_unsupported", "non_url_citation",
+                                    "regulation_unsupported", "findings_ungrounded")
+            quarantine_reason = next(
+                (a["problem"] for a in reversed(run_state.data.get("completion_check_attempts", []))
+                 if a.get("problem") in _QUARANTINE_PROBLEMS), problem)
             if req_artifact in get_workspace_files():
                 notify(f"**System (final):** Retry budget exhausted with an unresolved issue ({problem}). "
                        f"`{req_artifact}` exists but could NOT be fully verified this run — treat its "
                        f"claims as unconfirmed. This was not silently accepted.")
+            elif problem == "missing_artifact" and _restore_quarantined_draft(req_artifact, quarantine_reason):
+                notify(f"**System (final):** The model never rewrote `{req_artifact}` after its draft "
+                       f"was quarantined ({quarantine_reason}) — restored the quarantined draft, "
+                       f"loudly labeled with the unresolved check. A real draft that failed one "
+                       f"known check beats salvaged narration; review the flagged claims before "
+                       f"trusting it.")
             elif problem == "missing_artifact" and _salvage_narrated_report(req_artifact, _find_last_substantial_text() or last_assistant_text):
                 # Structural fallback, not another prompt nudge — see _salvage_narrated_report's
                 # docstring for why: nudging alone has proven insufficient for this exact pattern

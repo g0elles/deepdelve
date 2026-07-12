@@ -121,6 +121,54 @@ def find_non_url_citations(text: str) -> list[str]:
     return hits
 
 
+# Regulation identifiers, ES + EN: "Ley 1906 de 2021", "Decreto 2242/2015", "Resolución
+# 2275/2023", "Directive 2014/55/EU", "Regulation (EU) 2024/1689", "Circular 052", "CONPES 3995".
+_REGULATION_ID_RE = re.compile(
+    r'\b(?:Ley|Decreto|Resoluci[oó]n|Circular|Directiva|Directive|Regulation|CONPES)'
+    r'(?:\s+\(?(?:EU|UE)\)?)?'
+    r'\s*(?:N[o°º.]*\s*)?'
+    r'(\d{2,}(?:[./]\d{2,4})?)'
+    r'(?:\s+de\s+\d{4})?',
+    re.IGNORECASE,
+)
+
+
+def find_unsupported_regulation_ids(text: str) -> list[str]:
+    """A regulation identifier cited to a fetched source whose content never mentions the
+    regulation's number. Confirmed live (run 12, 2026-07-11): the report's flagship niche hung on
+    'Ley 1906 de 2021', cited to a genuinely-fetched Mintic page that is actually about the 2025-2027
+    digital security strategy and contains no '1906' anywhere — the URL-presence gate passed (real
+    fetch) and the zero-overlap content check passed (shared generic terms like 'Colombia'), so a
+    misattributed law number sailed through both. Line-scoped like find_non_url_citations (this
+    project's report format keeps a claim and its citation on one line); only fires when the line's
+    cited URL WAS fetched — unfetched URLs are already the hard gate's job. Conservative by
+    construction: only the identifier's primary number is required, as a whole word, anywhere in
+    the source — absence is a strong signal, coincidental presence just means no flag."""
+    fetched = {entry["url"].rstrip('/'): entry["filename"] for entry in get_fetched_urls()}
+    hits = []
+    for line in (text or "").splitlines():
+        ids = list(_REGULATION_ID_RE.finditer(line))
+        if not ids:
+            continue
+        files = []
+        for u in extract_cited_urls(line):
+            key = u.rstrip('/')
+            fn = fetched.get(key) or next(
+                (f for orig, f in fetched.items() if _urls_prefix_match(key, orig)), None)
+            if fn:
+                files.append(fn)
+        if not files:
+            continue
+        content = "\n".join(get_workspace_file_content(f) or "" for f in files)
+        if len(content.strip()) < 50:
+            continue
+        for m in ids:
+            num = re.split(r'[./]', m.group(1))[0]
+            if len(num) >= 2 and not re.search(rf'\b{re.escape(num)}\b', content):
+                hits.append(m.group(0).strip())
+    return hits
+
+
 def claim_grounding_problem(report: str) -> str | None:
     """Content-level check beyond URL-presence: for a citation that WAS actually fetched, does its
     content share any checkable fact (number, version, proper noun) with what the report claims?
@@ -203,6 +251,11 @@ async def real_grounding_problem(content: str) -> str | None:
         non_url = find_non_url_citations(content)
         if non_url:
             return f"non_url_citation:{'; '.join(non_url[:3])}"
+
+    if gc_cfg.get("regulation_id_check", True):
+        bad_regs = find_unsupported_regulation_ids(content)
+        if bad_regs:
+            return f"regulation_unsupported:{'; '.join(bad_regs[:3])}"
 
     if gc_cfg.get("content_level_check", True):
         return claim_grounding_problem(content)

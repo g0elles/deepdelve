@@ -118,6 +118,13 @@ settings:
     # others (see utils/grounding.py::find_non_url_citations). Set false to disable if a legitimate
     # report style trips it too often.
     non_url_citation_check: true
+    # A regulation identifier ("Ley 1906 de 2021", "Directive 2014/55/EU") cited to a fetched
+    # source whose content never mentions that regulation's number — a misattributed or invented
+    # law number wearing a real citation. Confirmed live (run 12): the report's flagship niche
+    # hung on a law number that appears nowhere in its own cited source; the URL-presence gate
+    # passed (real fetch) and the zero-overlap content check passed (shared generic terms), so
+    # only this check catches it (see utils/grounding.py::find_unsupported_regulation_ids).
+    regulation_id_check: true
     # Runs the same URL-presence + content-level check on each Searcher specialist's summary
     # before it reaches the Planner, not just on the final report — catches a hallucinated
     # citation at the source instead of letting it poison findings.md first (see

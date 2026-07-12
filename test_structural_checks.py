@@ -269,6 +269,109 @@ def main():
 
         contextvars.copy_context().run(_findings_gate_scenario)
 
+    # --- regulation-identifier grounding (live case run 12: 'Ley 1906 de 2021' cited to a real
+    # fetched page that never mentions 1906 — passed both the URL gate and zero-overlap check) ---
+    from utils.grounding import find_unsupported_regulation_ids
+
+    def _regulation_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        _orig_ws4 = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory"}
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            _IN_MEMORY_FS.clear()
+            reset_fetched_urls()
+            record_fetched_url("https://mintic.example.gov.co/article", filename="sources/mintic.md")
+            _IN_MEMORY_FS["sources/mintic.md"] = (
+                "Source-URL: https://mintic.example.gov.co/article\n\n"
+                "La Estrategia Nacional de Seguridad Digital 2025-2027 llega para proteger a Colombia. "
+                "El Ministerio TIC presenta el plan de ciberseguridad nacional para infraestructura."
+            )
+            # Misattributed law number: page never says 1906 -> flagged
+            bad = find_unsupported_regulation_ids(
+                "| Ley 1906 de 2021 | [Mintic](https://mintic.example.gov.co/article) |")
+            assert bad and "1906" in bad[0], bad
+            # Supported identifier: page that DOES contain the number -> silent
+            _IN_MEMORY_FS["sources/mintic.md"] += "\nTexto oficial de la Ley 1906 de 2021."
+            assert find_unsupported_regulation_ids(
+                "| Ley 1906 de 2021 | [Mintic](https://mintic.example.gov.co/article) |") == []
+            # Identifier with an unfetched/no URL on the line -> other gates' job, silent here
+            assert find_unsupported_regulation_ids("Decreto 9999/2015 obliga a todos.") == []
+            assert find_unsupported_regulation_ids(
+                "Decreto 9999/2015 ([x](https://never-fetched.example.com/y))") == []
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            if _orig_ws4 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws4
+
+    contextvars.copy_context().run(_regulation_scenario)
+
+    # --- regulation_unsupported routes to its OWN completion-check branch (the swallowed-elif
+    # bug class has now hit this chain twice — bd307f4 and run 13 — this pins verdict routing) ---
+    with tempfile.TemporaryDirectory() as tmpdir:
+        def _reg_branch_scenario():
+            from tools.fs import _IN_MEMORY_FS
+            from tools.core import tool_quotas_ctx as q_ctx
+            _orig_ws5 = _config.cfg.get("settings", {}).get("workspace")
+            _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
+            saved_fs = dict(_IN_MEMORY_FS)
+            try:
+                _IN_MEMORY_FS.clear()
+                reset_fetched_urls()
+                record_fetched_url("https://gov.example.co/page", filename="sources/page.md")
+                _IN_MEMORY_FS["sources/page.md"] = ("Source-URL: https://gov.example.co/page\n\n"
+                    + "Estrategia nacional de seguridad digital de Colombia para infraestructura. " * 3)
+                _IN_MEMORY_FS["findings.md"] = "- hallado (https://gov.example.co/page)"
+                _IN_MEMORY_FS["final_report.md"] = "| Ley 1906 de 2021 | [gov](https://gov.example.co/page) |"
+                q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5}})
+                rs = RunState(tmpdir)
+                run_state_ctx.set(rs)
+                msgs = []
+                should_retry, _ = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append))
+                assert should_retry, msgs
+                assert rs.data["completion_check_attempts"][-1]["problem"] == "regulation_unsupported", \
+                    rs.data["completion_check_attempts"]
+            finally:
+                _IN_MEMORY_FS.clear()
+                _IN_MEMORY_FS.update(saved_fs)
+                reset_fetched_urls()
+                if _orig_ws5 is None:
+                    _config.cfg["settings"].pop("workspace", None)
+                else:
+                    _config.cfg["settings"]["workspace"] = _orig_ws5
+
+        contextvars.copy_context().run(_reg_branch_scenario)
+
+    # --- quarantined-draft restore beats narration salvage (runs 11/13's endgame) ---
+    from engine.tui import _restore_quarantined_draft
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        def _restore_scenario():
+            _orig_ws6 = _config.cfg.get("settings", {}).get("workspace")
+            _config.cfg["settings"]["workspace"] = {"type": "disk", "dir": tmpdir}
+            try:
+                draft_path = os.path.join(tmpdir, "final_report.md.rejected_attempt_1")
+                with open(draft_path, "w", encoding="utf-8") as f:
+                    f.write("# Real Report\nActual researched content.")
+                assert _restore_quarantined_draft("final_report.md", "regulation_unsupported")
+                restored = open(os.path.join(tmpdir, "final_report.md"), encoding="utf-8").read()
+                assert "QUARANTINED DRAFT" in restored and "regulation_unsupported" in restored
+                assert "Actual researched content." in restored
+                # No-op when the artifact already exists (never clobber a real report)
+                assert not _restore_quarantined_draft("final_report.md", "x")
+            finally:
+                if _orig_ws6 is None:
+                    _config.cfg["settings"].pop("workspace", None)
+                else:
+                    _config.cfg["settings"]["workspace"] = _orig_ws6
+
+        contextvars.copy_context().run(_restore_scenario)
+
     # --- intake verdict parsing (fail-open: the clarifier can never block research) ---
     assert _clarify_verdict("CLEAR") is None
     assert _clarify_verdict("  clear\n") is None
