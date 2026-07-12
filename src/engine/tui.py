@@ -1753,6 +1753,13 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
                 )
 
         malformed_retries = 0
+        # Context-budget guard for the Planner stream (see orchestrator.get_context_budget) —
+        # headless only, same policy as max_run_minutes. Counts streamed chars across the whole
+        # run (with conversational memory the session accumulates across turns).
+        from engine.orchestrator import get_context_budget, stream_content_chars
+        context_budget = get_context_budget()
+        run_stream_chars = 0
+        budget_nudged = False
 
         while has_requests:
             has_requests = False
@@ -1765,6 +1772,13 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
                     if budget_deadline and time.monotonic() > budget_deadline:
                         sys.stdout.write(
                             f"\n\033[91m[System] max_run_minutes ({max_run_minutes}) exceeded — "
+                            f"cutting the current turn short.\033[0m\n"
+                        )
+                        break
+                    run_stream_chars += stream_content_chars(update)
+                    if context_budget and run_stream_chars > context_budget:
+                        sys.stdout.write(
+                            f"\n\033[91m[System] context_budget_chars ({context_budget}) exceeded — "
                             f"cutting the current turn short.\033[0m\n"
                         )
                         break
@@ -1807,6 +1821,29 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
                     has_requests = True
                     continue
                 raise
+
+            if context_budget and run_stream_chars > context_budget:
+                if not budget_nudged:
+                    # One wrap-up turn: no more research tools, write the artifacts NOW from what
+                    # already exists. A second overshoot forces the completion check straight to
+                    # its final verdict (same mechanism as max_run_minutes) — never nudge-loop.
+                    budget_nudged = True
+                    run_stream_chars = 0
+                    req_artifact = config.cfg.get("settings", {}).get("workspace", {}).get("required_artifact", "final_report.md")
+                    endgame = (
+                        f"SYSTEM: you have reached your context budget for this run. Do NOT call "
+                        f"delegate_tasks or any research tool again. Write findings.md (if missing) "
+                        f"and '{req_artifact}' RIGHT NOW from the delegated results you already "
+                        f"have, then stop. An incomplete but grounded report now beats a truncated "
+                        f"context."
+                    )
+                    sys.stdout.write(f"\n\033[93m[System] Context budget reached — forcing wrap-up turn.\033[0m\n")
+                    new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
+                    new_inputs.append(Message("user", [{"type": "text", "text": endgame}]))
+                    current_input = new_inputs
+                    has_requests = True
+                    continue
+                run_state.attempt = 10**6
 
             if user_input_requests:
                 has_requests = True

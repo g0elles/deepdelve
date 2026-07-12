@@ -138,6 +138,42 @@ def _get_default_options():
         }
     return options
 
+def stream_content_chars(update) -> int:
+    """Approximate context growth from one stream update: text, tool-call arguments, and tool
+    results all re-enter the model's context on subsequent turns of the same agent run. Char
+    count (not tokens) on purpose — deterministic, tokenizer-free, and the budget it feeds is a
+    safety margin, not an exact fit."""
+    n = 0
+    for c in getattr(update, "contents", None) or []:
+        for attr in ("text", "arguments"):
+            v = getattr(c, attr, None)
+            if isinstance(v, str):
+                n += len(v)
+        r = getattr(c, "result", None)
+        if r is not None:
+            n += len(r) if isinstance(r, str) else len(str(r))
+    return n
+
+
+def get_context_budget() -> int:
+    """settings.context_budget_chars: per-agent-stream char budget (0/absent = off). Idea from
+    Tongyi DeepResearch's react_agent.py (see README References), which counts tokens and at the
+    limit forces 'stop tool calls, answer now'. DeepDelve runs local models at num_ctx ~16384 and
+    previously had NO context accounting at all — on overflow Ollama silently truncates from the
+    TOP, which can eat the system prompt mid-run and looks exactly like model collapse. This is a
+    conservative proxy (per-stream streamed chars, not true prompt size): when exceeded, the turn
+    is cut and the agent gets ONE wrap-up turn to return/write what it already has."""
+    return config.cfg.get("settings", {}).get("context_budget_chars", 0) or 0
+
+
+SUBAGENT_BUDGET_NUDGE = (
+    "SYSTEM: you have reached your context budget for this task. Do NOT call any more tools. "
+    "Immediately return your consolidated findings as your final message, from what you have "
+    "already gathered: each finding with its source URL and exact figures/names, plus your "
+    "FOLLOW-UP DIRECTIONS. An incomplete summary now beats a truncated context."
+)
+
+
 def malformed_tool_call_nudge(e: BaseException) -> str | None:
     """One-turn recovery message for a model emitting syntactically invalid tool-call JSON.
     Confirmed live (2026-07-11, gpt-oss on Ollama): a bad backslash escape inside think_tool
@@ -315,6 +351,13 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                     current_input = instructions
                     has_requests = True
                     malformed_retries = 0
+                    # Context-budget guard (see get_context_budget): Analyzer-tier tasks are the
+                    # likeliest overflow point — 30 capped reads of a 25KB source still exceed a
+                    # 16K-token num_ctx inside ONE task stream. TUI main loop deliberately not
+                    # guarded (a user at the keyboard can /stop), same policy as max_run_minutes.
+                    context_budget = get_context_budget()
+                    stream_chars = 0
+                    budget_nudged = False
                     while has_requests:
                         has_requests = False
                         user_input_requests = []
@@ -330,6 +373,9 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
 
                                 if getattr(update, "user_input_requests", None):
                                     user_input_requests.extend(update.user_input_requests)
+                                stream_chars += stream_content_chars(update)
+                                if context_budget and stream_chars > context_budget:
+                                    break
                         except QuotaAbortException as e:
                             return f"## Error for {task_name}\nTask forcefully aborted: {str(e)}\n---"
                         except Exception as e:
@@ -343,6 +389,20 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                                 has_requests = True
                                 continue
                             raise
+
+                        if context_budget and stream_chars > context_budget and not budget_nudged:
+                            # One wrap-up turn: cut the stream, tell the sub-agent to return its
+                            # findings NOW. A second overshoot falls through and returns whatever
+                            # final_text accumulated — never loop on the nudge itself.
+                            budget_nudged = True
+                            stream_chars = 0
+                            from agent_framework import Message
+                            new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
+                            new_inputs.append(Message("user", [{"type": "text", "text": SUBAGENT_BUDGET_NUDGE}]))
+                            current_input = new_inputs
+                            has_requests = True
+                            final_text += f"\n\n[SYSTEM: task '{task_name}' hit its context budget — findings below were wrapped up early.]"
+                            continue
 
                         if user_input_requests:
                             has_requests = True
