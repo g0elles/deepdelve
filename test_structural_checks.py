@@ -220,6 +220,55 @@ def main():
             else:
                 _config.cfg["settings"]["workspace"] = _orig_ws2
 
+    # --- depth presets (--depth): quick/deep touch quotas+search_mode+retries, standard is a no-op ---
+    from engine.tui import apply_depth_preset
+
+    cfg = {"settings": {"quotas": {"web_search": 15, "read_workspace_file": {"limit": 30, "rules": {}}},
+                        "search_mode": "light", "max_completion_check_attempts": 3}}
+    apply_depth_preset(cfg, "standard")
+    assert cfg["settings"]["quotas"]["web_search"] == 15  # untouched
+    apply_depth_preset(cfg, "deep")
+    assert cfg["settings"]["quotas"]["web_search"] == 30
+    assert cfg["settings"]["search_mode"] == "heavy"
+    assert cfg["settings"]["max_completion_check_attempts"] == 4
+    apply_depth_preset(cfg, "quick")
+    assert cfg["settings"]["quotas"]["web_search"] == 8
+    assert cfg["settings"]["quotas"]["read_workspace_file"]["limit"] == 30  # dict quotas untouched
+
+    # --- findings.md existence gate (live cases: runs 10 & 11 skipped Pass 1 entirely) ---
+    import asyncio as _asyncio
+    from engine.tui import run_completion_check
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        def _findings_gate_scenario():
+            from tools.fs import _IN_MEMORY_FS
+            from tools.core import tool_quotas_ctx as q_ctx
+            _orig_ws3 = _config.cfg.get("settings", {}).get("workspace")
+            _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
+            saved_fs = dict(_IN_MEMORY_FS)
+            try:
+                _IN_MEMORY_FS.clear()
+                _IN_MEMORY_FS["final_report.md"] = "# report\n- claim [x](https://real.example.com/a)"
+                q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5}})
+                reset_fetched_urls()
+                rs = RunState(tmpdir)
+                run_state_ctx.set(rs)
+                msgs = []
+                should_retry, _ = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append))
+                assert should_retry, msgs
+                assert rs.data["completion_check_attempts"][-1]["problem"] == "missing_findings", \
+                    rs.data["completion_check_attempts"]
+            finally:
+                _IN_MEMORY_FS.clear()
+                _IN_MEMORY_FS.update(saved_fs)
+                if _orig_ws3 is None:
+                    _config.cfg["settings"].pop("workspace", None)
+                else:
+                    _config.cfg["settings"]["workspace"] = _orig_ws3
+
+        contextvars.copy_context().run(_findings_gate_scenario)
+
     # --- intake verdict parsing (fail-open: the clarifier can never block research) ---
     assert _clarify_verdict("CLEAR") is None
     assert _clarify_verdict("  clear\n") is None
