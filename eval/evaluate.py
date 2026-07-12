@@ -79,12 +79,15 @@ def _resolve_base_config_path(base_config_path: str | None, project_root: str) -
     if base_config_path and os.path.exists(base_config_path):
         base_path = base_config_path
     else:
-        base_path = os.path.join(project_root, "src", "config_template.yaml")
+        # Lives under src/tools/ (a real installed package for the pip-installed layout), not
+        # directly under src/ — see pyproject.toml / config.py's load_config, second full audit
+        # 2026-07-12 item 5.
+        base_path = os.path.join(project_root, "src", "tools", "config_template.yaml")
 
     if not os.path.exists(base_path):
         raise FileNotFoundError(
             f"No agent config found at '{base_path}'. "
-            "Pass --config <path> or ensure src/config_template.yaml exists."
+            "Pass --config <path> or ensure src/tools/config_template.yaml exists."
         )
     return base_path
 
@@ -104,7 +107,7 @@ def write_eval_config(base_config_path: str | None, project_root: str, tmp_dir: 
     """
     Write a complete, explicit agent config for one eval run.
 
-    Loads src/config_template.yaml from the project (the canonical source of
+    Loads src/tools/config_template.yaml from the project (the canonical source of
     all quota/concurrency/API defaults) then overlays eval-specific overrides.
     Pass --config to override the base entirely with your own file.
 

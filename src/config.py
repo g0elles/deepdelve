@@ -36,6 +36,10 @@ _DEFAULTS = {
 }
 
 cfg: dict = {}
+# Snapshot of cfg as loaded from disk, BEFORE env-var overlays, CLI --depth/--style presets, or
+# the workspace-dir tilde/abspath expansion below ever mutate the live `cfg` dict in place.
+# save_config() persists against THIS, not `cfg` — see its docstring.
+_file_cfg: dict = {}
 
 def _deep_merge(base: dict, overlay: dict) -> dict:
     """Merge overlay into base, recursively for nested dicts."""
@@ -49,11 +53,14 @@ def _deep_merge(base: dict, overlay: dict) -> dict:
 
 def load_config() -> dict:
     """Load config from YAML file, falling back to defaults for missing keys."""
-    global cfg
+    global cfg, _file_cfg
     file_cfg = {}
 
     if not os.path.exists(_CONFIG_PATH):
-        bundled_config = os.path.join(os.path.dirname(__file__), "config_template.yaml")
+        # Lives under tools/ (a real installed package), not next to this loose top-level module
+        # — [tool.setuptools.package-data] can only bundle data files inside an actual package,
+        # not a py-module (second full audit, 2026-07-12, item 5).
+        bundled_config = os.path.join(os.path.dirname(__file__), "tools", "config_template.yaml")
         os.makedirs(os.path.dirname(_CONFIG_PATH), exist_ok=True)
         if os.path.exists(bundled_config):
             import shutil
@@ -67,6 +74,7 @@ def load_config() -> dict:
             file_cfg = yaml.safe_load(f) or {}
 
     cfg = _deep_merge(_DEFAULTS, file_cfg)
+    _file_cfg = copy.deepcopy(cfg)  # pristine, pre-expansion/pre-env-overlay snapshot
 
     # Expand APP_NAME placeholder and tilde (~) in workspace directory
     if "settings" in cfg and "workspace" in cfg["settings"]:
@@ -83,9 +91,27 @@ def load_config() -> dict:
 
     return cfg
 
+# Settings the TUI actually exposes a toggle for (/toggle_thinking, /toggle_persistence) — the
+# only things save_config() is allowed to persist. Anything else in the live `cfg` (an
+# OPENAI_MODEL/OPENAI_API_BASE env-var overlay, a --depth/--style CLI preset's quota/style
+# mutations, the tilde-expanded absolute workspace dir) is session-scoped and must never leak
+# into the user's saved config.yaml.
+_PERSISTABLE_SETTINGS_KEYS = ("enable_thinking", "enable_session_persistence")
+
+
 def save_config() -> None:
-    """Persist the current config dict back to config.yaml."""
-    save_data = copy.deepcopy(cfg)
+    """Persist ONLY the specific runtime toggles the TUI exposes, applied onto the config AS
+    LOADED FROM DISK (_file_cfg) — never the fully-live `cfg`, which by call time may carry an
+    env var model override, a CLI preset's quota mutations, or the expanded workspace dir. A
+    benchmark run started with an OPENAI_MODEL override, followed by one /toggle_thinking, used
+    to silently rewrite the user's saved default model to whatever that run happened to use
+    (second full audit, 2026-07-12, item 2)."""
+    save_data = copy.deepcopy(_file_cfg)
+    live_settings = cfg.get("settings", {})
+    save_data.setdefault("settings", {})
+    for key in _PERSISTABLE_SETTINGS_KEYS:
+        if key in live_settings:
+            save_data["settings"][key] = live_settings[key]
 
     # Strip out sensitive API keys before writing if any are stored in keys
     if "api" in save_data:
