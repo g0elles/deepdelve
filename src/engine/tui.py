@@ -1129,6 +1129,13 @@ class BasicTuiAgent(App):
                 # (it drives the exclusion gate — a follow-up rarely restates the exclusions).
                 run_state = self._conv_run_state
                 run_state.attempt = 0
+                # no_urls_count is a standalone per-turn escalation counter (unlike
+                # completion_check_attempts, which is meant to keep growing as one continuous
+                # forensic timeline across turns) — without this reset, a follow-up turn's first
+                # zero-citation nudge inherits the PRIOR turn's escalation count and immediately
+                # fires the "Nth time in a row" language, even though this turn never failed
+                # before. Second full audit, 2026-07-12, item 7.
+                run_state.data.pop("no_urls_count", None)
                 run_state.data.setdefault("followup_queries", []).append(query)
             else:
                 run_state = RunState(_current_run_dir(run_dir_name))
@@ -1184,7 +1191,13 @@ class BasicTuiAgent(App):
 
                 if user_input_requests:
                     has_requests = True
-                    new_inputs = [query] if isinstance(current_input, str) else list(current_input)
+                    # current_input, not query: an approval request arriving after a completion-
+                    # check nudge (run_completion_check reassigns current_input to include the
+                    # injected retry message) must keep that nudge in the rebuilt input list, or
+                    # the retry silently reverts to the bare original prompt — the exact bug
+                    # run_cli's copy of this same loop was already fixed for (see its "current_input,
+                    # not prompt" comment below). Second full audit, 2026-07-12, item 1.
+                    new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
 
                     for req in user_input_requests:
                         # Mount the interactive widget conditionally

@@ -26,12 +26,27 @@ dependencies = [
 ]
 
 [project.scripts]
-deepdelve = "src.app:cli_main"
+deepdelve = "app:cli_main"
 
+# src-layout, but rooted so the installed package tree matches the bare top-level imports used
+# throughout the codebase (`import config`, `from tools import ...`, `from engine.tui import
+# ...`) — those only resolved when running from the checkout (`python src/app.py` puts `src/`
+# itself on sys.path). The old `packages = ["src", "src.tools", ...]` installed everything under
+# a literal top-level package named `src`, so only `import src.tools` etc. would have worked post
+# pip-install; the `deepdelve` console script (which has no "run from src/" trick to lean on)
+# could never actually import its own modules. Fixed by rooting the install AT src/ instead of
+# treating src/ itself as a package (its __init__.py, which did nothing, is removed) — everything
+# under src/ installs at the top level of site-packages, matching every existing import statement
+# unchanged. Second full audit, 2026-07-12, item 5.
 [tool.setuptools]
-packages = [
-    "src",
-    "src.tools",
-    "src.engine",
-    "src.utils"
-]
+package-dir = {"" = "src"}
+packages = ["tools", "engine", "utils"]
+py-modules = ["app", "config", "prompts"]
+
+# config.py's load_config() locates the bundled template via os.path.join(os.path.dirname(
+# __file__), "tools", "config_template.yaml") — it lives inside the real "tools" package (moved
+# there from directly under src/) specifically so package-data can bundle it: py-modules (loose
+# top-level files like config.py itself, no __init__.py) aren't covered by
+# [tool.setuptools.package-data], which only attaches data files to actual packages.
+[tool.setuptools.package-data]
+tools = ["config_template.yaml"]

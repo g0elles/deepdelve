@@ -78,6 +78,15 @@ def _strip_boilerplate_html(html_text: str) -> bytes:
         return html_text.encode("utf-8", errors="replace")
 
 
+# Hard cap on RAW download size, independent of _save_fetched's separate 5MB SAVED-content cap
+# (web.py:266,270) — that cap only applies AFTER a PDF/HTML has already been fully downloaded and
+# parsed, so a multi-GB URL (a mislabeled video, a huge dataset dump) would previously OOM the run
+# well before ever reaching it. Set comfortably above the save cap since PDF/HTML parsing wants
+# the whole document, not a truncated one, to produce coherent markdown. Second full audit,
+# 2026-07-12, item 3.
+_MAX_FETCH_BYTES = 25_000_000
+
+
 def _fetch_raw(url: str, convert_to_md: bool = True, _redirect_depth: int = 0):
     """Blocking fetch + parse (PDF/HTML -> Markdown, or raw bytes). Shared by
     fetch_url_to_workspace and web_search's auto-fetch — pulled out of the former so both paths
@@ -87,23 +96,41 @@ def _fetch_raw(url: str, convert_to_md: bool = True, _redirect_depth: int = 0):
     original first — more than one entry only when a client-side redirect stub was followed (see
     _looks_like_redirect_stub). The caller must record ALL of them as fetched, since the model may
     reasonably cite either the URL it searched (the stub) or the one the content is actually from.
+
+    Streams the body instead of buffering it whole via httpx.get, so a URL over _MAX_FETCH_BYTES
+    is caught (via Content-Length when the server sends one, or by aborting mid-stream when it
+    doesn't) before the full body is ever held in memory.
     """
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
-    resp = httpx.get(url, headers=headers, timeout=30, follow_redirects=True)
+    with httpx.stream("GET", url, headers=headers, timeout=30, follow_redirects=True) as resp:
+        content_length = resp.headers.get("content-length")
+        if content_length and content_length.isdigit() and int(content_length) > _MAX_FETCH_BYTES:
+            return (f"[ERROR: {url} reports Content-Length {int(content_length):,} bytes, over "
+                    f"the {_MAX_FETCH_BYTES:,} byte fetch cap. Skipped without downloading.]"), [url]
+        chunks, total = [], 0
+        for piece in resp.iter_bytes():
+            chunks.append(piece)
+            total += len(piece)
+            if total > _MAX_FETCH_BYTES:
+                return (f"[ERROR: {url} exceeded the {_MAX_FETCH_BYTES:,} byte fetch cap while "
+                        f"downloading (no Content-Length header caught it early). Skipped.]"), [url]
+        content = b"".join(chunks)
+        resp_url = resp.url
+        charset_encoding = resp.charset_encoding
+        content_type = resp.headers.get("content-type", "").lower()
 
     if not convert_to_md:
-        return resp.content, [url]  # Raw bytes
+        return content, [url]  # Raw bytes
 
-    content_type = resp.headers.get("content-type", "").lower()
     # Check actual bytes — a URL might say .pdf but serve HTML (JS-gated doc viewers)
-    is_actual_pdf = resp.content[:4] == b"%PDF"
+    is_actual_pdf = content[:4] == b"%PDF"
     is_pdf = is_actual_pdf or ("application/pdf" in content_type and is_actual_pdf)
 
     if is_pdf:
         # Save to temp file, then parse locally
         import tempfile
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-            tmp.write(resp.content)
+            tmp.write(content)
             tmp_path = tmp.name
         try:
             # Try liteparse first (better spatial accuracy for PDFs)
@@ -126,7 +153,7 @@ def _fetch_raw(url: str, convert_to_md: bool = True, _redirect_depth: int = 0):
             except ImportError:
                 pass
 
-            return f"[ERROR: PDF at {url} could not be parsed. Size: {len(resp.content)} bytes. Try a different source.]", [url]
+            return f"[ERROR: PDF at {url} could not be parsed. Size: {len(content)} bytes. Try a different source.]", [url]
         finally:
             os.unlink(tmp_path)
     else:
@@ -135,7 +162,7 @@ def _fetch_raw(url: str, convert_to_md: bool = True, _redirect_depth: int = 0):
         # either path runs, not after — see _strip_boilerplate_html. Bytes are decoded honoring
         # the page's real charset first (C8 — see _decode_html_bytes), so cleaned_html is always
         # well-formed UTF-8 whatever the server sent.
-        cleaned_html = _strip_boilerplate_html(_decode_html_bytes(resp.content, resp.charset_encoding))
+        cleaned_html = _strip_boilerplate_html(_decode_html_bytes(content, charset_encoding))
         md_content = None
         try:
             from utils.parsers import convert_to_markdown
@@ -162,7 +189,7 @@ def _fetch_raw(url: str, convert_to_md: bool = True, _redirect_depth: int = 0):
             target = _looks_like_redirect_stub(md_content)
             if target:
                 from urllib.parse import urljoin
-                resolved = urljoin(str(resp.url), target)
+                resolved = urljoin(str(resp_url), target)
                 try:
                     inner_data, inner_urls = _fetch_raw(resolved, convert_to_md, _redirect_depth=_redirect_depth + 1)
                     return inner_data, [url] + inner_urls
@@ -535,6 +562,12 @@ async def web_search(
             r["auto_fetched_filename"] = _fetched_filename(filename)
             r["auto_fetch_status"] = save_msg
         except Exception as e:
+            # check_quota above already consumed a fetch_url_to_workspace unit for this attempt —
+            # an environmental failure here (network error, parse crash) must not also burn the
+            # model's budget, same refund philosophy web_search's own failure path already
+            # follows. Second full audit, 2026-07-12, item 4.
+            from tools.core import refund_quota
+            refund_quota("fetch_url_to_workspace")
             r["auto_fetch_status"] = f"Auto-fetch failed ({e}) — snippet only for this result."
 
     result_texts = []

@@ -64,7 +64,7 @@ pip install -e .
 
 DeepDelve talks to any **OpenAI-compatible chat-completions endpoint** — it isn't Ollama-specific, that's just the default. Three ways to point it elsewhere, in order of precedence (later overrides earlier):
 
-1. **Edit `~/.deepdelve/config.yaml`** (created on first run from `src/config_template.yaml`):
+1. **Edit `~/.deepdelve/config.yaml`** (created on first run from `src/tools/config_template.yaml`):
    ```yaml
    api:
      openai_base_url: https://api.openai.com/v1   # or any other OpenAI-compatible URL
