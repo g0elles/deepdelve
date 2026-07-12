@@ -122,9 +122,13 @@ def _fetch_raw(url: str, convert_to_md: bool = True, _redirect_depth: int = 0):
     if not convert_to_md:
         return content, [url]  # Raw bytes
 
-    # Check actual bytes — a URL might say .pdf but serve HTML (JS-gated doc viewers)
-    is_actual_pdf = content[:4] == b"%PDF"
-    is_pdf = is_actual_pdf or ("application/pdf" in content_type and is_actual_pdf)
+    # Check actual bytes — a URL might say .pdf but serve HTML (JS-gated doc viewers). Sniffs the
+    # first 1KB rather than requiring the magic bytes at offset 0 (fresh audit, 2026-07-12): the
+    # old `content[:4] == b"%PDF"` missed a real PDF preceded by a BOM or a couple of stray bytes
+    # some servers prepend, misrouting it to the HTML/BeautifulSoup path and producing garbage —
+    # the previous `"application/pdf" in content_type and is_actual_pdf` branch was also dead code
+    # (a strict subset of is_actual_pdf alone, content_type was never actually consulted).
+    is_pdf = b"%PDF-" in content[:1024]
 
     if is_pdf:
         # Save to temp file, then parse locally
