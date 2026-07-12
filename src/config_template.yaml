@@ -74,6 +74,16 @@ settings:
   # completion check jumps straight to its final verdict, so labeling and report salvage still
   # run and the run ends with an explicit outcome. A qwen3.6 run once ran 64 minutes unbounded.
   max_run_minutes: 45
+  # Per-agent-stream context budget in CHARACTERS (0 = off). Local models run at num_ctx ~16384
+  # tokens (~65K chars); on overflow Ollama silently truncates from the TOP — eating the system
+  # prompt mid-run, which looks exactly like model collapse. When an agent's streamed content
+  # (text + tool args + tool results) exceeds this, its turn is cut and it gets ONE wrap-up turn:
+  # sub-agents return their findings immediately; the headless Planner writes findings.md +
+  # the report from what it has (a second overshoot forces the completion check's final verdict).
+  # Idea from Tongyi DeepResearch's react_agent.py (see README References). Applies to sub-agent
+  # tasks everywhere and to the Planner in headless mode; the TUI Planner is exempt (a user can
+  # /stop), same policy as max_run_minutes. 50000 ≈ safe margin under a 16K-token num_ctx.
+  context_budget_chars: 50000
   # When true, the Planner's write_todos call requires human approval before it commits (TUI mode
   # shows the plan content in an interactive approve/deny widget; headless/--prompt mode falls back
   # to the existing --auto-approve flag). Lets you review/reject the research plan before quota is

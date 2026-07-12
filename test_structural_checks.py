@@ -540,6 +540,32 @@ def main():
     _hits = find_uncited_claim_lines(_sectioned_report)
     assert len(_hits) < 3 and not any("2585" in h for h in _hits), _hits
 
+    # --- context-budget guard: stream char accounting (settings.context_budget_chars) ---
+    from engine.orchestrator import stream_content_chars, get_context_budget
+
+    class _C:
+        def __init__(self, **kw): [setattr(self, k, v) for k, v in kw.items()]
+    class _U:
+        def __init__(self, contents): self.contents = contents
+
+    assert stream_content_chars(_U([_C(text="abcde")])) == 5
+    assert stream_content_chars(_U([_C(arguments='{"q":1}'), _C(result="xyz")])) == 10
+    assert stream_content_chars(_U([_C(result=12345)])) == 5   # non-str result stringified
+    assert stream_content_chars(_U([])) == 0
+    _orig_cb = _config.cfg.get("settings", {}).get("context_budget_chars")
+    try:
+        _config.cfg["settings"]["context_budget_chars"] = 50000
+        assert get_context_budget() == 50000
+        _config.cfg["settings"]["context_budget_chars"] = 0
+        assert get_context_budget() == 0
+        _config.cfg["settings"].pop("context_budget_chars")
+        assert get_context_budget() == 0  # absent = off
+    finally:
+        if _orig_cb is None:
+            _config.cfg["settings"].pop("context_budget_chars", None)
+        else:
+            _config.cfg["settings"]["context_budget_chars"] = _orig_cb
+
     # --- C8 charset handling (run 14: the flagship 750KB DIAN law text was saved as mojibake —
     # 'Resolución'/'número' could never string-match, silently gutting every Spanish-term check) ---
     from tools.web import _decode_html_bytes, _strip_boilerplate_html, _meta_declared_encoding
