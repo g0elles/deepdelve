@@ -170,34 +170,52 @@ def find_unsupported_regulation_ids(text: str) -> list[str]:
 
 
 def claim_grounding_problem(report: str) -> str | None:
-    """Content-level check beyond URL-presence: for a citation that WAS actually fetched, does its
-    content share any checkable fact (number, version, proper noun) with what the report claims?
-    Deliberately conservative (zero overlap only) to keep false positives rare."""
+    """Content-level check beyond URL-presence, LINE-scoped (this project's report format keeps a
+    claim and its citation on one line, same as find_non_url_citations/find_unsupported_regulation_ids):
+    for each line citing a fetched source, do that line's own checkable facts (numbers, versions,
+    proper nouns) share anything with that source's content? The previous version compared
+    WHOLE-report terms against each source, so generic shared terms ('Colombia', a year) masked
+    per-claim fabrication — run 12's flagship figure (USD 3.5B, absent from its cited source)
+    passed because OTHER lines shared terms with the same source. Still deliberately conservative,
+    to keep false positives rare: only fires on a line with >=1 checkable term of its own and ZERO
+    overlap with every fetched source it cites; lines with no checkable terms, unfetched citations
+    (the hard gate's job), or thin sources (<50 chars) are skipped. URL text is stripped before
+    term extraction so a slug like 'ley_1819_2016' can neither support nor incriminate a claim."""
     prose = split_prose_from_sources(report)
-    report_terms = extract_salient_terms(prose)
-    if not report_terms:
-        return None
-
-    cited = extract_cited_urls(report)
-    fetched_list = get_fetched_urls()
-    fetched = {entry["url"].rstrip('/'): entry["filename"] for entry in fetched_list}
+    fetched = {entry["url"].rstrip('/'): entry["filename"] for entry in get_fetched_urls()}
 
     unsupported = []
-    for u in cited:
-        key = u.rstrip('/')
-        filename = fetched.get(key)
-        if not filename:
-            filename = next((f for orig, f in fetched.items() if _urls_prefix_match(key, orig)), None)
-        if not filename:
+    source_terms_cache: dict = {}
+    for line in prose.splitlines():
+        cited = extract_cited_urls(line)
+        if not cited:
             continue
-
-        source_content = get_workspace_file_content(filename) or ""
-        if len(source_content.strip()) < 50:
+        line_terms = extract_salient_terms(re.sub(r'https?://[^\s\)\]\}"\'>【】]+', '', line))
+        if not line_terms:
             continue
-
-        source_terms = extract_salient_terms(source_content)
-        if not (report_terms & source_terms):
-            unsupported.append(u)
+        files = []
+        for u in cited:
+            key = u.rstrip('/')
+            fn = fetched.get(key) or next(
+                (f for orig, f in fetched.items() if _urls_prefix_match(key, orig)), None)
+            if fn:
+                files.append((u, fn))
+        if not files:
+            continue
+        checkable, supported = False, False
+        for _, fn in files:
+            if fn not in source_terms_cache:
+                content = get_workspace_file_content(fn) or ""
+                source_terms_cache[fn] = extract_salient_terms(content) if len(content.strip()) >= 50 else None
+            source_terms = source_terms_cache[fn]
+            if source_terms is None:
+                continue
+            checkable = True
+            if line_terms & source_terms:
+                supported = True
+                break
+        if checkable and not supported:
+            unsupported.append(files[0][0])
 
     if not unsupported:
         return None
