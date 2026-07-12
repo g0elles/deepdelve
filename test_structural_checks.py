@@ -244,6 +244,7 @@ def main():
     from engine.tui import run_completion_check
 
     _SRC = "https://gov.example.co/page"
+    _STUB_SRC = "https://news.example.co/paywalled-article"
     _SOURCE_TEXT = ("Source-URL: " + _SRC + "\n\n"
                     + "Estrategia nacional de seguridad digital para infraestructura y sectores productivos. " * 3)
     _FINDINGS_OK = f"- hallado ({_SRC})"
@@ -270,6 +271,11 @@ def main():
         ("non_url_citation", True, {"findings.md": _FINDINGS_OK,
           "final_report.md": f"- dato uno [gov]({_SRC})\n- **Fuente:** Ministerio de Salud, informe interno"},
          "non_url_citation", "isn't a real URL"),
+        # Live case run 14: citation to a really-fetched URL whose fetch was a 200 soft-404
+        # (paywall shell) — hollow even though the URL gate sees a real fetch.
+        ("stub_source", True, {"findings.md": _FINDINGS_OK,
+          "final_report.md": f"- dato [news]({_STUB_SRC})"},
+         "stub_source", "paywall/not-found stub"),
         ("not_grounded", True, {"findings.md": _FINDINGS_OK,
           "final_report.md": "- x [g](https://never-fetched.example.com/y)"},
          "not_grounded", "was never actually fetched this run"),
@@ -293,6 +299,10 @@ def main():
                     reset_fetched_urls()
                     record_fetched_url(_SRC, filename="sources/page.md")
                     _IN_MEMORY_FS["sources/page.md"] = _SOURCE_TEXT
+                    # A stub fetch is on record in EVERY row (rows that don't cite it must not
+                    # trip over its mere existence); only the stub_source row cites it.
+                    record_fetched_url(_STUB_SRC, filename="sources/stub.md", stub="paywall marker")
+                    _IN_MEMORY_FS["sources/stub.md"] = "Source-URL: " + _STUB_SRC + "\n\nSUSCRÍBETE"
                     _IN_MEMORY_FS.update(_files)
                     q_ctx.set({"delegate_tasks": {"used": 1 if _delegated else 0, "limit": 5}})
                     rs = RunState(tmpdir)
@@ -356,6 +366,65 @@ def main():
                 _config.cfg["settings"]["workspace"] = _orig_ws4
 
     contextvars.copy_context().run(_regulation_scenario)
+
+    # --- stub-fetch detection (live case run 14: a model-invented URL answered by a 200
+    # soft-404 — 5KB of subscription chrome — was recorded as a real fetch and passed the
+    # hard URL gate) ---
+    from tools.web import _stub_reason
+    from utils.grounding import real_grounding_problem
+
+    chrome = "\n".join(["[SUSCRÍBETE](https://news.example.co/sub)", "Inicia sesión",
+                        "Noticias", "Deportes", "Política"] * 20)
+    assert _stub_reason(chrome), "paywall chrome must flag as stub"
+    assert _stub_reason("") == "empty page"
+    assert _stub_reason("Página no encontrada\n\nError 404"), "tiny not-found page must flag"
+    assert _stub_reason("Just a title\n\nAnd one short line."), "near-zero prose must flag"
+    _para = ("Colombian exporters shipped record volumes of coffee and flowers this quarter "
+             "according to the trade ministry figures released on Tuesday, with analysts "
+             "noting sustained demand across European and North American markets overall.")
+    real_article = "\n\n".join([_para] * 6 + ["Subscribe to our newsletter for updates"])
+    assert _stub_reason(real_article) is None, "real prose mentioning 'subscribe' must NOT flag"
+
+    def _stub_gate_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        _orig_ws5 = _config.cfg.get("settings", {}).get("workspace")
+        _orig_gc = _config.cfg.get("settings", {}).get("grounding_check")
+        _config.cfg["settings"]["workspace"] = {"type": "memory"}
+        _config.cfg["settings"]["grounding_check"] = {"stub_detection": True, "live_http_verify": False}
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            _IN_MEMORY_FS.clear()
+            reset_fetched_urls()
+            record_fetched_url("https://news.example.co/paywalled", filename="sources/stub.md",
+                               stub="paywall marker")
+            _IN_MEMORY_FS["sources/stub.md"] = "Source-URL: https://news.example.co/paywalled\n\nSUSCRÍBETE"
+            report = "- dato [news](https://news.example.co/paywalled)"
+            problem = _asyncio.run(real_grounding_problem(report))
+            assert problem and problem.startswith("stub_source"), problem
+            # Flag off -> the stub gate stands down (stub content still can't ground claims,
+            # via _fetched_url_files' exclusion).
+            _config.cfg["settings"]["grounding_check"]["stub_detection"] = False
+            assert _asyncio.run(real_grounding_problem(report)) is None
+            _config.cfg["settings"]["grounding_check"]["stub_detection"] = True
+            # Same URL later fetched for real (retry got the actual page) -> citation valid.
+            record_fetched_url("https://news.example.co/paywalled", filename="sources/real.md")
+            _IN_MEMORY_FS["sources/real.md"] = "Source-URL: https://news.example.co/paywalled\n\n" + _para
+            problem2 = _asyncio.run(real_grounding_problem(report))
+            assert not (problem2 or "").startswith("stub_source"), problem2
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            if _orig_ws5 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws5
+            if _orig_gc is None:
+                _config.cfg["settings"].pop("grounding_check", None)
+            else:
+                _config.cfg["settings"]["grounding_check"] = _orig_gc
+
+    contextvars.copy_context().run(_stub_gate_scenario)
 
     # --- line-scoped claim grounding (review #2 item 4): the old WHOLE-report term overlap let
     # generic shared terms mask per-claim fabrication — run 12's flagship figure was absent from

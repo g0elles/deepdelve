@@ -331,7 +331,10 @@ def score_structural(session_dir: str | None, artifact_name: str | None) -> floa
                 state = json.load(f)
         except Exception:
             state = {}
-    fetched = {e["url"].rstrip("/") for e in state.get("fetched_urls", []) if e.get("url")}
+    # Stub-flagged fetches (soft-404/paywall shells, see tools/web.py's _stub_reason) don't
+    # count as grounding here either — the live gate refuses them, so scoring must too.
+    fetched = {e["url"].rstrip("/") for e in state.get("fetched_urls", [])
+               if e.get("url") and not e.get("stub")}
 
     def _grounded(u: str) -> bool:
         k = u.rstrip("/")

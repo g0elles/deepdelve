@@ -126,6 +126,13 @@ settings:
     # passed (real fetch) and the zero-overlap content check passed (shared generic terms), so
     # only this check catches it (see utils/grounding.py::find_unsupported_regulation_ids).
     regulation_id_check: true
+    # A cited URL whose fetch returned only a soft-404/paywall shell (HTTP 200 but no real
+    # article content — detected at fetch time by tools/web.py::_stub_reason and recorded as
+    # stub in _run_state.json's fetched_urls). Confirmed live (run 14): a model-invented URL
+    # answered 200 with 5KB of subscription chrome, counted as a real fetch, and passed the
+    # URL-presence gate. With this on, citing a stub-only URL fails the completion check, and
+    # stub content can't satisfy the claim/regulation checks either.
+    stub_detection: true
     # Runs the same URL-presence + content-level check on each Searcher specialist's summary
     # before it reaches the Planner, not just on the final report — catches a hallucinated
     # citation at the source instead of letting it poison findings.md first (see

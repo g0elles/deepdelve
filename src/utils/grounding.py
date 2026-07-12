@@ -121,6 +121,15 @@ def find_non_url_citations(text: str) -> list[str]:
     return hits
 
 
+def _fetched_url_files() -> dict:
+    """url -> filename map for the LINE-SCOPED checks (regulation/claim), excluding stub fetches
+    (soft-404/paywall shells flagged by tools/web.py's _stub_reason): a stub can neither support
+    a claim nor be meaningfully line-checked — chrome text matching a claim's terms proves
+    nothing. Citing a stub is caught upstream by real_grounding_problem's stub gate instead."""
+    return {entry["url"].rstrip('/'): entry["filename"]
+            for entry in get_fetched_urls() if not entry.get("stub")}
+
+
 # Regulation identifiers, ES + EN: "Ley 1906 de 2021", "Decreto 2242/2015", "Resolución
 # 2275/2023", "Directive 2014/55/EU", "Regulation (EU) 2024/1689", "Circular 052", "CONPES 3995".
 _REGULATION_ID_RE = re.compile(
@@ -144,7 +153,7 @@ def find_unsupported_regulation_ids(text: str) -> list[str]:
     cited URL WAS fetched — unfetched URLs are already the hard gate's job. Conservative by
     construction: only the identifier's primary number is required, as a whole word, anywhere in
     the source — absence is a strong signal, coincidental presence just means no flag."""
-    fetched = {entry["url"].rstrip('/'): entry["filename"] for entry in get_fetched_urls()}
+    fetched = _fetched_url_files()
     hits = []
     for line in (text or "").splitlines():
         ids = list(_REGULATION_ID_RE.finditer(line))
@@ -182,7 +191,7 @@ def claim_grounding_problem(report: str) -> str | None:
     (the hard gate's job), or thin sources (<50 chars) are skipped. URL text is stripped before
     term extraction so a slug like 'ley_1819_2016' can neither support nor incriminate a claim."""
     prose = split_prose_from_sources(report)
-    fetched = {entry["url"].rstrip('/'): entry["filename"] for entry in get_fetched_urls()}
+    fetched = _fetched_url_files()
 
     unsupported = []
     source_terms_cache: dict = {}
@@ -250,7 +259,8 @@ async def real_grounding_problem(content: str) -> str | None:
     if not cited:
         return "no_urls"
 
-    fetched = {entry["url"].rstrip('/') for entry in get_fetched_urls()}
+    fetched_entries = get_fetched_urls()
+    fetched = {entry["url"].rstrip('/') for entry in fetched_entries}
     unverified = [u for u in cited if u.rstrip('/') not in fetched and not any(_urls_prefix_match(u.rstrip('/'), f) for f in fetched)]
 
     gc_cfg = config.cfg.get("settings", {}).get("grounding_check", {})
@@ -264,6 +274,25 @@ async def real_grounding_problem(content: str) -> str | None:
             if dead:
                 detail += f" (also unreachable: {', '.join(dead[:3])})"
         return detail
+
+    # Every cited URL WAS fetched — but a fetch that returned only a soft-404/paywall shell
+    # (entry["stub"], see tools/web.py's _stub_reason) has no real content behind it, so a
+    # citation resolving ONLY to stub fetches is hollow. Closes run 14's hole: a model-invented
+    # URL that the domain answered with a 200 subscription shell passed this gate as a "real"
+    # fetch. A URL also fetched non-stub elsewhere (retry that got the real page) stays valid.
+    if gc_cfg.get("stub_detection", True):
+        non_stub = {e["url"].rstrip('/') for e in fetched_entries if not e.get("stub")}
+        stub_only = {e["url"].rstrip('/') for e in fetched_entries if e.get("stub")} - non_stub
+        if stub_only:
+            stub_cited = [
+                u for u in cited
+                if u.rstrip('/') not in non_stub
+                and not any(_urls_prefix_match(u.rstrip('/'), f) for f in non_stub)
+                and (u.rstrip('/') in stub_only
+                     or any(_urls_prefix_match(u.rstrip('/'), f) for f in stub_only))
+            ]
+            if stub_cited:
+                return f"stub_source:{', '.join(stub_cited[:3])}"
 
     if gc_cfg.get("non_url_citation_check", True):
         non_url = find_non_url_citations(content)

@@ -247,6 +247,23 @@ def check_non_url_citation(ctx: Ctx) -> Optional[Verdict]:
     )
 
 
+def check_stub_source(ctx: Ctx) -> Optional[Verdict]:
+    """The URL was really fetched, but every fetch of it returned only a paywall/not-found
+    shell (a 200 soft-404) — the citation is hollow even though the fetch 'succeeded'.
+    Confirmed live (run 14, 2026-07-12): a model-INVENTED El Tiempo URL answered 200 with
+    ~5KB of subscription chrome, was recorded as a real fetch, and passed the hard URL gate.
+    Distinct correction from not_grounded: the model must find a genuinely different source
+    (or the publisher's working URL), not just re-cite something it already fetched."""
+    gp = ctx.grounding_problem
+    if not (gp and gp.startswith("stub_source")):
+        return None
+    return Verdict(
+        "stub_source",
+        f"`{ctx.req_artifact}` cites a URL whose fetch returned only a paywall/not-found stub ({gp}) — there is no real article content behind that citation.",
+        f"SYSTEM WARNING: '{ctx.req_artifact}' cites at least one URL ({gp}) whose fetch returned only a subscription/not-found shell — the page contains no real article content, so nothing attributed to it can actually be verified from it. A citation to an empty shell is exactly as unverifiable as a fabricated URL. The previous draft has been moved aside. Delegate a Searcher to find a REAL source for those claims (a different site, or the publisher's actual working URL) and cite THAT — or drop the claims entirely. Do not keep citing the stub URL.{_redelegate_directive(ctx)}",
+    )
+
+
 def check_not_grounded(ctx: Ctx) -> Optional[Verdict]:
     """The generic hard gate: at least one cited URL matches nothing actually fetched this run."""
     gp = ctx.grounding_problem
@@ -272,15 +289,18 @@ COMPLETION_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
 GROUNDING_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
     check_claim_unsupported,
     check_no_urls,
+    check_stub_source,
     check_regulation_unsupported,
     check_non_url_citation,
-    check_not_grounded,
+    check_not_grounded,  # generic catch-all: fires on ANY grounding problem — keep it LAST
 ]
 
 # Problems whose bad draft gets quarantined (renamed aside) before the retry, and which count as
 # "the check the quarantined draft actually failed" when restoring it at the final verdict.
+# run_completion_check derives its quarantine branch from this tuple (findings_ungrounded
+# quarantines findings.md instead of the artifact) — one list, no second copy to forget.
 _QUARANTINE_PROBLEMS = ("not_grounded", "claim_unsupported", "non_url_citation",
-                        "regulation_unsupported", "findings_ungrounded")
+                        "regulation_unsupported", "stub_source", "findings_ungrounded")
 
 
 def _quarantine_artifact(req_artifact: str, attempt: int) -> None:
@@ -413,10 +433,10 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
 
             notify(f"**System ({attempt + 1}/{max_attempts}):** {verdict.warning}")
 
-            if problem in ("not_grounded", "claim_unsupported", "non_url_citation", "regulation_unsupported"):
-                _quarantine_artifact(req_artifact, attempt + 1)
-            elif problem == "findings_ungrounded":
+            if problem == "findings_ungrounded":
                 _quarantine_artifact("findings.md", attempt + 1)
+            elif problem in _QUARANTINE_PROBLEMS:
+                _quarantine_artifact(req_artifact, attempt + 1)
 
             # Per-attempt quota top-up: without this, a retry shares the same already-exhausted
             # pool as the failed attempt it's correcting (see plan doc diagnosis point 2) and

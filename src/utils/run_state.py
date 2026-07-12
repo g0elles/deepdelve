@@ -51,8 +51,15 @@ def reset_fetched_urls() -> None:
     fetched_urls_ctx.set([])
 
 
-def record_fetched_url(url: str, filename: str) -> None:
+def record_fetched_url(url: str, filename: str, stub: Optional[str] = None) -> None:
     entry = {"url": url, "filename": filename, "timestamp": time.time()}
+    # A truthy stub is the REASON string from tools/web.py's _stub_reason (soft-404/paywall
+    # shell). Key absent when not a stub, so pre-existing _run_state.json files (and any reader
+    # doing entry.get("stub")) stay compatible. Confirmed live (run 14): a model-invented URL
+    # answered 200 with 5KB of subscription chrome and was recorded as a real fetch — the
+    # grounding layer needs to know a "successful" fetch had no real content behind it.
+    if stub:
+        entry["stub"] = stub
 
     lst = fetched_urls_ctx.get()
     if lst is None:
