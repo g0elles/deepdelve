@@ -438,6 +438,58 @@ def main():
 
     contextvars.copy_context().run(_stub_gate_scenario)
 
+    # --- URL prefix-match boundary (2026-07-12 audit G1: a genuinely fetched .../article
+    # grounded an invented .../article-fake-2024 via bare string-prefixing) ---
+    from utils.grounding import _urls_prefix_match
+
+    assert not _urls_prefix_match("https://real.com/article-fake-2024", "https://real.com/article")
+    assert _urls_prefix_match("https://real.com/article?utm=1", "https://real.com/article")
+    assert _urls_prefix_match("https://real.com/article#s2", "https://real.com/article")
+    assert _urls_prefix_match("https://real.com/article/annex", "https://real.com/article")
+    # Bare-origin rule unchanged: a domain root never prefix-grounds a deep link.
+    assert not _urls_prefix_match("https://real.com/deep/link", "https://real.com")
+
+    # --- grounding_check.enabled master switch honored (2026-07-12 audit G2: the template
+    # shipped it but nothing read it — an unhonored kill switch) ---
+    def _enabled_off_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        from tools.core import tool_quotas_ctx as q_ctx
+        _orig_ws6 = _config.cfg.get("settings", {}).get("workspace")
+        _orig_gc2 = _config.cfg.get("settings", {}).get("grounding_check")
+        _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
+        _config.cfg["settings"]["grounding_check"] = {"enabled": False}
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            _IN_MEMORY_FS.clear()
+            reset_fetched_urls()
+            # findings.md fabricated AND the report cites a never-fetched URL — with the master
+            # switch off, neither grounding gate may fire (structural checks still pass: the
+            # run delegated and both artifacts exist).
+            _IN_MEMORY_FS["findings.md"] = "- todo de memoria, sin fuente"
+            _IN_MEMORY_FS["final_report.md"] = "- x [g](https://never-fetched.example.com/y)"
+            q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5}})
+            rs = RunState(tempfile.gettempdir())
+            run_state_ctx.set(rs)
+            msgs = []
+            should_retry, _ = _asyncio.run(run_completion_check(
+                query="q", current_input="q", run_state=rs, notify=msgs.append))
+            recorded = rs.data["completion_check_attempts"][-1]["problem"]
+            assert recorded is None and not should_retry, (recorded, should_retry, msgs)
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            if _orig_ws6 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws6
+            if _orig_gc2 is None:
+                _config.cfg["settings"].pop("grounding_check", None)
+            else:
+                _config.cfg["settings"]["grounding_check"] = _orig_gc2
+
+    contextvars.copy_context().run(_enabled_off_scenario)
+
     # --- line-scoped claim grounding (review #2 item 4): the old WHOLE-report term overlap let
     # generic shared terms mask per-claim fabrication — run 12's flagship figure was absent from
     # its cited source but passed because other lines shared terms with that same source. ---

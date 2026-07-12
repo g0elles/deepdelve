@@ -84,7 +84,8 @@ def check_findings_ungrounded(ctx: Ctx) -> Optional[Verdict]:
     downstream — a final report rewritten from fabricated findings can never become
     grounded. Uses the wholesale-fabrication gate (fully_ungrounded), not the strict
     per-URL one, so legitimately-mixed Pass-1 notes don't hard-fail a run."""
-    if not config.cfg.get("settings", {}).get("grounding_check", {}).get("check_findings", True):
+    gc_cfg = config.cfg.get("settings", {}).get("grounding_check", {})
+    if not (gc_cfg.get("enabled", True) and gc_cfg.get("check_findings", True)):
         return None
     if "findings.md" not in ctx.files:
         return None
@@ -420,7 +421,10 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
         # only actually retrying does. Otherwise a success on the final allowed
         # attempt is never recognized as a success (it just falls through silently).
         verdict = next((v for check in COMPLETION_CHECKS if (v := check(ctx)) is not None), None)
-        if verdict is None:
+        # grounding_check.enabled is the section's master switch — before this guard it was a
+        # documented no-op (config_template.yaml shipped it, nothing read it; 2026-07-12 audit,
+        # G2). The pre-grounding checks above are structural, not grounding, and still run.
+        if verdict is None and config.cfg.get("settings", {}).get("grounding_check", {}).get("enabled", True):
             ctx.grounding_problem = await real_grounding_problem(ctx.content or "")
             verdict = next((v for check in GROUNDING_CHECKS if (v := check(ctx)) is not None), None)
         problem = verdict.problem if verdict else None
