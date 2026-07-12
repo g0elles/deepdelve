@@ -390,8 +390,12 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                         scope_entities = _extract_scope_entities(instructions)
                         if scope_entities and new_urls:
                             from tools.fs import get_workspace_file_content
+                            # Case-insensitive on both sides (C8 companion fix): "Colombia"
+                            # must match a page's lowercase "colombia" — the entity comes from
+                            # instruction casing, the page from editorial casing.
+                            lowered = [t.lower() for t in scope_entities]
                             matched = any(
-                                any(term in (get_workspace_file_content(u["filename"]) or "") for term in scope_entities)
+                                any(term in (get_workspace_file_content(u["filename"]) or "").lower() for term in lowered)
                                 for u in new_urls
                             )
                             if not matched:

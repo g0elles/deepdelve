@@ -23,14 +23,46 @@ def _looks_like_redirect_stub(md_content: str) -> str | None:
     return None
 
 
-def _strip_boilerplate_html(html_bytes: bytes) -> bytes:
+def _meta_declared_encoding(content: bytes) -> str | None:
+    """Charset declared inside the document's own head (<meta charset=...> or the http-equiv
+    Content-Type form) — scanned in the first 2KB, where the HTML spec requires it to live."""
+    m = re.search(rb'<meta[^>]{0,200}charset\s*=\s*["\']?\s*([\w.-]{2,20})', content[:2048], re.IGNORECASE)
+    return m.group(1).decode("ascii", errors="replace") if m else None
+
+
+def _decode_html_bytes(content: bytes, header_encoding: str | None) -> str:
+    """Decode fetched HTML to text honoring the page's real encoding — C8 fix. Run 14's DIAN
+    law text (the flagship 750KB source) was saved full of mojibake (�), so 'Resolución'/'número'
+    could never string-match and every accent-bearing Spanish term silently dropped out of the
+    scope/term/regulation checks. Root cause: raw bytes went to BeautifulSoup/markitdown with the
+    HTTP Content-Type charset discarded, leaving them to guess.
+
+    Order: strict UTF-8 first (it self-validates — genuine Latin-1 accents make it fail, so a
+    wrong/absent header can't corrupt a UTF-8 page), then the HTTP header charset, then the
+    meta-declared charset, then cp1252 with replacement (a superset of Latin-1 that never fails
+    and keeps Spanish smart quotes)."""
+    for enc in ("utf-8", header_encoding, _meta_declared_encoding(content)):
+        if not enc:
+            continue
+        try:
+            return content.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return content.decode("cp1252", errors="replace")
+
+
+def _strip_boilerplate_html(html_text: str) -> bytes:
     """Remove common non-article chrome (nav, footer, script, style, ads, cookie banners) before
     markdown conversion, so a fetched page doesn't burn an Analyzer's context budget on chrome
     that was never going to contain a real finding. Applied to BOTH the markitdown path and the
     BeautifulSoup fallback below — previously only the fallback path stripped anything, so the
-    primary (markitdown) path passed raw nav/footer/script content straight through untouched."""
+    primary (markitdown) path passed raw nav/footer/script content straight through untouched.
+
+    Takes already-decoded text (see _decode_html_bytes) and returns UTF-8 bytes with any original
+    charset-declaring meta tags replaced by a UTF-8 one — otherwise a stale '<meta charset=
+    iso-8859-1>' inside now-UTF-8 bytes makes markitdown re-mojibake the exact content C8 fixed."""
     try:
-        soup = BeautifulSoup(html_bytes, "html.parser")
+        soup = BeautifulSoup(html_text, "html.parser")
         for tag in soup(["script", "style", "nav", "footer", "header", "aside", "noscript", "iframe", "svg"]):
             tag.extract()
         boilerplate = re.compile(r'cookie|consent|advert|sidebar|popup|newsletter|subscribe-banner|site-header|site-footer', re.IGNORECASE)
@@ -38,9 +70,12 @@ def _strip_boilerplate_html(html_bytes: bytes) -> bytes:
             tag.extract()
         for tag in soup.find_all(attrs={"id": boilerplate}):
             tag.extract()
-        return soup.encode()
+        for tag in soup.find_all("meta"):
+            if tag.get("charset") or (tag.get("http-equiv") or "").lower() == "content-type":
+                tag.extract()
+        return b'<meta charset="utf-8">' + soup.encode("utf-8")
     except Exception:
-        return html_bytes
+        return html_text.encode("utf-8", errors="replace")
 
 
 def _fetch_raw(url: str, convert_to_md: bool = True, _redirect_depth: int = 0):
@@ -97,8 +132,10 @@ def _fetch_raw(url: str, convert_to_md: bool = True, _redirect_depth: int = 0):
     else:
         # HTML path: try markitdown on local temp file first, then BeautifulSoup fallback.
         # Boilerplate (nav/footer/script/ads/cookie banners) is stripped from the HTML BEFORE
-        # either path runs, not after — see _strip_boilerplate_html.
-        cleaned_html = _strip_boilerplate_html(resp.content)
+        # either path runs, not after — see _strip_boilerplate_html. Bytes are decoded honoring
+        # the page's real charset first (C8 — see _decode_html_bytes), so cleaned_html is always
+        # well-formed UTF-8 whatever the server sent.
+        cleaned_html = _strip_boilerplate_html(_decode_html_bytes(resp.content, resp.charset_encoding))
         md_content = None
         try:
             from utils.parsers import convert_to_markdown
