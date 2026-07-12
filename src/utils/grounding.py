@@ -67,8 +67,16 @@ def extract_salient_terms(text: str) -> set:
 
 def split_prose_from_sources(report: str) -> str:
     """Best-effort strip of a trailing Sources/References section, so the content-level check
-    compares against what the report actually CLAIMS rather than its own citation list."""
-    m = re.search(r'^#{0,3}\s*(sources|references)\s*:?\s*$', report or "", re.IGNORECASE | re.MULTILINE)
+    compares against what the report actually CLAIMS rather than its own citation list.
+    Matches the bare heading plus common suffixed/Spanish variants ("### Source URLs",
+    "Sources used", "Fuentes consultadas") — run 14's report used "### Source URLs", which
+    this didn't match, so its citation list counted as prose. Suffixes are a fixed allowlist,
+    NOT any trailing words: a real content heading like "Sources of growth in Colombia" must
+    never be treated as the start of a citation section (that would hide claims from checks)."""
+    m = re.search(
+        r'^[#\s>*_]*(?:sources?|references?|referencias?|fuentes?|bibliograf[ií]a)'
+        r'(?:\s+(?:urls?|list|used|cited|consultadas?|utilizadas?))?[\s*_:]*$',
+        report or "", re.IGNORECASE | re.MULTILINE)
     return report[:m.start()] if m else (report or "")
 
 
@@ -193,6 +201,36 @@ def find_unsupported_regulation_ids(text: str) -> list[str]:
             num = re.split(r'[./]', m.group(1))[0]
             if len(num) >= 2 and not re.search(rf'\b{re.escape(num)}\b', content):
                 hits.append(m.group(0).strip())
+    return hits
+
+
+# Figure-bearing tokens only (amounts, decimals, years, percentages, counted quantities) — the
+# quantitative-claim vector specifically, not proper nouns, which appear in harmless narrative
+# far too often to gate on.
+_NUMERIC_CLAIM_RE = re.compile(r'\b\d+(?:[.,]\d+)+\b|\b(?:19|20)\d{2}\b|\b\d+\s?%|\b(?:USD|COP|EUR)\s?\d')
+
+
+def find_uncited_claim_lines(report: str) -> list[str]:
+    """Figure-bearing claim lines that carry no citation at all — the format hole every
+    line-scoped check falls through. Confirmed live (run 14): the model wrote its claims as a
+    table plus a detached '### Source URLs' section, so no claim line carried a URL and the
+    regulation/claim checks had literally nothing to bite on, while the hard gate passed on the
+    detached list. This project's required format is claim+citation on ONE line; a claim that
+    names a figure but no source on its own line is unverifiable BY CONSTRUCTION here even when
+    the report's URL list is fully real. Conservative: only lines with a hard number (figure,
+    percent, year, amount), only substantial lines, and the caller only acts on a pile of them
+    (>=3) — narrative context lines or a single stray year never trip a verdict alone."""
+    hits = []
+    for raw in split_prose_from_sources(report or "").splitlines():
+        line = raw.strip()
+        if len(line) < 30 or "http" in line:
+            continue
+        if line.startswith(("#", ">", "[SYSTEM")):
+            continue
+        if re.fullmatch(r'[|\s:\-]+', line):  # markdown table separator row
+            continue
+        if _NUMERIC_CLAIM_RE.search(line):
+            hits.append(line[:120])
     return hits
 
 
@@ -323,6 +361,17 @@ async def real_grounding_problem(content: str) -> str | None:
             return f"regulation_unsupported:{'; '.join(bad_regs[:3])}"
 
     if gc_cfg.get("content_level_check", True):
-        return claim_grounding_problem(content)
+        problem = claim_grounding_problem(content)
+        if problem:
+            return problem
+
+    # Last, because it's the weakest signal: everything cited is real, no line-scoped check
+    # fired — but if the claims are decoupled from the citations wholesale (table + detached
+    # URL list, run 14's shape), that silence is vacuous, not a pass.
+    if gc_cfg.get("citation_format_check", True):
+        uncited = find_uncited_claim_lines(content)
+        if len(uncited) >= 3:
+            return (f"uncited_claims:{len(uncited)} figure-bearing lines with no citation on "
+                    f"the line, e.g. {uncited[0][:80]!r}")
 
     return None

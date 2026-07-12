@@ -265,6 +265,24 @@ def check_stub_source(ctx: Ctx) -> Optional[Verdict]:
     )
 
 
+def check_uncited_claims(ctx: Ctx) -> Optional[Verdict]:
+    """The report's citations are all real, but its claims are structurally decoupled from
+    them — figure-bearing claim lines with no citation on the line (e.g. a table of numbers
+    plus a detached '### Source URLs' list, run 14's exact shape). Every line-scoped check
+    passes vacuously on that format, so nothing ties any specific figure to any specific
+    source. NOT quarantined (like no_urls, unlike the fabrication verdicts): the content may
+    be fine — the fix is re-attaching citations, and the model needs its own draft visible
+    to do that."""
+    gp = ctx.grounding_problem
+    if not (gp and gp.startswith("uncited_claims")):
+        return None
+    return Verdict(
+        "uncited_claims",
+        f"`{ctx.req_artifact}`'s figures aren't tied to sources — claim lines carry no citation of their own ({gp}), so none of them can be verified against anything.",
+        f"SYSTEM WARNING: {ctx.last_chance_prefix}'{ctx.req_artifact}' states specific figures on lines that carry no citation ({gp}). A separate list of source URLs does NOT tie any claim to any source — every claim line (including every table row) must carry its own `[Title](URL)` on the SAME line, using a URL your Searcher(s) actually fetched this run. Rewrite '{ctx.req_artifact}' keeping the content but attaching to each claim line the exact fetched URL that supports it; if no fetched source supports a figure, remove the figure rather than leaving it uncited.",
+    )
+
+
 def check_not_grounded(ctx: Ctx) -> Optional[Verdict]:
     """The generic hard gate: at least one cited URL matches nothing actually fetched this run."""
     gp = ctx.grounding_problem
@@ -293,6 +311,7 @@ GROUNDING_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
     check_stub_source,
     check_regulation_unsupported,
     check_non_url_citation,
+    check_uncited_claims,
     check_not_grounded,  # generic catch-all: fires on ANY grounding problem — keep it LAST
 ]
 
