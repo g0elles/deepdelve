@@ -357,6 +357,50 @@ def main():
 
     contextvars.copy_context().run(_regulation_scenario)
 
+    # --- line-scoped claim grounding (review #2 item 4): the old WHOLE-report term overlap let
+    # generic shared terms mask per-claim fabrication — run 12's flagship figure was absent from
+    # its cited source but passed because other lines shared terms with that same source. ---
+    from utils.grounding import claim_grounding_problem
+
+    def _line_claim_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        _orig_ws8 = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory"}
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            _IN_MEMORY_FS.clear()
+            reset_fetched_urls()
+            record_fetched_url("https://gov.example.co/exportaciones", filename="sources/exp.md")
+            _IN_MEMORY_FS["sources/exp.md"] = (
+                "Source-URL: https://gov.example.co/exportaciones\n\n"
+                "Las exportaciones de cacao de Colombia alcanzaron USD 265.1 millones en 2024, "
+                "segun cifras oficiales de la entidad nacional de estadistica.")
+            supported_line = "- Cacao: USD 265.1 millones en 2024 [gov](https://gov.example.co/exportaciones)"
+            # A line whose own figure appears in its cited source -> silent
+            assert claim_grounding_problem(supported_line) is None
+            # THE masking case: a supported line + a fabricated figure citing the SAME source.
+            # The whole-report version passed this (265.1/2024 overlapped report-wide).
+            problem = claim_grounding_problem(
+                supported_line
+                + "\n- Software: USD 3.5 mil millones en 2023 [gov](https://gov.example.co/exportaciones)")
+            assert problem and problem.startswith("claim_unsupported"), problem
+            # A line with no checkable terms of its own -> skipped, never flagged
+            assert claim_grounding_problem(
+                "- el sector crece de forma sostenida [gov](https://gov.example.co/exportaciones)") is None
+            # Unfetched citation -> the hard URL gate's job, silent here
+            assert claim_grounding_problem(
+                "- USD 9.9 mil millones [x](https://never-fetched.example.com/a)") is None
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            if _orig_ws8 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws8
+
+    contextvars.copy_context().run(_line_claim_scenario)
+
     # --- quarantined-draft restore beats narration salvage (runs 11/13's endgame) ---
     from engine.tui import _restore_quarantined_draft
 
