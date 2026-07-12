@@ -276,6 +276,15 @@ def main():
         ("stub_source", True, {"findings.md": _FINDINGS_OK,
           "final_report.md": f"- dato [news]({_STUB_SRC})"},
          "stub_source", "paywall/not-found stub"),
+        # Live case run 14 (format half): claims as a figure table + detached Source URLs list —
+        # every line-scoped check passes vacuously; nothing ties any figure to any source.
+        ("uncited_claims", True, {"findings.md": _FINDINGS_OK,
+          "final_report.md": ("| Sector | Valor estimado |\n"
+                              "| Fintech | USD 3.5 mil millones en el mercado local en 2024 |\n"
+                              "| Agro | 12% de crecimiento anual en exportaciones regionales |\n"
+                              "| Salud | 2.300 empresas registradas en el sector durante 2023 |\n"
+                              f"\n### Source URLs\n- {_SRC}\n")},
+         "uncited_claims", "carry no citation of their own"),
         ("not_grounded", True, {"findings.md": _FINDINGS_OK,
           "final_report.md": "- x [g](https://never-fetched.example.com/y)"},
          "not_grounded", "was never actually fetched this run"),
@@ -489,6 +498,61 @@ def main():
                 _config.cfg["settings"]["grounding_check"] = _orig_gc2
 
     contextvars.copy_context().run(_enabled_off_scenario)
+
+    # --- A3 citation-format layer (run 14's format half: table + detached '### Source URLs') ---
+    from utils.grounding import split_prose_from_sources, find_uncited_claim_lines
+
+    # The detached-source-section heading variants must be stripped from prose...
+    for heading in ("### Source URLs", "## Sources", "**Fuentes:**", "## Fuentes consultadas",
+                    "References used:"):
+        rep = f"- claim line\n{heading}\nhttps://x.co/a"
+        assert "x.co" not in split_prose_from_sources(rep), heading
+    # ...but a real content heading that merely starts with the word must NOT be.
+    kept = split_prose_from_sources("## Sources of growth in Colombia\nhttps://x.co/a")
+    assert "x.co" in kept
+
+    _table_report = ("| Sector | Valor |\n"
+                     "| Fintech | USD 3.5 mil millones en el mercado local en 2024 |\n"
+                     "| Agro | 12% de crecimiento anual en exportaciones regionales |\n"
+                     "| Salud | 2.300 empresas registradas en el sector durante 2023 |\n"
+                     "\n### Source URLs\n- https://gov.example.co/page\n")
+    assert len(find_uncited_claim_lines(_table_report)) >= 3
+    # Properly formatted claim+citation lines never count, nor do short/heading/separator lines.
+    _good_report = ("# Informe\n"
+                    "- **[Fintech](https://gov.example.co/page)** USD 3.5 mil millones en 2024\n"
+                    "- **[Agro](https://gov.example.co/page)** 12% de crecimiento anual\n"
+                    "|---|---|\n")
+    assert find_uncited_claim_lines(_good_report) == []
+
+    # --- C8 charset handling (run 14: the flagship 750KB DIAN law text was saved as mojibake —
+    # 'Resolución'/'número' could never string-match, silently gutting every Spanish-term check) ---
+    from tools.web import _decode_html_bytes, _strip_boilerplate_html, _meta_declared_encoding
+
+    _latin_body = "<html><body><p>Resolución número 000042 de la DIAN sobre facturación electrónica en Colombia y sus efectos.</p></body></html>"
+    # Charset only in the HTTP header
+    assert "Resolución número" in _decode_html_bytes(_latin_body.encode("latin-1"), "iso-8859-1")
+    # Charset only in the document's own meta tag
+    _latin_meta = ('<html><head><meta charset="iso-8859-1"></head><body>'
+                   "<p>Resolución número 000042 de la DIAN.</p></body></html>").encode("latin-1")
+    assert _meta_declared_encoding(_latin_meta) == "iso-8859-1"
+    assert "Resolución número" in _decode_html_bytes(_latin_meta, None)
+    # A LYING latin-1 header must not corrupt a UTF-8 page (strict UTF-8 self-validates first)
+    assert "Resolución número" in _decode_html_bytes("<p>Resolución número</p>".encode("utf-8"), "iso-8859-1")
+    # No declaration anywhere: cp1252 fallback still yields the accents, never mojibake
+    assert "Resolución" in _decode_html_bytes("<p>Resolución</p>".encode("latin-1"), None)
+    # The stale meta tag must not survive into the cleaned UTF-8 bytes (markitdown would honor
+    # it and re-mojibake the content), and the full markitdown round trip must keep the accents.
+    _cleaned = _strip_boilerplate_html(_decode_html_bytes(_latin_meta, None))
+    assert b"iso-8859-1" not in _cleaned and _cleaned.startswith(b'<meta charset="utf-8">')
+    from utils.parsers import convert_to_markdown
+    with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="wb") as _tmp_html:
+        _tmp_html.write(_strip_boilerplate_html(_decode_html_bytes(_latin_body.encode("latin-1"), "iso-8859-1")))
+        _tmp_html_path = _tmp_html.name
+    try:
+        _md = convert_to_markdown(_tmp_html_path)
+        assert _md and "Resolución número 000042" in _md, _md
+    finally:
+        os.unlink(_tmp_html_path)
 
     # --- line-scoped claim grounding (review #2 item 4): the old WHOLE-report term overlap let
     # generic shared terms mask per-claim fabrication — run 12's flagship figure was absent from

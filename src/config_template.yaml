@@ -133,6 +133,12 @@ settings:
     # URL-presence gate. With this on, citing a stub-only URL fails the completion check, and
     # stub content can't satisfy the claim/regulation checks either.
     stub_detection: true
+    # Citation-format enforcement: >=3 figure-bearing claim lines with no citation on the line
+    # fail the check even when every URL in the report is real. The line-scoped checks above all
+    # assume claim+citation on one line; a model that writes a table of figures plus a detached
+    # "### Source URLs" list (run 14's exact shape) passes them all vacuously — nothing ties any
+    # figure to any source (see utils/grounding.py::find_uncited_claim_lines).
+    citation_format_check: true
     # Runs the same URL-presence + content-level check on each Searcher specialist's summary
     # before it reaches the Planner, not just on the final report — catches a hallucinated
     # citation at the source instead of letting it poison findings.md first (see
