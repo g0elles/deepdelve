@@ -235,39 +235,86 @@ def main():
     assert cfg["settings"]["quotas"]["web_search"] == 8
     assert cfg["settings"]["quotas"]["read_workspace_file"]["limit"] == 30  # dict quotas untouched
 
-    # --- findings.md existence gate (live cases: runs 10 & 11 skipped Pass 1 entirely) ---
+    # --- verdict matrix: one row per completion-check problem type, asserting the RECORDED
+    # problem name AND a phrase distinctive to that branch's corrective nudge. This is the pin
+    # against the swallowed-elif bug class (bd307f4, run 13) that motivated engine/completion.py:
+    # a verdict carrying the right detail under the wrong label/nudge fails its row instantly.
+    # Live-case rows: missing_findings (runs 10/11), regulation_unsupported (runs 12/13). ---
     import asyncio as _asyncio
     from engine.tui import run_completion_check
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        def _findings_gate_scenario():
-            from tools.fs import _IN_MEMORY_FS
-            from tools.core import tool_quotas_ctx as q_ctx
-            _orig_ws3 = _config.cfg.get("settings", {}).get("workspace")
-            _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
-            saved_fs = dict(_IN_MEMORY_FS)
-            try:
-                _IN_MEMORY_FS.clear()
-                _IN_MEMORY_FS["final_report.md"] = "# report\n- claim [x](https://real.example.com/a)"
-                q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5}})
-                reset_fetched_urls()
-                rs = RunState(tmpdir)
-                run_state_ctx.set(rs)
-                msgs = []
-                should_retry, _ = _asyncio.run(run_completion_check(
-                    query="q", current_input="q", run_state=rs, notify=msgs.append))
-                assert should_retry, msgs
-                assert rs.data["completion_check_attempts"][-1]["problem"] == "missing_findings", \
-                    rs.data["completion_check_attempts"]
-            finally:
-                _IN_MEMORY_FS.clear()
-                _IN_MEMORY_FS.update(saved_fs)
-                if _orig_ws3 is None:
-                    _config.cfg["settings"].pop("workspace", None)
-                else:
-                    _config.cfg["settings"]["workspace"] = _orig_ws3
+    _SRC = "https://gov.example.co/page"
+    _SOURCE_TEXT = ("Source-URL: " + _SRC + "\n\n"
+                    + "Estrategia nacional de seguridad digital para infraestructura y sectores productivos. " * 3)
+    _FINDINGS_OK = f"- hallado ({_SRC})"
 
-        contextvars.copy_context().run(_findings_gate_scenario)
+    matrix = [
+        # (row, delegated, workspace files, expected recorded problem, distinctive nudge phrase)
+        ("not_delegated", False, {"final_report.md": f"- x [g]({_SRC})"},
+         "not_delegated", "No `delegate_tasks` call was ever made"),
+        ("findings_ungrounded", True, {"findings.md": "- todo de memoria, sin fuente alguna"},
+         "findings_ungrounded", "fails the grounding check"),
+        ("missing_findings", True, {"final_report.md": f"- x [g]({_SRC})"},
+         "missing_findings", "was never written — the two-pass discipline was skipped"),
+        ("missing_artifact", True, {"findings.md": _FINDINGS_OK},
+         "missing_artifact", "is missing from the workspace"),
+        ("claim_unsupported", True, {"findings.md": _FINDINGS_OK,
+          "final_report.md": f"- Colombia exporto USD 3.5 mil millones en 2024 [gov]({_SRC})"},
+         "claim_unsupported", "don't appear to come from that source's actual content"),
+        ("no_urls", True, {"findings.md": _FINDINGS_OK,
+          "final_report.md": "# Informe\nSin enlaces aqui."},
+         "not_grounded", "zero hyperlinked sources"),
+        ("regulation_unsupported", True, {"findings.md": _FINDINGS_OK,
+          "final_report.md": f"| Ley 1906 de 2021 | [gov]({_SRC}) |"},
+         "regulation_unsupported", "never mentions that regulation's number"),
+        ("non_url_citation", True, {"findings.md": _FINDINGS_OK,
+          "final_report.md": f"- dato uno [gov]({_SRC})\n- **Fuente:** Ministerio de Salud, informe interno"},
+         "non_url_citation", "isn't a real URL"),
+        ("not_grounded", True, {"findings.md": _FINDINGS_OK,
+          "final_report.md": "- x [g](https://never-fetched.example.com/y)"},
+         "not_grounded", "was never actually fetched this run"),
+        # Clean pass: grounded findings, report cites the fetched source, no checkable claim
+        # contradicting it -> no problem recorded, no retry.
+        ("clean_pass", True, {"findings.md": _FINDINGS_OK,
+          "final_report.md": f"- el pais avanza de forma sostenida segun cifras oficiales [gov]({_SRC})"},
+         None, None),
+    ]
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        for _row_name, _delegated, _files, _expected, _phrase in matrix:
+            def _matrix_row():
+                from tools.fs import _IN_MEMORY_FS
+                from tools.core import tool_quotas_ctx as q_ctx
+                _orig_ws3 = _config.cfg.get("settings", {}).get("workspace")
+                _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
+                saved_fs = dict(_IN_MEMORY_FS)
+                try:
+                    _IN_MEMORY_FS.clear()
+                    reset_fetched_urls()
+                    record_fetched_url(_SRC, filename="sources/page.md")
+                    _IN_MEMORY_FS["sources/page.md"] = _SOURCE_TEXT
+                    _IN_MEMORY_FS.update(_files)
+                    q_ctx.set({"delegate_tasks": {"used": 1 if _delegated else 0, "limit": 5}})
+                    rs = RunState(tmpdir)
+                    run_state_ctx.set(rs)
+                    msgs = []
+                    should_retry, _ = _asyncio.run(run_completion_check(
+                        query="q", current_input="q", run_state=rs, notify=msgs.append))
+                    recorded = rs.data["completion_check_attempts"][-1]["problem"]
+                    assert recorded == _expected, (_row_name, recorded, msgs)
+                    assert should_retry == (_expected is not None), (_row_name, should_retry, msgs)
+                    if _phrase:
+                        assert _phrase in msgs[-1], (_row_name, _phrase, msgs)
+                finally:
+                    _IN_MEMORY_FS.clear()
+                    _IN_MEMORY_FS.update(saved_fs)
+                    reset_fetched_urls()
+                    if _orig_ws3 is None:
+                        _config.cfg["settings"].pop("workspace", None)
+                    else:
+                        _config.cfg["settings"]["workspace"] = _orig_ws3
+
+            contextvars.copy_context().run(_matrix_row)
 
     # --- regulation-identifier grounding (live case run 12: 'Ley 1906 de 2021' cited to a real
     # fetched page that never mentions 1906 — passed both the URL gate and zero-overlap check) ---
@@ -309,43 +356,6 @@ def main():
                 _config.cfg["settings"]["workspace"] = _orig_ws4
 
     contextvars.copy_context().run(_regulation_scenario)
-
-    # --- regulation_unsupported routes to its OWN completion-check branch (the swallowed-elif
-    # bug class has now hit this chain twice — bd307f4 and run 13 — this pins verdict routing) ---
-    with tempfile.TemporaryDirectory() as tmpdir:
-        def _reg_branch_scenario():
-            from tools.fs import _IN_MEMORY_FS
-            from tools.core import tool_quotas_ctx as q_ctx
-            _orig_ws5 = _config.cfg.get("settings", {}).get("workspace")
-            _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
-            saved_fs = dict(_IN_MEMORY_FS)
-            try:
-                _IN_MEMORY_FS.clear()
-                reset_fetched_urls()
-                record_fetched_url("https://gov.example.co/page", filename="sources/page.md")
-                _IN_MEMORY_FS["sources/page.md"] = ("Source-URL: https://gov.example.co/page\n\n"
-                    + "Estrategia nacional de seguridad digital de Colombia para infraestructura. " * 3)
-                _IN_MEMORY_FS["findings.md"] = "- hallado (https://gov.example.co/page)"
-                _IN_MEMORY_FS["final_report.md"] = "| Ley 1906 de 2021 | [gov](https://gov.example.co/page) |"
-                q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5}})
-                rs = RunState(tmpdir)
-                run_state_ctx.set(rs)
-                msgs = []
-                should_retry, _ = _asyncio.run(run_completion_check(
-                    query="q", current_input="q", run_state=rs, notify=msgs.append))
-                assert should_retry, msgs
-                assert rs.data["completion_check_attempts"][-1]["problem"] == "regulation_unsupported", \
-                    rs.data["completion_check_attempts"]
-            finally:
-                _IN_MEMORY_FS.clear()
-                _IN_MEMORY_FS.update(saved_fs)
-                reset_fetched_urls()
-                if _orig_ws5 is None:
-                    _config.cfg["settings"].pop("workspace", None)
-                else:
-                    _config.cfg["settings"]["workspace"] = _orig_ws5
-
-        contextvars.copy_context().run(_reg_branch_scenario)
 
     # --- quarantined-draft restore beats narration salvage (runs 11/13's endgame) ---
     from engine.tui import _restore_quarantined_draft
