@@ -523,6 +523,22 @@ def main():
                     "- **[Agro](https://gov.example.co/page)** 12% de crecimiento anual\n"
                     "|---|---|\n")
     assert find_uncited_claim_lines(_good_report) == []
+    # Run 15's live FALSE POSITIVE (2026-07-12): a per-niche '#### Sources' block under each
+    # h3 section ties that section's claims to sources — held a correctly-grounded report
+    # through 3 nudges. h4+ blocks must survive split_prose_from_sources, and a section
+    # containing a URL exempts its own figure lines.
+    _sectioned_report = (
+        "## Research Objective\n"
+        "Identify B2B technology opportunities in Colombia for 2026 where a small team could generate revenue.\n\n"
+        "### 1. Cattle Traceability\n"
+        "| **Regulation** | Ley 2585 de 2026 — trazabilidad ganadera obligatoria |\n"
+        "| **Compliance Deadline** | Enacted 4 June 2026; implementation required by that date |\n"
+        "| **Market Size** | 2.300 productores registrados en el sistema en 2025 |\n"
+        "#### Sources\n"
+        "- **[Ley 2585 de 2026](https://sidn.example.gov.co/ley_2585)**\n")
+    assert "sidn.example.gov.co" in split_prose_from_sources(_sectioned_report)
+    _hits = find_uncited_claim_lines(_sectioned_report)
+    assert len(_hits) < 3 and not any("2585" in h for h in _hits), _hits
 
     # --- C8 charset handling (run 14: the flagship 750KB DIAN law text was saved as mojibake —
     # 'Resolución'/'número' could never string-match, silently gutting every Spanish-term check) ---

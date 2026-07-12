@@ -72,9 +72,13 @@ def split_prose_from_sources(report: str) -> str:
     "Sources used", "Fuentes consultadas") — run 14's report used "### Source URLs", which
     this didn't match, so its citation list counted as prose. Suffixes are a fixed allowlist,
     NOT any trailing words: a real content heading like "Sources of growth in Colombia" must
-    never be treated as the start of a citation section (that would hide claims from checks)."""
+    never be treated as the start of a citation section (that would hide claims from checks).
+    Heading depth is capped at h3: an h4+ block ("#### Sources" under each niche section) is a
+    PER-SECTION citation list, not the report's trailing sources section — confirmed live
+    (run 15): stripping at the first such block deleted the rest of the report including its
+    own citations, and find_uncited_claim_lines then flagged a correctly-sourced report."""
     m = re.search(
-        r'^[#\s>*_]*(?:sources?|references?|referencias?|fuentes?|bibliograf[ií]a)'
+        r'^[\s>*_]*#{0,3}[\s>*_]*(?:sources?|references?|referencias?|fuentes?|bibliograf[ií]a)'
         r'(?:\s+(?:urls?|list|used|cited|consultadas?|utilizadas?))?[\s*_:]*$',
         report or "", re.IGNORECASE | re.MULTILINE)
     return report[:m.start()] if m else (report or "")
@@ -219,18 +223,32 @@ def find_uncited_claim_lines(report: str) -> list[str]:
     names a figure but no source on its own line is unverifiable BY CONSTRUCTION here even when
     the report's URL list is fully real. Conservative: only lines with a hard number (figure,
     percent, year, amount), only substantial lines, and the caller only acts on a pile of them
-    (>=3) — narrative context lines or a single stray year never trip a verdict alone."""
-    hits = []
+    (>=3) — narrative context lines or a single stray year never trip a verdict alone.
+
+    SECTION-scoped, not line-scoped (run 15's live false positive): a report that puts a
+    '#### Sources' block inside each niche's own h1-h3 section HAS tied those claims to
+    sources — per-section rather than per-line, which the per-line checks can't read but is
+    not the run-14 decoupling this exists to catch. Any URL anywhere in a section (delimited
+    by h1-h3 headings; h4+ subsections stay with their parent) exempts that whole section;
+    run 14's shape (figure table in one section, every URL in a detached 'Source URLs'
+    section) still fires."""
+    sections: list[list[str]] = [[]]
     for raw in split_prose_from_sources(report or "").splitlines():
-        line = raw.strip()
-        if len(line) < 30 or "http" in line:
+        if re.match(r'#{1,3}\s', raw):
+            sections.append([])
+        sections[-1].append(raw)
+    hits = []
+    for section in sections:
+        if any("http" in l for l in section):
             continue
-        if line.startswith(("#", ">", "[SYSTEM")):
-            continue
-        if re.fullmatch(r'[|\s:\-]+', line):  # markdown table separator row
-            continue
-        if _NUMERIC_CLAIM_RE.search(line):
-            hits.append(line[:120])
+        for raw in section:
+            line = raw.strip()
+            if len(line) < 30 or line.startswith(("#", ">", "[SYSTEM")):
+                continue
+            if re.fullmatch(r'[|\s:\-]+', line):  # markdown table separator row
+                continue
+            if _NUMERIC_CLAIM_RE.search(line):
+                hits.append(line[:120])
     return hits
 
 
