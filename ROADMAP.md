@@ -107,6 +107,41 @@ Status as of 2026-07-12.
   fix delivered the real, mostly-correct draft with a loud warning banner instead of losing it to
   salvage narration, exactly as designed.
 
+- **Checkmark-on-error TUI bug fixed (2026-07-12, `ad07a5f`)**: `ToolCallWidget.set_result` always
+  rendered a green checkmark regardless of the result text — a real run showed a
+  `read_workspace_file` call marked complete despite returning an error. New
+  `_looks_like_tool_error()` (matches "Error:"/"CRITICAL TOOL EXECUTION ERROR"/"forcefully
+  aborted") drives both the TUI glyph and a new `RunState.record_tool_error` counter/sample log.
+- **Fuzzy-filename fallback for `read_workspace_file`/`grep_workspace_file` (2026-07-12)**: traced
+  root cause of a run that gathered substantial research (33 fetches, 38 findings) but never
+  produced a report — 16% of workspace-read calls used a garbled/truncated filename reconstructed
+  from memory by a sub-agent one hop removed from the original fetch (e.g.
+  `sources/nixtaverse_nixta?`), each failure burning a turn and a quota unit, cascading into
+  `QuotaAbortException` aborts. `resolve_fuzzy_filename()` in `src/tools/fs.py`
+  (`difflib.SequenceMatcher`, conservative single-best-match threshold) now auto-resolves these
+  instead of erroring.
+- **Structured `_run_state.json` logging (2026-07-12)**: full completion-check verdict detail
+  (not just the problem label) now persisted per attempt; `RunState.record_tool_error`
+  (count + samples); `RunState.next_subagent_label` disambiguates repeat dispatches of the same
+  task name (`SubAgent_x` → `SubAgent_x#2`, with a collision-avoidance guard against a task
+  literally named to collide with the auto-generated suffix) so post-hoc elapsed-time analysis on
+  sub-agents is trustworthy without hand-parsing the raw session log. Live-validated end-to-end in
+  the answer-mode smoke test below.
+- **`/resume-run` added to the TUI (2026-07-12)**: was CLI-only for a full prior session
+  unnoticed — the exact scenario it exists for (a quarantined run with real work already on disk)
+  happened and had no TUI path. New no-argument slash command with a picker, reusing the existing
+  headless `load_resume_state`/`build_resume_input` logic. Prompted two new CLAUDE.md rules:
+  mandatory TUI/CLI feature parity checks, and tracing a change's blast radius across sibling
+  surfaces before calling it done.
+- **Answer mode (2026-07-12)**, from the `dzhng/deep-research` candidate below: third
+  `report_style` option (`standard`/`academic`/`answer`) — a short 1-3 sentence direct answer, no
+  section headings, inline `(Source: [Title](URL))` citation instead of a References list.
+  **Live-validated** on `deepdelve-gpt-oss`: first attempt hit a real `claim_unsupported`
+  quarantine (model's citation format deviated from spec, no square brackets around the title);
+  the completion-check cycle correctly caught it and nudged a rewrite; attempt 2 passed with a
+  clean short answer — confirms `extract_cited_urls` tolerates the format deviation and that the
+  quarantine/nudge cycle generalizes to a third report style, not just the original two.
+
 ## Findings from live testing (not yet acted on / informational)
 
 - **Grounding check verifies provenance, not topical relevance.** A live GOA (Grasshopper Optimization Algorithm) research query got a citation from `globaldrivetozero.org` — actually fetched, and sharing surface terms like "GOA"/"Goa" — that's actually about the Indian state of Goa's EV policy, not the algorithm. The URL-presence + term-overlap check passed it because it only checks "was this fetched" and "do terms overlap," not "is this source about the same subject." Acronym collisions are the clearest way to trigger this; unclear how common the failure mode is outside them.
@@ -123,6 +158,14 @@ Status as of 2026-07-12.
 
 - **Address the grounding check's topical-relevance gap** — some form of "is this source actually about the claimed subject," not just "was it fetched and does it share terms." Unclear whether this needs an LLM judge (this local model class has proven unreliable as its own judge elsewhere in this project) or a cheaper heuristic. *(Partially mitigated 2026-07-12: scope matching is now case-insensitive and charset-correct, and stub shells can no longer ground anything.)*
 - **Headless-browser fetch fallback** for JS-gated pages that return bot-challenge stubs to a plain HTTP GET. *(Partially mitigated 2026-07-12: stub detection now at least FLAGS those pages and refuses to ground citations on them, instead of counting them as real fetches — run 15 flagged 10/21 fetches with zero false positives.)*
+- **B4: unify the duplicated TUI/CLI run loop.** `src/engine/tui.py` hosts two ~150-line
+  stream/approval/retry loops — `run_cli` (headless) and `run_agent`/`BasicTuiAgent` (interactive)
+  — that duplicate most of the same run-lifecycle logic instead of sharing one implementation.
+  Deliberately deferred 2026-07-12 (user chose "safe parts now, defer the risky merge"): this
+  exact code has caused 2 historical regressions (checkmark-on-error bug, the `--resume-run`
+  TUI-parity gap), so a structural merge needs its own careful pass rather than being bundled into
+  an unrelated feature commit. Until merged, CLAUDE.md's TUI/CLI parity rule is the mitigation —
+  every new CLI-surfaced capability must be checked against the TUI for an equivalent by hand.
 
 ## Candidates from the 2026-07-12 reference-repo review (see README References)
 
@@ -131,8 +174,6 @@ Status as of 2026-07-12.
   next round's Planner input, with geometric narrowing (their `newBreadth = ceil(breadth/2)`,
   depth counter). DeepDelve currently trusts the Planner model to loop, and local models
   demonstrably under-loop (run 15: 1 niche of 4-6). Could integrate with `--depth`.
-- **Answer mode** (from `dzhng/deep-research`): a concise exact-answer output path for short
-  factual queries instead of the full report artifact (their `writeFinalAnswer`).
 - **Tongyi-DeepResearch-30B-A3B as a benchmark candidate** (from `Alibaba-NLP/DeepResearch`):
   30B MoE / 3.3B active — same size class as deepdelve-qwen3.6, but trained specifically for
   long-horizon research. **Chat-template/tool-call compatibility check done, 2026-07-12 — the

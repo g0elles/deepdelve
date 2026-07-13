@@ -2125,10 +2125,12 @@ def cli_main(builder):
     parser.add_argument("--depth", choices=["quick", "standard", "deep"], default=None,
                         help="Research depth preset: quick (~half quotas, light search, 2 retries), "
                              "standard (config as-is), deep (raised quotas, heavy search, 4 retries).")
-    parser.add_argument("--style", choices=["standard", "academic"], default=None,
+    parser.add_argument("--style", choices=["standard", "academic", "answer"], default=None,
                         help="Report shape: standard (config as-is), academic (literature-review "
                              "paper with (Author, Year) citations and a References list — see "
-                             "eval/sales_forecasting_benchmark.md). Orthogonal to --depth.")
+                             "eval/sales_forecasting_benchmark.md), answer (a short 1-3 sentence "
+                             "direct answer instead of a full report, for simple factual queries). "
+                             "Orthogonal to --depth.")
     parser.add_argument("--seed-url", action="append", default=None, metavar="URL",
                         help="Pre-fetch this URL into the run's sources/ before research starts "
                              "(repeatable). Doesn't consume the agent's fetch quota. Headless mode.")
