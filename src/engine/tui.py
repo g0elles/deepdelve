@@ -1185,6 +1185,7 @@ class BasicTuiAgent(App):
             agent, session = create_local_agent(builder=self.builder, subagent_callback=ui_callback)
             current_input = query
             has_requests = True
+            malformed_retries = 0
             state = {"calls": {}, "current_call_id": None, "current_msg": None}
             if is_followup and self._conv_run_state is not None:
                 # Same conversation, same _run_state.json: one continuous forensic timeline.
@@ -1260,6 +1261,29 @@ class BasicTuiAgent(App):
                         state["processing_widget"] = None
 
                 except Exception as e:
+                    # TUI/CLI parity fix (CLAUDE.md: any headless-only capability must be checked
+                    # against the TUI) -- run_cli already retries a malformed tool call twice with
+                    # a corrective nudge before degrading gracefully (added 2026-07-12 after an
+                    # uncaught crash there); this path previously had NO retry at all, just an
+                    # immediate error widget with no further progress on that turn.
+                    from engine.orchestrator import malformed_tool_call_nudge
+                    nudge = malformed_tool_call_nudge(e)
+                    if nudge and malformed_retries < 2:
+                        malformed_retries += 1
+                        p_widget = state.get("processing_widget")
+                        if p_widget:
+                            p_widget.stop()
+                            state["processing_widget"] = None
+                        chat.mount(Static(
+                            f"[yellow]Model emitted a malformed tool call — retrying the turn "
+                            f"({malformed_retries}/2).[/yellow]", classes="agent-bubble"))
+                        chat.scroll_end(animate=False)
+                        new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
+                        new_inputs.append(Message("user", [{"type": "text", "text": nudge}]))
+                        current_input = new_inputs
+                        has_requests = True
+                        continue
+
                     p_widget = state.get("processing_widget")
                     if p_widget:
                         p_widget.mark_error(str(e))
@@ -1267,6 +1291,17 @@ class BasicTuiAgent(App):
                     else:
                         chat.mount(Static(f"[red]Error: {str(e)}[/red]", classes="agent-bubble"))
                     chat.scroll_end(animate=False)
+
+                    if nudge:
+                        # Retry budget exhausted for this SPECIFIC, already-recognized failure
+                        # class -- force the completion check straight to its final-verdict path
+                        # (quarantine-restore/salvage) instead of leaving the turn as a bare error
+                        # widget with no further progress, same degradation run_cli now applies.
+                        # No `continue`: has_requests is already False, so falling through
+                        # naturally into the rest of this iteration is what actually reaches the
+                        # completion-check branch below.
+                        if run_state is not None:
+                            run_state.attempt = 10**6
 
                 if user_input_requests:
                     has_requests = True
@@ -2039,7 +2074,33 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
                     current_input = new_inputs
                     has_requests = True
                     continue
-                raise
+                if not nudge:
+                    # A genuinely unrecognized exception (not the malformed-tool-call class at
+                    # all) — still a real crash, not something this loop knows how to degrade
+                    # gracefully.
+                    raise
+                # Retry budget exhausted for this SPECIFIC, already-recognized failure class
+                # (malformed_tool_call_nudge only returns non-None for "error parsing tool
+                # call") -- degrade to the final-verdict path instead of crashing the whole run.
+                # Confirmed live 2026-07-12: 3 consecutive malformed tool calls (a huge
+                # write_workspace_file argument got truncated mid-JSON) exceeded the 2-retry
+                # budget and an uncaught 500 killed a run that had already gathered 18 real
+                # sources and 5 rejected report attempts on disk -- the SAME failure class this
+                # nudge was originally built for (see malformed_tool_call_nudge's docstring: "an
+                # otherwise-successful 16-minute run" lost to one transient slip), just recurring
+                # enough times in a row to blow past the existing safety net. Deliberately does
+                # NOT `continue` here (that would skip straight past the `while has_requests:`
+                # check with has_requests already False, exiting the loop WITHOUT ever calling
+                # run_completion_check — meaning the "finishing with whatever exists" message
+                # below would be a lie). Falling through naturally into the rest of this same
+                # iteration's body is what actually reaches the completion-check branch.
+                sys.stdout.write(
+                    f"\n\033[91m[System] Model kept emitting malformed tool calls after "
+                    f"{malformed_retries} retries — giving up on this turn and finishing with "
+                    f"whatever exists (quarantine-restore/salvage still applies).\033[0m\n"
+                )
+                if run_state is not None:
+                    run_state.attempt = 10**6
 
             if context_budget and run_stream_chars > context_budget:
                 if not budget_nudged:
