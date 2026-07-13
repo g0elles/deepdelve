@@ -907,6 +907,70 @@ def main():
     assert _how == "timeout", _how
     assert _elapsed < 2, f"cutoff must fire near the 0.2s deadline, not wait for the 10s stall ({_elapsed}s)"
 
+    # --- fuzzy filename fallback: a sub-agent's garbled/reconstructed filename should still
+    # resolve if it clearly maps to one real file ---
+    # (live bug, 2026-07-12): sub-agents handed a filename second-hand (not the one they fetched
+    # themselves) reconstruct it from memory and get it wrong — 'sources/nixtaverse_nixta?',
+    # 'sources/arxiv_org_metaheuristic_analysis?', 'sources/Arxiv????' were all observed live,
+    # each burning a full turn + quota unit on a doomed read_workspace_file/grep_workspace_file
+    # call. Measured on that one run: 16% of read/grep calls failed "not found", 7/12 of those
+    # visibly garbled with a literal '?'.
+    from tools.fs import resolve_fuzzy_filename, read_workspace_file, grep_workspace_file, _IN_MEMORY_FS
+
+    def _fuzzy_filename_scenario():
+        _orig_ws7 = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory"}
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS["sources/nixtlaverse_nixtla_exogenous_features_a1b2c3d4.md"] = (
+                "Source-URL: https://nixtlaverse.nixtla.io/mlforecast/docs/how-to-guides/exogenous_features.html\n\n"
+                "Nixtla exogenous features documentation content here."
+            )
+            _IN_MEMORY_FS["sources/arxiv_org_genetic_algorithm_deep_learning_sales_e5f6a7b8.md"] = (
+                "Source-URL: https://arxiv.org/abs/2410.15047\n\nGenetic algorithm paper content."
+            )
+            # A garbled request with a literal '?' (exactly the observed live shape) resolves to
+            # the one real file it clearly maps to.
+            assert resolve_fuzzy_filename("sources/nixtaverse_nixta?") == \
+                "sources/nixtlaverse_nixtla_exogenous_features_a1b2c3d4.md"
+            # '.' vs '_' mismatch (arxiv.org vs the real arxiv_org slug) also resolves.
+            assert resolve_fuzzy_filename("sources/arxiv.org_genetic_algorithm_deep_l") == \
+                "sources/arxiv_org_genetic_algorithm_deep_learning_sales_e5f6a7b8.md"
+            # Too short / no real overlap -> no confident auto-resolve, stays None.
+            assert resolve_fuzzy_filename("sources/xyz?") is None
+            assert resolve_fuzzy_filename("sources/completely_unrelated_name_here") is None
+            # (In real production flow, resolve_fuzzy_filename is only ever called AFTER an exact
+            # get_workspace_file_content lookup already missed — the tools never call it for a
+            # name that already resolved. Calling it directly with an exact name is just a
+            # 1.0-ratio match to itself, which is correct, not a special case to guard against.)
+
+            # End-to-end through the actual tools: a garbled filename still returns real content
+            # (and the response shows the corrected filename, not the garbled one).
+            result = read_workspace_file("sources/nixtaverse_nixta?")
+            assert "Nixtla exogenous features documentation" in result
+            assert "sources/nixtlaverse_nixtla_exogenous_features_a1b2c3d4.md" in result
+            assert "not found" not in result
+
+            grep_result = grep_workspace_file("sources/arxiv_org_genetic_algo_deep?", "Genetic")
+            assert "genetic algorithm" in grep_result.lower() or "Genetic" in grep_result
+            assert "not found — searched" in grep_result
+
+            # A genuinely unresolvable filename still fails cleanly, no false-positive resolve.
+            assert "not found" in read_workspace_file("sources/nothing_like_this_exists_at_all.md")
+            # Too short/generic even after cleaning ('Arxiv????' -> just 'arxiv') to safely
+            # auto-resolve on its own — conservative by design, matches this project's posture.
+            assert resolve_fuzzy_filename("sources/Arxiv????") is None
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            if _orig_ws7 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws7
+
+    contextvars.copy_context().run(_fuzzy_filename_scenario)
+
     # --- TUI tool-call widget: an error RESULT must not render a green success checkmark ---
     # (live bug, 2026-07-12): a read_workspace_file call that failed with 'Error: Requested
     # function "read_workspace..." not found.' still showed a checkmark, because ToolCallWidget's
