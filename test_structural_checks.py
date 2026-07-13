@@ -283,6 +283,58 @@ def main():
     from engine.tui import BasicTuiAgent
     _asyncio_tui.run(_resume_run_tui_scenario())
 
+    # --- B5: session log write throttling (2026-07-12) — _write_log serializes and rewrites the
+    # WHOLE _session_events list every call; log_stream_content used to call it after EVERY
+    # streamed event, so an N-event run paid O(N) per write summed over N writes = O(n²) total
+    # (confirmed live: a 370-event killed run produced a 565KB session file). Throttled to at
+    # most once per _LOG_WRITE_THROTTLE_SECONDS by default; force=True (every genuine checkpoint:
+    # turn end, run end, before sys.exit) always writes regardless. ---
+    def _write_log_throttle_scenario():
+        # Local import, not the enclosing main()'s `time` (imported later, line ~987 as of this
+        # writing) — Python's static per-function scoping would make a bare `time.sleep` here
+        # resolve to that not-yet-assigned enclosing local and raise UnboundLocalError, the exact
+        # bug class caught and fixed elsewhere in this file earlier this session.
+        import time
+        import engine.tui as _tui_mod
+        with tempfile.TemporaryDirectory() as home_dir:
+            _orig_home = os.environ.get("HOME")
+            os.environ["HOME"] = home_dir
+            _orig_persist = _config.cfg["settings"].get("enable_session_persistence")
+            _config.cfg["settings"]["enable_session_persistence"] = True
+            _orig_sid = _tui_mod._current_session_id
+            _orig_events = _tui_mod._session_events
+            _orig_last_write = _tui_mod._last_log_write
+            try:
+                _tui_mod._current_session_id = "throttle_test"
+                _tui_mod._session_events = [{"a": 1}]
+                _tui_mod._last_log_write = 0.0
+                log_file = os.path.join(home_dir, f".{_config.APP_NAME}", "sessions", "session_throttle_test.json")
+
+                _tui_mod._write_log()  # first call always writes (last_write starts at 0)
+                assert os.path.exists(log_file), "first call must write"
+                mtime1 = os.path.getmtime(log_file)
+
+                time.sleep(0.05)
+                _tui_mod._write_log()  # well within the throttle window
+                assert os.path.getmtime(log_file) == mtime1, "throttled call must not rewrite"
+
+                _tui_mod._write_log(force=True)  # bypasses the throttle unconditionally
+                assert os.path.getmtime(log_file) > mtime1, "force=True must always write"
+            finally:
+                if _orig_home is None:
+                    os.environ.pop("HOME", None)
+                else:
+                    os.environ["HOME"] = _orig_home
+                if _orig_persist is None:
+                    _config.cfg["settings"].pop("enable_session_persistence", None)
+                else:
+                    _config.cfg["settings"]["enable_session_persistence"] = _orig_persist
+                _tui_mod._current_session_id = _orig_sid
+                _tui_mod._session_events = _orig_events
+                _tui_mod._last_log_write = _orig_last_write
+
+    _write_log_throttle_scenario()
+
     # --- depth presets (--depth): quick/deep touch quotas+search_mode+retries, standard is a no-op ---
     from engine.tui import apply_depth_preset
 

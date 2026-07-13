@@ -40,10 +40,28 @@ _session_events = []
 _current_call_by_source = {}
 _current_text_by_source = {}
 _current_session_id = str(uuid.uuid4())
+_last_log_write = 0.0
+# _write_log serializes the WHOLE _session_events list and rewrites the whole file every call —
+# fine on its own, but log_stream_content calls it after EVERY streamed text/function/subagent
+# event, so a run with N events pays O(N) per write summed over N writes = O(n²) total (B5,
+# 2026-07-12: confirmed live, one killed gpt-oss run alone produced a 565KB/370-event session
+# file). Throttling the FREQUENT per-event call to at most once per _LOG_WRITE_THROTTLE_SECONDS
+# fixes this without touching the persisted format at all (zero back-compat risk for
+# _load_session_by_id/--resume/the eval harness, all of which read this exact JSON shape) — the
+# tradeoff is losing at most that window's worth of the very latest events on a hard crash, which
+# is why every genuine checkpoint (turn end, run end, before sys.exit) still calls
+# _write_log(force=True) and writes for real regardless of the throttle.
+_LOG_WRITE_THROTTLE_SECONDS = 0.5
 
-def _write_log():
+def _write_log(force: bool = False):
     if not config.cfg["settings"].get("enable_session_persistence", False):
         return
+
+    global _last_log_write
+    now = time.monotonic()
+    if not force and (now - _last_log_write) < _LOG_WRITE_THROTTLE_SECONDS:
+        return
+    _last_log_write = now
 
     log_dir = Path.home() / f".{config.APP_NAME}" / "sessions"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -79,7 +97,7 @@ def log_prompt(prompt: str):
     })
     _current_call_by_source.clear()
     _current_text_by_source.clear()
-    _write_log()
+    _write_log(force=True)
 
 def log_stream_content(source: str, content_type: str, raw_data_dict: dict, depth: int = None):
     global _session_events, _current_call_by_source, _current_text_by_source
@@ -704,7 +722,7 @@ class BasicTuiAgent(App):
                 log_dir = Path.home() / f".{config.APP_NAME}" / "sessions"
                 log_file = log_dir / f"session_{_current_session_id}.json"
                 msg += f"\nSaving to: `{log_file}`"
-                _write_log()
+                _write_log(force=True)
             chat.mount(Static(Markdown(msg), classes="agent-bubble"))
             chat.scroll_end(animate=False)
         elif query == "/sessions":
@@ -1226,7 +1244,7 @@ class BasicTuiAgent(App):
                     # the final file written during standard generation would often contain
                     # `{"state": {"in_memory": {}}}` because the stream hadn't reached its end yet.
                     # We definitively evaluate `_write_log()` here once the stream guarantees finalization.
-                    _write_log()
+                    _write_log(force=True)
 
                 except Exception as e:
                     p_widget = state.get("processing_widget")
@@ -1874,7 +1892,7 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
                 f"the search layer failed a trivial probe ({probe_err}). This is not a model "
                 f"problem; re-run when search egress recovers.\033[0m\n"
             )
-            _write_log()
+            _write_log(force=True)
             sys.exit(1)
 
         # --seed-url: the user often already has the 2-3 links (or the regulation PDF) the
@@ -2054,7 +2072,7 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
                     has_requests = True
 
         run_state.save()
-        _write_log()
+        _write_log(force=True)
         elapsed = datetime.now() - start_time
         sys.stdout.write(f"\n\n\033[1mTask completed in {elapsed.total_seconds():.1f} seconds.\033[0m\n")
 
@@ -2081,7 +2099,7 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
         if run_state is not None:
             run_state.sync_fetched_urls()
             run_state.save()
-        _write_log()
+        _write_log(force=True)
         sys.exit(1)
     finally:
         tool_quotas_ctx.reset(quota_token)
