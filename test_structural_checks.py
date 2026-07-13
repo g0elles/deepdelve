@@ -477,6 +477,14 @@ def main():
                 from tools.core import tool_quotas_ctx as q_ctx
                 _orig_ws3 = _config.cfg.get("settings", {}).get("workspace")
                 _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
+                # This matrix isn't testing NLI wiring (that's _nli_verify_scenario below, with a
+                # mocked model) -- without disabling it here, any row whose content_level_check
+                # passes would fall through to a REAL (unmocked) nli_unsupported_problem call,
+                # silently loading the actual HuggingFace model and making this "fast structural
+                # suite" depend on network access. Confirmed live: exactly this happened before
+                # this line was added.
+                _orig_gc3 = _config.cfg.get("settings", {}).get("grounding_check")
+                _config.cfg["settings"]["grounding_check"] = {"nli_verify": False}
                 saved_fs = dict(_IN_MEMORY_FS)
                 try:
                     _IN_MEMORY_FS.clear()
@@ -507,8 +515,97 @@ def main():
                         _config.cfg["settings"].pop("workspace", None)
                     else:
                         _config.cfg["settings"]["workspace"] = _orig_ws3
+                    if _orig_gc3 is None:
+                        _config.cfg["settings"].pop("grounding_check", None)
+                    else:
+                        _config.cfg["settings"]["grounding_check"] = _orig_gc3
 
             contextvars.copy_context().run(_matrix_row)
+
+    # --- NLI grounding verification (live case 2026-07-12, NVIDIA NIM gpt-oss-20b benchmark run):
+    # a citation to a real, fetched source whose claim shares terms with it (passes
+    # content_level_check) but is actually contradicted by the source's real content (a paper
+    # title quoted with one word swapped). The real NLI model isn't loaded in this fast suite —
+    # mocked at utils.grounding._get_nli_model to test WIRING correctness (config toggle ->
+    # ordering after content_level_check -> Verdict routing -> quarantine -> nudge phrase), same
+    # boundary this project already draws elsewhere (e.g. live_http_verify is a real network call,
+    # never exercised by the fast suite either). ---
+    def _nli_verify_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        from tools.core import tool_quotas_ctx as q_ctx
+        from unittest.mock import patch
+        import utils.grounding as _grounding_mod
+
+        class _FakeScore:
+            def __init__(self, idx):
+                self._idx = idx
+            def argmax(self):
+                return self._idx
+
+        class _FakeModel:
+            def __init__(self, idx):
+                self._idx = idx
+            def predict(self, pairs):
+                return [_FakeScore(self._idx) for _ in pairs]
+
+        _orig_ws6 = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            _IN_MEMORY_FS.clear()
+            reset_fetched_urls()
+            # Dedicated source/claim pair, NOT the shared _SRC/_SOURCE_TEXT fixture: that fixture
+            # deliberately has zero numbers/capitalized phrases (so claim_grounding_problem's OTHER
+            # matrix rows can test "no checkable terms -> skipped" vs. "checkable terms -> zero
+            # overlap -> flagged"). This scenario needs a claim that DOES share a term with its
+            # source (so content_level_check passes and execution actually reaches
+            # nli_unsupported_problem) -- a shared year, "2020".
+            _nli_src = "https://gov.example.co/nli-test-page"
+            _nli_source_text = ("Source-URL: " + _nli_src + "\n\n"
+                                 + "The National Cyber Strategy was formally adopted in 2020 "
+                                   "following extensive review. " * 3)
+            record_fetched_url(_nli_src, filename="sources/nli_page.md")
+            _IN_MEMORY_FS["sources/nli_page.md"] = _nli_source_text
+            _IN_MEMORY_FS["findings.md"] = f"- hallado ({_nli_src})"
+            claim_line = f"- The strategy launched in 2020 under a different name [gov]({_nli_src})"
+            _IN_MEMORY_FS["final_report.md"] = claim_line
+            q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5}})
+
+            # Contradiction mocked -> nli_unsupported verdict, quarantined, distinctive nudge.
+            with patch.object(_grounding_mod, "_get_nli_model", return_value=_FakeModel(0)):
+                with tempfile.TemporaryDirectory() as tmpdir5:
+                    rs = RunState(tmpdir5)
+                    run_state_ctx.set(rs)
+                    msgs = []
+                    should_retry, _ = _asyncio.run(run_completion_check(
+                        query="q", current_input="q", run_state=rs, notify=msgs.append))
+                    recorded = rs.data["completion_check_attempts"][-1]["problem"]
+                    assert recorded == "nli_unsupported", (recorded, msgs)
+                    assert should_retry
+                    assert "isn't actually entailed" in msgs[-1] or "NOT actually supported" in msgs[-1], msgs
+
+            # Entailment/neutral mocked (never contradiction) -> clean pass, confirming the new
+            # check doesn't regress the existing clean-pass path once wired in.
+            with patch.object(_grounding_mod, "_get_nli_model", return_value=_FakeModel(2)):
+                with tempfile.TemporaryDirectory() as tmpdir6:
+                    rs = RunState(tmpdir6)
+                    run_state_ctx.set(rs)
+                    msgs = []
+                    should_retry, _ = _asyncio.run(run_completion_check(
+                        query="q", current_input="q", run_state=rs, notify=msgs.append))
+                    recorded = rs.data["completion_check_attempts"][-1]["problem"]
+                    assert recorded is None, (recorded, msgs)
+                    assert not should_retry
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            if _orig_ws6 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws6
+
+    contextvars.copy_context().run(_nli_verify_scenario)
 
     # --- missing_artifact escalation (live case 2026-07-12: 24 real fetched URLs + a populated
     # findings.md, but the model still got this nudge 5x verbatim and never once attempted
@@ -648,7 +745,12 @@ def main():
     def _academic_citation_scenario():
         from tools.fs import _IN_MEMORY_FS
         _orig_ws6 = _config.cfg.get("settings", {}).get("workspace")
+        _orig_gc6 = _config.cfg.get("settings", {}).get("grounding_check")
         _config.cfg["settings"]["workspace"] = {"type": "memory"}
+        # Not testing NLI-specific behavior here -- the well-formed case below has genuine
+        # term-overlap and would otherwise silently load the real HuggingFace model (see the
+        # matrix's own nli_verify:False guard above for why that's undesirable in this suite).
+        _config.cfg["settings"]["grounding_check"] = {"nli_verify": False}
         saved_fs = dict(_IN_MEMORY_FS)
         try:
             _IN_MEMORY_FS.clear()
@@ -769,6 +871,10 @@ def main():
                 _config.cfg["settings"].pop("workspace", None)
             else:
                 _config.cfg["settings"]["workspace"] = _orig_ws6
+            if _orig_gc6 is None:
+                _config.cfg["settings"].pop("grounding_check", None)
+            else:
+                _config.cfg["settings"]["grounding_check"] = _orig_gc6
 
     contextvars.copy_context().run(_academic_citation_scenario)
 

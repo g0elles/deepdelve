@@ -470,6 +470,116 @@ def claim_grounding_problem(report: str) -> str | None:
     return f"claim_unsupported:{', '.join(unsupported[:3])}"
 
 
+_nli_model = None
+_nli_load_failed = False
+
+
+def _get_nli_model():
+    """Lazy, process-wide singleton — loaded at most once (measured live 2026-07-12: ~14s first
+    load on CPU, ~0.03s/pair thereafter, so paying that cost once per process is the right trade,
+    not once per completion-check call). Explicit device='cpu': this project budgets its VRAM
+    entirely for the main research LLM — a verification classifier must never contend for it.
+    Fails OPEN (returns None) on any load error (missing sentence-transformers dependency, no
+    network for the first-run HuggingFace download, offline/air-gapped environment) —
+    nli_unsupported_problem then no-ops rather than crashing a run that would otherwise complete
+    cleanly, same philosophy as every other check in this module."""
+    global _nli_model, _nli_load_failed
+    if _nli_model is not None or _nli_load_failed:
+        return _nli_model
+    try:
+        from sentence_transformers import CrossEncoder
+        _nli_model = CrossEncoder("cross-encoder/nli-deberta-v3-small", device="cpu")
+    except Exception:
+        _nli_load_failed = True
+    return _nli_model
+
+
+def _select_relevant_window(claim_terms: set, source_text: str, window_size: int = 1) -> str:
+    """Cheapest-adequate relevance selection before an NLI call, not whole-document NLI: this
+    checkpoint class is trained on short claim/evidence pairs and degrades on long, multi-paragraph
+    RAG source text. Reuses extract_salient_terms (already computed for claim_grounding_problem)
+    to find the source's best-overlapping paragraph, then returns that paragraph plus its
+    immediate neighbors — cheap (pure Python, no model call) and keeps the NLI call's input in the
+    size class it was actually trained on."""
+    paragraphs = [p for p in source_text.split("\n\n") if p.strip()]
+    if not paragraphs:
+        return source_text[:2000]
+    best_idx, best_score = 0, -1
+    for i, p in enumerate(paragraphs):
+        score = len(claim_terms & extract_salient_terms(p))
+        if score > best_score:
+            best_idx, best_score = i, score
+    lo, hi = max(0, best_idx - window_size), min(len(paragraphs), best_idx + window_size + 1)
+    window = "\n\n".join(paragraphs[lo:hi])
+    return window[:2500]  # hard cap regardless — a single huge paragraph must not blow past this
+
+
+def nli_unsupported_problem(report: str) -> str | None:
+    """Second-stage grounding check beyond claim_grounding_problem's term-overlap: for each report
+    prose line whose citation resolves to a fetched source AND already PASSED term-overlap (shares
+    >=1 salient term with that source), does a small NLI cross-encoder actually judge the claim as
+    entailed by the source's most relevant passage — or does it CONTRADICT what the source says,
+    despite the shared terms?
+
+    Confirmed live 2026-07-12 (NVIDIA NIM gpt-oss-20b benchmark run): a report cited a real,
+    fetched arXiv paper whose title was quoted with one word swapped ('Dual Causal Network' vs the
+    real 'Dual Correlation Network') — enough shared capitalized-phrase/number overlap to pass
+    claim_grounding_problem's zero-overlap gate outright, while the specific claim sentence isn't
+    actually what the source says. Per HALT-RAG's combine-lexical-and-NLI finding: this deliberately
+    runs ONLY on lines term-overlap already passed — the zero-overlap wholesale-fabrication cases
+    are already caught cheaply upstream; this is the harder tier those miss.
+
+    Flags ONLY on **contradiction**, never on **neutral** — neutral is the expected, common case
+    for a claim that legitimately paraphrases or summarizes its source (NLI's precision on
+    'neutral' vs. 'not explicitly stated' is poor, and treating it as a failure would over-flag
+    ordinary paraphrase). Conservative by construction, same as every other check in this file.
+    Fails open (returns None) if the model isn't available — see _get_nli_model. The model is
+    loaded (or, when mocked/unavailable, checked) only AFTER pairs is confirmed non-empty below —
+    a report with no NLI-checkable line (e.g. every citation's claim already had no checkable term
+    at all, claim_grounding_problem's own job) must not pay the model-load cost for nothing."""
+    prose = split_prose_from_sources(report)
+    fetched = _fetched_url_files()
+    ref_map = parse_academic_references(report)
+
+    pairs = []  # (window, claim_line_text, display_citation)
+    for line in prose.splitlines():
+        display = (extract_cited_urls(line) + [m.group(0) for m in _PARENTHETICAL_CITATION_RE.finditer(line)])
+        if not display:
+            continue
+        stripped_line = re.sub(r'https?://[^\s\)\]\}"\'>【】]+', '', line)
+        line_terms = extract_salient_terms(stripped_line)
+        if not line_terms:
+            continue
+        files = _line_cited_files(line, fetched, ref_map)
+        if not files:
+            continue
+        for fn in files:
+            content = _source_body(get_workspace_file_content(fn) or "")
+            if len(content.strip()) < 50:
+                continue
+            source_terms = extract_salient_terms(content)
+            if not (line_terms & source_terms):
+                continue  # term-overlap didn't pass for this file -- claim_grounding_problem's job
+            window = _select_relevant_window(line_terms, content)
+            pairs.append((window, stripped_line.strip(), display[0]))
+            break  # one passing source is enough evidence to NLI-check this line against
+
+    if not pairs:
+        return None
+
+    model = _get_nli_model()
+    if model is None:
+        return None
+
+    scores = model.predict([(w, c) for w, c, _ in pairs])
+    # Verified live 2026-07-12 against this exact checkpoint: id2label == {0: 'contradiction',
+    # 1: 'entailment', 2: 'neutral'} -- argmax index 0 is the only flag-worthy outcome.
+    contradicted = [display for (score, (_, __, display)) in zip(scores, pairs) if score.argmax() == 0]
+    if not contradicted:
+        return None
+    return f"nli_unsupported:{', '.join(contradicted[:3])}"
+
+
 def fully_ungrounded(content: str) -> str | None:
     """Wholesale-fabrication gate for findings.md (Pass 1): 'no_urls' if it cites nothing at all,
     'all_cited_urls_unverified' if not a single cited URL matches anything actually fetched this
@@ -545,6 +655,11 @@ async def real_grounding_problem(content: str) -> str | None:
 
     if gc_cfg.get("content_level_check", True):
         problem = claim_grounding_problem(content)
+        if problem:
+            return problem
+
+    if gc_cfg.get("nli_verify", True):
+        problem = nli_unsupported_problem(content)
         if problem:
             return problem
 

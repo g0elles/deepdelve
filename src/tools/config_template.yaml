@@ -136,6 +136,23 @@ settings:
     # call (see utils/grounding.py::claim_grounding_problem). Deliberately conservative (zero-overlap
     # only) to keep false positives rare — set false to disable if it proves too noisy in practice.
     content_level_check: true
+    # Third, deepest layer beyond URL-presence and term-overlap: for a claim line whose citation
+    # WAS fetched and DOES share a checkable term with the source (so content_level_check passed),
+    # does a small NLI cross-encoder actually judge the claim as entailed by the source's most
+    # relevant paragraph — not just coincidentally overlapping? Catches a claim wearing a citation
+    # to a real, fetched, topically-similar source whose specific claim text isn't actually
+    # supported (e.g. a wrong paper title/attribute swap that still shares generic terms).
+    # Runs a small CPU-only NLI model (sentence-transformers cross-encoder/nli-deberta-v3-small,
+    # ~550MB checkpoint downloaded from HuggingFace on first use, ~2.5GB additional disk for the
+    # torch/transformers/sentence-transformers dependency stack itself — see pyproject.toml) —
+    # explicit device="cpu", never competes for GPU/VRAM already budgeted for the main research
+    # LLM. Confirmed live 2026-07-12 (NVIDIA NIM gpt-oss-20b benchmark): term-overlap alone passed
+    # a citation whose claim sentence directly contradicted its cited source's real title
+    # ("Dual Causal Network" quoted vs. the source's actual "Dual Correlation Network"). Fails
+    # open (skips silently, never crashes or blocks a run) if the model/dependency isn't
+    # available — an offline/air-gapped run is never blocked by this. Set false to disable if it
+    # proves noisy, or if sentence-transformers isn't installed.
+    nli_verify: true
     # Catches a claim attributed to something that isn't a URL at all — a bare "(DANE, 2020)"
     # parenthetical or a "Source: <prose>" line — which extract_cited_urls never sees since it only
     # recognizes https?:// patterns. Confirmed live: a report can have real, fetched-and-verified
