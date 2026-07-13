@@ -83,13 +83,70 @@ def get_workspace_file_content(filename: str) -> str | None:
         return None
     return _IN_MEMORY_FS.get(path)
 
+def _clean_filename_for_match(name: str) -> str:
+    """Normalize a filename for fuzzy comparison: bare basename, no extension, '.' treated the
+    same as '_' (a model garbling 'arxiv.org' vs the real 'arxiv_org' slug is exactly the kind of
+    near-miss this exists to catch), lowercased, trailing '?' stripped."""
+    name = name.rsplit("/", 1)[-1]
+    name = re.sub(r'\.(md|pdf|txt)$', '', name, flags=re.IGNORECASE)
+    return name.replace(".", "_").replace("?", "").lower()
+
+def resolve_fuzzy_filename(filename: str) -> str | None:
+    """When an exact filename lookup misses, try to recover the real file the caller almost
+    certainly meant. Confirmed live (2026-07-12): a sub-agent handed a filename second-hand
+    (not the one it fetched itself) reconstructs it from memory and gets it wrong — trailing
+    '?' garbage, truncation, '.' instead of '_', even outright typos ('nixtaverse_nixta' for the
+    real 'nixtlaverse_nixtla...', missing an 'l') — burning a full turn AND a quota unit per
+    failed guess (measured on one live run: 16% of read/grep_workspace_file calls failed
+    "not found", 7/12 of those visibly garbled with a literal '?'). Uses difflib's
+    SequenceMatcher rather than a plain common-prefix check — a real early-string typo like the
+    'nixtla' example above shares almost no prefix with the correct name at all, but is still an
+    obvious match to a human (and should be to this). Deliberately conservative, matching this
+    project's "keep false positives rare" posture elsewhere (utils/grounding.py): only resolves
+    when exactly one real file scores above a high similarity threshold, and when there are
+    multiple candidates, only if the best is clearly ahead of the runner-up. Returns None (no
+    auto-resolve) on an ambiguous or no-match request — the caller's normal "not found" error
+    still fires."""
+    real_files = get_workspace_files()
+    if not real_files:
+        return None
+
+    cleaned_request = _clean_filename_for_match(filename)
+    if len(cleaned_request) < 6:  # too short to fuzzy-match safely
+        return None
+
+    import difflib
+    scored = []
+    for real in real_files:
+        cleaned_real = _clean_filename_for_match(real)
+        # Real filenames carry a trailing content hash the model never sees (e.g.
+        # '..._a1b2c3d4') — comparing against the FULL real name would dilute the ratio with a
+        # suffix the request was never going to match. Compare against a same-length-ish prefix
+        # of the real name instead when the real name is longer.
+        compare_real = cleaned_real[:len(cleaned_request) + 4] if len(cleaned_real) > len(cleaned_request) else cleaned_real
+        ratio = difflib.SequenceMatcher(None, cleaned_request, compare_real).ratio()
+        if ratio >= 0.72:
+            scored.append((ratio, real))
+
+    if not scored:
+        return None
+    scored.sort(key=lambda x: x[0], reverse=True)
+    if len(scored) == 1 or scored[0][0] - scored[1][0] >= 0.1:
+        return scored[0][1]
+    return None
+
 @tool
 @with_quota
 def read_workspace_file(filename: str, start_line: int = 1, end_line: int = -1) -> str:
     """Read a stored text file. Use start_line and end_line bounds to read large files safely. Both bounds are 1-indexed."""
     try:
         content = get_workspace_file_content(filename)
-        if content is None: return f"Error: '{filename}' not found."
+        if content is None:
+            resolved = resolve_fuzzy_filename(filename)
+            content = get_workspace_file_content(resolved) if resolved else None
+            if content is None:
+                return f"Error: '{filename}' not found."
+            filename = resolved
 
         lines = content.splitlines()
         total = len(lines)
@@ -149,7 +206,16 @@ def grep_workspace_file(filename: str, pattern: str, context_lines: int = 2) -> 
     """Search for a regex pattern within a file, returning matching lines with surrounding context."""
     try:
         content = get_workspace_file_content(filename)
-        if content is None: return f"Error: '{filename}' not found."
+        resolved_note = ""
+        if content is None:
+            resolved = resolve_fuzzy_filename(filename)
+            content = get_workspace_file_content(resolved) if resolved else None
+            if content is None:
+                return f"Error: '{filename}' not found."
+            # Unlike read_workspace_file, the result body never mentions the filename — the model
+            # needs an explicit note or it won't learn the corrected name for later calls.
+            resolved_note = f"(Note: '{filename}' not found — searched '{resolved}' instead, the closest real match.)\n"
+            filename = resolved
 
         lines = content.splitlines()
         max_matches = _get_tool_rule("grep_workspace_file", "max_matches", 10)
@@ -162,9 +228,9 @@ def grep_workspace_file(filename: str, pattern: str, context_lines: int = 2) -> 
                 if len(matches) >= max_matches:
                     break
 
-        if not matches: return f"No matches found for '{pattern}'."
+        if not matches: return f"{resolved_note}No matches found for '{pattern}'."
 
-        out = []
+        out = [resolved_note] if resolved_note else []
         for match_idx in matches:
             start = max(0, match_idx - context_lines)
             end = min(len(lines), match_idx + context_lines + 1)
