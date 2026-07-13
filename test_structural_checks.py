@@ -971,6 +971,46 @@ def main():
 
     contextvars.copy_context().run(_fuzzy_filename_scenario)
 
+    # --- structured run-state diagnostics (2026-07-12): answer "why did each attempt fail",
+    # "how many tool calls errored", and "was this task re-delegated" from _run_state.json alone,
+    # without hand-parsing the raw session-event JSON ---
+    with tempfile.TemporaryDirectory() as _tmpdir2:
+        _rs = RunState(_tmpdir2)
+
+        # record_attempt's new `detail` param persists the full verdict text, not just the label.
+        _rs.record_attempt(0, "claim_unsupported", 5, detail="claim_unsupported:https://x.org/a")
+        assert _rs.data["completion_check_attempts"][-1]["detail"] == "claim_unsupported:https://x.org/a"
+        _rs.record_attempt(1, None, 5)  # detail defaults to None, not required
+        assert _rs.data["completion_check_attempts"][-1]["detail"] is None
+
+        # record_tool_error counts + samples (capped at 10 so a constantly-erroring run doesn't
+        # bloat _run_state.json).
+        for i in range(15):
+            _rs.record_tool_error(f"[Agent] Error: sample {i}")
+        assert _rs.data["tool_error_count"] == 15
+        assert len(_rs.data["tool_error_samples"]) == 10
+
+        # next_subagent_label: first dispatch unchanged, repeats get disambiguated.
+        assert _rs.next_subagent_label("SubAgent_background") == "SubAgent_background"
+        assert _rs.next_subagent_label("SubAgent_background") == "SubAgent_background#2"
+        assert _rs.next_subagent_label("SubAgent_background") == "SubAgent_background#3"
+        assert _rs.data["subagent_invocations"]["SubAgent_background"] == 3
+
+        # Collision guard: if a task was genuinely (if implausibly) named to match what the
+        # auto-disambiguator would generate for a DIFFERENT task, the generator must not silently
+        # collide with it — this is the exact scenario raised when reviewing this feature.
+        _rs2 = RunState(_tmpdir2)
+        assert _rs2.next_subagent_label("SubAgent_x") == "SubAgent_x"                 # 1st real "x"
+        assert _rs2.next_subagent_label("SubAgent_x#2") == "SubAgent_x#2"             # a DIFFERENT
+        #                                                                                real task
+        #                                                                                literally
+        #                                                                                named "x#2"
+        assert _rs2.next_subagent_label("SubAgent_x") == "SubAgent_x#3", (
+            "2nd real dispatch of 'x' must skip the already-claimed '#2' and land on '#3', "
+            "not silently collide with the unrelated task literally named 'x#2'"
+        )
+        assert len({"SubAgent_x", "SubAgent_x#2", "SubAgent_x#3"}) == 3  # all distinct
+
     # --- TUI tool-call widget: an error RESULT must not render a green success checkmark ---
     # (live bug, 2026-07-12): a read_workspace_file call that failed with 'Error: Requested
     # function "read_workspace..." not found.' still showed a checkmark, because ToolCallWidget's

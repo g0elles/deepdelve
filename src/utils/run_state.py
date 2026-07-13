@@ -128,6 +128,13 @@ class RunState:
             "fetched_urls": [],
             "completion_check_attempts": [],
             "started_at": time.time(),
+            # Structured diagnostics (2026-07-12, live investigation of a run that gathered
+            # substantial material but still failed): before this, answering "why did each
+            # attempt fail" or "how many tool calls errored" required hand-parsing the raw
+            # session-event JSON. These make _run_state.json alone sufficient.
+            "tool_error_count": 0,
+            "tool_error_samples": [],
+            "subagent_invocations": {},
         }
 
     def set_query(self, query: str) -> None:
@@ -139,13 +146,57 @@ class RunState:
     def add_finding(self, source_url: str, summary: str) -> None:
         self.data["findings"].append({"source_url": source_url, "summary": summary, "timestamp": time.time()})
 
-    def record_attempt(self, attempt_number: int, problem: Optional[str], fetched_url_count: int) -> None:
+    def record_attempt(self, attempt_number: int, problem: Optional[str], fetched_url_count: int,
+                        detail: Optional[str] = None) -> None:
         self.data["completion_check_attempts"].append({
             "attempt": attempt_number,
             "problem": problem,
             "fetched_url_count": fetched_url_count,
             "timestamp": time.time(),
+            "detail": detail,
         })
+
+    def record_tool_error(self, summary: str) -> None:
+        """Count + sample tool calls whose OWN result text is an error (this project's tools
+        return formatted error strings instead of raising — see engine/tui.py's
+        _looks_like_tool_error). Capped sample list so a run that errors constantly doesn't bloat
+        _run_state.json; the count alone is enough to show the trend past that cap."""
+        self.data["tool_error_count"] = self.data.get("tool_error_count", 0) + 1
+        samples = self.data.setdefault("tool_error_samples", [])
+        if len(samples) < 10:
+            samples.append(summary[:200])
+
+    def next_subagent_label(self, agent_name: str) -> str:
+        """Disambiguate a sub-agent name that gets dispatched more than once in the same run
+        (the original delegate_tasks batch, then again in a later re-delegation after a
+        completion-check nudge) — e.g. 'SubAgent_background' -> 'SubAgent_background#2' on its
+        second real dispatch. Without this, the session log/UI shows two separate ~2-3 minute
+        invocations as one source label, making elapsed-time analysis meaningless (confirmed
+        live: looked exactly like one continuous 19-minute sub-agent, was actually two short
+        ones with an 11-minute gap where the Planner was busy elsewhere). Also persists the raw
+        counts as a diagnostic in their own right — how many times was each task re-delegated.
+
+        Uniqueness: the counter itself is race-free against concurrent delegate_tasks dispatch —
+        _run_single_task (orchestrator.py) is only ever scheduled via asyncio.gather on the same
+        event loop, never asyncio.to_thread, and this method has no `await` in its body, so its
+        read-increment-write executes as one atomic step from every other coroutine's
+        perspective (asyncio only switches between coroutines at an `await` point). What this
+        does NOT protect against: a model naming two genuinely different tasks such that one's
+        raw name collides with the auto-generated '#N' suffix of another (e.g. real tasks named
+        'background' and 'background#2' in the same run) — guarded against explicitly below by
+        skipping any candidate label that's already a key in this run's own tracked names,
+        rather than assuming '#N' can never collide."""
+        counts = self.data.setdefault("subagent_invocations", {})
+        counts[agent_name] = counts.get(agent_name, 0) + 1
+        n = counts[agent_name]
+        if n == 1:
+            return agent_name
+        label = f"{agent_name}#{n}"
+        while label in counts:
+            n += 1
+            label = f"{agent_name}#{n}"
+        counts[agent_name] = n
+        return label
 
     def sync_fetched_urls(self) -> None:
         self.data["fetched_urls"] = get_fetched_urls()
