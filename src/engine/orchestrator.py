@@ -7,8 +7,8 @@ from tools import with_quota, think_tool, QuotaAbortException
 from utils.run_state import run_state_ctx, task_fetched_urls_ctx, scope_entities_ctx
 from prompts import (
     SUBAGENT_INSTRUCTIONS, SUBAGENT_DELEGATION_INSTRUCTIONS,
-    STANDARD_REPORT_STYLE_INSTRUCTIONS, ACADEMIC_REPORT_STYLE_INSTRUCTIONS,
-    STANDARD_CITATION_FORMAT_INSTRUCTIONS, ACADEMIC_CITATION_FORMAT_INSTRUCTIONS,
+    STANDARD_REPORT_STYLE_INSTRUCTIONS, ACADEMIC_REPORT_STYLE_INSTRUCTIONS, ANSWER_REPORT_STYLE_INSTRUCTIONS,
+    STANDARD_CITATION_FORMAT_INSTRUCTIONS, ACADEMIC_CITATION_FORMAT_INSTRUCTIONS, ANSWER_CITATION_FORMAT_INSTRUCTIONS,
 )
 import datetime
 import config
@@ -701,7 +701,14 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
     # contains these two placeholders, so passing them for a sub-agent build is a harmless no-op
     # via _safe_format's "unknown keys stay literal" behavior.
     report_style = config.cfg.get("settings", {}).get("report_style", "standard")
-    is_academic = report_style == "academic"
+    _REPORT_STYLE_INSTRUCTIONS = {
+        "academic": ACADEMIC_REPORT_STYLE_INSTRUCTIONS,
+        "answer": ANSWER_REPORT_STYLE_INSTRUCTIONS,
+    }
+    _CITATION_FORMAT_INSTRUCTIONS = {
+        "academic": ACADEMIC_CITATION_FORMAT_INSTRUCTIONS,
+        "answer": ANSWER_CITATION_FORMAT_INSTRUCTIONS,
+    }
 
     agent = client.as_agent(
         name=_sanitize_name(builder.name),
@@ -712,12 +719,8 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
             delegation_instructions=SUBAGENT_DELEGATION_INSTRUCTIONS.format(
                 max_concurrency=config.cfg.get("settings", {}).get("concurrency", {}).get("max_concurrent_tasks", 1)
             ),
-            report_style_instructions=(
-                ACADEMIC_REPORT_STYLE_INSTRUCTIONS if is_academic else STANDARD_REPORT_STYLE_INSTRUCTIONS
-            ),
-            citation_format_instructions=(
-                ACADEMIC_CITATION_FORMAT_INSTRUCTIONS if is_academic else STANDARD_CITATION_FORMAT_INSTRUCTIONS
-            ),
+            report_style_instructions=_REPORT_STYLE_INSTRUCTIONS.get(report_style, STANDARD_REPORT_STYLE_INSTRUCTIONS),
+            citation_format_instructions=_CITATION_FORMAT_INSTRUCTIONS.get(report_style, STANDARD_CITATION_FORMAT_INSTRUCTIONS),
             **_get_quota_format_vars()
         ),
         tools=tools_list,

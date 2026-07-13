@@ -7,7 +7,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 
 from engine.orchestrator import _extract_excluded_topics, _lacks_concrete_subject
-from utils.grounding import find_non_url_citations, fully_ungrounded, find_uncited_claim_lines
+from utils.grounding import find_non_url_citations, fully_ungrounded, find_uncited_claim_lines, extract_cited_urls
 from utils.run_state import record_fetched_url, reset_fetched_urls
 
 
@@ -634,6 +634,34 @@ def main():
                 _config.cfg["settings"]["workspace"] = _orig_ws6
 
     contextvars.copy_context().run(_academic_citation_scenario)
+
+    # --- answer mode (ROADMAP.md candidate from dzhng/deep-research's writeFinalAnswer,
+    # 2026-07-12): a short direct-answer report shape, `(Source: [Title](URL))` inline citations.
+    # Deliberately requires ZERO grounding.py changes — the format is just a different PLACEMENT
+    # of the same `[Title](URL)` markdown link syntax the standard style already uses, and every
+    # check here extracts URLs format-agnostically. This pins that compatibility claim.
+    from prompts import PLANNER_INSTRUCTIONS, ANSWER_REPORT_STYLE_INSTRUCTIONS, ANSWER_CITATION_FORMAT_INSTRUCTIONS
+
+    class _AnswerModeSafeDict(dict):
+        def __missing__(self, key):
+            return '{' + key + '}'
+
+    _rendered = PLANNER_INSTRUCTIONS.format_map(_AnswerModeSafeDict(
+        date="2026-07-12", workspace_dir="/tmp/ws", delegation_instructions="[DELEGATION BLOCK]",
+        report_style_instructions=ANSWER_REPORT_STYLE_INSTRUCTIONS,
+        citation_format_instructions=ANSWER_CITATION_FORMAT_INSTRUCTIONS,
+        delegate_tasks_quota=10, write_workspace_file_quota=10, write_todos_quota=5,
+    ))
+    assert "{report_style_instructions}" not in _rendered
+    assert "{citation_format_instructions}" not in _rendered
+
+    _answer_text = (
+        "Guido van Rossum created Python in 1991 "
+        "(Source: [Wikipedia](https://en.wikipedia.org/wiki/Guido_van_Rossum))."
+    )
+    assert extract_cited_urls(_answer_text) == ["https://en.wikipedia.org/wiki/Guido_van_Rossum"]
+    assert find_non_url_citations(_answer_text) == []
+    assert find_uncited_claim_lines(_answer_text) == []
 
     # --- stub-fetch detection (live case run 14: a model-invented URL answered by a 200
     # soft-404 — 5KB of subscription chrome — was recorded as a real fetch and passed the

@@ -36,6 +36,10 @@ settings:
   # Conclusion, References) with `(Author, Year)` in-text citations resolved against a numbered
   # References list — see src/prompts.py's ACADEMIC_REPORT_STYLE_INSTRUCTIONS /
   # ACADEMIC_CITATION_FORMAT_INSTRUCTIONS and utils/grounding.py's parse_academic_references.
+  # "answer": a 1-3 sentence direct answer instead of a full report, for simple factual queries —
+  # ROADMAP.md candidate from dzhng/deep-research's writeFinalAnswer. Cites inline as
+  # `(Source: [Title](URL))` on the answer's own sentence — no separate References section. Does
+  # NOT relax any grounding check, only the report's SHAPE (see ANSWER_REPORT_STYLE_INSTRUCTIONS).
   # Orthogonal to --depth (that only changes tool budgets, this changes report SHAPE); set via
   # --style on the CLI or this key directly.
   report_style: standard

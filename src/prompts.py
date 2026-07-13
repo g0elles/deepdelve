@@ -67,6 +67,31 @@ STANDARD_CITATION_FORMAT_INSTRUCTIONS = """Use this exact format for sources: `-
 - For simple queries, a short factual answer is sufficient.
 - For complex queries, include methodology and source quality notes."""
 
+# ATTRIBUTION (answer mode, ROADMAP.md candidate from dzhng/deep-research's writeFinalAnswer):
+# a concise exact-answer path for short factual queries instead of the full report artifact.
+# Deliberately does NOT touch engine/completion.py's two-pass (findings.md-then-report) discipline
+# or any grounding check — this only changes the SHAPE of final_report.md itself (a few sentences
+# instead of a structured document); the existing hard URL-presence/grounding gates apply
+# identically. Explicit opt-in via --style answer (like academic), not auto-detected from the
+# query — this project's established posture is to prefer explicit structural signals over
+# inferred classification for anything a completion check has to reason about.
+ANSWER_REPORT_STYLE_INSTRUCTIONS = """Write a SHORT, direct answer, not a report:
+   - 1-3 sentences (a short paragraph at most) that directly answer the query — no headings, no
+     "Introduction"/"Findings"/"Sources" sections, no bullet-point survey of tangential facts.
+   - If the query genuinely has multiple parts, answer each part in its own short sentence — still
+     no multi-section document structure.
+   - If you cannot find a confident, grounded answer, say so directly in one sentence rather than
+     padding with related-but-inconclusive material — an honest "not found" beats a long report
+     that talks around the question."""
+
+ANSWER_CITATION_FORMAT_INSTRUCTIONS = """Cite inline, in the same sentence as the claim, exactly like the
+standard style: `- **[Title](URL)**` is NOT the format here — instead end the answer sentence with
+`(Source: [Title](URL))`, e.g. "Guido van Rossum created Python (Source: [Wikipedia](https://en.wikipedia.org/wiki/Guido_van_Rossum))."
+- Still non-negotiable: the URL must be one you actually fetched this run — a short answer is not
+  an excuse for an uncited or fabricated claim.
+- Do not add a separate References/Sources section — for this style, the inline `(Source: ...)`
+  on the answer's own sentence(s) is the complete citation record."""
+
 ACADEMIC_CITATION_FORMAT_INSTRUCTIONS = """## Knowledge Isolation Directive
 Write this paper from `findings.md` — the material your specialists actually fetched this run —
 not from your own training knowledge. Prefer a `findings.md` line over anything you recall about
