@@ -700,6 +700,71 @@ def main():
 
     contextvars.copy_context().run(_missing_artifact_escalation_scenario)
 
+    # --- missing_findings escalation (live case 2026-07-13): a real run produced literally ZERO
+    # content (no tool call, no text) in response to this exact nudge for 6 consecutive attempts,
+    # then genuinely self-corrected with real findings.md content on the 7th. Unlike
+    # missing_artifact, late recovery is real here -- wording escalates and, on repeat, hands the
+    # model its actual fetched URLs as proof material exists, but deliberately does NOT get the
+    # aggressive early-cutoff missing_artifact has (that would have killed this run's real
+    # recovery at attempt 3). ---
+    def _missing_findings_escalation_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        from tools.core import tool_quotas_ctx as q_ctx
+        _orig_ws7 = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            _IN_MEMORY_FS.clear()
+            reset_fetched_urls()
+            record_fetched_url(_SRC, filename="sources/page.md")
+            _IN_MEMORY_FS["sources/page.md"] = _SOURCE_TEXT
+            # No findings.md and no final_report.md -- the exact "nothing written yet" shape.
+            q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5}})
+
+            # First occurrence: fresh framing, no URL list yet (nothing to prove wrong yet).
+            with tempfile.TemporaryDirectory() as tmpdir7:
+                rs = RunState(tmpdir7)
+                run_state_ctx.set(rs)
+                msgs = []
+                should_retry, new_input = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append))
+                recorded = rs.data["completion_check_attempts"][-1]["problem"]
+                assert recorded == "missing_findings", (recorded, msgs)
+                assert should_retry
+                injected = new_input[-1].contents[0].text
+                assert "STILL missing" not in injected, "first occurrence must use the fresh framing"
+                assert _SRC not in injected, "no URL list should be injected on the first occurrence"
+
+            # 6th consecutive occurrence (matching the live case exactly): escalated wording AND
+            # the real fetched URL handed back verbatim, but should_retry must still be True --
+            # missing_findings must NOT get missing_artifact's early cutoff.
+            with tempfile.TemporaryDirectory() as tmpdir8:
+                rs = RunState(tmpdir8)
+                rs.data["completion_check_attempts"] = [
+                    {"attempt": i, "problem": "missing_findings"} for i in range(6)
+                ]
+                run_state_ctx.set(rs)
+                msgs = []
+                should_retry, new_input = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append))
+                assert should_retry, (
+                    "missing_findings must keep retrying past 6 consecutive occurrences -- "
+                    "late recovery is real for this problem type, confirmed live", msgs)
+                injected = new_input[-1].contents[0].text
+                assert "STILL missing" in injected, "6th occurrence must use the escalated framing"
+                assert _SRC in injected, (
+                    "the real fetched URL must be injected verbatim once the problem repeats", injected)
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            if _orig_ws7 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws7
+
+    contextvars.copy_context().run(_missing_findings_escalation_scenario)
+
     # --- regulation-identifier grounding (live case run 12: 'Ley 1906 de 2021' cited to a real
     # fetched page that never mentions 1906 — passed both the URL gate and zero-overlap check) ---
     from utils.grounding import find_unsupported_regulation_ids
