@@ -142,6 +142,16 @@ Status as of 2026-07-12.
   clean short answer — confirms `extract_cited_urls` tolerates the format deviation and that the
   quarantine/nudge cycle generalizes to a third report style, not just the original two.
 
+- **TUI `ProcessingWidget` timer leak fixed (2026-07-12, `e24ecd8`)**: caught live — a run's final
+  turn (model's response after tool quotas were exhausted, with nothing left to say) streamed zero
+  content, so `ProcessingWidget.stop()` — gated on the turn's first content token — never fired.
+  Its `set_interval` animation kept climbing the elapsed-seconds counter indefinitely, well past
+  the point the run had already reached its quarantine-restore final verdict, making a genuinely
+  finished run look stuck. Same UI-implies-false-run-state bug class as the checkmark-on-error fix
+  earlier this session. Fixed with unconditional cleanup once the stream is guaranteed exhausted,
+  not just the reactive first-token path. Checked `run_cli` (no equivalent — plain stdout writes,
+  no stateful timer widget there).
+
 ## Findings from live testing (not yet acted on / informational)
 
 - **Grounding check verifies provenance, not topical relevance.** A live GOA (Grasshopper Optimization Algorithm) research query got a citation from `globaldrivetozero.org` — actually fetched, and sharing surface terms like "GOA"/"Goa" — that's actually about the Indian state of Goa's EV policy, not the algorithm. The URL-presence + term-overlap check passed it because it only checks "was this fetched" and "do terms overlap," not "is this source about the same subject." Acronym collisions are the clearest way to trigger this; unclear how common the failure mode is outside them.
@@ -151,6 +161,25 @@ Status as of 2026-07-12.
 - **Non-URL "citations" evade the grounding check entirely.** A live report sourced several claims to `"Expert opinion from a cold storage facility manager in Colombia"` — not URL-shaped, so `extract_cited_urls` never sees it, even though it's exactly as ungrounded as a fabricated URL. The grounding check's whole model is "cross-reference cited URLs against fetched URLs" — a citation with no URL at all currently gets a free pass. **Fixed — see "Done" above (`non_url_citation_check`).**
 - **Scaling down scope (12 sectors → 5) improved surface polish, not actual grounding rate.** A 5-sector re-run produced far more plausible-looking, consistently-formatted citations than a 12-sector run, but cross-referencing against `_run_state.json`'s real `fetched_urls` showed most of them were still fabricated — only 5 URLs were ever fetched all run, while the final report cited well over twice that many distinct domains. Fewer sectors did not proportionally reduce the fabrication rate.
 
+- **gpt-oss hallucinates entire tool names, not just filenames (2026-07-12).** Distinct from the
+  fuzzy-filename problem fixed this session (a real tool called with a garbled argument) — this is
+  the model inventing a function that was never in its schema at all: `grep_search?` and `justify`
+  both fired as literal function-call names in one live run (heuristic-algorithms sales-forecasting
+  query), 3 occurrences total. Each one only cost a turn (clean error, `malformed_tool_call_nudge`
+  path, sub-agent recovered without stalling) but three in a single run is a real pattern worth its
+  own investigation, not noise to fold into the filename fix. Open question: is this addressable
+  with tighter tool-schema framing in the prompt, or a harder reliability ceiling for this model
+  class — unclear without a dedicated look.
+- **gpt-oss endgame-collapse reproduced again, fresh data point (2026-07-12).** Same live run above:
+  9 completion-check attempts, cascading `web_search`/`grep_workspace_file`/`fetch_url_to_workspace`
+  quota exhaustion across multiple re-delegation rounds (including a genuine `QuotaAbortException`
+  nested-agent abort), before finally falling back to the quarantine-restore path at attempt 9/9 —
+  the query (peer-reviewed sourcing for heuristic algorithms + deep learning + multi-franchise sales
+  forecasting, a 3-way AND) never had a real source satisfying all three criteria. Already tracked
+  as a known gap (runs 11/13) — not a new finding, but confirms it's not resolved and reproduces on
+  a genuinely hard query, not just a fluke. The quarantine-restore fallback itself worked exactly as
+  designed: final artifact carries a loud warning banner instead of a fabricated clean-looking
+  report.
 - **Line-scoped claim grounding (2026-07-12):** `claim_grounding_problem` compared WHOLE-report terms against each source, so generic shared terms masked per-claim fabrication (run 12's flagship figure was absent from its cited source but passed via other lines' overlap). Now each line with a fetched citation is checked against its own source(s) — the regulation-check pattern generalized; conservative as before (≥1 checkable term + zero overlap only, URL slugs stripped).
 - **Structural eval scorer (2026-07-12):** new `eval_type: structural` in `eval/evaluate.py` — rubric tier 1 scored deterministically from `_run_state.json` + workspace files (cited⊆fetched, findings.md grounded, no salvage/quarantine banner, no unresolved final problem), which no other scorer read at all.
 
