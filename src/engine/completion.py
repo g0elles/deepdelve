@@ -107,15 +107,59 @@ def check_missing_findings(ctx: Ctx) -> Optional[Verdict]:
     live twice (runs 10 and 11, 2026-07-11): the Planner skips findings.md, then
     "forgets" 29+ fetched files and writes an empty report claiming nothing was
     retrieved, or narrates the report as chat. Making Pass 1 structurally required
-    gives the final report a real, on-disk substrate to be rewritten from."""
+    gives the final report a real, on-disk substrate to be rewritten from.
+
+    Escalates on repeat, same spirit as check_missing_artifact/check_no_urls — but confirmed
+    live 2026-07-13 that this problem type's failure SHAPE differs from missing_artifact's: a run
+    produced literally zero content (no tool call, no text) in response to this exact nudge for 6
+    consecutive attempts, then genuinely self-corrected with real findings.md content on the 7th.
+    Unlike missing_artifact (which never self-corrected without intervention), late recovery is
+    real here — so this deliberately does NOT get the aggressive early-cutoff
+    run_completion_check applies to missing_artifact; it only strengthens the wording and, on
+    repeat, hands the model concrete proof real material already exists (its actual fetched
+    URLs), mirroring check_no_urls's own escalation for the same reason."""
     if not config.cfg.get("settings", {}).get("grounding_check", {}).get("check_findings", True):
         return None
     if "findings.md" in ctx.files:
         return None
+
+    prior_same = 0
+    for a in reversed(ctx.run_state.data.get("completion_check_attempts", [])):
+        if a.get("problem") == "missing_findings":
+            prior_same += 1
+        else:
+            break
+
+    if prior_same == 0:
+        directive = (
+            "You never wrote 'findings.md'. The workflow is two passes: FIRST write findings.md "
+            "as a verbatim consolidation of everything your delegated Searchers/Analyzers "
+            f"actually returned (each claim with its real source URL), THEN write "
+            f"'{ctx.req_artifact}' from it. You have real delegated results in your context "
+            f"above — do NOT claim nothing was retrieved, and do NOT write '{ctx.req_artifact}' "
+            f"directly."
+        )
+    else:
+        directive = (
+            f"'findings.md' is STILL missing after {prior_same} prior warning(s). A text "
+            f"response or silence does not count — only a file that actually exists on disk "
+            f"does. Do NOT claim nothing was retrieved: you have real fetched sources from this "
+            f"run (see the exact URLs below if you've lost track of them)."
+        )
+
+    escalation = ""
+    if prior_same >= 1:
+        real_urls = get_fetched_urls()
+        url_list = "\n".join(f"- {u['url']}" for u in real_urls[:20]) or "(none fetched yet)"
+        escalation = (
+            f" Here are the EXACT URLs actually fetched this run — write findings.md "
+            f"summarizing what each one contains, using these verbatim:\n{url_list}"
+        )
+
     return Verdict(
         "missing_findings",
         "`findings.md` (Pass 1) was never written — the two-pass discipline was skipped. Pushing agent to write it before the final report.",
-        f"SYSTEM WARNING: {ctx.last_chance_prefix}You never wrote 'findings.md'. The workflow is two passes: FIRST write findings.md as a verbatim consolidation of everything your delegated Searchers/Analyzers actually returned (each claim with its real source URL), THEN write '{ctx.req_artifact}' from it. You have real delegated results in your context above — do NOT claim nothing was retrieved, and do NOT write '{ctx.req_artifact}' directly. Call write_workspace_file(filename='findings.md', content=...) right now.",
+        f"SYSTEM WARNING: {ctx.last_chance_prefix}{directive} Call write_workspace_file(filename='findings.md', content=...) right now.{escalation}",
     )
 
 
