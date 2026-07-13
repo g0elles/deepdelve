@@ -1246,6 +1246,19 @@ class BasicTuiAgent(App):
                     # We definitively evaluate `_write_log()` here once the stream guarantees finalization.
                     _write_log(force=True)
 
+                    # ProcessingWidget.stop() (above) only fires reactively on the turn's first
+                    # content token. A turn that streams NO content at all (e.g. the model's final
+                    # attempt after tool quotas are exhausted, with nothing left to say) never
+                    # triggers that, so its set_interval keeps animating and its elapsed-seconds
+                    # counter climbs forever even after the run has genuinely concluded — confirmed
+                    # live 2026-07-12 (counter still climbing minutes after the final verdict
+                    # banner had already printed). Unconditional cleanup once the stream is
+                    # guaranteed exhausted, regardless of whether content ever arrived.
+                    leftover_widget = state.get("processing_widget")
+                    if leftover_widget:
+                        leftover_widget.stop()
+                        state["processing_widget"] = None
+
                 except Exception as e:
                     p_widget = state.get("processing_widget")
                     if p_widget:
