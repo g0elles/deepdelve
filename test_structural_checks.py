@@ -220,6 +220,69 @@ def main():
             else:
                 _config.cfg["settings"]["workspace"] = _orig_ws2
 
+    # --- /resume-run TUI wiring: --resume-run existed in the headless CLI for a full session
+    # before the TUI had any equivalent at all (caught live, 2026-07-12) ---
+    import asyncio as _asyncio_tui
+
+    async def _resume_run_tui_scenario():
+        with tempfile.TemporaryDirectory() as tmpdir2:
+            run_dir2 = os.path.join(tmpdir2, "my_interrupted_run")
+            os.makedirs(os.path.join(run_dir2, "sources"))
+            with open(os.path.join(run_dir2, "_run_state.json"), "w", encoding="utf-8") as f:
+                json.dump({
+                    "query": "Research X",
+                    "fetched_urls": [{"url": "https://real.example.com/a", "filename": "sources/a.md", "timestamp": 1.0}],
+                    "findings": [{"source_url": "https://real.example.com/a", "summary": "s"}],
+                }, f)
+
+            _orig_ws9 = _config.cfg.get("settings", {}).get("workspace")
+            _config.cfg["settings"]["workspace"] = {"type": "disk", "dir": tmpdir2, "session_isolation": True}
+            try:
+                class _FakeBuilder:
+                    name = "Planner"
+                    instructions = "test"
+                    tools = []
+                    sub_agents = []
+
+                app = BasicTuiAgent(_FakeBuilder())
+                resume_calls = []
+
+                async def _fake_run_agent(query, mount_user=True):
+                    resume_calls.append({
+                        "mount_user": mount_user,
+                        "active_run_dir": app._active_run_dir,
+                        "resuming_run": app._resuming_run,  # must be True DURING the call
+                        "conv_fetched": list(app._conv_fetched or []),
+                        "conv_run_state_query": app._conv_run_state.data.get("query") if app._conv_run_state else None,
+                    })
+                app.run_agent = _fake_run_agent
+
+                async with app.run_test():
+                    app._show_run_picker()
+                    assert app._run_picker_active
+                    assert app._filtered_cmds and app._filtered_cmds[0][0] == "my_interrupted_run"
+
+                    await app._open_selected_run("my_interrupted_run")
+                    assert len(resume_calls) == 1, resume_calls
+                    call = resume_calls[0]
+                    assert call["mount_user"] is False  # no giant resume-preamble bubble
+                    assert call["active_run_dir"] == "my_interrupted_run"
+                    assert call["resuming_run"] is True  # skip_completion_check's Q&A shortcut must be disarmed
+                    assert call["conv_fetched"] == [
+                        {"url": "https://real.example.com/a", "filename": "sources/a.md", "timestamp": 1.0}
+                    ]
+                    assert call["conv_run_state_query"] == "Research X"
+                    # Reset back to False once run_agent returns (the `finally` in _resume_run).
+                    assert app._resuming_run is False
+            finally:
+                if _orig_ws9 is None:
+                    _config.cfg["settings"].pop("workspace", None)
+                else:
+                    _config.cfg["settings"]["workspace"] = _orig_ws9
+
+    from engine.tui import BasicTuiAgent
+    _asyncio_tui.run(_resume_run_tui_scenario())
+
     # --- depth presets (--depth): quick/deep touch quotas+search_mode+retries, standard is a no-op ---
     from engine.tui import apply_depth_preset
 

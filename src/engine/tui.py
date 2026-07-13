@@ -527,7 +527,7 @@ class BasicTuiAgent(App):
     #command-list { height: auto; max-height: 15; padding: 0 1; }
     """
 
-    SLASH_COMMANDS = [("/stop", "Stop execution"), ("/new", "New conversation"), ("/exit", "Quit app"), ("/toggle_thinking", "Toggle reasoning trace capability"), ("/toggle_persistence", "Toggle session history saving"), ("/config", "Show current configuration"), ("/files", "Browse memory workspace files"), ("/sessions", "List saved sessions"), ("/resume", "Resume a saved session")]
+    SLASH_COMMANDS = [("/stop", "Stop execution"), ("/new", "New conversation"), ("/exit", "Quit app"), ("/toggle_thinking", "Toggle reasoning trace capability"), ("/toggle_persistence", "Toggle session history saving"), ("/config", "Show current configuration"), ("/files", "Browse memory workspace files"), ("/sessions", "List saved sessions"), ("/resume", "Resume a saved session"), ("/resume-run", "Reattach an interrupted research run")]
     def __init__(self, builder, session_to_resume: str = None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.builder = builder
@@ -544,6 +544,14 @@ class BasicTuiAgent(App):
         self._active_run_dir = None
         self._conv_fetched = None
         self._conv_run_state = None
+        # /resume-run (second full audit follow-up, 2026-07-12): --resume-run existed in the
+        # headless CLI for a full session before anyone noticed the TUI had no equivalent at
+        # all. Set True only for the one run_agent call that continues a --resume-run'd run, so
+        # the completion check isn't mistaken for the "same-session Q&A follow-up" shortcut below
+        # (see skip_completion_check in run_agent) — a resumed run's final_report.md may already
+        # exist as an UNVERIFIED quarantined draft, which must still go through the full
+        # completion-check loop, not be treated as "already has a good report."
+        self._resuming_run = False
 
     def compose(self) -> ComposeResult:
         yield VerticalScroll(id="chat-container")
@@ -583,6 +591,7 @@ class BasicTuiAgent(App):
     async def on_mount(self) -> None:
         self._is_agent_running = False
         self._file_picker_active = False
+        self._run_picker_active = False
         self._filtered_cmds = []
         chat = self.query_one("#chat-container", VerticalScroll)
         chat.mount(self._banner_widget())
@@ -592,7 +601,8 @@ class BasicTuiAgent(App):
             await self._load_session_by_id(self.session_to_resume)
 
     def on_input_changed(self, event: Input.Changed) -> None:
-        if getattr(self, "_file_picker_active", False) or getattr(self, "_session_picker_active", False):
+        if (getattr(self, "_file_picker_active", False) or getattr(self, "_session_picker_active", False)
+                or getattr(self, "_run_picker_active", False)):
             return
         val = event.value
         opt_list = self.query_one("#command-list", OptionList)
@@ -621,6 +631,10 @@ class BasicTuiAgent(App):
 
         if getattr(self, "_session_picker_active", False):
             await self._open_selected_session(query)
+            return
+
+        if getattr(self, "_run_picker_active", False):
+            await self._open_selected_run(query)
             return
 
         self.query_one("#command-list", OptionList).display = False
@@ -717,6 +731,8 @@ class BasicTuiAgent(App):
             chat.scroll_end(animate=False)
         elif query == "/resume":
             self._show_session_picker()
+        elif query == "/resume-run":
+            self._show_run_picker()
         elif query == "/config":
             chat = self.query_one("#chat-container", VerticalScroll)
             config_path = getattr(config, "_CONFIG_PATH", "Unknown")
@@ -1175,7 +1191,10 @@ class BasicTuiAgent(App):
             # research, not a new research run — the artifact/grounding contract was already
             # enforced when the report was produced. ponytail: follow-up answers themselves are
             # unverified chat; per-turn grounding of follow-ups if that ever proves insufficient.
-            skip_completion_check = is_followup and (
+            # NOT for a /resume-run continuation (self._resuming_run): a resumed run's
+            # final_report.md may already exist as an UNVERIFIED quarantined draft — it still
+            # needs the full completion-check loop, not the "already has a good report" shortcut.
+            skip_completion_check = is_followup and not self._resuming_run and (
                 config.cfg.get("settings", {}).get("workspace", {}).get("required_artifact", "final_report.md")
                 in get_workspace_files()
             )
@@ -1365,6 +1384,93 @@ class BasicTuiAgent(App):
                 pass
 
         self._render_cmd_list()
+
+    def _show_run_picker(self) -> None:
+        """Picker for /resume-run — lists research runs under settings.workspace.dir the same
+        way --list-runs already does (cli_main), so selecting one reattaches its
+        workspace/fetched-URLs/findings instead of starting fresh. Second full audit follow-up,
+        2026-07-12: --resume-run existed in the headless CLI for a full session before the TUI
+        had any equivalent — a run that ends in quarantine-restore with real work already done
+        (fetches, findings.md) is exactly what it's for, but a TUI user previously had no way to
+        invoke it without dropping to a separate headless command."""
+        base = config.cfg.get("settings", {}).get("workspace", {}).get("dir", ".")
+        req_artifact = config.cfg.get("settings", {}).get("workspace", {}).get("required_artifact", "final_report.md")
+        chat = self.query_one("#chat-container", VerticalScroll)
+        if not os.path.isdir(base):
+            chat.mount(Static(Markdown(f"**System:**\nNo runs found (`{base}` does not exist)."), classes="agent-bubble"))
+            chat.scroll_end(animate=False)
+            return
+
+        run_dirs = sorted(
+            (d for d in Path(base).iterdir() if d.is_dir() and (d / "_run_state.json").exists()),
+            key=os.path.getmtime, reverse=True,
+        )
+        if not run_dirs:
+            chat.mount(Static(Markdown(f"**System:**\nNo runs found in `{base}`."), classes="agent-bubble"))
+            chat.scroll_end(animate=False)
+            return
+
+        self._run_picker_active = True
+        self._filtered_cmds = []
+        for d in run_dirs[:15]:
+            ts = datetime.fromtimestamp(os.path.getmtime(d)).strftime("%Y-%m-%d %H:%M")
+            status = "report" if (d / req_artifact).exists() else "NO REPORT"
+            self._filtered_cmds.append((d.name, f"{ts} — {status}"))
+        self._render_cmd_list()
+
+    async def _open_selected_run(self, run_dir_name: str) -> None:
+        if not getattr(self, "_run_picker_active", False):
+            return
+        self._run_picker_active = False
+        self._filtered_cmds = []
+        self.query_one("#command-list", OptionList).display = False
+        await self._resume_run(run_dir_name)
+
+    async def _resume_run(self, folder: str) -> None:
+        """Reattach an interrupted/failed run's workspace, fetched-URL record, and findings —
+        the TUI equivalent of headless's --resume-run (load_resume_state/build_resume_input,
+        both reused unchanged below). Wires into run_agent's EXISTING same-session-follow-up
+        continuation mechanism (is_followup branch) rather than duplicating it, just seeded from
+        a different run's persisted state instead of this session's own prior turn."""
+        chat = self.query_one("#chat-container", VerticalScroll)
+        try:
+            run_dir_name, prior_state = load_resume_state(folder)
+        except Exception as e:
+            chat.mount(Static(Markdown(f"**System:**\nCannot resume `{folder}`: {e}"), classes="agent-bubble"))
+            chat.scroll_end(animate=False)
+            return
+
+        query = prior_state.get("query")
+        if not query:
+            chat.mount(Static(Markdown(
+                f"**System:**\nRun `{folder}` recorded no query — cannot resume automatically."
+            ), classes="agent-bubble"))
+            chat.scroll_end(animate=False)
+            return
+
+        self._active_run_dir = run_dir_name
+        self._conv_fetched = list(prior_state.get("fetched_urls") or [])
+        rs = RunState(_current_run_dir(run_dir_name))
+        for key in ("query", "findings", "fetched_urls", "completion_check_attempts",
+                    "search_health", "started_at", "plan"):
+            if key in prior_state:
+                rs.data[key] = prior_state[key]
+        rs.data["resumed_at"] = time.time()
+        rs.set_query(query)
+        self._conv_run_state = rs
+
+        chat.mount(Static(Markdown(
+            f"**System:** Resuming run `{run_dir_name}` — "
+            f"{len(prior_state.get('fetched_urls') or [])} sources already fetched, "
+            f"{len(prior_state.get('findings') or [])} findings on record."
+        ), classes="agent-bubble"))
+        chat.scroll_end(animate=False)
+
+        self._resuming_run = True
+        try:
+            await self.run_agent(build_resume_input(query, prior_state), mount_user=False)
+        finally:
+            self._resuming_run = False
 
     def _display_file(self, filename: str, collapsed_by_default: bool = False) -> None:
         content = get_workspace_file_content(filename)
