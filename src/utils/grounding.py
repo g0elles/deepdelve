@@ -42,8 +42,25 @@ def extract_cited_urls(text: str) -> list[str]:
     # Fullwidth 【】 brackets included: gpt-oss habitually cites as 【URL】, and the closing 】 was
     # observed leaking into the knowledge cache's pre-registered URLs (grounding still passed, but
     # only via the prefix-match fallback).
-    urls = re.findall(r'https?://[^\s\)\]\}"\'>【】]+', text or "")
-    return [u.rstrip('.,;:\'")]}】') for u in urls]
+    #
+    # NOTE: ')' is deliberately NOT excluded here (unlike ']', '}', quotes) — a real URL can
+    # contain a literal balanced '(...)', e.g. Wikipedia disambiguator pages
+    # (.../wiki/Heuristic_(computer_science)). Confirmed live 2026-07-12: excluding ')' entirely
+    # truncated that exact URL mid-slug, so a genuinely-fetched citation was false-flagged as
+    # unverified/hallucinated for 3 consecutive completion-check attempts, wasting the run's
+    # retry budget chasing a bug in the extractor, not the model. The regex now captures through
+    # any ')' (including the markdown link's own closing paren), and _strip_trailing_punct below
+    # removes only an UNBALANCED trailing ')' — i.e. one with no matching '(' earlier in the same
+    # URL — which correctly strips markdown syntax while preserving a URL's own balanced parens.
+    urls = re.findall(r'https?://[^\s\]\}"\'>【】]+', text or "")
+    return [_strip_trailing_punct(u) for u in urls]
+
+
+def _strip_trailing_punct(url: str) -> str:
+    url = url.rstrip('.,;:\'"]}】')
+    while url.endswith(')') and url.count(')') > url.count('('):
+        url = url[:-1]
+    return url
 
 
 def extract_salient_terms(text: str) -> set:

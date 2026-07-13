@@ -740,6 +740,20 @@ def main():
     assert find_non_url_citations(_answer_text) == []
     assert find_uncited_claim_lines(_answer_text) == []
 
+    # --- parenthesized URL extraction (live case 2026-07-12, NIM gpt-oss-20b run): a genuinely
+    # fetched Wikipedia disambiguator URL — https://en.wikipedia.org/wiki/Heuristic_(computer_science)
+    # — has a literal balanced '(...)' as part of its own path. The old regex excluded ')' entirely
+    # from a URL match, truncating this exact citation mid-slug and false-flagging a real fetch as
+    # unverified for 3 consecutive completion-check attempts (wasted retry budget chasing a bug in
+    # the extractor, not the model). ---
+    _paren_url = "https://en.wikipedia.org/wiki/Heuristic_(computer_science)"
+    assert extract_cited_urls(f"See [Heuristic]({_paren_url}) for background.") == [_paren_url], (
+        "a URL with its own balanced parens must not be truncated at the internal ')'")
+    assert extract_cited_urls(f"See ({_paren_url}) for background.") == [_paren_url], (
+        "same case without markdown link syntax, just parenthesized prose")
+    # A URL with NO internal parens must still have the markdown link's own closing paren stripped.
+    assert extract_cited_urls("See [Foo](https://example.com/page) now.") == ["https://example.com/page"]
+
     # --- stub-fetch detection (live case run 14: a model-invented URL answered by a 200
     # soft-404 — 5KB of subscription chrome — was recorded as a real fetch and passed the
     # hard URL gate) ---
