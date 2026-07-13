@@ -276,13 +276,19 @@ def find_non_url_citations(text: str) -> list[str]:
 
 
 def _source_body(content: str) -> str:
-    """Strip the engine-injected 'Source-URL: ...' line-1 header (tools/web.py::_save_fetched)
-    before any term/number matching against a source file. The header's URL slug contains the
-    very tokens being verified — confirmed live (run 14): the report's '1819' regulation number
-    existed in its cited stub file ONLY via this header, so the regulation check self-grounded
-    on our own injected provenance line."""
+    """Strip the engine-injected header block (tools/web.py::_save_fetched) before any term/number
+    matching against a source file. The header's URL slug contains the very tokens being verified
+    — confirmed live (run 14): the report's '1819' regulation number existed in its cited stub
+    file ONLY via this header, so the regulation check self-grounded on our own injected
+    provenance line.
+
+    Splits on the first BLANK line, not the first newline: since 2026-07-12 the header can be
+    multiple lines (Source-URL, optionally Title/Authors/Published — see _save_fetched), all
+    ending with one blank-line separator before the real body, same as the original single-line
+    shape. A split on the first bare '\\n' would have left Title:/Authors:/Published: lines mixed
+    into what's treated as body content."""
     if content.startswith("Source-URL:"):
-        return content.split("\n", 1)[1] if "\n" in content else ""
+        return content.split("\n\n", 1)[1] if "\n\n" in content else ""
     return content
 
 

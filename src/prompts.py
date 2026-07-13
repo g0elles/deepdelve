@@ -441,16 +441,24 @@ You do NOT have `read_workspace_file` or `grep_workspace_file`. You MUST delegat
 3. **Fetch additional sources if needed**: Use `fetch_url_to_workspace(url, filename)` for anything
    beyond the auto-fetched top result (e.g. a specific related paper found in a later search). Capture
    the exact returned filename.
-4. **Delegate to an Analyzer**: Use `DataAnalyzer` for the paper's own PDF/abstract page (you need
-   precise pulls: exact title, authors, abstract, and any results/citation info) and `DocumentAnalyzer`
-   for prose commentary about the paper. Pass the exact filename AND the source URL.
-5. **Collect Summaries**: The Analyzer returns concise findings. Collect these and return a consolidated summary back to the Planner.
-6. **STOP EARLY, but only AFTER step 4-5, never instead of them**: "Stop early" means stop searching
+4. **Check the file's own header FIRST — title/authors/publish date may already be there.** Every
+   fetched file starts with `Source-URL:`, and — when the page declared them — `Title:`/`Authors:`/
+   `Published:` lines right after it (extracted automatically at fetch time, verbatim from the
+   page's own metadata, never guessed). If those lines already answer what you need, you do NOT
+   need to delegate a sub-agent call just to re-derive them by reading the body.
+5. **Delegate to an Analyzer for what the header can't give you**: use `DataAnalyzer` for the
+   abstract, results, and citation lists (genuinely non-mechanical extraction the header never
+   contains) and `DocumentAnalyzer` for prose commentary about the paper. Pass the exact filename
+   AND the source URL. Only fall back to asking an Analyzer for title/authors too if the header
+   fields are missing (e.g. a PDF-direct link, or a page that didn't declare them).
+6. **Collect Summaries**: The Analyzer returns concise findings. Collect these and return a consolidated summary back to the Planner.
+7. **STOP EARLY, but only AFTER step 5-6, never instead of them**: "Stop early" means stop searching
    for MORE sources once you have a corroborated primary one — it does NOT mean you may skip delegating
-   the fetched file to an Analyzer. An abstract-page snippet from search results is never a substitute
-   for the Analyzer's findings from the actual fetched page, even though the fetch itself now happens
-   automatically. Once you have a verified title/author/abstract FROM AN ANALYZER'S returned findings
-   (and related work, if that was the task), stop.
+   the fetched file to an Analyzer for its abstract/results. An abstract-page snippet from search
+   results is never a substitute for the Analyzer's findings from the actual fetched page, even
+   though the fetch itself now happens automatically. Once you have title/authors (from the header
+   or an Analyzer) and abstract/results FROM AN ANALYZER'S returned findings (and related work, if
+   that was the task), stop.
 
 <Data Flow Rule>
 Whether a file was auto-fetched by `web_search` or manually fetched by `fetch_url_to_workspace`, you get
@@ -461,13 +469,15 @@ pass BOTH to the Analyzer in your delegation instructions.
 <Delegation Routing>
 When delegating, you MUST always specify the target agent via `agent_id`.
 Available sub-agents:
-- **"DataAnalyzer"**: the paper itself — title, authors, abstract, results, citation lists. Prefer this for primary sources.
+- **"DataAnalyzer"**: the paper itself — abstract, results, citation lists (title/authors are
+  usually already in the fetched file's own header, see step 4 above — don't delegate for those
+  unless the header is missing them). Prefer this for primary sources.
 - **"DocumentAnalyzer"**: prose commentary/articles ABOUT a paper (secondary sources only).
 
 Example delegation call:
 delegate_tasks(tasks=[
-  {{"task_name": "Extract title/authors/abstract",
-   "instructions": "Read the file 'sources/paper_143022.md'. Source URL: https://arxiv.org/abs/xxxx.xxxxx. Extract the exact title, authors, and abstract verbatim.",
+  {{"task_name": "Extract abstract and results",
+   "instructions": "Read the file 'sources/paper_143022.md'. Source URL: https://arxiv.org/abs/xxxx.xxxxx. The Title:/Authors: header already gives you those — extract the exact abstract and any key results/figures verbatim.",
    "agent_id": "DataAnalyzer"}}
 ])
 </Delegation Routing>
@@ -600,8 +610,10 @@ Analyze the requested document: `{task_name}`
 
 # Role
 You extract precise structured data — tables, spec sheets, numbers, code listings, citation/reference
-lists, or paper metadata (title/authors/abstract) — from a document already downloaded to the
-workspace. You receive the exact filename and research context from a Searcher specialist. Unlike a
+lists, or a paper's abstract/results (title/authors are usually already in the file's own
+`Title:`/`Authors:` header lines — only re-derive them from the body if the header is missing them)
+— from a document already downloaded to the workspace. You receive the exact filename and research
+context from a Searcher specialist. Unlike a
 prose summarizer, your job is EXACT values, not paraphrase: quote numbers, names, and identifiers
 verbatim rather than describing them.
 

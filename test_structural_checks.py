@@ -136,12 +136,72 @@ def main():
         assert _IN_MEMORY_FS["sources/foo.md"].startswith("Source-URL: https://example.com/page\n\n")
         from utils.run_state import get_fetched_urls
         assert get_fetched_urls()[0]["filename"] == "sources/foo.md"
+
+        # --- fetch-time metadata extraction (2026-07-12): Title:/Authors:/Published: headers,
+        # written only for fields actually present, replacing the "Extract title/authors/abstract"
+        # sub-agent-dispatch pattern that recurred identically across multiple live benchmark runs.
+        reset_fetched_urls()
+        _save_fetched(["https://example.com/paper"], "bar", "body text", metadata={
+            "title": "A Real Paper Title", "author": "Jane Doe", "published": "2026-01-15"})
+        assert _IN_MEMORY_FS["sources/bar.md"] == (
+            "Source-URL: https://example.com/paper\n"
+            "Title: A Real Paper Title\n"
+            "Authors: Jane Doe\n"
+            "Published: 2026-01-15\n"
+            "\nbody text"
+        ), _IN_MEMORY_FS["sources/bar.md"]
+
+        # Partial metadata (only title known) -> only that one extra header line, no blank/guessed
+        # Authors:/Published: lines for fields extraction didn't find.
+        reset_fetched_urls()
+        _save_fetched(["https://example.com/partial"], "baz", "body text", metadata={"title": "Only Title Known"})
+        assert _IN_MEMORY_FS["sources/baz.md"] == (
+            "Source-URL: https://example.com/partial\nTitle: Only Title Known\n\nbody text"
+        ), _IN_MEMORY_FS["sources/baz.md"]
+
+        # No metadata at all (PDF/plain-text path, or extraction found nothing) -> unchanged
+        # single-line header, exactly today's pre-existing shape.
+        reset_fetched_urls()
+        _save_fetched(["https://example.com/none"], "qux", "body text", metadata={})
+        assert _IN_MEMORY_FS["sources/qux.md"] == "Source-URL: https://example.com/none\n\nbody text"
     finally:
         if _orig_ws is None:
             _config.cfg["settings"].pop("workspace", None)
         else:
             _config.cfg["settings"]["workspace"] = _orig_ws
         reset_fetched_urls()
+
+    # --- _extract_html_metadata: title/author/published from a page's own <head>, best-effort,
+    # never fabricated for fields the page doesn't declare ---
+    from tools.web import _extract_html_metadata
+    from bs4 import BeautifulSoup
+
+    _html_full = BeautifulSoup(
+        '<html><head><title>The Real Title</title>'
+        '<meta name="author" content="John Smith">'
+        '<meta property="article:published_time" content="2026-03-01">'
+        '</head><body>ignored</body></html>', "html.parser")
+    _meta_full = _extract_html_metadata(_html_full)
+    assert _meta_full == {"title": "The Real Title", "author": "John Smith", "published": "2026-03-01"}, _meta_full
+
+    _html_og_fallback = BeautifulSoup(
+        '<html><head><meta property="og:title" content="OG Title Fallback"></head>'
+        '<body>ignored</body></html>', "html.parser")
+    assert _extract_html_metadata(_html_og_fallback) == {"title": "OG Title Fallback"}
+
+    _html_empty = BeautifulSoup('<html><head></head><body>no metadata here</body></html>', "html.parser")
+    assert _extract_html_metadata(_html_empty) == {}, "a page with no declared metadata must return an empty dict, never guess"
+
+    # --- prompts.py: the mechanical "Extract title/authors/abstract" delegation worked example
+    # must be gone (it's exactly the pattern that fired identically across multiple 2026-07-12
+    # benchmark runs, burning a full LLM sub-agent turn each time), replaced by wording pointing
+    # at the new fetch-time header fields instead. ---
+    from prompts import ACADEMIC_SEARCHER_INSTRUCTIONS, DATA_ANALYZER_INSTRUCTIONS
+    assert "Extract title/authors/abstract" not in ACADEMIC_SEARCHER_INSTRUCTIONS, (
+        "the old mechanical worked example must be replaced, not just supplemented")
+    assert "Title:" in ACADEMIC_SEARCHER_INSTRUCTIONS and "Authors:" in ACADEMIC_SEARCHER_INSTRUCTIONS, (
+        "must reference the new fetch-time header fields")
+    assert "already in the file" in DATA_ANALYZER_INSTRUCTIONS or "header" in DATA_ANALYZER_INSTRUCTIONS
 
     # --- query-level scope warning (live case: Colombia task searching offshore wind turbines) ---
     from tools.web import _scope_warning
@@ -950,11 +1010,13 @@ def main():
     assert "Resolución" in _decode_html_bytes("<p>Resolución</p>".encode("latin-1"), None)
     # The stale meta tag must not survive into the cleaned UTF-8 bytes (markitdown would honor
     # it and re-mojibake the content), and the full markitdown round trip must keep the accents.
-    _cleaned = _strip_boilerplate_html(_decode_html_bytes(_latin_meta, None))
+    _cleaned, _cleaned_meta = _strip_boilerplate_html(_decode_html_bytes(_latin_meta, None))
     assert b"iso-8859-1" not in _cleaned and _cleaned.startswith(b'<meta charset="utf-8">')
+    assert _cleaned_meta == {}, _cleaned_meta  # no <title>/meta author/date in this fixture
     from utils.parsers import convert_to_markdown
     with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="wb") as _tmp_html:
-        _tmp_html.write(_strip_boilerplate_html(_decode_html_bytes(_latin_body.encode("latin-1"), "iso-8859-1")))
+        _tmp_html_bytes, _ = _strip_boilerplate_html(_decode_html_bytes(_latin_body.encode("latin-1"), "iso-8859-1"))
+        _tmp_html.write(_tmp_html_bytes)
         _tmp_html_path = _tmp_html.name
     try:
         _md = convert_to_markdown(_tmp_html_path)
