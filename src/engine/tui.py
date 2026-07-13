@@ -145,6 +145,15 @@ def log_stream_content(source: str, content_type: str, raw_data_dict: dict, dept
         }
         _session_events.append(entry)
 
+        # Structured diagnostics (2026-07-12): count/sample tool-result errors in _run_state.json
+        # itself, not just the ephemeral session log — "how many calls errored and what kind" used
+        # to require re-parsing the raw session-event JSON by hand after the fact.
+        result_text = str(raw_data_dict.get("result", ""))
+        if _looks_like_tool_error(result_text):
+            rs = run_state_ctx.get()
+            if rs is not None:
+                rs.record_tool_error(f"[{source}] {result_text}")
+
     elif content_type in ("subagent_start", "subagent_end"):
         _current_text_by_source[source] = None
         _current_call_by_source[source] = None

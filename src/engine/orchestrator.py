@@ -309,6 +309,17 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                 # Scope the available sub-agents for the target agent's own delegate_tasks calls
                 children_token = available_sub_agents_ctx.set(target_children)
 
+                # Disambiguate a task_name reused across multiple real dispatches (the original
+                # delegate_tasks batch, then again in a later re-delegation after a
+                # completion-check nudge) — e.g. 'SubAgent_background' -> 'SubAgent_background#2'.
+                # Without this the session log/UI shows two separate short invocations as one
+                # source label, making elapsed-time analysis meaningless (confirmed live: looked
+                # exactly like one continuous 19-minute sub-agent, was actually two ~2-3 minute
+                # ones with an 11-minute gap where the Planner was busy elsewhere).
+                raw_agent_name = f"SubAgent_{task_name}"
+                _rs = run_state_ctx.get()
+                agent_name = _rs.next_subagent_label(raw_agent_name) if _rs is not None else raw_agent_name
+
                 sub_instr = ""
                 if target_config:
                     sub_instr = _safe_format(
@@ -346,7 +357,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                         await mcp_stack.enter_async_context(mt)
 
                     sub_agent = client.as_agent(
-                        name=_sanitize_name(f"SubAgent_{task_name}"),
+                        name=_sanitize_name(agent_name),
                         instructions=sub_instr,
                         tools=sub_tools + mcp_tools,
                         default_options=_get_default_options()
@@ -370,7 +381,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                             stream = sub_agent.run(current_input, stream=True)
                             async for update in stream:
                                 if subagent_callback:
-                                    await subagent_callback(update, is_subagent=True, agent_name=f"SubAgent_{task_name}")
+                                    await subagent_callback(update, is_subagent=True, agent_name=agent_name)
                                 for c in update.contents:
                                     if c.type == "text" and c.text:
                                         final_text += c.text
@@ -412,7 +423,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                             has_requests = True
                             responses = []
                             if subagent_callback:
-                                responses = await subagent_callback(None, is_subagent=True, agent_name=f"SubAgent_{task_name}", approval_requests=user_input_requests)
+                                responses = await subagent_callback(None, is_subagent=True, agent_name=agent_name, approval_requests=user_input_requests)
 
                             new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
                             if responses:
@@ -420,7 +431,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                             current_input = new_inputs
 
                 if subagent_callback:
-                    await subagent_callback(None, is_subagent=True, agent_name=f"SubAgent_{task_name}", is_done=True)
+                    await subagent_callback(None, is_subagent=True, agent_name=agent_name, is_done=True)
 
                 new_urls = task_fetched_urls_ctx.get() or []
 

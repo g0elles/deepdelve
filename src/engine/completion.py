@@ -449,7 +449,12 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
         problem = verdict.problem if verdict else None
 
         run_state.sync_fetched_urls()
-        run_state.record_attempt(attempt, problem, len(get_fetched_urls()))
+        # detail = the full human-readable verdict text (e.g. exactly which claim/URL failed),
+        # not just the short problem label — previously only shown live via notify() and lost
+        # once the terminal scrolled, so answering "why did attempt N fail" required re-parsing
+        # the raw session-event JSON instead of just reading _run_state.json.
+        run_state.record_attempt(attempt, problem, len(get_fetched_urls()),
+                                  detail=verdict.warning if verdict else None)
 
         if verdict and attempt < max_attempts:
             run_state.attempt = attempt + 1
