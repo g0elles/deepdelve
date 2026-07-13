@@ -450,6 +450,83 @@ def main():
 
             contextvars.copy_context().run(_matrix_row)
 
+    # --- missing_artifact escalation (live case 2026-07-12: 24 real fetched URLs + a populated
+    # findings.md, but the model still got this nudge 5x verbatim and never once attempted
+    # write_workspace_file). Two behaviors added: findings.md content quoted directly in the
+    # nudge, and wording/attempt-budget escalate once the SAME problem repeats. ---
+    def _missing_artifact_escalation_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        _orig_ws5 = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            from tools.core import tool_quotas_ctx as q_ctx
+            _IN_MEMORY_FS.clear()
+            reset_fetched_urls()
+            record_fetched_url(_SRC, filename="sources/page.md")
+            _IN_MEMORY_FS["sources/page.md"] = _SOURCE_TEXT
+            _IN_MEMORY_FS["findings.md"] = "- Real finding with a real cited URL (" + _SRC + ")"
+            q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5}})
+
+            # First occurrence: findings.md content must appear verbatim in the nudge, and the
+            # wording must be the fresh (not-yet-escalated) framing.
+            with tempfile.TemporaryDirectory() as tmpdir2:
+                rs = RunState(tmpdir2)
+                run_state_ctx.set(rs)
+                msgs = []
+                should_retry, new_input = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append))
+                assert should_retry, "first missing_artifact occurrence must still retry"
+                injected = new_input[-1].contents[0].text
+                assert "Real finding with a real cited URL" in injected, (
+                    "findings.md content must be quoted directly in the missing_artifact nudge", injected)
+                assert "STILL missing" not in injected, "first occurrence must use the fresh framing"
+
+            # Second consecutive occurrence: with the threshold at 3, this is the LAST retry
+            # nudge that will ever actually be built for this problem (the 3rd occurrence gets
+            # cut off before a nudge is constructed at all) — wording must already be the
+            # strongest framing, not a middle step implying more chances remain.
+            with tempfile.TemporaryDirectory() as tmpdir3:
+                rs = RunState(tmpdir3)
+                rs.data["completion_check_attempts"] = [
+                    {"attempt": 0, "problem": "missing_artifact"},
+                ]
+                run_state_ctx.set(rs)
+                msgs = []
+                should_retry, new_input = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append))
+                assert should_retry, "2nd consecutive occurrence must still retry"
+                injected = new_input[-1].contents[0].text
+                assert "last realistic chance" in injected, (
+                    "2nd consecutive missing_artifact must use the escalated framing", injected)
+
+            # Third consecutive occurrence: the early-escalation threshold must now force the
+            # FINAL-verdict path (should_retry == False) instead of granting yet another retry,
+            # even though the configured max_completion_check_attempts is still far away.
+            with tempfile.TemporaryDirectory() as tmpdir4:
+                rs = RunState(tmpdir4)
+                rs.data["completion_check_attempts"] = [
+                    {"attempt": 0, "problem": "missing_artifact"},
+                    {"attempt": 1, "problem": "missing_artifact"},
+                ]
+                run_state_ctx.set(rs)
+                msgs = []
+                should_retry, _ = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append))
+                assert not should_retry, (
+                    "3rd consecutive missing_artifact must escalate straight to the final "
+                    "verdict instead of granting another identical retry", msgs)
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            if _orig_ws5 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws5
+
+    contextvars.copy_context().run(_missing_artifact_escalation_scenario)
+
     # --- regulation-identifier grounding (live case run 12: 'Ley 1906 de 2021' cited to a real
     # fetched page that never mentions 1906 — passed both the URL gate and zero-overlap check) ---
     from utils.grounding import find_unsupported_regulation_ids

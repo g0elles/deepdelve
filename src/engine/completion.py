@@ -126,7 +126,17 @@ def check_missing_artifact(ctx: Ctx) -> Optional[Verdict]:
     delegate_tasks instead of write_workspace_file). Naming and forbidding that specific
     wrong action, rather than only naming the right one, measurably changes behavior on
     small models — same principle as the existing Anti-Looping prompt rules, applied
-    structurally here since the prompt-level rule alone didn't hold under a nudge."""
+    structurally here since the prompt-level rule alone didn't hold under a nudge.
+
+    Also escalates on repeat failures — confirmed live 2026-07-12: a run with 24 real fetched
+    URLs and a fully-populated findings.md still got this exact nudge 5 times in a row, and the
+    model responded each time with confident "Task completed, no further action required" prose
+    without ever once attempting write_workspace_file. Two changes address that: (1) the nudge's
+    wording escalates with each consecutive occurrence instead of repeating verbatim (a small
+    model may get stuck in a rut on an identical system message), and (2) findings.md's actual
+    content is quoted directly in the nudge — the prior wording's "use whatever findings you
+    already have" assumed the model could still recall them amid several turns of accumulated
+    quota-error clutter; showing them removes that assumption."""
     if ctx.req_artifact in ctx.files:
         return None
     forbid_redelegate = (
@@ -134,10 +144,51 @@ def check_missing_artifact(ctx: Ctx) -> Optional[Verdict]:
         "delegate_tasks again. Your ONLY next action must be write_workspace_file."
         if ctx.delegated else ""
     )
+
+    prior_same = 0
+    for a in reversed(ctx.run_state.data.get("completion_check_attempts", [])):
+        if a.get("problem") == "missing_artifact":
+            prior_same += 1
+        else:
+            break
+
+    # Only two tiers, deliberately kept in lockstep with run_completion_check's
+    # CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD (currently 3): with that threshold, a retry
+    # nudge only ever gets BUILT for occurrences 1 and 2 of this problem — the 3rd consecutive
+    # occurrence is cut off before a nudge is even constructed (see that threshold's own comment).
+    # So whichever wording tier fires on occurrence 2 (prior_same == 1) is the LAST thing the
+    # model will ever see for this problem — it must already be the strongest framing, not a
+    # middle step that implies more chances are coming.
+    if prior_same == 0:
+        directive = (
+            f"You are attempting to finish the task, but the required final artifact "
+            f"'{ctx.req_artifact}' is missing from the workspace. Writing your answer as a "
+            f"chat message does NOT complete the task."
+        )
+    else:
+        directive = (
+            f"'{ctx.req_artifact}' is STILL missing after a prior warning ({prior_same + 1} "
+            f"consecutive checks now). A text response claiming the task is done does not "
+            f"count — only a file that actually exists on disk does. This is your last "
+            f"realistic chance before the run ends and whatever partial content already "
+            f"exists is used instead. Do not respond with another text-only message."
+        )
+
+    findings_excerpt = ""
+    if "findings.md" in ctx.files:
+        raw = get_workspace_file_content("findings.md") or ""
+        excerpt = raw[:2500]
+        if len(raw) > 2500:
+            excerpt += "\n...[truncated — the full content is already on disk in findings.md]"
+        findings_excerpt = (
+            f"\n\nHere is the ACTUAL content of findings.md, verbatim, so there is no ambiguity "
+            f"about what real material you already have to write from:\n---\n{excerpt}\n---"
+        )
+
     return Verdict(
         "missing_artifact",
         f"Required artifact `{ctx.req_artifact}` is missing from the workspace. Pushing agent to create it.",
-        f"SYSTEM WARNING: {ctx.last_chance_prefix}You are attempting to finish the task, but the required final artifact '{ctx.req_artifact}' is missing from the workspace. Writing your answer as a chat message does NOT complete the task.{forbid_redelegate} Call write_workspace_file(filename='{ctx.req_artifact}', content=...) right now, using whatever findings you already have — an imperfect report that exists beats a perfect one that doesn't.",
+        f"SYSTEM WARNING: {ctx.last_chance_prefix}{directive}{forbid_redelegate} Call write_workspace_file(filename='{ctx.req_artifact}', content=...) right now, using whatever findings you already have — an imperfect report that exists beats a perfect one that doesn't.{findings_excerpt}",
     )
 
 
@@ -455,6 +506,28 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
         # the raw session-event JSON instead of just reading _run_state.json.
         run_state.record_attempt(attempt, problem, len(get_fetched_urls()),
                                   detail=verdict.warning if verdict else None)
+
+        # Escalate early rather than granting the full attempt budget to a nudge that's already
+        # proven ineffective. Confirmed live 2026-07-12: missing_artifact repeated 5 times
+        # verbatim in one run — the model answered each one with confident "no further action
+        # needed" prose and never once attempted write_workspace_file, burning wall-clock and
+        # tool-call quota on retries that had already shown they don't work. Once the SAME
+        # problem has now fired this many times in a row, fall straight through to the
+        # final-verdict path (quarantine-restore or salvage) instead of granting more identical
+        # retries — it preserves whatever real content already exists rather than grinding an
+        # already-exhausted approach further. check_missing_artifact's own escalating wording
+        # (see its docstring) still gets one shot at each of these attempts first; this only
+        # trims how many total attempts a provably-stuck pattern gets to burn.
+        CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD = 3
+        if problem == "missing_artifact":
+            consecutive = 0
+            for a in reversed(run_state.data.get("completion_check_attempts", [])):
+                if a.get("problem") == "missing_artifact":
+                    consecutive += 1
+                else:
+                    break
+            if consecutive >= CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD:
+                attempt = max_attempts
 
         if verdict and attempt < max_attempts:
             run_state.attempt = attempt + 1
