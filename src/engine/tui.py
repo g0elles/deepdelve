@@ -1693,6 +1693,20 @@ def _find_last_substantial_text(min_len: int = 200) -> str:
 async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_id: str = None,
                   resume_run: str = None, seed_urls: list = None):
     """Run the agent in headless mode, streaming results to stdout."""
+    # Python block-buffers stdout by default when it's redirected to a file/pipe (not a real
+    # TTY) — confirmed live 2026-07-12: a background-launched headless run kept writing real
+    # progress (tool calls, sub-agent activity) to its own persisted session log the whole time,
+    # but the raw captured stdout file sat at a constant byte count for 60+ seconds because the
+    # writes just hadn't been flushed to disk yet. That made a genuinely-still-working run look
+    # indistinguishable from a hung one to anything monitoring the captured output file, and it
+    # got killed as a false positive. Only one `sys.stdout.write` call in this whole function
+    # explicitly flushed (the streamed-text one) — every other one (tool-call announcements,
+    # system warnings, etc.) didn't. Forcing line buffering here fixes all of them at once
+    # instead of relying on remembering to add `.flush()` at every call site.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except (AttributeError, ValueError):
+        pass  # stdout may already be closed/redirected in a way that doesn't support this (rare)
     quota_token = tool_quotas_ctx.set(build_quota_pool())
     reset_fetched_urls()
     run_state_token = None
