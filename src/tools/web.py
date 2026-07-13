@@ -463,9 +463,18 @@ def _slugify_for_filename(url: str, query: str) -> str:
 
 @tool
 @with_quota
-async def fetch_url_to_workspace(url: str | list, filename: str, convert_to_md: bool = True) -> str:
-    """Fetch external web content and save it directly to the workspace. If convert_to_md is True, parses to Markdown. url takes ONE URL per call."""
+async def fetch_url_to_workspace(url: str | list, filename: str = "", convert_to_md: bool = True) -> str:
+    """Fetch external web content and save it directly to the workspace. If convert_to_md is True, parses to Markdown. url takes ONE URL per call. filename is optional — a name is auto-generated from the URL if you omit it."""
     url, list_note = _first_of_list_arg(url, "url", "fetch_url_to_workspace")
+    # filename used to be a required argument with no default -- confirmed live 2026-07-12: the
+    # model omitted it entirely in 5 separate calls across today's benchmark runs, and since a
+    # missing required field is rejected by schema validation BEFORE the function body ever runs,
+    # there was no way to recover inside the function -- the call was simply lost, unlike
+    # _first_of_list_arg's wrong-TYPE handling just above, which DOES reach here. Making it
+    # optional with an auto-derived default (reusing the same slugify helper web_search's
+    # auto-fetch already uses) turns a rejected call into a working one instead.
+    if not filename:
+        filename = _slugify_for_filename(url, "")
     try:
         data, urls_fetched, metadata = await asyncio.to_thread(_fetch_raw, url, convert_to_md)
         return _save_fetched(urls_fetched, filename, data, convert_to_md, metadata=metadata) + list_note
