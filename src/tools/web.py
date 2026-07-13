@@ -51,18 +51,55 @@ def _decode_html_bytes(content: bytes, header_encoding: str | None) -> str:
     return content.decode("cp1252", errors="replace")
 
 
-def _strip_boilerplate_html(html_text: str) -> bytes:
+def _extract_html_metadata(soup: BeautifulSoup) -> dict:
+    """Best-effort title/author/publish-date from a page's own <head> — never guessed, only what
+    the page itself declares. Must run BEFORE _strip_boilerplate_html's tag-stripping, since that's
+    the one point in the fetch pipeline where these tags are still in hand; markdown/text
+    conversion afterward discards them entirely (attribute values never appear in get_text()
+    output). A field the page doesn't declare is simply omitted from the returned dict, not
+    fabricated — matches this project's zero-fabrication ethos for everything else it saves."""
+    meta = {}
+
+    def _meta_content(*names_or_props):
+        for n in names_or_props:
+            tag = soup.find("meta", attrs={"name": n}) or soup.find("meta", attrs={"property": n})
+            if tag and tag.get("content"):
+                return tag["content"].strip()
+        return None
+
+    if soup.title and soup.title.string and soup.title.string.strip():
+        meta["title"] = soup.title.string.strip()
+    else:
+        og_title = _meta_content("og:title")
+        if og_title:
+            meta["title"] = og_title
+
+    author = _meta_content("author", "article:author")
+    if author:
+        meta["author"] = author
+
+    published = _meta_content("article:published_time", "date", "publish-date", "og:updated_time")
+    if published:
+        meta["published"] = published
+
+    return meta
+
+
+def _strip_boilerplate_html(html_text: str) -> tuple[bytes, dict]:
     """Remove common non-article chrome (nav, footer, script, style, ads, cookie banners) before
     markdown conversion, so a fetched page doesn't burn an Analyzer's context budget on chrome
     that was never going to contain a real finding. Applied to BOTH the markitdown path and the
     BeautifulSoup fallback below — previously only the fallback path stripped anything, so the
     primary (markitdown) path passed raw nav/footer/script content straight through untouched.
 
-    Takes already-decoded text (see _decode_html_bytes) and returns UTF-8 bytes with any original
-    charset-declaring meta tags replaced by a UTF-8 one — otherwise a stale '<meta charset=
-    iso-8859-1>' inside now-UTF-8 bytes makes markitdown re-mojibake the exact content C8 fixed."""
+    Takes already-decoded text (see _decode_html_bytes) and returns (UTF-8 bytes, metadata dict)
+    — any original charset-declaring meta tags are replaced by a UTF-8 one in the bytes (otherwise
+    a stale '<meta charset=iso-8859-1>' inside now-UTF-8 bytes makes markitdown re-mojibake the
+    exact content C8 fixed). The metadata dict is title/author/published extracted from the same
+    parsed soup before boilerplate stripping — see _extract_html_metadata."""
     try:
         soup = BeautifulSoup(html_text, "html.parser")
+        metadata = _extract_html_metadata(soup)
         for tag in soup(["script", "style", "nav", "footer", "header", "aside", "noscript", "iframe", "svg"]):
             tag.extract()
         boilerplate = re.compile(r'cookie|consent|advert|sidebar|popup|newsletter|subscribe-banner|site-header|site-footer', re.IGNORECASE)
@@ -73,9 +110,9 @@ def _strip_boilerplate_html(html_text: str) -> bytes:
         for tag in soup.find_all("meta"):
             if tag.get("charset") or (tag.get("http-equiv") or "").lower() == "content-type":
                 tag.extract()
-        return b'<meta charset="utf-8">' + soup.encode("utf-8")
+        return b'<meta charset="utf-8">' + soup.encode("utf-8"), metadata
     except Exception:
-        return html_text.encode("utf-8", errors="replace")
+        return html_text.encode("utf-8", errors="replace"), {}
 
 
 # Hard cap on RAW download size, independent of _save_fetched's separate 5MB SAVED-content cap
@@ -92,10 +129,13 @@ def _fetch_raw(url: str, convert_to_md: bool = True, _redirect_depth: int = 0):
     fetch_url_to_workspace and web_search's auto-fetch — pulled out of the former so both paths
     use identical fetch/parse logic instead of drifting.
 
-    Returns (data, urls_fetched) where urls_fetched is every URL actually retrieved this call,
-    original first — more than one entry only when a client-side redirect stub was followed (see
-    _looks_like_redirect_stub). The caller must record ALL of them as fetched, since the model may
-    reasonably cite either the URL it searched (the stub) or the one the content is actually from.
+    Returns (data, urls_fetched, metadata) where urls_fetched is every URL actually retrieved
+    this call, original first — more than one entry only when a client-side redirect stub was
+    followed (see _looks_like_redirect_stub). The caller must record ALL of them as fetched, since
+    the model may reasonably cite either the URL it searched (the stub) or the one the content is
+    actually from. metadata is a best-effort dict of title/author/published extracted from the
+    page's own <head> (HTML only — PDF/raw-bytes paths always return {}, see
+    _extract_html_metadata), empty when nothing was declared or extraction failed.
 
     Streams the body instead of buffering it whole via httpx.get, so a URL over _MAX_FETCH_BYTES
     is caught (via Content-Length when the server sends one, or by aborting mid-stream when it
@@ -106,20 +146,20 @@ def _fetch_raw(url: str, convert_to_md: bool = True, _redirect_depth: int = 0):
         content_length = resp.headers.get("content-length")
         if content_length and content_length.isdigit() and int(content_length) > _MAX_FETCH_BYTES:
             return (f"[ERROR: {url} reports Content-Length {int(content_length):,} bytes, over "
-                    f"the {_MAX_FETCH_BYTES:,} byte fetch cap. Skipped without downloading.]"), [url]
+                    f"the {_MAX_FETCH_BYTES:,} byte fetch cap. Skipped without downloading.]"), [url], {}
         chunks, total = [], 0
         for piece in resp.iter_bytes():
             chunks.append(piece)
             total += len(piece)
             if total > _MAX_FETCH_BYTES:
                 return (f"[ERROR: {url} exceeded the {_MAX_FETCH_BYTES:,} byte fetch cap while "
-                        f"downloading (no Content-Length header caught it early). Skipped.]"), [url]
+                        f"downloading (no Content-Length header caught it early). Skipped.]"), [url], {}
         content = b"".join(chunks)
         resp_url = resp.url
         charset_encoding = resp.charset_encoding
 
     if not convert_to_md:
-        return content, [url]  # Raw bytes
+        return content, [url], {}  # Raw bytes
 
     # Check actual bytes — a URL might say .pdf but serve HTML (JS-gated doc viewers). Sniffs the
     # first 1KB rather than requiring the magic bytes at offset 0 (fresh audit, 2026-07-12): the
@@ -145,18 +185,18 @@ def _fetch_raw(url: str, convert_to_md: bool = True, _redirect_depth: int = 0):
                     capture_output=True, text=True, timeout=60
                 )
                 if result.returncode == 0 and result.stdout.strip():
-                    return result.stdout, [url]
+                    return result.stdout, [url], {}
 
             # Fallback to markitdown on local file
             try:
                 from utils.parsers import convert_to_markdown
                 md_content = convert_to_markdown(tmp_path)
                 if md_content:
-                    return md_content, [url]
+                    return md_content, [url], {}
             except ImportError:
                 pass
 
-            return f"[ERROR: PDF at {url} could not be parsed. Size: {len(content)} bytes. Try a different source.]", [url]
+            return f"[ERROR: PDF at {url} could not be parsed. Size: {len(content)} bytes. Try a different source.]", [url], {}
         finally:
             os.unlink(tmp_path)
     else:
@@ -165,7 +205,7 @@ def _fetch_raw(url: str, convert_to_md: bool = True, _redirect_depth: int = 0):
         # either path runs, not after — see _strip_boilerplate_html. Bytes are decoded honoring
         # the page's real charset first (C8 — see _decode_html_bytes), so cleaned_html is always
         # well-formed UTF-8 whatever the server sent.
-        cleaned_html = _strip_boilerplate_html(_decode_html_bytes(content, charset_encoding))
+        cleaned_html, metadata = _strip_boilerplate_html(_decode_html_bytes(content, charset_encoding))
         md_content = None
         try:
             from utils.parsers import convert_to_markdown
@@ -194,12 +234,12 @@ def _fetch_raw(url: str, convert_to_md: bool = True, _redirect_depth: int = 0):
                 from urllib.parse import urljoin
                 resolved = urljoin(str(resp_url), target)
                 try:
-                    inner_data, inner_urls = _fetch_raw(resolved, convert_to_md, _redirect_depth=_redirect_depth + 1)
-                    return inner_data, [url] + inner_urls
+                    inner_data, inner_urls, inner_meta = _fetch_raw(resolved, convert_to_md, _redirect_depth=_redirect_depth + 1)
+                    return inner_data, [url] + inner_urls, inner_meta
                 except Exception:
                     pass  # Fall through and return the stub rather than losing the fetch entirely.
 
-        return md_content, [url]
+        return md_content, [url], metadata
 
 
 # Phrase-level soft-404/paywall markers (EN + ES — the flagship benchmark language), not single
@@ -264,10 +304,19 @@ def _fetched_filename(filename: str, convert_to_md: bool = True) -> str:
     return filename
 
 
-def _save_fetched(urls_fetched: list[str], filename: str, data, convert_to_md: bool = True) -> str:
+def _save_fetched(urls_fetched: list[str], filename: str, data, convert_to_md: bool = True,
+                   metadata: dict | None = None) -> str:
     """Persist already-fetched content to the workspace and record ALL of urls_fetched (original
     plus any redirect target actually followed) as real fetches. Shared by fetch_url_to_workspace
-    and web_search's auto-fetch."""
+    and web_search's auto-fetch.
+
+    metadata (title/author/published, best-effort from the page's own <head> — see
+    _extract_html_metadata) is written as extra header lines alongside Source-URL, only for fields
+    actually present, so downstream Analyzers don't need to delegate a whole sub-agent call just to
+    re-derive title/authors a file's own header already answers. Confirmed live 2026-07-12: this
+    exact "Extract title/authors/abstract from [paper]" delegation pattern recurred identically
+    across multiple benchmark runs, burning a full LLM sub-agent turn each time for what the
+    fetched page's own metadata already declared."""
     filename = _fetched_filename(filename, convert_to_md)
 
     # Stub detection runs on the raw converted markdown BEFORE the Source-URL header is
@@ -286,7 +335,15 @@ def _save_fetched(urls_fetched: list[str], filename: str, data, convert_to_md: b
     # real URL, so they reconstructed plausible-looking fake ones from the filename — 0 of 22
     # cited URLs in that run's findings.md were real.
     if convert_to_md and isinstance(data, str):
-        data = "Source-URL: " + " | ".join(urls_fetched) + "\n\n" + data
+        header_lines = ["Source-URL: " + " | ".join(urls_fetched)]
+        if metadata:
+            if metadata.get("title"):
+                header_lines.append(f"Title: {metadata['title']}")
+            if metadata.get("author"):
+                header_lines.append(f"Authors: {metadata['author']}")
+            if metadata.get("published"):
+                header_lines.append(f"Published: {metadata['published']}")
+        data = "\n".join(header_lines) + "\n\n" + data
 
     path = _get_safe_path(filename)
     if not path:
@@ -410,8 +467,8 @@ async def fetch_url_to_workspace(url: str | list, filename: str, convert_to_md: 
     """Fetch external web content and save it directly to the workspace. If convert_to_md is True, parses to Markdown. url takes ONE URL per call."""
     url, list_note = _first_of_list_arg(url, "url", "fetch_url_to_workspace")
     try:
-        data, urls_fetched = await asyncio.to_thread(_fetch_raw, url, convert_to_md)
-        return _save_fetched(urls_fetched, filename, data, convert_to_md) + list_note
+        data, urls_fetched, metadata = await asyncio.to_thread(_fetch_raw, url, convert_to_md)
+        return _save_fetched(urls_fetched, filename, data, convert_to_md, metadata=metadata) + list_note
     except Exception as e:
         import traceback
         return f"Failed: {e}\n\nTraceback:\n{traceback.format_exc()}"
@@ -560,8 +617,8 @@ async def web_search(
             break
         filename = _slugify_for_filename(r["url"], query)
         try:
-            data, urls_fetched = await asyncio.to_thread(_fetch_raw, r["url"], True)
-            save_msg = await asyncio.to_thread(_save_fetched, urls_fetched, filename, data, True)
+            data, urls_fetched, metadata = await asyncio.to_thread(_fetch_raw, r["url"], True)
+            save_msg = await asyncio.to_thread(_save_fetched, urls_fetched, filename, data, True, metadata)
             r["auto_fetched_filename"] = _fetched_filename(filename)
             r["auto_fetch_status"] = save_msg
         except Exception as e:
