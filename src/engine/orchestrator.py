@@ -246,6 +246,16 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
     """
     global _session
     client = _build_client()
+    # Framework default silently strips the actual validation-error detail from a rejected tool
+    # call, replacing it with a bare "Error: Argument parsing failed." — confirmed live
+    # 2026-07-12: this was the single most common error signature across an entire day of
+    # multi-model benchmark testing (41 occurrences across today's session logs alone), and every
+    # one of them was undiagnosable because the real Pydantic ValidationError (e.g. "query: Input
+    # should be a valid string, got list") was thrown away instead of shown. This also directly
+    # helps the MODEL self-correct on retry — a specific error is far more actionable than a
+    # generic one — not just diagnostics for us. Applies to every agent built from this client
+    # (Planner + every dispatched sub-agent share the one client instance created here).
+    client.function_invocation_configuration["include_detailed_errors"] = True
 
     # -------------------------------------------------------------
     # SDK Bounded Dispatcher

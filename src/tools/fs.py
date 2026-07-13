@@ -203,7 +203,11 @@ def list_workspace_files() -> str:
 @tool
 @with_quota
 def grep_workspace_file(filename: str, pattern: str, context_lines: int = 2) -> str:
-    """Search for a regex pattern within a file, returning matching lines with surrounding context."""
+    """Search for a REQUIRED regex `pattern` within a file, returning matching lines with
+    surrounding context. `pattern` has no default — you must already know what text/term you're
+    looking for. If you just want to check whether a file exists or see its raw content, use
+    `read_workspace_file` instead; this tool is for finding a specific string inside a file
+    already known to exist, not for browsing or existence-checking."""
     try:
         content = get_workspace_file_content(filename)
         resolved_note = ""

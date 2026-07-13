@@ -123,11 +123,27 @@ def main():
     assert malformed_tool_call_nudge(Exception("Connection error.")) is None
 
     # --- fetched files live under sources/ and carry their true URL as line 1 ---
-    from tools.web import _fetched_filename, _save_fetched
+    from tools.web import _fetched_filename, _save_fetched, _slugify_for_filename, fetch_url_to_workspace
     from tools.fs import _IN_MEMORY_FS
     import config as _config
     assert _fetched_filename("foo") == "sources/foo.md"
     assert _fetched_filename("sources/foo.md") == "sources/foo.md"
+
+    # --- fetch_url_to_workspace's filename is optional with an auto-derived default (2026-07-12):
+    # confirmed live, 5 separate calls across today's benchmark runs omitted `filename` entirely.
+    # Since a missing REQUIRED field is rejected by schema validation before the function body
+    # ever runs, there was no way to recover it defensively inside the function -- the call was
+    # just lost. Pin that the default actually exists (not just "happens to work by luck") and
+    # that the slugify helper it falls back to produces a sane, deterministic, non-empty name. ---
+    import inspect
+    _fetch_sig = inspect.signature(fetch_url_to_workspace.func if hasattr(fetch_url_to_workspace, "func") else fetch_url_to_workspace)
+    assert _fetch_sig.parameters["filename"].default == "", (
+        "fetch_url_to_workspace's filename must default to '' (auto-derive), not be required")
+    _slug1 = _slugify_for_filename("https://example.com/some/page", "")
+    _slug2 = _slugify_for_filename("https://example.com/some/page", "")
+    _slug3 = _slugify_for_filename("https://different.com/other", "")
+    assert _slug1 and _slug1 == _slug2, "must be deterministic for the same URL"
+    assert _slug1 != _slug3, "must differ for a different URL"
     _orig_ws = _config.cfg.get("settings", {}).get("workspace")
     _config.cfg.setdefault("settings", {})["workspace"] = {"type": "memory"}
     try:
