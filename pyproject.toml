@@ -33,7 +33,18 @@ dependencies = [
     # Imported directly in engine/sdk.py (SubAgentConfig/AgentBuilder). Currently only installed
     # transitively via agent-framework, which is fragile — declare it explicitly so this doesn't
     # silently break if agent-framework ever drops or reshuffles its own pydantic dependency.
-    "pydantic>=2.13.4,<3.0.0"
+    "pydantic>=2.13.4,<3.0.0",
+    # First ML/NLP inference dependency this project has ever taken on (2026-07-12) — used only
+    # for utils/grounding.py's nli_unsupported_problem (settings.grounding_check.nli_verify), a
+    # small CPU-only NLI entailment classifier that verifies a claim is actually supported by its
+    # cited source's content, not just term-overlapping with it. `pip install sentence-transformers`
+    # alone pulls the full CUDA-enabled torch build (~6GB) even though inference is explicitly
+    # device="cpu" in code and never touches the GPU — install the CPU-only torch wheel FIRST from
+    # PyTorch's dedicated index (`pip install torch --index-url https://download.pytorch.org/whl/cpu`)
+    # to get the ~200MB CPU build instead, THEN this. Fails open at runtime if unavailable (see
+    # grounding.py::_get_nli_model) — an environment that skips this dependency entirely still
+    # runs every other check unaffected, it just never gets the NLI verification layer.
+    "sentence-transformers>=5.6.0,<6.0.0"
 ]
 
 [project.optional-dependencies]

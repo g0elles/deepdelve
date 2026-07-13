@@ -316,6 +316,26 @@ def check_stub_source(ctx: Ctx) -> Optional[Verdict]:
     )
 
 
+def check_nli_unsupported(ctx: Ctx) -> Optional[Verdict]:
+    """The URL was fetched and the claim shares a checkable term with its source's content (so
+    check_claim_unsupported already passed) — but a small NLI entailment model judges the claim as
+    CONTRADICTED by that source's most relevant passage, not just coincidentally overlapping.
+    Confirmed live 2026-07-12: a citation to a real, fetched arXiv paper quoted its title with one
+    word swapped ('Dual Causal Network' vs the real 'Dual Correlation Network') — enough shared
+    terms to pass term-overlap outright. Distinct correction from claim_unsupported: the citation
+    itself is real and the general topic checks out, only the SPECIFIC detail attached to it is
+    wrong — a name, title, or figure was likely swapped or misremembered while the citation stayed
+    attached."""
+    gp = ctx.grounding_problem
+    if not (gp and gp.startswith("nli_unsupported")):
+        return None
+    return Verdict(
+        "nli_unsupported",
+        f"`{ctx.req_artifact}` cites a source that was fetched and shares terms with the claim, but an NLI check found the claim isn't actually entailed by that source's content ({gp}).",
+        f"SYSTEM WARNING: '{ctx.req_artifact}' cites a real, fetched source for a claim that shares some words with that source but is NOT actually supported by what it says ({gp}). This often means a specific detail (a name, title, or figure) was swapped or misremembered while the citation itself was kept. The previous draft has been moved aside. Re-read the cited source's actual content and rewrite the claim to match exactly what it says, or drop it if you can't verify it.{_redelegate_directive(ctx)}",
+    )
+
+
 def check_uncited_claims(ctx: Ctx) -> Optional[Verdict]:
     """The report's citations are all real, but its claims are structurally decoupled from
     them — figure-bearing claim lines with no citation on the line (e.g. a table of numbers
@@ -362,6 +382,7 @@ GROUNDING_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
     check_stub_source,
     check_regulation_unsupported,
     check_non_url_citation,
+    check_nli_unsupported,
     check_uncited_claims,
     check_not_grounded,  # generic catch-all: fires on ANY grounding problem — keep it LAST
 ]
@@ -371,7 +392,8 @@ GROUNDING_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
 # run_completion_check derives its quarantine branch from this tuple (findings_ungrounded
 # quarantines findings.md instead of the artifact) — one list, no second copy to forget.
 _QUARANTINE_PROBLEMS = ("not_grounded", "claim_unsupported", "non_url_citation",
-                        "regulation_unsupported", "stub_source", "findings_ungrounded")
+                        "regulation_unsupported", "stub_source", "nli_unsupported",
+                        "findings_ungrounded")
 
 
 def _quarantine_artifact(req_artifact: str, attempt: int) -> None:
