@@ -526,6 +526,27 @@ def _salvage_narrated_report(req_artifact: str, last_assistant_text: str) -> boo
         return False
 
 
+def _ensure_builder_write_quota_headroom(pool: dict) -> None:
+    """Build->Review->Fix can burn up to 2 `write_workspace_file` calls in a single completion-
+    check retry (Builder's initial rewrite, plus one corrective Fix pass if PeerReviewer flags
+    issues) — against the SAME shared cumulative pool the Planner's own `findings.md` writes draw
+    from (see `build_quota_pool`'s docstring: one pool across every role, by design). The standard
+    per-attempt `topup_quota_pool` (called just before this) already covers the default config
+    fine — not currently starved in practice — but a config with a low `write_workspace_file`
+    limit/topup would starve Builder specifically mid-cycle, degrading it to the same "narrate
+    instead of write" failure the Planner used to be prone to, one level down. Rather than a
+    separate reserved pool (a bigger structural change, and against the shared-pool design), this
+    tops up ONLY the one tool this cycle actually needs, and only by the exact headroom it could
+    need — not a blanket amount that would also quietly inflate the Planner's own budget."""
+    entry = pool.get("write_workspace_file")
+    if entry is None:
+        return
+    needed = 2  # Builder's initial rewrite + one possible corrective Fix pass
+    headroom = entry["limit"] - entry["used"]
+    if headroom < needed:
+        entry["limit"] += (needed - headroom)
+
+
 async def _dispatch_build_review_fix(dispatch_task, req_artifact: str, verdict: "Verdict", attempt: int, notify) -> None:
     """Build -> Review -> Fix, all fresh-context sub-agent dispatches, none of which touch the
     Planner's own conversation. Caller (run_completion_check) is responsible for quarantine,
@@ -677,6 +698,8 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                     and any(c.name == "PeerReviewer" for c in caller_sub_agents)
                 if has_builder_pair:
                     notify(f"**System ({attempt + 1}/{max_attempts}):** {verdict.warning} (dispatching Builder to rewrite, not the Planner)")
+                    if pool is not None:
+                        _ensure_builder_write_quota_headroom(pool)
                     try:
                         await _dispatch_build_review_fix(dispatch_task, req_artifact, verdict, attempt, notify)
                         run_state.save()

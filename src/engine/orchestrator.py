@@ -193,6 +193,52 @@ def malformed_tool_call_nudge(e: BaseException) -> str | None:
     return None
 
 
+_FUNC_NOT_FOUND_RE = re.compile(r'Requested function "([^"]+)" not found')
+_FILE_NOT_FOUND_RE = re.compile(r"^Error: '(.+)' not found\.$")
+
+
+def tool_result_error_nudge(result_text: str) -> str | None:
+    """One-turn recovery message for a sub-agent tool call that failed IN-BAND — a normal tool
+    result whose text is an error string, not a raised exception. `malformed_tool_call_nudge`
+    above only covers the (rarer) transport-level case where the SDK itself raises; a hallucinated
+    tool name or a bad argument comes back as an ordinary successful `function_result` content
+    item instead (see agent_framework/_tools.py: `Error: Requested function "{name}" not found.`
+    and `Error: Argument parsing failed.`), so it never reaches `_run_single_task`'s `except` block
+    and never triggered any nudge at all. Confirmed live 2026-07-13: a `SubAgent_BuilderFix` retry
+    hallucinated a call to `delegate_tasks` (not in Builder's real tool list), a separate sub-agent
+    called a malformed `grep_workspace?`, and `PeerReviewer` tried reading a nonexistent
+    `workspace.txt` — each burned a turn with nothing telling the model what actually went wrong.
+
+    Deliberately narrow (three specific, evidence-backed error shapes, not every possible tool
+    failure) — a legitimate business-logic error (a real search that genuinely failed, a quota
+    genuinely exhausted) already has its own handling elsewhere and retrying it blindly wouldn't
+    help; these three are specifically "the model asked for something that doesn't exist and can
+    immediately ask for the right thing instead" cases."""
+    if not result_text:
+        return None
+    m = _FUNC_NOT_FOUND_RE.search(result_text)
+    if m:
+        return (
+            f'SYSTEM: your last tool call named "{m.group(1)}", which does not exist. Only call '
+            f"tools that are actually available to you in this conversation — check the exact "
+            f"name (it may be a typo, or a tool you don't actually have access to) and retry with "
+            f"a real one."
+        )
+    if result_text.startswith("Error: Argument parsing failed."):
+        return (
+            "SYSTEM: your last tool call's arguments were rejected — see the exception detail "
+            "above for exactly which field was wrong. Fix that field and re-issue the call with "
+            "corrected arguments."
+        )
+    if _FILE_NOT_FOUND_RE.match(result_text.strip()):
+        return (
+            "SYSTEM: the file you just tried to read does not exist in this workspace. Double-check "
+            "the exact filename (it may be misspelled, or never actually written) before retrying, "
+            "or proceed without it if it truly doesn't exist."
+        )
+    return None
+
+
 def _build_client():
     # Injected AsyncOpenAI so the SDK's own exponential backoff (which honors Retry-After) covers
     # 429/5xx. Confirmed live 2026-07-11: NIM's free-tier rate limit 429-crashed an entire
@@ -399,6 +445,12 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                     current_input = instructions
                     has_requests = True
                     malformed_retries = 0
+                    # Sibling of malformed_retries, for the in-band tool-error class
+                    # tool_result_error_nudge covers (hallucinated tool name, rejected arguments,
+                    # missing file) — see its docstring for why this needed its own counter/path
+                    # rather than reusing the exception-only malformed_tool_call_nudge.
+                    tool_error_retries = 0
+                    pending_tool_error_nudge = None
                     # Context-budget guard (see get_context_budget): Analyzer-tier tasks are the
                     # likeliest overflow point — 30 capped reads of a 25KB source still exceed a
                     # 16K-token num_ctx inside ONE task stream. TUI main loop deliberately not
@@ -418,6 +470,15 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                                 for c in update.contents:
                                     if c.type == "text" and c.text:
                                         final_text += c.text
+                                    elif c.type == "function_result":
+                                        # Overwritten on every function_result seen this turn, not
+                                        # just set-once — a LATER successful call after an earlier
+                                        # error means the model already self-corrected on its own
+                                        # within the SDK's internal loop, so only the error still
+                                        # standing at the end of the stream (if any) gets nudged.
+                                        pending_tool_error_nudge = tool_result_error_nudge(
+                                            str(getattr(c, "result", "") or "")
+                                        )
 
                                 if getattr(update, "user_input_requests", None):
                                     user_input_requests.extend(update.user_input_requests)
@@ -437,6 +498,17 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                                 has_requests = True
                                 continue
                             raise
+
+                        if pending_tool_error_nudge and tool_error_retries < 2:
+                            tool_error_retries += 1
+                            nudge, pending_tool_error_nudge = pending_tool_error_nudge, None
+                            from agent_framework import Message
+                            new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
+                            new_inputs.append(Message("user", [{"type": "text", "text": nudge}]))
+                            current_input = new_inputs
+                            has_requests = True
+                            continue
+                        pending_tool_error_nudge = None
 
                         if context_budget and stream_chars > context_budget and not budget_nudged:
                             # One wrap-up turn: cut the stream, tell the sub-agent to return its

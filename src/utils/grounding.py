@@ -57,7 +57,13 @@ def extract_cited_urls(text: str) -> list[str]:
 
 
 def _strip_trailing_punct(url: str) -> str:
-    url = url.rstrip('.,;:\'"]}】')
+    # '*' added 2026-07-14: Builder's own citation style is `**[Title](URL)**` — the closing `**`
+    # sat right after the URL's markdown-link `)`, which made `.endswith(')')` below false
+    # (the literal last char was '*', not ')'), so the unbalanced-paren strip never even ran and
+    # every Builder-written citation carried a trailing '**' that could never match a real fetched
+    # URL — a false not_grounded on every single report using this style. Stripped BEFORE the
+    # paren check specifically so a bold-wrapped URL still exposes its real trailing ')' to it.
+    url = url.rstrip('.,;:\'"]}】*')
     while url.endswith(')') and url.count(')') > url.count('('):
         url = url[:-1]
     return url
