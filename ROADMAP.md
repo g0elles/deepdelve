@@ -606,12 +606,43 @@ Status as of 2026-07-14.
   Phase 1 claim-level grounding upgrade (DONE) → Phase 2 cross-source contradiction detection
   (DONE) → Phase 3 xQuAD diversity reranking (DONE) → Phase 4 topical-relevance cross-encoder
   reranker (DONE) → Phase 5 coverage accounting/ResearchMap (independent, Planner schema change) →
-  Phase 6 B4 TUI/CLI loop unification (deferred last, highest regression risk). Sequenced by
-  ROADMAP's own stated priority + dependency order + risk, not file order below.
-- **Coverage accounting / ResearchMap** (found 2026-07-13) — track topic-completeness (e.g. per
-  planned research slot: status, evidence count, confidence) so the completion check can require a
-  coverage threshold, not just "enough tokens written." Complements the Builder loop without
-  touching it — a Planner-side addition. Moderate effort (needs a Planner output schema change).
+  Phase 5 coverage accounting/ResearchMap (DONE) → Phase 6 B4 TUI/CLI loop unification (deferred
+  last, highest regression risk). Sequenced by ROADMAP's own stated priority + dependency order +
+  risk, not file order below.
+- **Phase 5 of the approved 6-phase plan: coverage accounting / ResearchMap.** Distinct from every
+  other completion check: those all verify content that ALREADY EXISTS is properly grounded/cited;
+  this instead asks whether the Planner's own top-level delegated research plan actually paid off
+  — a report can be perfectly grounded yet still be thin because most of the Planner's own
+  delegated angles came back with nothing usable and got silently dropped rather than surfaced or
+  retried. Deliberately built entirely from already-reliable, model-independent structural data
+  instead of a new Planner-authored schema (investigated first and explicitly ruled out: `_todos.md`
+  is free text with only a prompted, zero-code-validated convention — exactly the kind of
+  compliance-dependent signal this project's own established philosophy avoids, given repeated
+  live failures of small local models following new structured-output requirements). New
+  `utils/run_state.py::RunState.coverage()` reuses two ALREADY-existing, engine-populated
+  primitives — `delegation_depth_ctx` (depth==1 = a task the Planner itself dispatched via
+  `delegate_tasks`; depth>1 = a nested Analyzer-tier sub-call, excluded from coverage since it's
+  expected to reuse already-fetched content with no new URL of its own) and per-task fetch
+  attribution (`task_fetched_urls_ctx`, from the 2026-07-12 race-condition fix) — to compute
+  `{total, covered, ratio, uncovered_task_names}` over distinct top-level task names.
+  `RunState.add_finding` gained optional `task_name`/`depth` params (both default `None`, fully
+  backward compatible) so `orchestrator.py::_run_single_task`'s existing two call sites can tag
+  each finding with what produced it. New `engine/completion.py::check_thin_coverage`
+  (`COMPLETION_CHECKS` entry, right after `check_not_delegated` — same category, "did research
+  happen adequately," not grounding). Not Builder/FindingsWriter-fixable (fixing thin coverage
+  needs NEW delegation, which only the Planner can decide, same as `not_delegated`) — falls through
+  to the classic inject-into-Planner path by design. Conservative by construction: fires only when
+  a MAJORITY of top-level tasks came back with no real source (`threshold`, default 0.5) AND there
+  are enough of them for that ratio to mean anything (`min_tasks`, default 2) — a single-task query
+  (the common case for a simple factual lookup) that succeeded is never affected regardless of
+  "breadth." New config: `settings.coverage_check.{enabled,threshold,min_tasks}`. New tests: a
+  pure `RunState.coverage()` unit-test block (empty run, single covered task, nested-Analyzer
+  exclusion, 1-of-3 thin case) plus a `check_thin_coverage` wiring scenario (fires with the correct
+  injected task names + ratio text, stays silent on a successful single-task query, stays silent
+  exactly AT the threshold — confirms "below," not "at or below"). TUI/CLI parity confirmed by
+  construction: both `run_cli` and `run_agent` call the same shared `run_completion_check`, and
+  `_run_single_task` is shared engine code, so no surface-specific wiring was needed. Full suite +
+  `ruff check .` pass.
 - **Local-model bake-off: Gemma 4 12B, Bonsai-8B, and `qwen3:4b` vs. `gpt-oss:20b`** (found/verified 2026-07-13,
   smoke-tested and partially live-tested 2026-07-14) — two real local-model candidates surfaced by
   a 3-model research pass, independently verified (not taken on trust — one of the three research

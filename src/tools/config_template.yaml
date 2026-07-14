@@ -101,6 +101,20 @@ settings:
   # agent keep revising than stop early. Each extra attempt costs wall-clock time and the
   # retry_quota_topup allowance above, not memory — this is not a resource-limited setting.
   max_completion_check_attempts: 3
+  # ROADMAP Phase 5 ("Coverage accounting / ResearchMap"): distinct from every grounding_check
+  # below, which all verify content that ALREADY EXISTS is properly cited -- this instead asks
+  # whether the Planner's own top-level delegated research plan actually paid off. A report can be
+  # perfectly grounded (every citation traces to a real fetch) yet still be thin because most of
+  # the Planner's own delegated angles came back with nothing usable and got silently dropped.
+  # Built entirely from already-reliable, model-independent structural data (utils/run_state.py's
+  # RunState.coverage(): per-task fetch attribution + delegation depth, not a new Planner-authored
+  # schema). Conservative: fires only when a MAJORITY of top-level tasks came back with no real
+  # source AND there are enough of them for that to mean something -- a single-task query (the
+  # common case for a simple factual lookup) that succeeded is never affected by this at all.
+  coverage_check:
+    enabled: true
+    threshold: 0.5    # fire when covered/total top-level tasks falls below this
+    min_tasks: 2       # never fire with fewer top-level tasks than this -- not enough signal
   # Wall-clock budget in minutes for headless runs (0 = no limit; TUI ignores this — a user at
   # the keyboard can /stop). Not a hard kill: on expiry the current turn is cut short and the
   # completion check jumps straight to its final verdict, so labeling and report salvage still

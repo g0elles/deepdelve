@@ -143,8 +143,53 @@ class RunState:
     def set_plan(self, plan: str) -> None:
         self.data["plan"] = plan
 
-    def add_finding(self, source_url: str, summary: str) -> None:
-        self.data["findings"].append({"source_url": source_url, "summary": summary, "timestamp": time.time()})
+    def add_finding(self, source_url: str, summary: str, task_name: Optional[str] = None,
+                     depth: Optional[int] = None) -> None:
+        # task_name/depth (ROADMAP Phase 5, "Coverage accounting") are the anchor coverage() below
+        # groups by -- depth==1 means a top-level task the Planner itself dispatched via
+        # delegate_tasks, depth>1 a nested Analyzer-tier call one of THOSE tasks made in turn.
+        # Optional (default None) so any other/future caller of add_finding that doesn't have this
+        # context handy still works unchanged.
+        self.data["findings"].append({
+            "source_url": source_url, "summary": summary, "timestamp": time.time(),
+            "task_name": task_name, "depth": depth,
+        })
+
+    def coverage(self) -> dict:
+        """ROADMAP Phase 5 ("Coverage accounting / ResearchMap"): did the Planner's OWN top-level
+        research plan actually pay off, not just "is whatever got written grounded"? Every
+        existing completion check verifies citation/grounding quality of content that already
+        exists; none measure whether the Planner's own delegated breadth actually produced real
+        evidence. Deliberately reuses only already-reliable, model-independent structural data —
+        depth (delegation_depth_ctx, set once per _run_single_task dispatch, engine-side) and
+        whether a task's own findings ever carried a real fetched URL (source_url starting with
+        "http" -- the _run_single_task call site only ever passes a real fetched URL there, or
+        falls back to the bare task_name string otherwise, see engine/orchestrator.py's two
+        add_finding call sites) — not a new Planner-authored schema, which this project's own
+        established philosophy avoids (small local models have repeatedly proven unreliable at
+        following new structured-output conventions; see PLANNER_INSTRUCTIONS' own `_todos.md`
+        checklist convention, which has zero code-level validation behind it).
+
+        Returns {total, covered, ratio, uncovered_task_names} over DISTINCT depth==1 task names
+        only — a nested Analyzer sub-call is expected to reuse already-fetched content and have no
+        new URL of its own, so counting it would make coverage look artificially low every time
+        the Planner's own top-level tasks correctly delegate deeper analysis. `ratio` is 1.0 (not
+        an error) when there are zero depth==1 findings at all — check_thin_coverage's own
+        minimum-task-count gate is what decides whether a ratio is even meaningful to act on, not
+        this method."""
+        top_level = [f for f in self.data.get("findings", []) if f.get("depth") == 1 and f.get("task_name")]
+        by_task: dict = {}
+        for f in top_level:
+            by_task.setdefault(f["task_name"], []).append(f)
+        total = len(by_task)
+        if total == 0:
+            return {"total": 0, "covered": 0, "ratio": 1.0, "uncovered_task_names": []}
+        uncovered = [
+            name for name, task_findings in by_task.items()
+            if not any((tf.get("source_url") or "").startswith("http") for tf in task_findings)
+        ]
+        covered = total - len(uncovered)
+        return {"total": total, "covered": covered, "ratio": covered / total, "uncovered_task_names": uncovered}
 
     def record_attempt(self, attempt_number: int, problem: Optional[str], fetched_url_count: int,
                         detail: Optional[str] = None) -> None:

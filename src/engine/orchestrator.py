@@ -671,13 +671,19 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                 # URLs actually fetched during THIS task over the task name keeps findings traceable to
                 # a real source when one exists (Searcher-tier calls); Analyzer-tier calls fetch nothing
                 # themselves, so they fall back to the task name as the record's identifier.
+                # task_name/depth (ROADMAP Phase 5, "Coverage accounting") let RunState.coverage()
+                # group findings by which top-level (depth==1) task produced them, and tell a real
+                # fetched-URL finding apart from a task-name fallback one -- see that method's own
+                # docstring for why depth==1 only (a nested Analyzer's lack of a new URL is
+                # expected, not a coverage gap).
+                this_depth = delegation_depth_ctx.get()
                 run_state = run_state_ctx.get()
                 if run_state is not None:
                     if new_urls:
                         for u in new_urls:
-                            run_state.add_finding(u["url"], final_text[:1500])
+                            run_state.add_finding(u["url"], final_text[:1500], task_name=task_name, depth=this_depth)
                     else:
-                        run_state.add_finding(task_name, final_text[:1500])
+                        run_state.add_finding(task_name, final_text[:1500], task_name=task_name, depth=this_depth)
 
                 return f"## Result for {task_name}\n{final_text}\n---"
             finally:
