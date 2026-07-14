@@ -44,6 +44,9 @@ dependencies = [
     # to get the ~200MB CPU build instead, THEN this. Fails open at runtime if unavailable (see
     # grounding.py::_get_nli_model) — an environment that skips this dependency entirely still
     # runs every other check unaffected, it just never gets the NLI verification layer.
+    # 2026-07-14: also used for grounding.py::_get_topical_relevance_model (BAAI/bge-reranker-v2-m3,
+    # settings.grounding_check.topical_relevance_check) — a second CrossEncoder checkpoint through
+    # this SAME library, not an additional pip dependency. Same CPU-only/fails-open behavior.
     "sentence-transformers>=5.6.0,<6.0.0"
 ]
 
