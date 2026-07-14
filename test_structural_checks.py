@@ -836,6 +836,18 @@ def main():
 
     _coverage_scenario()
 
+    # --- ROADMAP Phase 5 follow-up (2026-07-14, live-caught): Builder/FindingsWriter/PeerReviewer
+    # dispatches must never feed RunState.add_finding's coverage bookkeeping -- they land at
+    # delegation_depth_ctx==1 exactly like a genuine Planner-delegated research task (see
+    # orchestrator.py's _NON_RESEARCH_DISPATCH_ROLES comment) and none of them can ever have a
+    # real source URL. Pins the exact role set the add_finding call site excludes. ---
+    def _non_research_dispatch_roles_scenario():
+        from engine.orchestrator import _NON_RESEARCH_DISPATCH_ROLES
+        assert _NON_RESEARCH_DISPATCH_ROLES == {"Builder", "FindingsWriter", "PeerReviewer"}, (
+            _NON_RESEARCH_DISPATCH_ROLES)
+
+    _non_research_dispatch_roles_scenario()
+
     # --- check_thin_coverage wiring (mirrors _line_claim_scenario's directness -- pure RunState
     # setup, no fetched-fs dependency needed since this check doesn't read workspace content) ---
     def _thin_coverage_wiring_scenario():
