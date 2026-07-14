@@ -8,6 +8,7 @@
 # first verdict wins, and there are no elif headers left to swallow. Adding a check = one function
 # + one list entry. test_structural_checks.py's verdict matrix pins every problem's routing.
 import os
+import re
 from dataclasses import dataclass
 from typing import Callable, NamedTuple, Optional
 
@@ -15,8 +16,8 @@ import config
 from agent_framework import Message
 from tools import tool_quotas_ctx, get_workspace_files, get_workspace_file_content
 from utils.run_state import get_fetched_urls, get_search_health
-from utils.grounding import fully_ungrounded, real_grounding_problem
-from engine.orchestrator import topup_quota_pool, available_sub_agents_ctx
+from utils.grounding import fully_ungrounded, real_grounding_problem, split_into_heading_sections
+from engine.orchestrator import topup_quota_pool, available_sub_agents_ctx, _extract_excluded_topics
 
 DEFAULT_MAX_COMPLETION_CHECK_ATTEMPTS = 3
 
@@ -403,6 +404,42 @@ def check_uncited_claims(ctx: Ctx) -> Optional[Verdict]:
     )
 
 
+def check_excluded_topic(ctx: Ctx) -> Optional[Verdict]:
+    """A live-observed, twice-confirmed failure mode (ROADMAP "Findings from live testing"):
+    `delegate_tasks` already skips DISPATCHING a task whose own topic matches an explicit query
+    exclusion ("excluding X") via `_extract_excluded_topics`, but that only stops NEW research on
+    X — it does nothing to stop X showing up as its own section in the final artifact anyway
+    (recalled from a sibling task's tangential findings, or synthesized by Builder without ever
+    being explicitly delegated). Confirmed live twice, different prompt wordings: an
+    explicitly-excluded sector got researched and included in the final report anyway.
+
+    Deliberately HEADING-scoped, not line/whole-document-scoped: a topic mentioned once in
+    passing prose (e.g. a source that discusses it tangentially while covering something else)
+    is not the same failure as giving it its own section, and a bare substring match across the
+    whole document would false-positive constantly on legitimate incidental mentions — same
+    section-scoping principle as check_uncited_claims's h1-h3 split
+    (`utils.grounding.split_into_heading_sections`). Reuses the exact same
+    `_extract_excluded_topics` parser `delegate_tasks` already uses, so a phrase like "excluding
+    X" is detected identically at both dispatch time and report-write time."""
+    query = ctx.run_state.data.get("query", "") if ctx.run_state else ""
+    excluded_topics = _extract_excluded_topics(query)
+    if not excluded_topics or not ctx.content:
+        return None
+    for section in split_into_heading_sections(ctx.content):
+        heading = next((line for line in section if re.match(r'#{1,3}\s', line)), None)
+        if not heading:
+            continue
+        heading_text = heading.lower()
+        hit = next((topic for topic in excluded_topics if topic in heading_text), None)
+        if hit:
+            return Verdict(
+                "excluded_topic_present",
+                f"`{ctx.req_artifact}` has a section on {hit!r}, which the query explicitly excluded. Pushing agent to remove it.",
+                f"SYSTEM WARNING: {ctx.last_chance_prefix}'{ctx.req_artifact}' has a section covering {hit!r} — the original query explicitly excluded this topic from the research. Remove that entire section and any content specific to it, keeping the rest of the report intact.",
+            )
+    return None
+
+
 def check_not_grounded(ctx: Ctx) -> Optional[Verdict]:
     """The generic hard gate: at least one cited URL matches nothing actually fetched this run."""
     gp = ctx.grounding_problem
@@ -433,6 +470,7 @@ GROUNDING_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
     check_non_url_citation,
     check_nli_unsupported,
     check_uncited_claims,
+    check_excluded_topic,
     check_not_grounded,  # generic catch-all: fires on ANY grounding problem — keep it LAST
 ]
 
@@ -451,7 +489,7 @@ _QUARANTINE_PROBLEMS = ("not_grounded", "claim_unsupported", "non_url_citation",
 # delegate, so that one still falls through to the classic inject-into-Planner path below.
 _BUILDER_FIXABLE_PROBLEMS = ("missing_artifact", "not_grounded", "claim_unsupported",
                              "non_url_citation", "regulation_unsupported", "stub_source",
-                             "nli_unsupported", "uncited_claims")
+                             "nli_unsupported", "uncited_claims", "excluded_topic_present")
 
 # Findings-authoring problems, fixable by a fresh-context FindingsWriter (+ PeerReviewer check)
 # from this run's REAL structured results (see _build_findings_source_material) — the Planner
