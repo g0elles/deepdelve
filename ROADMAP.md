@@ -451,6 +451,82 @@ Status as of 2026-07-14.
   all 4 sites plus a 5th (`_nli_verify_scenario` itself, which needed `topical_relevance_check:
   false` added since it deliberately leaves `nli_verify` on).
 
+- **Phase 5 of the approved 6-phase plan: coverage accounting / ResearchMap.** Distinct from every
+  other completion check: those all verify content that ALREADY EXISTS is properly grounded/cited;
+  this instead asks whether the Planner's own top-level delegated research plan actually paid off
+  — a report can be perfectly grounded yet still be thin because most of the Planner's own
+  delegated angles came back with nothing usable and got silently dropped rather than surfaced or
+  retried. Deliberately built entirely from already-reliable, model-independent structural data
+  instead of a new Planner-authored schema (investigated first and explicitly ruled out: `_todos.md`
+  is free text with only a prompted, zero-code-validated convention — exactly the kind of
+  compliance-dependent signal this project's own established philosophy avoids, given repeated
+  live failures of small local models following new structured-output requirements). New
+  `utils/run_state.py::RunState.coverage()` reuses two ALREADY-existing, engine-populated
+  primitives — `delegation_depth_ctx` (depth==1 = a task the Planner itself dispatched via
+  `delegate_tasks`; depth>1 = a nested Analyzer-tier sub-call, excluded from coverage since it's
+  expected to reuse already-fetched content with no new URL of its own) and per-task fetch
+  attribution (`task_fetched_urls_ctx`, from the 2026-07-12 race-condition fix) — to compute
+  `{total, covered, ratio, uncovered_task_names}` over distinct top-level task names.
+  `RunState.add_finding` gained optional `task_name`/`depth` params (both default `None`, fully
+  backward compatible) so `orchestrator.py::_run_single_task`'s existing two call sites can tag
+  each finding with what produced it. New `engine/completion.py::check_thin_coverage`
+  (`COMPLETION_CHECKS` entry, right after `check_not_delegated` — same category, "did research
+  happen adequately," not grounding). Not Builder/FindingsWriter-fixable (fixing thin coverage
+  needs NEW delegation, which only the Planner can decide, same as `not_delegated`) — falls through
+  to the classic inject-into-Planner path by design. Conservative by construction: fires only when
+  a MAJORITY of top-level tasks came back with no real source (`threshold`, default 0.5) AND there
+  are enough of them for that ratio to mean anything (`min_tasks`, default 2) — a single-task query
+  (the common case for a simple factual lookup) that succeeded is never affected regardless of
+  "breadth." New config: `settings.coverage_check.{enabled,threshold,min_tasks}`. New tests: a
+  pure `RunState.coverage()` unit-test block (empty run, single covered task, nested-Analyzer
+  exclusion, 1-of-3 thin case) plus a `check_thin_coverage` wiring scenario (fires with the correct
+  injected task names + ratio text, stays silent on a successful single-task query, stays silent
+  exactly AT the threshold — confirms "below," not "at or below"). TUI/CLI parity confirmed by
+  construction: both `run_cli` and `run_agent` call the same shared `run_completion_check`, and
+  `_run_single_task` is shared engine code, so no surface-specific wiring was needed. Full suite +
+  `ruff check .` pass. Committed `2a70d01`.
+  - **Live verification (same day) found 2 more real bugs, both fixed and live-confirmed** — the
+    standing-rule smoke test for this phase took 4 attempts; the first 3 timed out for reasons NOT
+    in Phase 5's own code, and root-causing each timeout (per the "don't hand-wave as model
+    slowness" standing rule — `journalctl -u ollama`, `~/.deepdelve/sessions/session_<id>.json`,
+    `ollama ps`) surfaced two separate, previously-invisible bugs:
+    1. **`settings.sub_agent_timeout_minutes` (the Phase-4-era sub-agent deadline fix, `d72772c`/
+       `9962a22`) was never actually live** — it exists in `config_template.yaml` but nothing
+       back-fills an existing user's real `~/.deepdelve/config.yaml`, so it was silently `0`
+       (disabled) the whole time; every earlier "live-verified" confirmation of that fix was only
+       true because the key had been temporarily test-added to the config and reverted afterward
+       along with unrelated per-test overrides. Not a code bug — fixed by adding the key directly
+       to the live config. New standing memory: new `settings.*` keys must be grepped in the LIVE
+       config, not just the template, before a dependent fix counts as verified.
+    2. **`_dispatch_writer_review_fix`'s corrective Fix pass had no evidence base of its own**
+       (`src/engine/completion.py`). Its second dispatch (fixing PeerReviewer-flagged issues) is a
+       fresh sub-agent with zero memory of the first Write dispatch; `fix_instructions` said to use
+       "the real source material you were given" but never actually included it. Harmless for
+       Builder (its source, `findings.md`, is a real re-readable file) but fatal for FindingsWriter,
+       whose source material (`_build_findings_source_material`) only ever existed as a string in
+       the first dispatch's prompt. Confirmed live: a `FindingsWriterFix_..._reviewed` dispatch
+       burned its entire turn hunting `read_workspace_file` for guessed, nonexistent filenames
+       (`task_results.json`, `research_results.json`, `instructions.md`) instead of writing a fix.
+       Fixed by re-appending the original `write_instructions` to `fix_instructions`, keeping the
+       function writer-role-agnostic. Live-confirmed fixed on the very next run.
+    3. **`check_thin_coverage` itself false-positived on the project's own internal
+       Write→Review→Fix dispatches** (`src/engine/orchestrator.py`). `Builder`/`FindingsWriter`/
+       `PeerReviewer` are dispatched directly from the Planner's own top-level context (via
+       `run_completion_check`, not `delegate_tasks`), so they land at `delegation_depth_ctx==1`
+       exactly like a genuine top-level research task — structurally indistinguishable by depth
+       alone. Confirmed live: coverage counted `'FindingsWriterFix_attempt1'`,
+       `'ReviewFix_attempt1'`, `'FindingsWriterFix_attempt1_reviewed'` as 3 of 5 "delegated
+       research tasks" that produced no source. Fixed with a new
+       `_NON_RESEARCH_DISPATCH_ROLES = frozenset({"Builder", "FindingsWriter", "PeerReviewer"})`
+       constant; `add_finding` now skips recording entirely for those roles. Pinned by a regression
+       test asserting the exact role set. Live-confirmed fixed: the final clean run's
+       `_run_state.json` showed only real task names in `findings`, coverage 2/2 (ratio 1.0), no
+       `thin_coverage` entry.
+    - **Final clean end-to-end run**
+      (`compare_the_population_of_canada_and_australia_20260714_170629`, 1018.5s): `findings.md`
+      and `final_report.md` both written, PeerReviewer passed clean on the `final_report.md`
+      re-check, real grounded citations (ABS + Wikipedia). Full suite + `ruff check .` pass
+      throughout. Committed `3dd349a`.
 ## Findings from live testing (not yet acted on / informational)
 
 - **Grounding check verifies provenance, not topical relevance.** A live GOA (Grasshopper Optimization Algorithm) research query got a citation from `globaldrivetozero.org` — actually fetched, and sharing surface terms like "GOA"/"Goa" — that's actually about the Indian state of Goa's EV policy, not the algorithm. The URL-presence + term-overlap check passed it because it only checks "was this fetched" and "do terms overlap," not "is this source about the same subject." Acronym collisions are the clearest way to trigger this; unclear how common the failure mode is outside them. **Fixed 2026-07-14 — see "Done" (Phase 4, `topical_relevance_problem`).**
@@ -602,47 +678,12 @@ Status as of 2026-07-14.
 
 ## Planned (not started)
 
-- **6-phase plan approved 2026-07-14 for the items below** (Phases 1-4 done — see "Done" above):
-  Phase 1 claim-level grounding upgrade (DONE) → Phase 2 cross-source contradiction detection
-  (DONE) → Phase 3 xQuAD diversity reranking (DONE) → Phase 4 topical-relevance cross-encoder
-  reranker (DONE) → Phase 5 coverage accounting/ResearchMap (independent, Planner schema change) →
-  Phase 5 coverage accounting/ResearchMap (DONE) → Phase 6 B4 TUI/CLI loop unification (deferred
-  last, highest regression risk). Sequenced by ROADMAP's own stated priority + dependency order +
-  risk, not file order below.
-- **Phase 5 of the approved 6-phase plan: coverage accounting / ResearchMap.** Distinct from every
-  other completion check: those all verify content that ALREADY EXISTS is properly grounded/cited;
-  this instead asks whether the Planner's own top-level delegated research plan actually paid off
-  — a report can be perfectly grounded yet still be thin because most of the Planner's own
-  delegated angles came back with nothing usable and got silently dropped rather than surfaced or
-  retried. Deliberately built entirely from already-reliable, model-independent structural data
-  instead of a new Planner-authored schema (investigated first and explicitly ruled out: `_todos.md`
-  is free text with only a prompted, zero-code-validated convention — exactly the kind of
-  compliance-dependent signal this project's own established philosophy avoids, given repeated
-  live failures of small local models following new structured-output requirements). New
-  `utils/run_state.py::RunState.coverage()` reuses two ALREADY-existing, engine-populated
-  primitives — `delegation_depth_ctx` (depth==1 = a task the Planner itself dispatched via
-  `delegate_tasks`; depth>1 = a nested Analyzer-tier sub-call, excluded from coverage since it's
-  expected to reuse already-fetched content with no new URL of its own) and per-task fetch
-  attribution (`task_fetched_urls_ctx`, from the 2026-07-12 race-condition fix) — to compute
-  `{total, covered, ratio, uncovered_task_names}` over distinct top-level task names.
-  `RunState.add_finding` gained optional `task_name`/`depth` params (both default `None`, fully
-  backward compatible) so `orchestrator.py::_run_single_task`'s existing two call sites can tag
-  each finding with what produced it. New `engine/completion.py::check_thin_coverage`
-  (`COMPLETION_CHECKS` entry, right after `check_not_delegated` — same category, "did research
-  happen adequately," not grounding). Not Builder/FindingsWriter-fixable (fixing thin coverage
-  needs NEW delegation, which only the Planner can decide, same as `not_delegated`) — falls through
-  to the classic inject-into-Planner path by design. Conservative by construction: fires only when
-  a MAJORITY of top-level tasks came back with no real source (`threshold`, default 0.5) AND there
-  are enough of them for that ratio to mean anything (`min_tasks`, default 2) — a single-task query
-  (the common case for a simple factual lookup) that succeeded is never affected regardless of
-  "breadth." New config: `settings.coverage_check.{enabled,threshold,min_tasks}`. New tests: a
-  pure `RunState.coverage()` unit-test block (empty run, single covered task, nested-Analyzer
-  exclusion, 1-of-3 thin case) plus a `check_thin_coverage` wiring scenario (fires with the correct
-  injected task names + ratio text, stays silent on a successful single-task query, stays silent
-  exactly AT the threshold — confirms "below," not "at or below"). TUI/CLI parity confirmed by
-  construction: both `run_cli` and `run_agent` call the same shared `run_completion_check`, and
-  `_run_single_task` is shared engine code, so no surface-specific wiring was needed. Full suite +
-  `ruff check .` pass.
+- **6-phase plan approved 2026-07-14 — Phases 1-5 done, see "Done" above.** Phase 1 claim-level
+  grounding upgrade → Phase 2 cross-source contradiction detection → Phase 3 xQuAD diversity
+  reranking → Phase 4 topical-relevance cross-encoder reranker → Phase 5 coverage accounting/
+  ResearchMap (all DONE) → **Phase 6 B4 TUI/CLI loop unification (deferred last, highest
+  regression risk — the only phase still open, see its own entry below).** Sequenced by ROADMAP's
+  own stated priority + dependency order + risk, not file order below.
 - **Local-model bake-off: Gemma 4 12B, Bonsai-8B, and `qwen3:4b` vs. `gpt-oss:20b`** (found/verified 2026-07-13,
   smoke-tested and partially live-tested 2026-07-14) — two real local-model candidates surfaced by
   a 3-model research pass, independently verified (not taken on trust — one of the three research
