@@ -743,10 +743,21 @@ async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artif
         return
 
     notify(f"**System ({attempt + 1}):** PeerReviewer flagged issues in the rebuilt `{req_artifact}` — dispatching one corrective {writer_role} pass.")
+    # Fresh-context dispatch: this Fix pass shares NO conversation history with the Write pass
+    # above, so `review_text` alone leaves it with no evidence base at all. Confirmed live
+    # 2026-07-14: a FindingsWriter Fix pass told to use "the real source material you were given"
+    # (worded for a Write-pass model that actually has it in-context) instead burned its whole
+    # dispatch hunting read_workspace_file for guessed, nonexistent filenames
+    # (task_results.json, research_results.json, instructions.md) — findings.md's source material
+    # is a string assembled by _build_findings_source_material, never a workspace file, so there
+    # was nothing for it to find. Builder's source (findings.md itself) IS a real file it could
+    # have re-read, but re-including write_instructions here is correct for both roles and keeps
+    # this function writer-role-agnostic.
     fix_instructions = (
         f"PeerReviewer critiqued your last draft of '{req_artifact}'. Fix every issue it raised, "
-        f"using only the real source material you were given (never your own prior knowledge), "
-        f"then rewrite the file:\n\n{review_text}"
+        f"using only the real source material below (never your own prior knowledge), "
+        f"then rewrite the file:\n\n{review_text}\n\n"
+        f"--- YOUR ORIGINAL TASK INSTRUCTIONS AND SOURCE MATERIAL (unchanged) ---\n{write_instructions}"
     )
     await dispatch_task(f"{writer_role}Fix_attempt{attempt + 1}_reviewed", fix_instructions, writer_role)
 

@@ -20,6 +20,16 @@ _session = None
 delegation_depth_ctx = contextvars.ContextVar('delegation_depth_ctx', default=0)
 available_sub_agents_ctx = contextvars.ContextVar('available_sub_agents_ctx', default=[])
 
+# Roles dispatched by engine/completion.py's _dispatch_writer_review_fix (Write->Review->Fix loop),
+# not by the Planner's own delegate_tasks. They're called directly from the Planner's top-level
+# context, so they land at delegation_depth_ctx==1 exactly like a genuine research dispatch -- depth
+# alone can't tell them apart (see RunState.coverage()'s docstring). None of these roles do research
+# or can ever have a real source URL, so they must be excluded from add_finding's coverage
+# bookkeeping. Confirmed live 2026-07-14: check_thin_coverage fired counting
+# 'FindingsWriterFix_attempt1'/'ReviewFix_attempt1'/'FindingsWriterFix_attempt1_reviewed' as 3 of 5
+# "delegated research tasks" that produced no source.
+_NON_RESEARCH_DISPATCH_ROLES = frozenset({"Builder", "FindingsWriter", "PeerReviewer"})
+
 def apply_tool_permissions(tools: list) -> list:
     """Dynamically applies approval boundaries mapped in config.yaml."""
     perms = config.cfg.get("settings", {}).get("permissions", {})
@@ -678,7 +688,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                 # expected, not a coverage gap).
                 this_depth = delegation_depth_ctx.get()
                 run_state = run_state_ctx.get()
-                if run_state is not None:
+                if run_state is not None and agent_id not in _NON_RESEARCH_DISPATCH_ROLES:
                     if new_urls:
                         for u in new_urls:
                             run_state.add_finding(u["url"], final_text[:1500], task_name=task_name, depth=this_depth)
