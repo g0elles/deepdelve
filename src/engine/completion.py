@@ -92,12 +92,16 @@ def check_findings_ungrounded(ctx: Ctx) -> Optional[Verdict]:
     findings_problem = fully_ungrounded(get_workspace_file_content("findings.md") or "")
     if not findings_problem:
         return None
+    # This text is the Planner-facing FALLBACK only (used when no FindingsWriter is registered —
+    # see run_completion_check's dispatch branch, which handles the normal case directly and never
+    # shows this to the Planner at all). Must not tell the Planner to write anything itself — it
+    # has no write_workspace_file tool as of 2026-07-14 (see PLANNER_INSTRUCTIONS).
     return Verdict(
         "findings_ungrounded",
         f"`findings.md` (Pass 1) fails the grounding check ({findings_problem}) — nothing in it traces to a source actually fetched this run. Pushing agent to rebuild it from real delegated results.",
-        f"SYSTEM WARNING: your Pass-1 'findings.md' is not grounded in real research ({findings_problem}) — "
+        f"SYSTEM WARNING: 'findings.md' is not grounded in real research ({findings_problem}) — "
         + ("it contains no source URLs at all" if findings_problem == "no_urls" else "not one URL it cites matches anything your Searcher(s) actually fetched this run")
-        + f". findings.md must be a verbatim consolidation of what your delegated Searchers/Analyzers actually returned, never written from your own memory. The fabricated file has been moved aside. Delegate real research tasks now if you haven't, then rebuild findings.md strictly from those real results — only after that, write '{ctx.req_artifact}' from it.",
+        + f". You cannot fix this yourself — you have no write_workspace_file tool. If you have not delegated enough real research yet, delegate it now with delegate_tasks. Otherwise stop calling tools entirely: a dedicated FindingsWriter role rebuilds findings.md automatically from your real delegated results once you stop.",
     )
 
 
@@ -130,36 +134,37 @@ def check_missing_findings(ctx: Ctx) -> Optional[Verdict]:
         else:
             break
 
+    # This text is the Planner-facing FALLBACK only (used when no FindingsWriter is registered —
+    # see run_completion_check's dispatch branch, which handles the normal case directly and never
+    # shows this to the Planner at all). Must not tell the Planner to write anything itself — it
+    # has no write_workspace_file tool as of 2026-07-14 (see PLANNER_INSTRUCTIONS).
     if prior_same == 0:
         directive = (
-            "You never wrote 'findings.md'. The workflow is two passes: FIRST write findings.md "
-            "as a verbatim consolidation of everything your delegated Searchers/Analyzers "
-            f"actually returned (each claim with its real source URL), THEN write "
-            f"'{ctx.req_artifact}' from it. You have real delegated results in your context "
-            f"above — do NOT claim nothing was retrieved, and do NOT write '{ctx.req_artifact}' "
-            f"directly."
+            "No 'findings.md' exists yet, and you have no way to write one yourself — you have no "
+            "write_workspace_file tool. If you have not finished delegating all the research this "
+            "query needs, delegate the remaining tasks now with delegate_tasks. If you believe you "
+            "already have enough real delegated results, stop calling tools entirely: a dedicated "
+            "FindingsWriter role builds findings.md automatically from what you've delegated, once "
+            "you stop."
         )
     else:
         directive = (
-            f"'findings.md' is STILL missing after {prior_same} prior warning(s). A text "
-            f"response or silence does not count — only a file that actually exists on disk "
-            f"does. Do NOT claim nothing was retrieved: you have real fetched sources from this "
-            f"run (see the exact URLs below if you've lost track of them)."
+            f"'findings.md' is STILL missing after {prior_same} prior warning(s). You cannot "
+            f"write it yourself. If there is more research this query genuinely needs, delegate "
+            f"it now with delegate_tasks. Otherwise stop calling tools entirely — the automatic "
+            f"FindingsWriter step needs you to stop delegating, not to keep acting."
         )
 
     escalation = ""
     if prior_same >= 1:
         real_urls = get_fetched_urls()
         url_list = "\n".join(f"- {u['url']}" for u in real_urls[:20]) or "(none fetched yet)"
-        escalation = (
-            f" Here are the EXACT URLs actually fetched this run — write findings.md "
-            f"summarizing what each one contains, using these verbatim:\n{url_list}"
-        )
+        escalation = f" For reference, the EXACT URLs actually fetched this run so far:\n{url_list}"
 
     return Verdict(
         "missing_findings",
         "`findings.md` (Pass 1) was never written — the two-pass discipline was skipped. Pushing agent to write it before the final report.",
-        f"SYSTEM WARNING: {ctx.last_chance_prefix}{directive} Call write_workspace_file(filename='findings.md', content=...) right now.{escalation}",
+        f"SYSTEM WARNING: {ctx.last_chance_prefix}{directive}{escalation}",
     )
 
 
@@ -441,13 +446,24 @@ _QUARANTINE_PROBLEMS = ("not_grounded", "claim_unsupported", "non_url_citation",
 
 # Problems fixable by rewriting `req_artifact` from the SAME findings.md, no new research needed —
 # dispatched to a fresh-context Builder (+ PeerReviewer check) by run_completion_check's
-# Build->Review->Fix loop instead of growing the Planner's own conversation. The complement
-# (missing_findings, findings_ungrounded, not_delegated) genuinely needs more/different research,
-# which only the Planner can decide and delegate, so those still fall through to the classic
-# inject-into-Planner path below.
+# Write->Review->Fix loop instead of growing the Planner's own conversation. The complement
+# (not_delegated) genuinely needs more/different research, which only the Planner can decide and
+# delegate, so that one still falls through to the classic inject-into-Planner path below.
 _BUILDER_FIXABLE_PROBLEMS = ("missing_artifact", "not_grounded", "claim_unsupported",
                              "non_url_citation", "regulation_unsupported", "stub_source",
                              "nli_unsupported", "uncited_claims")
+
+# Findings-authoring problems, fixable by a fresh-context FindingsWriter (+ PeerReviewer check)
+# from this run's REAL structured results (see _build_findings_source_material) — the Planner
+# itself no longer writes findings.md at all (2026-07-14 architecture change: giving the Planner
+# that job meant a findings.md retry grew the Planner's OWN conversation exactly the way Builder
+# was invented to prevent for final_report.md — confirmed live the same day, a benchmark run hit
+# 4 consecutive findings_ungrounded retries before exhausting its budget with nothing written).
+# Requires "FindingsWriter" registered as a sub-agent (see src/app.py) — when it isn't (or
+# dispatch_task is None), both problems fall back to the classic inject-into-Planner path so an
+# older/custom SubAgentConfig setup that hasn't added FindingsWriter doesn't just silently stop
+# working.
+_FINDINGS_WRITER_FIXABLE_PROBLEMS = ("missing_findings", "findings_ungrounded")
 
 
 def _quarantine_artifact(req_artifact: str, attempt: int) -> None:
@@ -526,63 +542,95 @@ def _salvage_narrated_report(req_artifact: str, last_assistant_text: str) -> boo
         return False
 
 
-def _ensure_builder_write_quota_headroom(pool: dict) -> None:
-    """Build->Review->Fix can burn up to 2 `write_workspace_file` calls in a single completion-
-    check retry (Builder's initial rewrite, plus one corrective Fix pass if PeerReviewer flags
-    issues) — against the SAME shared cumulative pool the Planner's own `findings.md` writes draw
-    from (see `build_quota_pool`'s docstring: one pool across every role, by design). The standard
-    per-attempt `topup_quota_pool` (called just before this) already covers the default config
-    fine — not currently starved in practice — but a config with a low `write_workspace_file`
-    limit/topup would starve Builder specifically mid-cycle, degrading it to the same "narrate
-    instead of write" failure the Planner used to be prone to, one level down. Rather than a
-    separate reserved pool (a bigger structural change, and against the shared-pool design), this
-    tops up ONLY the one tool this cycle actually needs, and only by the exact headroom it could
-    need — not a blanket amount that would also quietly inflate the Planner's own budget."""
+def _ensure_writer_quota_headroom(pool: dict) -> None:
+    """A Write->Review->Fix cycle (Builder writing final_report.md, or FindingsWriter writing
+    findings.md — see _dispatch_writer_review_fix) can burn up to 2 `write_workspace_file` calls
+    in a single completion-check retry (the initial write, plus one corrective Fix pass if
+    PeerReviewer flags issues) — against the SAME shared cumulative pool every role's
+    `write_workspace_file` calls draw from (see `build_quota_pool`'s docstring: one pool across
+    every role, by design). The standard per-attempt `topup_quota_pool` (called just before this)
+    already covers the default config fine — not currently starved in practice — but a config
+    with a low `write_workspace_file` limit/topup would starve a writer role specifically
+    mid-cycle, degrading it to the same "narrate instead of write" failure the Planner used to be
+    prone to, one level down. Rather than a separate reserved pool (a bigger structural change,
+    and against the shared-pool design), this tops up ONLY the one tool this cycle actually needs,
+    and only by the exact headroom it could need — not a blanket amount that would also quietly
+    inflate every other role's budget."""
     entry = pool.get("write_workspace_file")
     if entry is None:
         return
-    needed = 2  # Builder's initial rewrite + one possible corrective Fix pass
+    needed = 2  # the writer's initial write + one possible corrective Fix pass
     headroom = entry["limit"] - entry["used"]
     if headroom < needed:
         entry["limit"] += (needed - headroom)
 
 
-async def _dispatch_build_review_fix(dispatch_task, req_artifact: str, verdict: "Verdict", attempt: int, notify) -> None:
-    """Build -> Review -> Fix, all fresh-context sub-agent dispatches, none of which touch the
-    Planner's own conversation. Caller (run_completion_check) is responsible for quarantine,
-    quota top-up, and run_state bookkeeping around this call — this function only runs the
-    dispatch sequence. Raises on any dispatch failure so the caller can fall back to the classic
-    inject-into-Planner path for this cycle rather than silently doing nothing.
+async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artifact: str,
+                                       write_instructions: str, attempt: int, notify) -> None:
+    """Write -> Review -> Fix, all fresh-context sub-agent dispatches, none of which touch the
+    Planner's own conversation. Shared by both writer roles that exist for exactly this reason —
+    Builder (writes/fixes final_report.md from findings.md) and FindingsWriter (writes/fixes
+    findings.md from this run's real structured results, see _build_findings_source_material) —
+    same loop shape, different writer role/artifact/source material. Caller
+    (run_completion_check) is responsible for quarantine, quota top-up, and run_state bookkeeping
+    around this call — this function only runs the dispatch sequence. Raises on any dispatch
+    failure so the caller can fall back to the classic inject-into-Planner path for this cycle
+    rather than silently doing nothing.
 
-    Capped at 3 dispatches total (Build, Review, optional Fix) — no unbounded nesting."""
-    builder_instructions = (
-        f"Rewrite '{req_artifact}' from findings.md, fixing this specific problem:\n"
-        f"{verdict.inject}\n\nWrite the corrected file now via write_workspace_file."
-    )
-    await dispatch_task(f"BuilderFix_attempt{attempt + 1}", builder_instructions, "Builder")
+    Capped at 3 dispatches total (Write, Review, optional Fix) — no unbounded nesting."""
+    await dispatch_task(f"{writer_role}Fix_attempt{attempt + 1}", write_instructions, writer_role)
 
     review = await dispatch_task(
         f"ReviewFix_attempt{attempt + 1}",
-        f"Review '{req_artifact}' against findings.md for accuracy and coherence. "
+        f"Review '{req_artifact}' for accuracy and coherence. "
         f"Start your response with exactly 'REVIEW: CLEAN' or 'REVIEW: ISSUES FOUND:'.",
         "PeerReviewer",
     )
 
     # Conservative parse: anything other than an explicit CLEAN verdict (including a missing
     # sentinel — the model didn't follow format) is treated as issues found, so a formatting slip
-    # never lets an unreviewed report slip through.
+    # never lets an unreviewed artifact slip through.
     review_text = review if isinstance(review, str) else str(review)
     is_clean = "REVIEW: CLEAN" in review_text and "REVIEW: ISSUES FOUND:" not in review_text
     if is_clean:
         notify(f"**System ({attempt + 1}):** PeerReviewer found no issues with the rebuilt `{req_artifact}`.")
         return
 
-    notify(f"**System ({attempt + 1}):** PeerReviewer flagged issues in the rebuilt `{req_artifact}` — dispatching one corrective Builder pass.")
+    notify(f"**System ({attempt + 1}):** PeerReviewer flagged issues in the rebuilt `{req_artifact}` — dispatching one corrective {writer_role} pass.")
     fix_instructions = (
         f"PeerReviewer critiqued your last draft of '{req_artifact}'. Fix every issue it raised, "
-        f"using only findings.md as your source of facts, then rewrite the file:\n\n{review_text}"
+        f"using only the real source material you were given (never your own prior knowledge), "
+        f"then rewrite the file:\n\n{review_text}"
     )
-    await dispatch_task(f"BuilderFix_attempt{attempt + 1}_reviewed", fix_instructions, "Builder")
+    await dispatch_task(f"{writer_role}Fix_attempt{attempt + 1}_reviewed", fix_instructions, writer_role)
+
+
+def _build_findings_source_material(run_state: "RunState") -> str:  # noqa: F821 — utils.run_state.RunState, annotation only
+    """Everything FindingsWriter needs to write findings.md, assembled from RunState's structured
+    per-task records rather than the Planner's own conversation — FindingsWriter is dispatched in
+    a fresh context with no memory of what the Planner saw, so this is its entire evidence base.
+    `run_state.data["findings"]` already accumulates a {source_url, summary} entry for EVERY
+    dispatched task (Searcher tier AND nested Analyzer tier alike — see
+    engine/orchestrator.py::_run_single_task's `run_state.add_finding` call, which fires
+    unconditionally on every task, not just top-level ones), so this is a complete record of the
+    run's real research, not a lossy approximation of it."""
+    findings = run_state.data.get("findings", [])
+    urls = run_state.data.get("fetched_urls", [])
+    findings_block = "\n\n".join(
+        f"### Source: {f.get('source_url')}\n{f.get('summary', '')}" for f in findings
+    ) or "(no findings recorded yet)"
+    fetched_block = "\n".join(
+        f"- {u.get('url')} (saved as {u.get('filename')})" for u in urls
+    ) or "(no URLs fetched yet)"
+    return (
+        "REAL RESEARCH RESULTS FROM THIS RUN, one entry per dispatched Searcher/Analyzer task "
+        "(this is your ENTIRE evidence base — you have no other memory of this run):\n\n"
+        f"{findings_block}\n\n"
+        "ALL URLS ACTUALLY FETCHED THIS RUN, for cross-reference — each file's full content is "
+        "readable under its saved filename via read_workspace_file/grep_workspace_file if a "
+        "summary above isn't detailed enough:\n"
+        f"{fetched_block}"
+    )
 
 
 async def run_completion_check(query: str, current_input, run_state: "RunState", notify, last_assistant_text: str = "", dispatch_task=None):  # noqa: F821 — utils.run_state.RunState, annotation only
@@ -591,12 +639,14 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
     (as a last resort) salvaging a narrated-but-never-written report instead of losing it.
 
     `dispatch_task`, when provided (see engine.orchestrator._run_single_task / create_local_agent's
-    3-tuple return), enables the Build->Review->Fix loop for `_BUILDER_FIXABLE_PROBLEMS`: instead
-    of injecting a nudge into the Planner's own `current_input` (which never shrinks across a
-    run), a fresh Builder sub-agent rewrites the artifact and a fresh PeerReviewer checks the
-    result, entirely outside the Planner's conversation. When `dispatch_task` is None (or the
-    caller's registered sub-agents don't include both "Builder" and "PeerReviewer"), every problem
-    falls back to the classic inject-into-Planner behavior unconditionally.
+    3-tuple return), enables the Write->Review->Fix loop for BOTH `_BUILDER_FIXABLE_PROBLEMS` and
+    `_FINDINGS_WRITER_FIXABLE_PROBLEMS`: instead of injecting a nudge into the Planner's own
+    `current_input` (which never shrinks across a run), a fresh Builder or FindingsWriter
+    sub-agent rewrites the relevant artifact and a fresh PeerReviewer checks the result, entirely
+    outside the Planner's conversation. When `dispatch_task` is None (or the caller's registered
+    sub-agents don't include the needed pair — "Builder"+"PeerReviewer" or
+    "FindingsWriter"+"PeerReviewer"), that class of problem falls back to the classic
+    inject-into-Planner behavior unconditionally.
 
     Returns (should_retry: bool, new_current_input). Caller is responsible for looping while
     should_retry is True, same as before.
@@ -687,25 +737,61 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
             if pool is not None:
                 topup_quota_pool(pool)
 
-            # Build->Review->Fix: for artifact-authoring problems, dispatch fresh-context Builder
-            # (+PeerReviewer check) instead of nudging the Planner's own conversation — see
-            # _dispatch_build_review_fix and run_completion_check's docstring. Defensive: requires
+            # Write->Review->Fix: for artifact-authoring problems, dispatch a fresh-context writer
+            # role (+PeerReviewer check) instead of nudging the Planner's own conversation — see
+            # _dispatch_writer_review_fix and run_completion_check's docstring. Defensive: requires
             # BOTH roles registered, and any dispatch failure falls back to the classic path for
             # this cycle rather than losing the retry entirely.
+            caller_sub_agents = available_sub_agents_ctx.get()
+            has_peer_reviewer = caller_sub_agents and any(c.name == "PeerReviewer" for c in caller_sub_agents)
+
             if dispatch_task is not None and problem in _BUILDER_FIXABLE_PROBLEMS:
-                caller_sub_agents = available_sub_agents_ctx.get()
-                has_builder_pair = caller_sub_agents and any(c.name == "Builder" for c in caller_sub_agents) \
-                    and any(c.name == "PeerReviewer" for c in caller_sub_agents)
+                has_builder_pair = has_peer_reviewer and any(c.name == "Builder" for c in caller_sub_agents)
                 if has_builder_pair:
                     notify(f"**System ({attempt + 1}/{max_attempts}):** {verdict.warning} (dispatching Builder to rewrite, not the Planner)")
                     if pool is not None:
-                        _ensure_builder_write_quota_headroom(pool)
+                        _ensure_writer_quota_headroom(pool)
                     try:
-                        await _dispatch_build_review_fix(dispatch_task, req_artifact, verdict, attempt, notify)
+                        builder_instructions = (
+                            f"Rewrite '{req_artifact}' from findings.md, fixing this specific problem:\n"
+                            f"{verdict.inject}\n\nWrite the corrected file now via write_workspace_file."
+                        )
+                        await _dispatch_writer_review_fix(dispatch_task, "Builder", req_artifact, builder_instructions, attempt, notify)
                         run_state.save()
                         return True, current_input
                     except Exception:
                         notify(f"**System ({attempt + 1}/{max_attempts}):** Builder dispatch failed — falling back to asking the Planner directly.")
+
+            elif dispatch_task is not None and problem in _FINDINGS_WRITER_FIXABLE_PROBLEMS:
+                has_findings_writer_pair = has_peer_reviewer and any(c.name == "FindingsWriter" for c in caller_sub_agents)
+                if has_findings_writer_pair:
+                    notify(f"**System ({attempt + 1}/{max_attempts}):** {verdict.warning} (dispatching FindingsWriter to rewrite, not the Planner)")
+                    if pool is not None:
+                        _ensure_writer_quota_headroom(pool)
+                    try:
+                        # Deliberately NOT verdict.inject — that text is worded for the PLANNER
+                        # fallback path (mentions delegate_tasks, "you have no write_workspace_file
+                        # tool") and would be actively confusing to FindingsWriter, which has the
+                        # opposite tool set (can write, can't delegate). FindingsWriter gets its
+                        # own problem-appropriate directive plus its real evidence base instead.
+                        if problem == "findings_ungrounded":
+                            write_directive = (
+                                "The previous findings.md draft was fabricated or wholesale "
+                                "ungrounded and has been moved aside. Rebuild it now, strictly "
+                                "from the real research results below — never from your own "
+                                "prior knowledge."
+                            )
+                        else:
+                            write_directive = "findings.md has never been written yet. Write it now from the real research results below."
+                        findings_writer_instructions = (
+                            f"{write_directive}\n\n{_build_findings_source_material(run_state)}\n\n"
+                            f"Write the file now via write_workspace_file."
+                        )
+                        await _dispatch_writer_review_fix(dispatch_task, "FindingsWriter", "findings.md", findings_writer_instructions, attempt, notify)
+                        run_state.save()
+                        return True, current_input
+                    except Exception:
+                        notify(f"**System ({attempt + 1}/{max_attempts}):** FindingsWriter dispatch failed — falling back to asking the Planner directly.")
 
             notify(f"**System ({attempt + 1}/{max_attempts}):** {verdict.warning}")
             new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)

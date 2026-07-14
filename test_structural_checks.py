@@ -721,7 +721,7 @@ def main():
     contextvars.copy_context().run(_missing_artifact_escalation_scenario)
 
     # --- Builder Build->Review->Fix dispatch loop (see engine/completion.py's
-    # _dispatch_build_review_fix / _BUILDER_FIXABLE_PROBLEMS): for artifact-authoring problems,
+    # _dispatch_writer_review_fix / _BUILDER_FIXABLE_PROBLEMS): for artifact-authoring problems,
     # run_completion_check must dispatch a fresh-context Builder (+PeerReviewer check) instead of
     # nudging the Planner's own current_input, when a dispatch_task callable is provided AND both
     # roles are registered. The core regression this guards against: current_input must come back
@@ -829,9 +829,12 @@ def main():
                     "missing-registration fallback must still inject the classic nudge", new_input)
                 available_sub_agents_ctx.set([_FakeSubAgentConfig("Builder"), _FakeSubAgentConfig("PeerReviewer")])
 
-            # (e) A Planner-escalated problem (missing_findings) must NEVER dispatch Builder, even
-            # with a fully-registered pair and a working dispatch_task — it needs new research, not
-            # a rewrite, so it must still grow current_input via the classic nudge path.
+            # (e) missing_findings must NEVER dispatch BUILDER, even with a fully-registered
+            # Builder+PeerReviewer pair and a working dispatch_task — that problem is
+            # FindingsWriter-fixable, not Builder-fixable (see _FINDINGS_WRITER_FIXABLE_PROBLEMS).
+            # Only "FindingsWriter" (not registered in THIS scenario) unlocks the dispatch path for
+            # it — see _findings_writer_dispatch_scenario below for that path with FindingsWriter
+            # actually registered. Here it must still grow current_input via the classic nudge path.
             with tempfile.TemporaryDirectory() as tmpdir_e:
                 _IN_MEMORY_FS.pop("findings.md", None)
                 rs = RunState(tmpdir_e)
@@ -863,24 +866,142 @@ def main():
 
     contextvars.copy_context().run(_builder_dispatch_scenario)
 
+    # --- FindingsWriter Write->Review->Fix dispatch loop (2026-07-14 architecture change: the
+    # Planner no longer writes findings.md itself — see _FINDINGS_WRITER_FIXABLE_PROBLEMS /
+    # _build_findings_source_material / src/prompts.py's FINDINGS_WRITER_INSTRUCTIONS). Mirrors
+    # _builder_dispatch_scenario above exactly, one artifact earlier: current_input must come back
+    # UNCHANGED (the same context-growth fix, now applied to findings.md too). ---
+    def _findings_writer_dispatch_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        from tools.core import tool_quotas_ctx as q_ctx
+        from unittest.mock import AsyncMock
+        from engine.orchestrator import available_sub_agents_ctx
+
+        class _FakeSubAgentConfig:
+            def __init__(self, name):
+                self.name = name
+
+        _orig_ws9 = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
+        _orig_gc9 = _config.cfg.get("settings", {}).get("grounding_check")
+        _config.cfg["settings"]["grounding_check"] = {"nli_verify": False}
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            _IN_MEMORY_FS.clear()
+            reset_fetched_urls()
+            record_fetched_url(_SRC, filename="sources/page.md")
+            _IN_MEMORY_FS["sources/page.md"] = _SOURCE_TEXT
+            # No findings.md yet -- the missing_findings shape.
+            q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5}})
+            available_sub_agents_ctx.set([_FakeSubAgentConfig("FindingsWriter"), _FakeSubAgentConfig("PeerReviewer")])
+
+            # (a) missing_findings, PeerReviewer returns REVIEW: CLEAN -> exactly 2 dispatches
+            # (FindingsWriter, PeerReviewer), current_input unchanged.
+            with tempfile.TemporaryDirectory() as tmpdir_a:
+                rs = RunState(tmpdir_a)
+                rs.add_finding(_SRC, "the real finding a dispatched Searcher actually returned")
+                run_state_ctx.set(rs)
+                msgs = []
+                dispatch = AsyncMock(side_effect=[
+                    "## Result for FindingsWriterFix_attempt1\nWrote findings.md\n---",
+                    "REVIEW: CLEAN\nNo issues found.",
+                ])
+                orig_input = "q"
+                should_retry, new_input = _asyncio.run(run_completion_check(
+                    query="q", current_input=orig_input, run_state=rs, notify=msgs.append,
+                    dispatch_task=dispatch))
+                assert should_retry
+                assert new_input == orig_input, ("current_input must stay unchanged on FindingsWriter-fixable dispatch", new_input)
+                assert dispatch.call_count == 2, dispatch.call_args_list
+                assert dispatch.call_args_list[0].args[2] == "FindingsWriter", dispatch.call_args_list
+                assert dispatch.call_args_list[1].args[2] == "PeerReviewer", dispatch.call_args_list
+                # The real finding must actually reach FindingsWriter's dispatch instructions —
+                # this is the whole point (a fresh context with no Planner conversation still
+                # needs the real evidence, via _build_findings_source_material).
+                write_instructions = dispatch.call_args_list[0].args[1]
+                assert _SRC in write_instructions, "real fetched URL must reach FindingsWriter's instructions"
+                assert rs.data["completion_check_attempts"][-1]["problem"] == "missing_findings"
+
+            # (b) findings_ungrounded (findings.md exists but cites nothing real), ISSUES FOUND ->
+            # exactly 3 dispatches (FindingsWriter, PeerReviewer, FindingsWriter again).
+            with tempfile.TemporaryDirectory() as tmpdir_b:
+                _IN_MEMORY_FS["findings.md"] = "Some claim with no source at all."
+                rs = RunState(tmpdir_b)
+                rs.add_finding(_SRC, "the real finding a dispatched Searcher actually returned")
+                run_state_ctx.set(rs)
+                msgs = []
+                dispatch = AsyncMock(side_effect=[
+                    "## Result for FindingsWriterFix_attempt1\nWrote findings.md\n---",
+                    "REVIEW: ISSUES FOUND:\n- a finding's figure doesn't match its source",
+                    "## Result for FindingsWriterFix_attempt1_reviewed\nFixed findings.md\n---",
+                ])
+                orig_input = "q"
+                should_retry, new_input = _asyncio.run(run_completion_check(
+                    query="q", current_input=orig_input, run_state=rs, notify=msgs.append,
+                    dispatch_task=dispatch))
+                assert should_retry
+                assert new_input == orig_input
+                assert dispatch.call_count == 3, dispatch.call_args_list
+                assert dispatch.call_args_list[2].args[2] == "FindingsWriter", dispatch.call_args_list
+                assert rs.data["completion_check_attempts"][-1]["problem"] == "findings_ungrounded"
+                _IN_MEMORY_FS.pop("findings.md", None)
+
+            # (c) FindingsWriter/PeerReviewer not both registered -> falls back to the classic
+            # inject-into-Planner path, dispatch_task never called.
+            with tempfile.TemporaryDirectory() as tmpdir_c:
+                rs = RunState(tmpdir_c)
+                run_state_ctx.set(rs)
+                msgs = []
+                available_sub_agents_ctx.set([_FakeSubAgentConfig("FindingsWriter")])  # PeerReviewer missing
+                dispatch = AsyncMock()
+                orig_input = "q"
+                should_retry, new_input = _asyncio.run(run_completion_check(
+                    query="q", current_input=orig_input, run_state=rs, notify=msgs.append,
+                    dispatch_task=dispatch))
+                assert should_retry
+                dispatch.assert_not_called()
+                assert isinstance(new_input, list) and len(new_input) == 2, (
+                    "missing-registration fallback must still inject the classic nudge", new_input)
+                # The classic fallback text must never INSTRUCT the Planner to call
+                # write_workspace_file -- it has no such tool as of this architecture change (it
+                # MAY explain that fact, e.g. "you have no write_workspace_file tool", which is
+                # correct — see PLANNER_INSTRUCTIONS).
+                injected = new_input[-1].contents[0].text
+                assert "call write_workspace_file" not in injected.lower(), (
+                    "Planner-facing fallback must not instruct a call to a tool it doesn't have", injected)
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            if _orig_ws9 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws9
+            if _orig_gc9 is None:
+                _config.cfg["settings"].pop("grounding_check", None)
+            else:
+                _config.cfg["settings"]["grounding_check"] = _orig_gc9
+
+    contextvars.copy_context().run(_findings_writer_dispatch_scenario)
+
     # --- Builder write_workspace_file quota headroom (ROADMAP "Planned": a Build->Review->Fix
     # cycle can burn up to 2 write_workspace_file calls — Builder's initial rewrite plus one
     # corrective Fix pass — against the same shared pool the Planner's own findings.md writes draw
     # from; a low-quota config could starve Builder specifically mid-cycle). ---
-    from engine.completion import _ensure_builder_write_quota_headroom
+    from engine.completion import _ensure_writer_quota_headroom
 
     # Nearly exhausted (0 headroom) -> topped up to guarantee exactly 2.
     pool_a = {"write_workspace_file": {"used": 5, "limit": 5}}
-    _ensure_builder_write_quota_headroom(pool_a)
+    _ensure_writer_quota_headroom(pool_a)
     assert pool_a["write_workspace_file"]["limit"] - pool_a["write_workspace_file"]["used"] == 2
 
     # Already has plenty of headroom -> left untouched, no silent inflation of the shared budget.
     pool_b = {"write_workspace_file": {"used": 1, "limit": 10}}
-    _ensure_builder_write_quota_headroom(pool_b)
+    _ensure_writer_quota_headroom(pool_b)
     assert pool_b["write_workspace_file"]["limit"] == 10
 
     # Tool not in this pool at all (e.g. quotas section omits it) -> no-op, no KeyError.
-    _ensure_builder_write_quota_headroom({"delegate_tasks": {"used": 0, "limit": 5}})
+    _ensure_writer_quota_headroom({"delegate_tasks": {"used": 0, "limit": 5}})
 
     # --- missing_findings escalation (live case 2026-07-13): a real run produced literally ZERO
     # content (no tool call, no text) in response to this exact nudge for 6 consecutive attempts,

@@ -544,8 +544,8 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                 # target_children rather than hardcoded agent names — Analyzers are leaf nodes with
                 # no children). Catches a hallucinated citation in a specialist's summary before it
                 # ever reaches the Planner's context, instead of only at final-report time — error
-                # propagation into the Planner's findings.md was previously undetectable until the
-                # very end of the run, by which point the retry budget was already partly spent.
+                # propagation into findings.md was previously undetectable until the very end of
+                # the run, by which point the retry budget was already partly spent.
                 gc_cfg = config.cfg.get("settings", {}).get("grounding_check", {})
                 # enabled is the grounding_check section's master switch (2026-07-12 audit, G2)
                 if target_children and gc_cfg.get("enabled", True) and gc_cfg.get("verify_specialist_output", True):
