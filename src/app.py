@@ -28,6 +28,7 @@ from prompts import (
     DATA_ANALYZER_INSTRUCTIONS,
     PEER_REVIEWER_INSTRUCTIONS,
     BUILDER_INSTRUCTIONS,
+    FINDINGS_WRITER_INSTRUCTIONS,
 )
 import config
 
@@ -84,7 +85,7 @@ peer_reviewer = SubAgentConfig(
 
 # Planner-tier delegate, NOT routed to by the Planner itself (it has no "Builder" agent_id in its
 # Delegation Routing block — see PLANNER_INSTRUCTIONS). Dispatched exclusively by
-# engine/completion.py's Build->Review->Fix loop, in a fresh context, after the Planner's own turn
+# engine/completion.py's Write->Review->Fix loop, in a fresh context, after the Planner's own turn
 # has ended with findings.md ready — this is what actually writes final_report.md now. Must be
 # registered here (in the Planner's own sub_agents list) since completion.py's dispatch_task
 # resolves agent_id against available_sub_agents_ctx, which is scoped to the Planner's own
@@ -96,16 +97,35 @@ builder_agent = SubAgentConfig(
     tools=[read_workspace_file, grep_workspace_file, write_workspace_file, think_tool]
 )
 
-# Tier 1 — plans, tracks todos, writes findings.md. No web tools and no file-reading tools, which
-# forces it to delegate all research to a Tier 2 specialist, routed by query type. It still holds
-# write_workspace_file (for findings.md) but final_report.md is produced by Builder, dispatched by
-# the completion-check system rather than the Planner itself — see builder_agent above.
+# Planner-tier delegate, same non-routed pattern as builder_agent above (2026-07-14 architecture
+# change). Writes `findings.md` from this run's REAL structured results
+# (engine/completion.py::_build_findings_source_material, sourced from RunState — NOT the
+# Planner's own conversation, which FindingsWriter never sees). Dispatched exclusively by
+# engine/completion.py's Write->Review->Fix loop when missing_findings/findings_ungrounded fires.
+# The Planner itself now has NO write_workspace_file tool at all (see `app` below) — it can only
+# plan and delegate, structurally, the same way it's already structurally forced to delegate
+# research by having no web_search/fetch_url_to_workspace. Motivated by a real live failure: giving
+# the Planner the findings.md-writing job meant a findings.md retry grew the PLANNER's own
+# conversation exactly the way Builder was invented to prevent for final_report.md — confirmed the
+# same day a benchmark run hit 4 consecutive findings_ungrounded retries and exhausted its budget
+# with nothing ever written.
+findings_writer_agent = SubAgentConfig(
+    name="FindingsWriter",
+    instructions=FINDINGS_WRITER_INSTRUCTIONS,
+    tools=[read_workspace_file, grep_workspace_file, write_workspace_file, think_tool]
+)
+
+# Tier 1 — plans, tracks todos, delegates all research. No web tools, no file-reading tools, and
+# (as of 2026-07-14) no write_workspace_file either — the Planner's job is structurally limited to
+# planning and delegation only. Both findings.md (FindingsWriter) and final_report.md (Builder)
+# are produced by dedicated writer roles, dispatched by the completion-check system, never by the
+# Planner itself — see findings_writer_agent/builder_agent above for why.
 app = AgentBuilder(
     name=config.APP_TITLE,
     description=config.APP_DESCRIPTION,
     instructions=PLANNER_INSTRUCTIONS,
-    tools=[write_workspace_file, list_workspace_files, write_todos, read_todos, think_tool],
-    sub_agents=[web_searcher, academic_searcher, peer_reviewer, builder_agent]
+    tools=[list_workspace_files, write_todos, read_todos, think_tool],
+    sub_agents=[web_searcher, academic_searcher, peer_reviewer, builder_agent, findings_writer_agent]
 )
 
 def cli_main():

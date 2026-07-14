@@ -109,9 +109,11 @@ settings:
   # Per-agent-stream context budget in CHARACTERS (0 = off). Local models run at num_ctx ~16384
   # tokens (~65K chars); on overflow Ollama silently truncates from the TOP — eating the system
   # prompt mid-run, which looks exactly like model collapse. When an agent's streamed content
-  # (text + tool args + tool results) exceeds this, its turn is cut and it gets ONE wrap-up turn:
-  # sub-agents return their findings immediately; the headless Planner writes findings.md +
-  # the report from what it has (a second overshoot forces the completion check's final verdict).
+  # (text + tool args + tool results) exceeds this, its turn is cut short: sub-agents return their
+  # findings immediately; the headless Planner's turn just ends (it stops delegating), and the
+  # completion-check system then dispatches FindingsWriter/Builder to write findings.md + the
+  # report from whatever real research was actually delegated before the cutoff — never the
+  # Planner itself, which has no write_workspace_file tool (see README "Context management").
   # Idea from Tongyi DeepResearch's react_agent.py (see README References). Applies to sub-agent
   # tasks everywhere and to the Planner in headless mode; the TUI Planner is exempt (a user can
   # /stop), same policy as max_run_minutes. 50000 ≈ safe margin under a 16K-token num_ctx.

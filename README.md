@@ -7,15 +7,15 @@ A from-scratch rebuild of an earlier prototype, not an incremental patch — the
 ## Architecture
 
 ```
-Planner
+Planner (plans + delegates ONLY — no write_workspace_file, cannot write any file itself)
   |
   +-- delegate_tasks, routed by research angle -------------------+
-  |                                    |                          |
-  v                                    v                          v
-WebSearcher                  AcademicSearcher              PeerReviewer
-(general web research)     (papers, citations,        (fresh-context critique —
-  |                          related work)              findings.md OR, in report
-  |                                    |                 mode, final_report.md)
+  |                                    |
+  v                                    v
+WebSearcher                  AcademicSearcher
+(general web research)     (papers, citations,
+  |                          related work)
+  |                                    |
   +-- delegate_tasks, routed by content type -----+
   |                                               |
   v                                               v
@@ -24,18 +24,23 @@ DocumentAnalyzer                          DataAnalyzer
                                        verbatim pulls; also the only tool
                                        with extract_structured_data)
 
-engine/completion.py's Build->Review->Fix loop (NOT the Planner):
-  missing/failed final_report.md --> Builder writes it --> PeerReviewer
-  reviews it (report mode) --> Builder fixes if flagged --> re-checked
+engine/completion.py's Write->Review->Fix loop (NOT the Planner, run entirely outside its
+conversation, once it stops delegating):
+  missing/failed findings.md    --> FindingsWriter writes it from RunState's real
+                                     structured results --> PeerReviewer reviews -->
+                                     FindingsWriter fixes if flagged --> re-checked
+  missing/failed final_report.md --> Builder writes it from findings.md --> PeerReviewer
+                                      reviews --> Builder fixes if flagged --> re-checked
 ```
 
-- **Planner**: plans in bounded, named slots (`background`/`comparison`/`related_work`/`verification` — never an open-ended task list), dispatches specialists, runs an adaptive planning loop (observe results, replan if something's missing or contradictory), and writes `findings.md` (Pass 1: verbatim extraction), optionally delegating to `PeerReviewer` to critique it before considering its own turn done. The Planner never writes or delegates `final_report.md` itself — see Builder below.
-- **Builder**: NOT dispatched by the Planner — a Planner-tier delegate dispatched exclusively by the completion-check system (`src/engine/completion.py`'s Build→Review→Fix loop), in a fresh context, once `findings.md` is ready. Writes/rewrites `final_report.md` from `findings.md`, then a fresh `PeerReviewer` dispatch reviews the result (`REVIEW: CLEAN` / `REVIEW: ISSUES FOUND:`); if flagged, Builder is re-dispatched once with the critique folded in. All of this happens outside the Planner's own conversation — retries never grow the Planner's context, which was the actual point (see "Context management" below).
-- **WebSearcher / AcademicSearcher**: search and fetch. Specialist summaries are grounding-checked *before* they reach the Planner, not just at final-report time.
-- **PeerReviewer**: Planner-tier delegate for an independent, fresh-context critique — of `findings.md` when the Planner dispatches it (Pass 2), or of `final_report.md` when the Build→Review→Fix loop dispatches it (same role, different target artifact named in its task instructions).
+- **Planner**: plans in bounded, named slots (`background`/`comparison`/`related_work`/`verification` — never an open-ended task list), dispatches specialists, and runs an adaptive planning loop (observe results, replan if something's missing or contradictory). That is its entire job — it has no `write_workspace_file` tool at all, so it structurally cannot write `findings.md`, `final_report.md`, or anything else. Once it stops delegating (enough real results, or quota exhausted), its turn simply ends.
+- **FindingsWriter**: NOT dispatched by the Planner — a Planner-tier delegate dispatched exclusively by the completion-check system, in a fresh context, once the Planner has stopped delegating (or a prior `findings.md` failed its grounding check). Writes `findings.md` — a verbatim consolidation of every dispatched task's real result — from `RunState`'s structured `{source_url, summary}` records (populated automatically by every Searcher/Analyzer dispatch, not from the Planner's own conversation, which it never sees), then a fresh `PeerReviewer` dispatch reviews the result; if flagged, FindingsWriter is re-dispatched once with the critique folded in.
+- **Builder**: same pattern, one artifact later — dispatched once `findings.md` is ready, writes/rewrites `final_report.md` from it, reviewed by a fresh `PeerReviewer` dispatch the same way.
+- **WebSearcher / AcademicSearcher**: search and fetch. Specialist summaries are grounding-checked *before* they reach the Planner, not just at final-artifact time.
+- **PeerReviewer**: Planner-tier delegate for an independent, fresh-context critique — of `findings.md` when the FindingsWriter loop dispatches it, or of `final_report.md` when the Builder loop dispatches it (same role, different target artifact named in its task instructions). Never dispatched by the Planner itself.
 - **DocumentAnalyzer / DataAnalyzer**: read/extract from downloaded files. `DataAnalyzer` also has `extract_structured_data` for tables/code/JSON blocks.
 
-Tool access is withheld from each parent so it's structurally forced to delegate rather than short-circuit the chain — see each role's Delegation Routing block in `src/prompts.py`.
+Tool access is withheld from each parent so it's structurally forced to delegate rather than short-circuit the chain — see each role's Delegation Routing block in `src/prompts.py`. FindingsWriter and Builder exist for the same reason, one level down: giving the Planner the job of writing *either* artifact meant a retry on it grew the Planner's own conversation — the context-poisoning risk this design exists to avoid (see "Context management" below). That was true for `final_report.md`/Builder from the start; it was only fixed for `findings.md`/FindingsWriter on 2026-07-14, after a live benchmark run hit 4 consecutive `findings_ungrounded` retries and exhausted its budget with nothing ever written.
 
 ## Context management
 
@@ -43,21 +48,27 @@ The Planner's own conversation only ever grows across a run (no compaction/pruni
 underlying agent-framework session) — every completion-check retry historically meant appending
 another nudge message and re-showing the model its own prior rejected drafts, which risks the
 model's attention degrading well before any hard token limit is hit ("context poisoning"). The
-**Builder + Build→Review→Fix loop** (`src/engine/completion.py`) is the structural fix: for
-artifact-authoring problems (missing report, ungrounded citation, unsupported claim, etc.), the
-completion-check system dispatches a fresh-context Builder directly — never touching the Planner's
-`current_input` — instead of nudging the Planner to fix it itself. Only genuinely strategic
-failures that need new research (`missing_findings`, `findings_ungrounded`, `not_delegated`) still
-escalate to the Planner's own conversation, since only the Planner can decide what to delegate next.
-`settings.context_budget_chars` (below) remains a second, independent guard against a single
+**FindingsWriter/Builder + Write→Review→Fix loop** (`src/engine/completion.py`) is the structural
+fix: for artifact-authoring problems on EITHER artifact (missing findings, ungrounded citation,
+unsupported claim, etc.), the completion-check system dispatches a fresh-context writer role
+directly — never touching the Planner's `current_input` — instead of nudging the Planner to fix it
+itself. Only one genuinely strategic failure that needs new research (`not_delegated`) still
+escalates to the Planner's own conversation, since only the Planner can decide what to delegate
+next. `settings.context_budget_chars` (below) remains a second, independent guard against a single
 sub-agent stream itself growing too large.
+
+This closed a real gap late: `findings.md` only got this treatment on 2026-07-14, well after
+`final_report.md`/Builder — until then, the Planner wrote `findings.md` itself, so a
+`findings_ungrounded` retry grew the Planner's own conversation the exact way this whole mechanism
+exists to prevent. Confirmed live the same day it was fixed: a benchmark run hit 4 consecutive
+`findings_ungrounded` retries and exhausted its budget with nothing ever written.
 
 ## Key structural fixes over the prototype
 
 The full history (with live-test evidence for each) is in `ROADMAP.md`. The headline ones:
 
 - **Real grounding check**: cross-references every cited URL against URLs actually fetched this run (`utils/grounding.py`), not a substring check — with a path-segment boundary, so a fetched `.../article` can't ground a decorated fabrication like `.../article-fake-2024`. A second, content-level layer flags a citation whose source shares zero checkable facts with the claim next to it. A third layer catches a claim attributed to something that isn't a URL at all (a bare `(DANE, 2020)` parenthetical, a `Source: <prose>` line) — unverifiable in exactly the same way a fabricated URL is, but invisible to a check that only looks for `https?://`. A fourth catches a regulation identifier ("Ley 1906 de 2021") cited to a genuinely-fetched source whose content never mentions that number. A fifth refuses citations to **stub fetches** — a URL that answered HTTP 200 with a paywall/not-found shell is recorded as `stub` at fetch time and can neither pass the URL gate nor support any claim (closes the invented-URL-plus-soft-404 hole found live in run 14). A sixth (`uncited_claims`) catches claims structurally decoupled from citations — a table of figures plus a detached "Source URLs" list passes every line-scoped check vacuously, so ≥3 figure-bearing lines in a section with no URL fail the check even when every listed URL is real. A seventh, **NLI entailment check** (`settings.grounding_check.nli_verify`, `cross-encoder/nli-deberta-v3-small`, CPU-only) catches a citation whose claim shares checkable terms with its source (so the term-overlap check alone passes it) but is actually CONTRADICTED by what the source says — e.g. a paper title quoted with one word swapped — running only on lines that already passed term-overlap, on the source's own best-matching paragraph window. Runs both on the final report and on each specialist's summary before it reaches the Planner. `findings.md` (Pass 1) is gated too: it must exist before `final_report.md` is accepted, and a wholesale-fabricated one (zero real citations) is quarantined. The verdict logic lives in `src/engine/completion.py` as an ordered check list, pinned by `test_structural_checks.py`'s verdict matrix.
-- **Build→Review→Fix loop for `final_report.md`** (`src/engine/completion.py`): the completion-check system, not the Planner, owns getting the report written and correct — see "Context management" above. A dedicated `Builder` sub-agent writes/rewrites it from `findings.md`, `PeerReviewer` independently checks the result in a fresh context, and Builder gets one corrective re-dispatch if flagged, all before the Planner ever sees anything.
+- **Write→Review→Fix loop for BOTH `findings.md` and `final_report.md`** (`src/engine/completion.py`): the completion-check system, not the Planner, owns getting each artifact written and correct — see "Context management" above. A dedicated `FindingsWriter` sub-agent writes `findings.md` straight from `RunState`'s structured per-task results (not the Planner's conversation, which it never sees); a dedicated `Builder` sub-agent writes `final_report.md` from `findings.md`. `PeerReviewer` independently checks each result in a fresh context, and the writer gets one corrective re-dispatch if flagged — all before the Planner ever sees anything, since (as of 2026-07-14) the Planner has no `write_workspace_file` tool at all and cannot write either artifact itself.
 - **Fetch-time metadata extraction** (`tools/web.py::_extract_html_metadata`): title/author/published-date are pulled from the same BeautifulSoup parse already done for boilerplate-stripping and written as `Title:`/`Authors:`/`Published:` header lines alongside `Source-URL:` — eliminates the need for a separate sub-agent dispatch just to extract a paper's byline.
 - **Fetched pages decoded by their real charset** (strict UTF-8 → HTTP header → meta tag → cp1252 fallback, stale charset meta tags scrubbed before markdown conversion) — mojibake had silently gutted every accent-bearing Spanish term match in the grounding checks on the benchmark's flagship language.
 - **Fetched files carry provenance**: everything a run fetches lands in the run folder's `sources/` subdirectory with `Source-URL: <true url>` as line 1, so a cited claim can be traced to the exact bytes it came from; the run root holds only `final_report.md`, `findings.md`, `_todos.md`, and `_run_state.json`.
