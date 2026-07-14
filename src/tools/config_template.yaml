@@ -49,6 +49,15 @@ settings:
   # whole runs fail in ways that looked like model fabrication (see search_health in
   # _run_state.json). A comma list pins specific engines in order, e.g. "google,brave,duckduckgo".
   search_backend: auto
+  fetch:
+    # Headless-browser (Playwright) retry when a plain HTTP fetch comes back looking like a
+    # bot-wall stub — Akamai/Cloudflare JS challenges, browser-version-sniffing blocks. Confirmed
+    # live 2026-07-14: real, citable papers on Springer, ScienceDirect, and MDPI were all getting
+    # marked as fake/stub sources because the plain fetch never received real content (a stripped
+    # shell, an "unsupported browser" block page, and a JS interstitial respectively) — see
+    # tools/web.py::_fetch_raw and ROADMAP.md. No-op with zero latency cost if Playwright isn't
+    # installed (`pip install deepdelve[browser] && playwright install chromium`).
+    headless_fallback: true
   quotas:
     # Quotas are GLOBAL — shared cumulatively across the Planner and every dispatched specialist
     # (WebSearcher, AcademicSearcher, DocumentAnalyzer, DataAnalyzer). Each key becomes a prompt

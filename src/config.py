@@ -27,6 +27,13 @@ _DEFAULTS = {
         "concurrency": {
             "max_concurrent_tasks": 1
         },
+        # Headless-browser (Playwright) retry for a fetch that comes back looking like a bot-wall
+        # stub (Akamai/Cloudflare JS challenges, browser-version-sniffing blocks — see
+        # tools/web.py::_fetch_raw and ROADMAP.md's Springer/ScienceDirect/MDPI finding,
+        # 2026-07-14). Default on: a no-op with no latency cost when Playwright isn't installed.
+        "fetch": {
+            "headless_fallback": True
+        },
         "quotas": {},
         "workspace": {
             "type": "memory",
