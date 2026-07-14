@@ -380,6 +380,20 @@ def find_unsupported_regulation_ids(text: str) -> list[str]:
 _NUMERIC_CLAIM_RE = re.compile(r'\b\d+(?:[.,]\d+)+\b|\b(?:19|20)\d{2}\b|\b\d+\s?%|\b(?:USD|COP|EUR)\s?\d')
 
 
+def split_into_heading_sections(text: str) -> list[list[str]]:
+    """Splits markdown into sections at each h1-h3 heading line (h4+ stays with its parent
+    section, e.g. a per-niche `#### Sources` block) — shared by find_uncited_claim_lines below
+    and engine/completion.py's check_excluded_topic, which both need the same section boundaries.
+    Returns a list of sections, each a list of RAW (unstripped) lines; the heading line itself is
+    the first line of the section it starts. First section (before any heading) may be empty."""
+    sections: list[list[str]] = [[]]
+    for raw in (text or "").splitlines():
+        if re.match(r'#{1,3}\s', raw):
+            sections.append([])
+        sections[-1].append(raw)
+    return sections
+
+
 def find_uncited_claim_lines(report: str) -> list[str]:
     """Figure-bearing claim lines that carry no citation at all — the format hole every
     line-scoped check falls through. Confirmed live (run 14): the model wrote its claims as a
@@ -404,11 +418,7 @@ def find_uncited_claim_lines(report: str) -> list[str]:
     fetched source is find_non_url_citations/claim_grounding_problem's job, which both run before
     this check in real_grounding_problem's ordering, so an unresolved academic citation is already
     caught there and this exemption never masks it)."""
-    sections: list[list[str]] = [[]]
-    for raw in split_prose_from_sources(report or "").splitlines():
-        if re.match(r'#{1,3}\s', raw):
-            sections.append([])
-        sections[-1].append(raw)
+    sections = split_into_heading_sections(split_prose_from_sources(report or ""))
     hits = []
     for section in sections:
         if any("http" in l or _PARENTHETICAL_CITATION_RE.search(l) for l in section):
@@ -424,20 +434,61 @@ def find_uncited_claim_lines(report: str) -> list[str]:
     return hits
 
 
-def claim_grounding_problem(report: str) -> str | None:
-    """Content-level check beyond URL-presence, LINE-scoped (this project's report format keeps a
-    claim and its citation on one line, same as find_non_url_citations/find_unsupported_regulation_ids):
-    for each line citing a fetched source, do that line's own checkable facts (numbers, versions,
-    proper nouns) share anything with that source's content? The previous version compared
-    WHOLE-report terms against each source, so generic shared terms ('Colombia', a year) masked
-    per-claim fabrication — run 12's flagship figure (USD 3.5B, absent from its cited source)
-    passed because OTHER lines shared terms with the same source. Still deliberately conservative,
-    to keep false positives rare: only fires on a line with >=1 checkable term of its own and ZERO
-    overlap with every fetched source it cites; lines with no checkable terms, unfetched citations
-    (the hard gate's job), or thin sources (<50 chars) are skipped. URL text is stripped before
-    term extraction so a slug like 'ley_1819_2016' can neither support nor incriminate a claim.
+_CLAIM_CITATION_TOKEN_RE = re.compile(
+    r'\[[^\]]*\]\(https?://[^\s\)]+\)'    # markdown [title](url) — the common case
+    r'|https?://[^\s\]\}"\'>【】]+'         # a bare, non-markdown URL
+    r'|' + _PARENTHETICAL_CITATION_RE.pattern  # (Author, Year) academic-style
+)
 
-    ACADEMIC style: a line's `(Author, Year)` citation resolves through parse_academic_references
+
+def decompose_claim_segments(line: str) -> list[str]:
+    """ROADMAP "Claim-level grounding upgrade" (Phase 1.1): splits a claim line into atomic
+    segments, each ending at (and including) its own citation — the unit claim_grounding_problem
+    now checks against a single source, instead of treating a whole multi-citation line as one
+    unit whose claims can borrow credit from each other's citations. Concretely, a line like
+    "Sector A grew 12% [gov](url1), while Sector B declined 3% [news](url2)" used to be checked
+    as ONE bag of terms against the UNION of both sources — a shared generic term anywhere would
+    mark BOTH claims "supported" even if only one citation actually backs its own claim. This now
+    decomposes it into two segments, each checked only against its own bound citation.
+
+    Deliberately mechanical (regex token boundaries), not NLP sentence-splitting — no new
+    dependency, and it only splits, it never judges what's true (that stays claim_grounding_problem's
+    job). A line with zero or one citation decomposes to `[line]` unchanged, so this is a strict
+    refinement of the prior whole-line behavior, not a new base case — every previously-tested
+    single-citation line is unaffected. Trailing text after the last citation (no citation of its
+    own) stays attached to the last segment rather than becoming an uncheckable orphan."""
+    tokens = list(_CLAIM_CITATION_TOKEN_RE.finditer(line))
+    if len(tokens) <= 1:
+        return [line]
+    segments = []
+    start = 0
+    for m in tokens:
+        segments.append(line[start:m.end()])
+        start = m.end()
+    if start < len(line) and line[start:].strip():
+        segments[-1] += line[start:]
+    return segments
+
+
+def claim_grounding_problem(report: str) -> str | None:
+    """Content-level check beyond URL-presence, CLAIM-scoped (this project's report format keeps
+    a claim and its citation on one line, same as find_non_url_citations/find_unsupported_regulation_ids):
+    for each citation-bearing SEGMENT of a line (see decompose_claim_segments — a line can carry
+    more than one claim+citation pair), do that segment's own checkable facts (numbers, versions,
+    proper nouns) share anything with ITS OWN cited source's content? An earlier version compared
+    WHOLE-LINE terms against the union of every source cited anywhere on the line, so a multi-claim
+    line could pass on a shared term between claim A and claim B's source even though claim A's own
+    citation didn't support it at all — the citation-sharing/drift gap ROADMAP's claim-level
+    grounding upgrade item exists to close (before that, an earlier fix already closed the same
+    class of bug at the whole-REPORT level: run 12's flagship figure, USD 3.5B, absent from its
+    cited source, passed because OTHER LINES shared terms with the same source). Still deliberately
+    conservative, to keep false positives rare: only fires on a segment with >=1 checkable term of
+    its own and ZERO overlap with every fetched source it cites; segments with no checkable terms,
+    unfetched citations (the hard gate's job), or thin sources (<50 chars) are skipped. URL text is
+    stripped before term extraction so a slug like 'ley_1819_2016' can neither support nor
+    incriminate a claim.
+
+    ACADEMIC style: a segment's `(Author, Year)` citation resolves through parse_academic_references
     to the same fetched-source file a `- **[Title](URL)**` citation would (via _line_cited_files),
     so an academic-style claim gets the identical term-overlap check as the default format."""
     prose = split_prose_from_sources(report)
@@ -447,29 +498,30 @@ def claim_grounding_problem(report: str) -> str | None:
     unsupported = []
     source_terms_cache: dict = {}
     for line in prose.splitlines():
-        display = (extract_cited_urls(line) + [m.group(0) for m in _PARENTHETICAL_CITATION_RE.finditer(line)])
-        if not display:
-            continue
-        line_terms = extract_salient_terms(re.sub(r'https?://[^\s\)\]\}"\'>【】]+', '', line))
-        if not line_terms:
-            continue
-        files = _line_cited_files(line, fetched, ref_map)
-        if not files:
-            continue
-        checkable, supported = False, False
-        for fn in files:
-            if fn not in source_terms_cache:
-                content = _source_body(get_workspace_file_content(fn) or "")
-                source_terms_cache[fn] = extract_salient_terms(content) if len(content.strip()) >= 50 else None
-            source_terms = source_terms_cache[fn]
-            if source_terms is None:
+        for segment in decompose_claim_segments(line):
+            display = (extract_cited_urls(segment) + [m.group(0) for m in _PARENTHETICAL_CITATION_RE.finditer(segment)])
+            if not display:
                 continue
-            checkable = True
-            if line_terms & source_terms:
-                supported = True
-                break
-        if checkable and not supported:
-            unsupported.append(display[0])
+            seg_terms = extract_salient_terms(re.sub(r'https?://[^\s\)\]\}"\'>【】]+', '', segment))
+            if not seg_terms:
+                continue
+            files = _line_cited_files(segment, fetched, ref_map)
+            if not files:
+                continue
+            checkable, supported = False, False
+            for fn in files:
+                if fn not in source_terms_cache:
+                    content = _source_body(get_workspace_file_content(fn) or "")
+                    source_terms_cache[fn] = extract_salient_terms(content) if len(content.strip()) >= 50 else None
+                source_terms = source_terms_cache[fn]
+                if source_terms is None:
+                    continue
+                checkable = True
+                if seg_terms & source_terms:
+                    supported = True
+                    break
+            if checkable and not supported:
+                unsupported.append(display[0])
 
     if not unsupported:
         return None

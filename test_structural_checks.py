@@ -499,6 +499,16 @@ def main():
         ("not_grounded", True, {"findings.md": _FINDINGS_OK,
           "final_report.md": "- x [g](https://never-fetched.example.com/y)"},
          "not_grounded", "was never actually fetched this run"),
+        # Live case (ROADMAP "Findings from live testing"): delegate_tasks already skips
+        # DISPATCHING a task on an explicitly-excluded topic, but nothing previously stopped that
+        # topic showing up as its own section in the final report anyway — confirmed live twice.
+        # Heading-scoped: the excluded topic ("agritech") appears as its own "## Sector Agritech"
+        # section, not just mentioned in passing prose.
+        ("excluded_topic_present", True, {"findings.md": _FINDINGS_OK,
+          "final_report.md": (f"- el pais avanza de forma sostenida segun cifras oficiales [gov]({_SRC})\n\n"
+                               f"## Sector Agritech\n- el sector agritech crecio de forma notable segun analistas [gov]({_SRC})\n")},
+         "excluded_topic_present", "explicitly excluded",
+         "Do a market research of Colombia, excluding Agritech."),
         # Clean pass: grounded findings, report cites the fetched source, no checkable claim
         # contradicting it -> no problem recorded, no retry.
         ("clean_pass", True, {"findings.md": _FINDINGS_OK,
@@ -507,7 +517,9 @@ def main():
     ]
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        for _row_name, _delegated, _files, _expected, _phrase in matrix:
+        for _row_name, _delegated, _files, _expected, _phrase, *_rest in matrix:
+            _query = _rest[0] if _rest else ""
+
             def _matrix_row():
                 from tools.fs import _IN_MEMORY_FS
                 from tools.core import tool_quotas_ctx as q_ctx
@@ -534,6 +546,7 @@ def main():
                     _IN_MEMORY_FS.update(_files)
                     q_ctx.set({"delegate_tasks": {"used": 1 if _delegated else 0, "limit": 5}})
                     rs = RunState(tmpdir)
+                    rs.set_query(_query)
                     run_state_ctx.set(rs)
                     msgs = []
                     should_retry, _ = _asyncio.run(run_completion_check(
@@ -1645,7 +1658,22 @@ def main():
     # --- line-scoped claim grounding (review #2 item 4): the old WHOLE-report term overlap let
     # generic shared terms mask per-claim fabrication — run 12's flagship figure was absent from
     # its cited source but passed because other lines shared terms with that same source. ---
-    from utils.grounding import claim_grounding_problem
+    from utils.grounding import claim_grounding_problem, decompose_claim_segments
+
+    # --- Phase 1.1/1.2 of the ROADMAP "Claim-level grounding upgrade": decompose_claim_segments
+    # (pure segmentation, no fetched-source dependency) ---
+    assert decompose_claim_segments("- Cacao: USD 265.1M [gov](https://x.co/a)") == [
+        "- Cacao: USD 265.1M [gov](https://x.co/a)"], "single-citation line must decompose to itself unchanged"
+    assert decompose_claim_segments("plain text, no citation at all") == ["plain text, no citation at all"]
+    _segs = decompose_claim_segments(
+        "- Cacao: USD 265.1M [gov](https://x.co/a), mientras Software genero USD 3.5B [tech](https://x.co/b)")
+    assert len(_segs) == 2, _segs
+    assert _segs[0] == "- Cacao: USD 265.1M [gov](https://x.co/a)", _segs
+    assert _segs[1] == ", mientras Software genero USD 3.5B [tech](https://x.co/b)", _segs
+    # Trailing uncited text stays attached to the last segment rather than becoming an orphan.
+    _segs_trail = decompose_claim_segments(
+        "- A [x](https://x.co/a), B [y](https://x.co/b), and an uncited closing remark")
+    assert len(_segs_trail) == 2 and _segs_trail[1].endswith("uncited closing remark"), _segs_trail
 
     def _line_claim_scenario():
         from tools.fs import _IN_MEMORY_FS
@@ -1675,6 +1703,35 @@ def main():
             # Unfetched citation -> the hard URL gate's job, silent here
             assert claim_grounding_problem(
                 "- USD 9.9 mil millones [x](https://never-fetched.example.com/a)") is None
+
+            # THE SAME-LINE citation-sharing/drift case (ROADMAP Phase 1 target): two claims on
+            # ONE line, each with its OWN distinct citation. The genuinely-supported cacao claim
+            # must not let its citation's overlap "cover for" the second, fabricated claim whose
+            # OWN cited source doesn't support it at all -- the exact gap the old whole-line
+            # union check had (a shared generic phrase between the two sources would have masked
+            # this before decompose_claim_segments existed).
+            record_fetched_url("https://gov.example.co/agro", filename="sources/agro.md")
+            _IN_MEMORY_FS["sources/agro.md"] = (
+                "Source-URL: https://gov.example.co/agro\n\n"
+                "El sector agropecuario crecio 8% en el primer trimestre de 2025, impulsado "
+                "por la demanda internacional de cafe.")
+            same_line = (
+                "- Cacao: USD 265.1 millones en 2024 [gov](https://gov.example.co/exportaciones), "
+                "mientras Software genero USD 3.5 mil millones en 2023 [tech](https://gov.example.co/agro)")
+            problem = claim_grounding_problem(same_line)
+            assert problem and problem.startswith("claim_unsupported"), (
+                "a same-line second claim citing a source that doesn't support it must be caught "
+                "even though the FIRST claim on the same line is genuinely supported", problem)
+            assert "agro" in problem, (
+                "the flagged citation must be the second claim's OWN (unsupporting) source, not "
+                "the first claim's genuinely-supporting one", problem)
+            # Same shape, but BOTH claims genuinely supported by their own distinct sources -> silent.
+            clean_same_line = (
+                "- Cacao: USD 265.1 millones en 2024 [gov](https://gov.example.co/exportaciones), "
+                "mientras el agro crecio 8% en 2025 [gov](https://gov.example.co/agro)")
+            assert claim_grounding_problem(clean_same_line) is None, (
+                "two claims on one line, each genuinely supported by its own distinct citation, "
+                "must not be flagged")
         finally:
             _IN_MEMORY_FS.clear()
             _IN_MEMORY_FS.update(saved_fs)

@@ -305,12 +305,37 @@ Status as of 2026-07-14.
     the Planner's `current_input` unboundedly on repeat — lower priority since those problems are
     rarer/more terminal (a stuck Planner, not an oscillating-on-polish loop).
 
+- **Phase 1 of the approved 6-phase plan: claim-level grounding upgrade (atomic-claim
+  decomposition + per-claim evidence binding).** (Found 2026-07-13, informed by FActScore's
+  decompose-then-verify pattern (arXiv:2305.14251, already cited in README for the NLI check) and
+  Rasheed et al.'s claim-evidence provenance framing (arXiv:2602.13855).) The prior
+  `claim_grounding_problem` compared a WHOLE LINE's terms against the UNION of every source cited
+  anywhere on that line — a real gap when a line carries two distinct claims each with its own
+  citation (e.g. "Sector A grew 12% [gov](url1), while Sector B declined 3% [news](url2)"): a
+  shared generic term between claim A and claim B's source could mark BOTH claims "supported" even
+  though claim B's own citation didn't actually back it. New `utils/grounding.py::decompose_claim_segments`
+  splits a line into atomic segments at each citation boundary (mechanical regex-token splitting,
+  no NLP, no new dependency — matches the "the decomposition step only splits propositions, it
+  doesn't decide what's true" design goal); `claim_grounding_problem` now checks each segment only
+  against its OWN bound citation's source, closing the citation-sharing/drift gap. A line with
+  zero or one citation decomposes to itself unchanged, so this is a strict refinement — every
+  previously-passing single-citation-per-line test is unaffected (verified: full suite passes with
+  zero pre-existing assertion changes needed). New tests: `decompose_claim_segments` unit
+  assertions (single-citation invariance, 2-citation split, trailing-uncited-text handling) plus a
+  live-shaped same-line scenario in `test_structural_checks.py` (a genuinely-supported cacao claim
+  and a fabricated software claim sharing one line, each with its own distinct citation — correctly
+  flags only the fabricated one, by its own citation, not the supported one's). **Residual note**:
+  `nli_unsupported_problem` (the separate second-stage NLI check) still does its own independent
+  whole-line term-overlap and wasn't touched by this pass — same latent multi-citation-per-line gap
+  could exist there too; flagged, not yet fixed, out of this milestone's scope.
+- **`check_excluded_topic` — report-write-time enforcement of query exclusions, closing the gap in the "Hard exclusion rules" finding below.** `delegate_tasks` already skipped DISPATCHING a task whose own topic matched an explicit query exclusion (`_extract_excluded_topics`), but did nothing to stop that topic showing up as its own section in the final report anyway, recalled from a sibling task's tangential findings. New `engine/completion.py::check_excluded_topic` (a `GROUNDING_CHECKS` entry, `_BUILDER_FIXABLE_PROBLEMS` member) reuses the exact same `_extract_excluded_topics` parser, now applied to `final_report.md`'s own h1-h3 heading sections (`utils/grounding.py::split_into_heading_sections`, extracted from the existing `find_uncited_claim_lines` section-scoping logic so both share one implementation) — deliberately heading-scoped rather than whole-document substring matching, so a topic mentioned once in passing prose doesn't false-positive the way a bare match would. New verdict-matrix row in `test_structural_checks.py` (query exclusion + a report with its own "## Sector Agritech" section).
+
 ## Findings from live testing (not yet acted on / informational)
 
 - **Grounding check verifies provenance, not topical relevance.** A live GOA (Grasshopper Optimization Algorithm) research query got a citation from `globaldrivetozero.org` — actually fetched, and sharing surface terms like "GOA"/"Goa" — that's actually about the Indian state of Goa's EV policy, not the algorithm. The URL-presence + term-overlap check passed it because it only checks "was this fetched" and "do terms overlap," not "is this source about the same subject." Acronym collisions are the clearest way to trigger this; unclear how common the failure mode is outside them.
 - **JS-gated pages return bot-challenge stubs, not content.** Several fetches (Cloudflare "Just a moment...", a "Human Verification" page, a Prezi slide deck) came back as 16-18 byte stubs since the fetcher doesn't execute JavaScript. *(Fixed for most cases — see "Done": headless/headed-browser fetch fallback, 2026-07-14. Recovers Springer (headless-sufficient) and MDPI (needed headed). NOT a universal fix: a genuine Cloudflare Turnstile challenge (ScienceDirect) resists both headless AND headed Chromium regardless of patience or `navigator.webdriver` spoofing — confirmed to be automation/CDP-fingerprint detection, not a solvable timing issue, and deliberately not pursued further; see the ScienceDirect sub-bullet above for the full investigation. Still correctly falls through to the stub flag rather than silently failing.)*
 - **A citation being present in a report's "Sources" list doesn't mean it was fetched.** Across several market-research runs, more than half of named sources were routinely never actually fetched (recalled from the model's training data) — and when independently fact-checked, specific statistics tied to unfetched sources were measurably wrong, usually understated.
-- **Hard exclusion rules ("do not research sector X") repeatedly fail to hold**, confirmed across at least 2 independent runs with different prompt wordings: an explicitly-excluded "Agricultural"/"agribusiness" sector got researched and included in the final report anyway — once purely from memory, once with the model actually delegating and fetching a real source for the excluded sector. Simply naming the exclusion in the prompt isn't enough; needs either a stronger structural check (reject a delegated task whose topic matches an excluded keyword) or repeated reinforcement at report-writing time, not just at planning time.
+- **Hard exclusion rules ("do not research sector X") repeatedly fail to hold**, confirmed across at least 2 independent runs with different prompt wordings: an explicitly-excluded "Agricultural"/"agribusiness" sector got researched and included in the final report anyway — once purely from memory, once with the model actually delegating and fetching a real source for the excluded sector. Simply naming the exclusion in the prompt isn't enough; `delegate_tasks`'s existing dispatch-time skip (`_extract_excluded_topics`) only stopped NEW research on the topic, not the topic showing up in the final report anyway via a sibling task's tangential findings. **Fixed 2026-07-14** — see "Done" below (`check_excluded_topic`).
 - **Non-URL "citations" evade the grounding check entirely.** A live report sourced several claims to `"Expert opinion from a cold storage facility manager in Colombia"` — not URL-shaped, so `extract_cited_urls` never sees it, even though it's exactly as ungrounded as a fabricated URL. The grounding check's whole model is "cross-reference cited URLs against fetched URLs" — a citation with no URL at all currently gets a free pass. **Fixed — see "Done" above (`non_url_citation_check`).**
 - **Scaling down scope (12 sectors → 5) improved surface polish, not actual grounding rate.** A 5-sector re-run produced far more plausible-looking, consistently-formatted citations than a 12-sector run, but cross-referencing against `_run_state.json`'s real `fetched_urls` showed most of them were still fabricated — only 5 URLs were ever fetched all run, while the final report cited well over twice that many distinct domains. Fewer sectors did not proportionally reduce the fabrication rate.
 
@@ -456,18 +481,14 @@ Status as of 2026-07-14.
 
 ## Planned (not started)
 
+- **6-phase plan approved 2026-07-14 for the items below** (Phase 1 done — see "Done" above): Phase
+  1 claim-level grounding upgrade (this section, DONE) → Phase 2 cross-source contradiction
+  detection (depends on Phase 1's claim clustering) → Phase 3 xQuAD diversity reranking
+  (independent) → Phase 4 topical-relevance cross-encoder reranker (independent, new soft
+  dependency) → Phase 5 coverage accounting/ResearchMap (independent, Planner schema change) →
+  Phase 6 B4 TUI/CLI loop unification (deferred last, highest regression risk). Sequenced by
+  ROADMAP's own stated priority + dependency order + risk, not file order below.
 - **Address the grounding check's topical-relevance gap** — some form of "is this source actually about the claimed subject," not just "was it fetched and does it share terms." Unclear whether this needs an LLM judge (this local model class has proven unreliable as its own judge elsewhere in this project) or a cheaper heuristic. *(Partially mitigated 2026-07-12: scope matching is now case-insensitive and charset-correct, and stub shells can no longer ground anything.)* **Concrete candidate mechanism found 2026-07-13** (verified real, not an LLM judge): a lightweight CPU cross-encoder reranker (`BAAI/bge-reranker-v2-m3`, ~278M params) scoring (claim, source) pairs directly — as a semantic sanity check layered *after* the existing term-overlap check, the same way the NLI entailment check is already layered on top of it. Would have caught the GOA-the-algorithm-vs-Goa-the-Indian-state acronym collision the existing stack missed.
-- **Claim-level grounding upgrade: atomic-claim decomposition + evidence assignment** (found
-  2026-07-13, informed by two independently-verified sources converging on the same idea —
-  FActScore's decompose-then-verify pattern (arXiv:2305.14251, already cited in README for the NLI
-  check) and Rasheed et al.'s claim-evidence provenance framing, *From Fluent to Verifiable:
-  Claim-Level Auditability for Deep Research Agents* (arXiv:2602.13855)) — the current grounding
-  stack verifies whole lines/paragraphs against a source; this decomposes report text into atomic
-  factual claims first, then binds each claim to its single best-supporting source (not just "a"
-  cited source on the same line), exposing citation-sharing and citation-drift cases line-scoped
-  checks can miss. No new external dependency, no LLM-judge-of-truth — the decomposition step only
-  splits propositions, it doesn't decide what's true. Fits the "structural fix over prompt tuning"
-  philosophy directly; highest-priority new item from the 2026-07-13 research pass.
 - **Cross-source contradiction detection** (found 2026-07-13, FEVER-style: Thorne et al., NAACL
   2018, `fever.ai`) — currently missing entirely: when two fetched sources disagree on a figure
   (e.g. one says $12B revenue, another says $13.4B), the report silently picks one. Cluster claims
