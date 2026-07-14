@@ -576,6 +576,62 @@ async def fetch_url_to_workspace(url: str | list, filename: str = "", convert_to
         return f"Failed: {e}\n\nTraceback:\n{traceback.format_exc()}"
 
 
+_DIVERSITY_STOPWORDS = {
+    "the", "and", "for", "with", "from", "this", "that", "these", "those", "into", "your",
+    "about", "what", "when", "where", "which", "while", "have", "has", "had", "are", "was",
+    "were", "will", "would", "could", "should", "https", "http", "www", "com", "org",
+}
+
+
+def _result_aspect_terms(result: dict) -> set:
+    """Cheap, deterministic "what distinct angle does this result cover" signal for
+    _diversity_rerank — lowercase words of length >=4 from title+snippet, minus a small stopword
+    list. Deliberately looser than utils.grounding.extract_salient_terms (which requires 2+
+    CAPITALIZED words and would miss a single distinguishing term like a bare sector name in a
+    short snippet) — same reasoning engine/orchestrator.py's _extract_scope_entities already
+    documents for why IT doesn't reuse extract_salient_terms either; a search snippet is a
+    different kind of text than a fetched article body."""
+    text = f"{result.get('title', '')} {result.get('snippet', '')}".lower()
+    words = re.findall(r"[a-zà-ÿ0-9]{4,}", text)
+    return {w for w in words if w not in _DIVERSITY_STOPWORDS}
+
+
+def _diversity_rerank(results: list) -> list:
+    """ROADMAP Phase 3: xQuAD-style (Santos, Peng, Macdonald, Ounis, ECIR 2010) greedy diversity
+    reranking of search results. DDGS already ranks by its own relevance signal, but several
+    near-duplicate results for the same angle commonly dominate the top of that ranking — a
+    documented finding ("scaling down scope did not improve grounding rate": a 5-source run still
+    only surfaced ~5 genuinely distinct sources, thin discovery even at small scope, ROADMAP
+    "Findings from live testing"). This reorders `results` by MARGINAL new aspect-term coverage
+    instead of raw rank: the first pick is always DDGS's own #1 (preserving its relevance
+    judgment for the single best result), then each subsequent pick is whichever REMAINING result
+    adds the most aspect terms not already covered by picks made so far — not just the
+    next-highest-ranked near-duplicate of what's already been picked. Ties broken by original
+    DDGS rank (deterministic; doesn't fight DDGS's own ordering when diversity is equal).
+
+    Pure reranking, no LLM judgment, no new dependency — same "structural, not another model
+    call" philosophy as every other check in this project (see search_mode: heavy's own comment
+    on preferring a deterministic mechanism over a fragile query-rewriting trick). Reordering
+    `results` in place is enough to improve BOTH consumers downstream: auto-fetch's
+    `results[:auto_fetch_top]` slice now prefers diverse results, and the returned
+    formatted-snippet ordering does too — no other call site needs to change."""
+    if len(results) <= 1:
+        return results
+    remaining = list(enumerate(results))
+    ordered = [remaining.pop(0)]
+    covered = set(_result_aspect_terms(ordered[0][1]))
+    while remaining:
+        best_pos, best_gain = 0, -1
+        for pos, (_, r) in enumerate(remaining):
+            gain = len(_result_aspect_terms(r) - covered)
+            if gain > best_gain:
+                best_pos, best_gain = pos, gain
+        orig_idx, chosen = remaining.pop(best_pos)
+        ordered.append((orig_idx, chosen))
+        covered |= _result_aspect_terms(chosen)
+    return [r for _, r in ordered]
+
+
 @tool
 async def web_search(
     query: str | list,
@@ -711,6 +767,8 @@ async def web_search(
     record_search_health(ok=bool(results))
     if not results:
         refund_quota("web_search")
+    else:
+        results = _diversity_rerank(results)
 
     # -------------------------------------------------------------
     # Auto-fetch fusion: search and fetch used to be two separate tools, which meant a model could
