@@ -101,7 +101,7 @@ def check_findings_ungrounded(ctx: Ctx) -> Optional[Verdict]:
         f"`findings.md` (Pass 1) fails the grounding check ({findings_problem}) — nothing in it traces to a source actually fetched this run. Pushing agent to rebuild it from real delegated results.",
         f"SYSTEM WARNING: 'findings.md' is not grounded in real research ({findings_problem}) — "
         + ("it contains no source URLs at all" if findings_problem == "no_urls" else "not one URL it cites matches anything your Searcher(s) actually fetched this run")
-        + f". You cannot fix this yourself — you have no write_workspace_file tool. If you have not delegated enough real research yet, delegate it now with delegate_tasks. Otherwise stop calling tools entirely: a dedicated FindingsWriter role rebuilds findings.md automatically from your real delegated results once you stop.",
+        + ". You cannot fix this yourself — you have no write_workspace_file tool. If you have not delegated enough real research yet, delegate it now with delegate_tasks. Otherwise stop calling tools entirely: a dedicated FindingsWriter role rebuilds findings.md automatically from your real delegated results once you stop.",
     )
 
 
