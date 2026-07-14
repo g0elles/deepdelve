@@ -27,6 +27,7 @@ from prompts import (
     DOCUMENT_ANALYZER_INSTRUCTIONS,
     DATA_ANALYZER_INSTRUCTIONS,
     PEER_REVIEWER_INSTRUCTIONS,
+    BUILDER_INSTRUCTIONS,
 )
 import config
 
@@ -81,14 +82,30 @@ peer_reviewer = SubAgentConfig(
     tools=[read_workspace_file, grep_workspace_file, think_tool]
 )
 
-# Tier 1 — plans, tracks todos, writes the final report. No web tools and no file-reading tools,
-# which forces it to delegate all research to a Tier 2 specialist, routed by query type.
+# Planner-tier delegate, NOT routed to by the Planner itself (it has no "Builder" agent_id in its
+# Delegation Routing block — see PLANNER_INSTRUCTIONS). Dispatched exclusively by
+# engine/completion.py's Build->Review->Fix loop, in a fresh context, after the Planner's own turn
+# has ended with findings.md ready — this is what actually writes final_report.md now. Must be
+# registered here (in the Planner's own sub_agents list) since completion.py's dispatch_task
+# resolves agent_id against available_sub_agents_ctx, which is scoped to the Planner's own
+# sub_agents at the point completion.py calls it. See PEER_REVIEWER_INSTRUCTIONS/BUILDER_INSTRUCTIONS
+# header comments in prompts.py for the full loop description.
+builder_agent = SubAgentConfig(
+    name="Builder",
+    instructions=BUILDER_INSTRUCTIONS,
+    tools=[read_workspace_file, grep_workspace_file, write_workspace_file, think_tool]
+)
+
+# Tier 1 — plans, tracks todos, writes findings.md. No web tools and no file-reading tools, which
+# forces it to delegate all research to a Tier 2 specialist, routed by query type. It still holds
+# write_workspace_file (for findings.md) but final_report.md is produced by Builder, dispatched by
+# the completion-check system rather than the Planner itself — see builder_agent above.
 app = AgentBuilder(
     name=config.APP_TITLE,
     description=config.APP_DESCRIPTION,
     instructions=PLANNER_INSTRUCTIONS,
     tools=[write_workspace_file, list_workspace_files, write_todos, read_todos, think_tool],
-    sub_agents=[web_searcher, academic_searcher, peer_reviewer]
+    sub_agents=[web_searcher, academic_searcher, peer_reviewer, builder_agent]
 )
 
 def cli_main():

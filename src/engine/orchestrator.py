@@ -241,11 +241,30 @@ def topup_quota_pool(pool: dict) -> dict:
 
 def create_local_agent(builder, subagent_callback=None, session_data=None):
     """
-    Returns (agent, session). Session is None when conversational memory is disabled.
-    Agent is re-created each call to pick up config changes (thinking toggle).
+    Returns (agent, session, dispatch_task). Session is None when conversational memory is
+    disabled. Agent is re-created each call to pick up config changes (thinking toggle).
+    dispatch_task is the same closure `delegate_tasks` wraps (_run_single_task) — passing it to
+    engine.completion.run_completion_check lets the Build->Review->Fix loop dispatch fresh-context
+    Builder/PeerReviewer sub-agents directly, without going through the Planner's own conversation.
     """
     global _session
     client = _build_client()
+
+    # Computed here (not inline where used) so both the Planner's own instructions AND the
+    # Builder sub-agent's instructions (formatted inside _run_single_task below) can reference
+    # {report_style_instructions}/{citation_format_instructions} — Builder is now the only role
+    # that writes final_report.md, so it needs the same style vars the Planner used to.
+    report_style = config.cfg.get("settings", {}).get("report_style", "standard")
+    _REPORT_STYLE_INSTRUCTIONS = {
+        "academic": ACADEMIC_REPORT_STYLE_INSTRUCTIONS,
+        "answer": ANSWER_REPORT_STYLE_INSTRUCTIONS,
+    }
+    _CITATION_FORMAT_INSTRUCTIONS = {
+        "academic": ACADEMIC_CITATION_FORMAT_INSTRUCTIONS,
+        "answer": ANSWER_CITATION_FORMAT_INSTRUCTIONS,
+    }
+    report_style_instructions = _REPORT_STYLE_INSTRUCTIONS.get(report_style, STANDARD_REPORT_STYLE_INSTRUCTIONS)
+    citation_format_instructions = _CITATION_FORMAT_INSTRUCTIONS.get(report_style, STANDARD_CITATION_FORMAT_INSTRUCTIONS)
     # Framework default silently strips the actual validation-error detail from a rejected tool
     # call, replacing it with a bare "Error: Argument parsing failed." — confirmed live
     # 2026-07-12: this was the single most common error signature across an entire day of
@@ -340,6 +359,8 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                         delegation_instructions=SUBAGENT_DELEGATION_INSTRUCTIONS.format(
                             max_concurrency=config.cfg.get("settings", {}).get("concurrency", {}).get("max_concurrent_tasks", 1)
                         ),
+                        report_style_instructions=report_style_instructions,
+                        citation_format_instructions=citation_format_instructions,
                         **_get_quota_format_vars()
                     )
                 else:
@@ -351,6 +372,8 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                         delegation_instructions=SUBAGENT_DELEGATION_INSTRUCTIONS.format(
                             max_concurrency=config.cfg.get("settings", {}).get("concurrency", {}).get("max_concurrent_tasks", 1)
                         ),
+                        report_style_instructions=report_style_instructions,
+                        citation_format_instructions=citation_format_instructions,
                         **_get_quota_format_vars()
                     )
 
@@ -707,18 +730,6 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
     available_sub_agents_ctx.set(builder.sub_agents)
     current_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     workspace_dir = config.cfg.get("settings", {}).get("workspace", {}).get("dir", ".")
-    # settings.report_style / --style CLI flag (tui.py): only PLANNER_INSTRUCTIONS actually
-    # contains these two placeholders, so passing them for a sub-agent build is a harmless no-op
-    # via _safe_format's "unknown keys stay literal" behavior.
-    report_style = config.cfg.get("settings", {}).get("report_style", "standard")
-    _REPORT_STYLE_INSTRUCTIONS = {
-        "academic": ACADEMIC_REPORT_STYLE_INSTRUCTIONS,
-        "answer": ANSWER_REPORT_STYLE_INSTRUCTIONS,
-    }
-    _CITATION_FORMAT_INSTRUCTIONS = {
-        "academic": ACADEMIC_CITATION_FORMAT_INSTRUCTIONS,
-        "answer": ANSWER_CITATION_FORMAT_INSTRUCTIONS,
-    }
 
     agent = client.as_agent(
         name=_sanitize_name(builder.name),
@@ -729,8 +740,8 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
             delegation_instructions=SUBAGENT_DELEGATION_INSTRUCTIONS.format(
                 max_concurrency=config.cfg.get("settings", {}).get("concurrency", {}).get("max_concurrent_tasks", 1)
             ),
-            report_style_instructions=_REPORT_STYLE_INSTRUCTIONS.get(report_style, STANDARD_REPORT_STYLE_INSTRUCTIONS),
-            citation_format_instructions=_CITATION_FORMAT_INSTRUCTIONS.get(report_style, STANDARD_CITATION_FORMAT_INSTRUCTIONS),
+            report_style_instructions=report_style_instructions,
+            citation_format_instructions=citation_format_instructions,
             **_get_quota_format_vars()
         ),
         tools=tools_list,
@@ -745,7 +756,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
             _session = agent.create_session()
         session = _session
 
-    return agent, session
+    return agent, session, _run_single_task
 
 def reset_session():
     """Clear the conversation session (called by /new)."""

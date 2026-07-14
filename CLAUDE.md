@@ -30,3 +30,21 @@
   leaving a sibling path (the other CLI mode, the log, the eval scorer, the TUI widget) silently
   unaware of it. Before treating a change as complete, name out loud which OTHER files consume
   the same data/tool/state you just touched, and check each one.
+- **`session_status/CURRENT.md` is the running scratchpad for in-progress work — keep it updated,
+  not just README/ROADMAP.** Whole `session_status/` directory is gitignored. Update
+  `session_status/CURRENT.md`:
+  - After any change judged important enough to matter to a future session (a real fix, a shipped
+    feature, a live-tested finding) — not necessarily every commit, but don't let real work go
+    unrecorded either.
+  - Whenever a plan is formed (via ExitPlanMode or otherwise) — record the plan itself, not just
+    the fact one exists.
+  - Before a session ends or a push happens — a short summary of what changed and why.
+  - Entries must be short and to the point, but concrete: reference the exact file path and the
+    line/function/section touched (e.g. `src/utils/grounding.py:59-63`,
+    `_strip_trailing_punct`), so a cold read of the entry tells you exactly where to go — not just
+    what happened.
+  - When `CURRENT.md` gets large or a work phase clearly closes out, archive it to
+    `session_status/<date>.md` (`YYYY-MM-DD`, matching existing archives) and start a fresh
+    `CURRENT.md` containing only what's still open — mirrors the README/ROADMAP-vs-session-status
+    split: durable, load-bearing facts belong in README/ROADMAP; `CURRENT.md` is short-lived
+    working memory for what's still in flight.

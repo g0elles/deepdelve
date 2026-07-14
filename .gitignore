@@ -10,4 +10,4 @@ eval/runs/
 .DS_Store
 feedback/
 .codegraph/
-SESSION_STATUS.md
+session_status/
