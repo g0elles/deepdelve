@@ -437,6 +437,52 @@ class ProcessingWidget(Static):
             self._timer.stop()
         self.update(f"[b]{self.agent_name}:[/b] [red]\N{CROSS MARK} Error: {error_msg}[/red]")
 
+
+class SubAgentStatusWidget(Static):
+    """Live status indicator for a whole running sub-agent dispatch — a parent-level 'this
+    sub-agent is running' signal, distinct from ToolCallWidget (one tool call) and
+    ProcessingWidget (the top-level agent). Found live 2026-07-13: this used to be a bare
+    `Static` mounted once with frozen "executing..." text and never touched again until the
+    sub-agent's own completion callback fired — a stuck/hung sub-agent (the exact stall this
+    project hit that same day) showed zero visual difference from a healthy one still working,
+    for however many minutes it took; cosmetic on its own, but a real diagnostic gap once the
+    search-timeout fix (see ROADMAP.md) makes a genuine multi-minute hang something a user might
+    actually need to notice mid-run rather than after killing it. Same animated-dots +
+    elapsed-timer pattern as ProcessingWidget/ToolCallWidget, so all three now behave consistently."""
+    DOTS_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+    def __init__(self, agent_name: str):
+        super().__init__("", classes="agent-bubble")
+        self.agent_name = agent_name
+        self._frame = 0
+        self._start_time = datetime.now()
+        self._done = False
+
+    def on_mount(self) -> None:
+        self._timer = self.set_interval(0.5, self._animate_dots)
+        self._animate_dots()
+
+    def _animate_dots(self) -> None:
+        if self._done:
+            return
+        self._frame = (self._frame + 1) % len(self.DOTS_FRAMES)
+        elapsed = datetime.now() - self._start_time
+        self.update(f"[blue]{self.DOTS_FRAMES[self._frame]}[/blue] [bold]{self.agent_name}[/bold] executing... ({elapsed.total_seconds():.1f}s)")
+
+    def mark_finished(self, elapsed: float) -> None:
+        self._done = True
+        if hasattr(self, "_timer"):
+            self._timer.stop()
+        self.update(f"[green]✅[/green] [bold]{self.agent_name}[/bold] finished ({elapsed:.1f}s)")
+
+    def mark_stopped(self) -> None:
+        self._done = True
+        if hasattr(self, "_timer"):
+            self._timer.stop()
+        elapsed = datetime.now() - self._start_time
+        self.update(f"[b]{self.agent_name}:[/b] \N{OCTAGONAL SIGN} Stopped ({elapsed.total_seconds():.1f}s)")
+
+
 def _looks_like_tool_error(text: str) -> bool:
     """True when a tool call's own result string represents a failure, not a real result.
     This project's tools never raise on expected failures — they return a formatted error
@@ -684,6 +730,9 @@ class BasicTuiAgent(App):
                     widget.mark_stopped()
             for widget in self.query("ProcessingWidget"):
                 widget.mark_stopped()
+            for widget in self.query("SubAgentStatusWidget"):
+                if not widget._done:
+                    widget.mark_stopped()
             for widget in self.query("ThinkingWidget"):
                 widget.finish()
             chat.mount(Static(Markdown("**System:**\nStopped."), classes="agent-bubble"))
@@ -900,7 +949,7 @@ class BasicTuiAgent(App):
             if widget:
                 start_time = state.get(f"start_time_{agent_name}", time.time())
                 elapsed = time.time() - start_time
-                widget.update(f"[green]✅[/green] [bold]{agent_name}[/bold] finished ({elapsed:.1f}s)")
+                widget.mark_finished(elapsed)
                 log_stream_content(agent_name, "subagent_end", {"elapsed": elapsed}, depth=depth)
             return
 
@@ -938,8 +987,9 @@ class BasicTuiAgent(App):
             if agent_name not in spawned:
                 spawned.add(agent_name)
                 state[f"start_time_{agent_name}"] = time.time()
-                # Mount a simple status indicator and store a reference to it
-                status_widget = Static(f"[blue]▶[/blue] [bold]{agent_name}[/bold] executing...", classes="agent-bubble")
+                # Animated status indicator (SubAgentStatusWidget) — see its class docstring for
+                # why a plain frozen-text Static wasn't enough.
+                status_widget = SubAgentStatusWidget(agent_name)
                 state[f"widget_{agent_name}"] = status_widget
                 chat.mount(apply_depth_style(status_widget))
                 self._safe_scroll_end(chat)
@@ -1958,11 +2008,20 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
 
         # Pre-run search health probe (headless only — an unattended run can't notice a sick
         # search layer until 20 wasted minutes later; a TUI user sees failures live). Aborting
-        # here costs ~5 seconds and leaves an explicit environmental verdict instead of a
-        # doomed run that looks like model failure.
-        from tools.web import probe_search_health
+        # here costs a few seconds and leaves an explicit environmental verdict instead of a
+        # doomed run that looks like model failure. Bounded via _run_with_daemon_timeout, not
+        # left to run unbounded or wrapped in a bare wait_for: probe_search_health's own DDGS
+        # call can hang the exact same way web_search's does (see tools/web.py::web_search's
+        # timeout_seconds comment for why a daemon thread, not just wait_for, is required — a
+        # bare wait_for unblocks this check in time but then leaves the whole process unable to
+        # exit cleanly afterward once the hung DDGS call's thread is orphaned).
+        from tools.web import probe_search_health, _run_with_daemon_timeout
         from utils.run_state import record_search_health
-        probe_err = await asyncio.to_thread(probe_search_health)
+        probe_timeout_s = config.cfg.get("settings", {}).get("web_search", {}).get("timeout_seconds", 20)
+        try:
+            probe_err = await asyncio.to_thread(_run_with_daemon_timeout, probe_search_health, probe_timeout_s)
+        except TimeoutError:
+            probe_err = f"search probe timed out after {probe_timeout_s}s with no response — the search layer appears to be hanging"
         if probe_err:
             record_search_health(ok=False)
             sys.stdout.write(

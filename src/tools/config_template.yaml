@@ -24,6 +24,15 @@ settings:
   # exhausted). Set to 0 to disable and restore the old search-then-optionally-fetch behavior.
   web_search:
     auto_fetch_top: 1
+    # Outer timeout on a single search call (also reused by the pre-run search-health probe in
+    # engine/tui.py) — confirmed live 2026-07-13 (a run stalled indefinitely) and root-caused
+    # against two real GitHub issues (HKUDS/nanobot#2804, microsoft/amplifier#219): ddgs's
+    # underlying `primp` Rust HTTP client can block in a way a plain asyncio.to_thread background
+    # thread never returns from — and never returns to Python control at all, which would leave
+    # the process unable to exit cleanly even after the model gets its error back. Enforced via
+    # tools/web.py::_run_with_daemon_timeout (a real daemon thread, not just an async cancel) —
+    # see its docstring for why a bare asyncio.wait_for isn't enough on its own.
+    timeout_seconds: 20
   # "light" (default): behavior unchanged. "heavy": web_search searches deeper (max_results >= 8)
   # and auto-fetches more of the top results (>= 3) per call — a larger verified data pool per
   # search, for queries where thoroughness matters more than tool-call/token economy. Costs more

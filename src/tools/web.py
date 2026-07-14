@@ -2,12 +2,48 @@ import httpx
 import os
 import re
 import asyncio
+import threading
 from bs4 import BeautifulSoup
 from agent_framework import tool
 from tools.core import with_quota
 from tools.fs import _get_safe_path, _get_workspace_type, _IN_MEMORY_FS
 from utils.run_state import record_fetched_url
 from utils.browser_fetch import fetch_via_headless_browser
+
+
+def _run_with_daemon_timeout(func, timeout: float):
+    """Run a blocking `func()` with a real timeout that ALSO can't block process exit — unlike a
+    plain `asyncio.wait_for(asyncio.to_thread(func), timeout=...)`. That combination does unblock
+    the awaiting coroutine on time, but `asyncio.to_thread`'s underlying executor thread is not a
+    daemon thread, so if `func()` never actually returns (confirmed live 2026-07-13/14: ddgs's
+    underlying `primp` Rust HTTP client can block below anything asyncio can interrupt — see
+    HKUDS/nanobot#2804, microsoft/amplifier#219), that orphaned thread lingers and Python's
+    interpreter-shutdown thread-join then hangs the WHOLE process at exit, even though the
+    original tool call itself already returned an honest timeout error long before. Verified
+    directly: a `time.sleep(999)`-hung call wrapped only in wait_for(to_thread(...)) times out the
+    caller correctly but the process never exits; the same call run through THIS helper both times
+    out the caller and lets the process exit cleanly, since the hung inner thread is daemonized.
+
+    Must be called from inside `asyncio.to_thread` (not directly on the event loop thread) — the
+    `Thread.join(timeout)` below is itself a blocking call bounded by `timeout`, so the outer
+    to_thread call returns promptly either way; it must not run on the loop thread, or it would
+    block all other concurrent tasks for up to `timeout` seconds."""
+    box = {}
+
+    def _wrapper():
+        try:
+            box['value'] = func()
+        except Exception as e:
+            box['error'] = e
+
+    t = threading.Thread(target=_wrapper, daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        raise TimeoutError(f"operation timed out after {timeout}s with no response")
+    if 'error' in box:
+        raise box['error']
+    return box.get('value')
 
 
 def _looks_like_redirect_stub(md_content: str) -> str | None:
@@ -629,9 +665,25 @@ async def web_search(
 
     from utils.run_state import record_search_health
     from tools.core import refund_quota
+    # Outer timeout, not just a retry — confirmed live 2026-07-13 (a full run stalled indefinitely
+    # here) and root-caused against two real GitHub issues describing the identical failure
+    # (HKUDS/nanobot#2804, microsoft/amplifier#219): ddgs's underlying `primp` Rust HTTP client can
+    # block in a way a plain `asyncio.to_thread` background thread never returns from. Uses
+    # _run_with_daemon_timeout (not a bare asyncio.wait_for around asyncio.to_thread) specifically
+    # because a plain wait_for only unblocks the CALLING coroutine on time — the orphaned executor
+    # thread itself is not a daemon thread, so it silently blocks the whole process from exiting
+    # cleanly later (confirmed directly: a hung call wrapped in bare wait_for/to_thread times out
+    # the caller fine but then Python's interpreter-shutdown thread-join hangs forever). Full
+    # process-based isolation (spawn+kill a subprocess) was considered instead and rejected: it
+    # would require calling ddgs from a module-level, picklable worker function, which breaks this
+    # exact call site's existing in-process `ddgs.DDGS` monkeypatch test
+    # (test_structural_checks.py) since a subprocess re-imports fresh, unpatched modules — the
+    # daemon-thread approach solves the same user-visible symptom (including the exit-hang) without
+    # that test-compatibility cost.
+    timeout_s = app_config.cfg.get("settings", {}).get("web_search", {}).get("timeout_seconds", 20)
     results, err = [], None
     try:
-        results = await asyncio.to_thread(_do_search)
+        results = await asyncio.to_thread(_run_with_daemon_timeout, _do_search, timeout_s)
     except Exception as e:
         err = e
     if not results:
@@ -640,7 +692,7 @@ async def web_search(
         # unit and returning nothing.
         await asyncio.sleep(3)
         try:
-            results = await asyncio.to_thread(_do_search)
+            results = await asyncio.to_thread(_run_with_daemon_timeout, _do_search, timeout_s)
             err = None
         except Exception as e:
             err = e
@@ -648,6 +700,10 @@ async def web_search(
         record_search_health(ok=False)
         # An environmental failure must not burn the model's research budget on top of failing.
         refund_quota("web_search")
+        if isinstance(err, TimeoutError):
+            return (f"Search failed: timed out after {timeout_s}s with no response — the search "
+                    f"layer appears to be hanging, not just slow. This is an environmental issue, "
+                    f"not a query problem; try a different query or search backend.")
         import traceback
         return f"Search failed: {err}\n\nTraceback:\n{''.join(traceback.format_exception(err))}"
     # Zero results counts as a failure: under provider throttling ddgs often returns empty rather

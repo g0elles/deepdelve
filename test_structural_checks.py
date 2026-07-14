@@ -122,6 +122,26 @@ def main():
         "Error code: 500 - {'error': {'message': 'error parsing tool call: raw=...'}}"))
     assert malformed_tool_call_nudge(Exception("Connection error.")) is None
 
+    # --- in-band tool-error recovery predicate (live case 2026-07-13/14: a SubAgent_BuilderFix
+    # hallucinated a delegate_tasks call, a separate sub-agent called a malformed grep_workspace?,
+    # PeerReviewer tried reading a nonexistent workspace.txt — none of these raise, they come back
+    # as ordinary successful function_result content, so malformed_tool_call_nudge above never
+    # sees them). Exact strings pulled from agent_framework/_tools.py, not guessed. ---
+    from engine.orchestrator import tool_result_error_nudge
+    assert tool_result_error_nudge('Error: Requested function "grep_workspace?" not found.')
+    assert tool_result_error_nudge('Error: Requested function "delegate_tasks" not found.')
+    assert tool_result_error_nudge("Error: Argument parsing failed.")
+    assert tool_result_error_nudge(
+        "Error: Argument parsing failed. Exception: 1 validation error for query")
+    assert tool_result_error_nudge("Error: 'workspace.txt' not found.")
+    # Must NOT false-positive on a real success or an unrelated (already-handled-elsewhere) error —
+    # a blind retry on either would waste a turn instead of fixing anything.
+    assert tool_result_error_nudge("Fetched URL successfully to 'sources/foo.md' on disk.") is None
+    assert tool_result_error_nudge(
+        "Search failed: timed out after 20s with no response — the search layer appears to be "
+        "hanging, not just slow.") is None
+    assert tool_result_error_nudge("") is None
+
     # --- fetched files live under sources/ and carry their true URL as line 1 ---
     from tools.web import _fetched_filename, _save_fetched, _slugify_for_filename, fetch_url_to_workspace
     from tools.fs import _IN_MEMORY_FS
@@ -843,6 +863,25 @@ def main():
 
     contextvars.copy_context().run(_builder_dispatch_scenario)
 
+    # --- Builder write_workspace_file quota headroom (ROADMAP "Planned": a Build->Review->Fix
+    # cycle can burn up to 2 write_workspace_file calls — Builder's initial rewrite plus one
+    # corrective Fix pass — against the same shared pool the Planner's own findings.md writes draw
+    # from; a low-quota config could starve Builder specifically mid-cycle). ---
+    from engine.completion import _ensure_builder_write_quota_headroom
+
+    # Nearly exhausted (0 headroom) -> topped up to guarantee exactly 2.
+    pool_a = {"write_workspace_file": {"used": 5, "limit": 5}}
+    _ensure_builder_write_quota_headroom(pool_a)
+    assert pool_a["write_workspace_file"]["limit"] - pool_a["write_workspace_file"]["used"] == 2
+
+    # Already has plenty of headroom -> left untouched, no silent inflation of the shared budget.
+    pool_b = {"write_workspace_file": {"used": 1, "limit": 10}}
+    _ensure_builder_write_quota_headroom(pool_b)
+    assert pool_b["write_workspace_file"]["limit"] == 10
+
+    # Tool not in this pool at all (e.g. quotas section omits it) -> no-op, no KeyError.
+    _ensure_builder_write_quota_headroom({"delegate_tasks": {"used": 0, "limit": 5}})
+
     # --- missing_findings escalation (live case 2026-07-13): a real run produced literally ZERO
     # content (no tool call, no text) in response to this exact nudge for 6 consecutive attempts,
     # then genuinely self-corrected with real findings.md content on the 7th. Unlike
@@ -1143,6 +1182,18 @@ def main():
         "same case without markdown link syntax, just parenthesized prose")
     # A URL with NO internal parens must still have the markdown link's own closing paren stripped.
     assert extract_cited_urls("See [Foo](https://example.com/page) now.") == ["https://example.com/page"]
+
+    # --- trailing '**' stripped (live case 2026-07-13/14: Builder's own citation style is
+    # `**[Title](URL)**` — the bold-close asterisks sat right after the URL's own closing ')',
+    # which made the old rstrip's endswith(')') check false and left a literal '**' on every
+    # extracted URL, so no Builder-written citation could ever match a real fetched URL) ---
+    assert extract_cited_urls("- **[Guido van Rossum](https://en.wikipedia.org/wiki/Guido_van_Rossum)**") == [
+        "https://en.wikipedia.org/wiki/Guido_van_Rossum"
+    ], "trailing '**' from Builder's bold citation style must not survive extraction"
+    # Same case, but the URL ALSO has its own internal balanced parens — both the bold '**' and
+    # the correct balanced ')' must be handled together, in the right order.
+    assert extract_cited_urls(f"- **[Heuristic]({_paren_url})**") == [_paren_url], (
+        "bold citation style combined with a URL's own balanced parens must still resolve correctly")
 
     # --- stub-fetch detection (live case run 14: a model-invented URL answered by a 200
     # soft-404 — 5KB of subscription chrome — was recorded as a real fetch and passed the

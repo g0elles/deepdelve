@@ -35,6 +35,20 @@ Status as of 2026-07-13.
   - **Headed beats headless, confirmed live**: MDPI's block turned out to be a headless-specific fingerprint check — it fires at the network/edge level before any JS/DOM loads, so JS-side stealth tweaks (webdriver-flag override, custom UA/plugins/locale, `--disable-blink-features=AutomationControlled`) made zero difference under `headless=True`, but a genuinely headed (non-headless) Chromium sailed straight through, both against a real X session and a freshly-started virtual one (Xvfb via `pyvirtualdisplay`, `DISPLAY` unset beforehand to rule out riding the real desktop's session). Shipped behavior: try headed first (real display, or auto-started Xvfb on Linux) and fall back to headless only when no display is available at all — recovers MDPI in addition to Springer.
   - **Found and fixed one more real bug along the way**: `_strip_boilerplate_html`'s boilerplate-class regex (`cookie|consent|advert|sidebar|...`) is a substring match, so it was deleting Springer's actual 221K-char article-body container because its CSS class (`eds-l-with-sidebar`, a layout hint) happened to contain "sidebar" — silently leaving only the cookie-consent banner behind, which then *passed* the stub check on its own prose mass. Pre-existing bug, invisible until headless/headed fetch started returning real content to trigger it. Fixed with a size guard (elements over 3000 chars are left alone — real chrome is never that large).
   - **ScienceDirect confirmed NOT fixable this way — root cause pinned down precisely, not just "still blocked."** It's gated by Cloudflare Turnstile, not Akamai. Live-tested exhaustively (2026-07-14): the challenge iframe never resolves even after 60s of patient polling with a real headed browser, clicking any checkbox that appears (none ever did — the widget cycles in and out of the DOM every ~6-12s, retrying itself indefinitely). Isolated the cause: Playwright's Chromium exposes `navigator.webdriver: true` by default (confirmed: `page.evaluate("() => navigator.webdriver")` → `True`); spoofing it to `undefined` via `add_init_script` changed the JS-visible value but the challenge *still* never resolved after another 45s of patient polling — so the detection is deeper than any single JS flag, almost certainly Cloudflare fingerprinting the CDP (Chrome DevTools Protocol) connection Playwright itself requires to drive the browser, a much harder thing to hide than `navigator.webdriver` (the reason dedicated "undetected browser" tooling exists as its own arms race, with a poor track record against Cloudflare specifically). **Directly confirmed the same exact URL, same machine/IP, loads cleanly in the user's real (non-automated) Firefox** — ruling out IP-reputation/rate-limiting as the cause; it's specifically automation-fingerprint detection. Deliberately **not pursued further**: defeating this would mean building and maintaining real anti-detection/stealth-patching tooling aimed specifically at circumventing a publisher's bot controls, which doesn't belong in DeepDelve's shipped default behavior even though the underlying paper is legitimately citable — same reasoning as declining to add CAPTCHA-solving. Left as a permanent, honestly-flagged residual gap, not a bug to keep chasing.
+  - **Checked whether "just fetch the abstract instead of the full PDF" routes around this — it
+    doesn't, for ScienceDirect specifically.** The abstract/landing page (`/science/article/pii/...`)
+    IS the same URL already being tested; Turnstile gates that whole page, not specifically a PDF
+    download action. Also checked Crossref's metadata API for two real DOIs from the pdfdownload
+    review above — no abstracts returned; Elsevier generally doesn't submit them to Crossref. The
+    legitimate alternative is Elsevier's own developer API (`dev.elsevier.com`, registered API key,
+    often free for text-mining/research use) — noted as a real future option, not started (no key
+    exists yet; the tool would need one as a required config value). Worth stating plainly what this
+    finding does NOT change: DeepDelve's existing fetch behavior already does the right thing for
+    every other publisher — `fetch_url_to_workspace` never tries to get past a paywall to reach a
+    full PDF specifically, it just fetches whatever's at the URL, so a typical journal with an open
+    abstract page and a separately-paywalled PDF link already naturally grounds on the abstract with
+    no special-casing needed. ScienceDirect is the unlucky case where the wall sits in front of the
+    abstract too, not a sign anything needs to change generally.
   - TUI/CLI parity: `/toggle_headless_fetch` slash command + status-bar/banner indicator on both surfaces (session-only, not persisted, same as `report_style`).
 - **The three remaining structural fabrication gaps, closed in one pass (2026-07-11, first Windows-side session).** (1) `findings.md` wholesale-fabrication gate: `run_completion_check` now flags a Pass-1 file with zero cited URLs or where not one cited URL matches a real fetch (`utils/grounding.py::fully_ungrounded`, `settings.grounding_check.check_findings`), quarantines it and forces re-delegation — deliberately laxer than the strict per-URL final-report check, since Pass-1 notes legitimately mention unfetched snippet URLs. (2) Structural exclusion enforcement: `delegate_tasks` extracts explicit exclusions from the original query (`_extract_excluded_topics` — only unambiguous cues like "excluding"/"except", NOT "avoid", which appears inside legitimate topics) and *skips* matching tasks individually rather than rejecting the batch, because the placeholder-detector incident showed wholesale rejection makes the model abandon delegation and fabricate. (3) Unresolved-referent rejection: a live delegated task "Summarize its headline feature." searched the web with no idea what "its" meant and returned Microsoft Research patent statistics as Python's headline feature — short instructions leaning on a bare pronoun with no proper-noun/digit/quote anchor are now rejected with guidance to restate the subject (`_lacks_concrete_subject`, kept deliberately conservative given the placeholder false-positive history). All three covered by `test_structural_checks.py`; verified live that none false-positive on a clean run.
 - **Windows migration (dual-boot, same NTFS drive).** Ollama model store shared via `OLLAMA_MODELS=D:\Projects\AI shit\Models`; cp1252 UnicodeEncodeError in headless mode fixed with a UTF-8 reconfigure guard in `app.py`; `markitdown[all]` is unresolvable on Windows/py3.14 (silently downgrades to a 0.0.2 stub) so `pyproject.toml` now pins the doc extras actually used. Full pipeline re-verified live on Windows (ROCm on an RX 9060 XT 16GB).
@@ -327,78 +341,116 @@ Status as of 2026-07-13.
 - **Four concrete findings from a fresh live run of the standing sales-forecasting benchmark
   (2026-07-13, later the same day the Builder loop shipped)** — user killed the run after it
   stalled; each finding traced to an exact file/line, not guessed:
-  - **NEW BUG, HIGH, not yet fixed — `_strip_trailing_punct` (`src/utils/grounding.py:59-63`)
-    doesn't strip a trailing `*`.** Builder's own citation format `**[Title](URL)**` puts `**`
+  - **`_strip_trailing_punct` (`src/utils/grounding.py:59-66`) didn't strip a trailing `*`.**
+    *(Fixed 2026-07-14.)* Builder's own citation format `**[Title](URL)**` puts `**`
     immediately after the link's closing `)` with no space; the existing unbalanced-`)`-stripping
-    loop only fires when the string *ends* with `)`, so a URL ending in `)**` is never cleaned up.
+    loop only fired when the string *ends* with `)`, so a URL ending in `)**` was never cleaned up.
     Confirmed live: two of this run's four completion-check attempts were `not_grounded` verdicts
     citing the literal string `...546e2a498c2f)**` as "unverified" — a genuinely-fetched,
     correctly-cited source false-flagged as hallucinated purely by this string-handling gap,
-    burning half the run's retry budget on a checker bug, not a model failure.
-  - **Sub-agent "tool not found"/"argument parsing failed" errors have zero recovery path.**
-    Confirmed via code trace: these come back from `agent_framework`'s SDK as in-band tool-result
-    text, never as exceptions, so they never reach `_run_single_task`'s `except` block and never
-    trigger the existing `malformed_tool_call_nudge` (which only covers transport-level "error
-    parsing tool call" failures). Confirmed live: a `SubAgent_BuilderFix` retry hallucinated a call
-    to `delegate_tasks` (Builder's real tool list never includes it — the model invented the call,
-    not a config leak); a separate sub-agent called a malformed `grep_workspace?`; `PeerReviewer`
-    tried reading a nonexistent `workspace.txt`. Each burned a turn with no corrective nudge of any
-    kind, unlike the Planner's own conversation.
-  - **NEW BUG, root cause of this run's stall, not yet fixed — `web_search`/`probe_search_health`
-    (`src/tools/web.py`) have no outer wall-clock timeout.** `DDGS()` is built with no explicit
-    timeout at either call site, relying on the `ddgs` library's own internal 5s-per-engine
-    default — not a real ceiling, since `ddgs` runs engines in a `ThreadPoolExecutor` and its
-    context-manager exit calls `shutdown(wait=True)`, which blocks until every thread finishes
-    regardless of the nominal per-engine timeout. Confirmed live: the process ended up blocked with
-    one established TCP connection open 9+ minutes to a yandex.ru-resolving IP (not an intentional
-    backend anywhere in this codebase — almost certainly a redirect inside `ddgs`), local model
-    unloaded, GPU idle. Generalizes the already-tracked "no liveness/stall detection" gap
-    (previously scoped to hosted/NIM runs only) to local `web_search` too.
-  - **Sub-agent status widgets have no staleness indication** (`src/engine/tui.py`,
-    `handle_agent_update`, ~886-934). Unlike `ProcessingWidget`/`ToolCallWidget`'s animated timers,
-    the per-sub-agent `Static` widget shows `"▶ {agent_name} executing..."` with no timer and no
-    upper bound — if the underlying dispatch never resolves (exactly what the stall above causes),
-    it stays frozen on "executing" forever with zero visual signal anything is wrong. Same bug
-    *class* as the already-fixed `ProcessingWidget` elapsed-counter issue, but that fix never got
-    applied here — this is what "stuck agent" looked like from the user's side that night.
+    burning half the run's retry budget on a checker bug, not a model failure. Fix: added `*` to
+    the initial `rstrip()` char set, stripped BEFORE the balanced-paren check so a bold-wrapped
+    URL's real trailing `)` is exposed to it correctly (verified against a bold URL that also has
+    its own internal balanced parens, e.g. a Wikipedia disambiguator page — both layers now
+    resolve in the right order). Two new assertions in `test_structural_checks.py`.
+  - **Sub-agent "tool not found"/"argument parsing failed" errors had zero recovery path.**
+    *(Fixed 2026-07-14.)* Confirmed via code trace: these come back from `agent_framework`'s SDK
+    as in-band tool-result text, never as exceptions, so they never reached `_run_single_task`'s
+    `except` block and never triggered the existing `malformed_tool_call_nudge` (which only covers
+    transport-level "error parsing tool call" failures). Confirmed live: a `SubAgent_BuilderFix`
+    retry hallucinated a call to `delegate_tasks` (Builder's real tool list never includes it — the
+    model invented the call, not a config leak); a separate sub-agent called a malformed
+    `grep_workspace?`; `PeerReviewer` tried reading a nonexistent `workspace.txt`. Each burned a
+    turn with no corrective nudge of any kind, unlike the Planner's own conversation. Fix: new
+    `engine/orchestrator.py::tool_result_error_nudge`, a sibling of `malformed_tool_call_nudge`
+    scoped to the exact SDK error strings pulled from `agent_framework/_tools.py` source (not
+    guessed) — `Error: Requested function "{name}" not found.` (hallucinated tool name),
+    `Error: Argument parsing failed.` (rejected arguments), and `tools/fs.py`'s
+    `Error: '{filename}' not found.` (missing file). Wired into `_run_single_task`'s stream loop:
+    the pending nudge is overwritten on every `function_result` seen, so a LATER successful call
+    after an earlier error (the model already self-correcting within the SDK's own internal turn)
+    clears it — only an error still standing at the end of the stream gets nudged, capped at 2
+    retries like `malformed_retries`. Deliberately narrow (three specific, evidence-backed error
+    shapes, not every possible tool failure) so a legitimate business-logic error (a real search
+    that genuinely failed, a quota genuinely exhausted) doesn't get blindly retried when that
+    wouldn't help — verified against both the three matching cases and two non-matching ones (a
+    real fetch-success string, `web_search`'s own timeout error) with no false positives. New
+    assertions in `test_structural_checks.py`. **Deliberately NOT extended to the Planner's own
+    loop** (`run_agent`/`run_cli` in `engine/tui.py`) despite this project's usual TUI/CLI parity
+    rule — this is a reasoned scope decision, not an oversight: the Planner already has independent
+    recovery via its multi-attempt completion-check loop (several full outer retries across an
+    entire run, each with fresh nudges and quota top-ups), unlike a sub-agent's single one-shot
+    dispatch with no outer safety net at all — the asymmetry this fix closes is specific to
+    sub-agents, not a gap in the Planner too. **Relationship to the researched LangGraph
+    `RetryPolicy` pattern** (see the earlier-recorded research-pass note): that pattern's
+    retryable-vs-fatal split maps onto DIFFERENT layers of this codebase rather than one function —
+    the genuinely *retryable* class (timeout, rate-limit, transient parse garble) is exactly what
+    `web_search`'s own daemon-timeout fix and the SDK's built-in 429/5xx backoff already handle;
+    `tool_result_error_nudge` covers what that pattern calls *fatal* (hallucinated tool name,
+    rejected arguments) — except here "fatal" doesn't mean "give up," it means "immediately
+    actionable by telling the model exactly what's wrong," which is what the nudge does.
+  - **`web_search`/`probe_search_health` (`src/tools/web.py`) had no outer wall-clock timeout.**
+    *(Fixed 2026-07-14.)* `DDGS()` is built with no explicit timeout at either call site, relying
+    on the `ddgs` library's own internal 5s-per-engine default — not a real ceiling, since `ddgs`
+    runs engines in a `ThreadPoolExecutor` and its context-manager exit calls `shutdown(wait=True)`,
+    which blocks until every thread finishes regardless of the nominal per-engine timeout. Confirmed
+    live: the process ended up blocked with one established TCP connection open 9+ minutes to a
+    yandex.ru-resolving IP (not an intentional backend anywhere in this codebase — almost certainly
+    a redirect inside `ddgs`), local model unloaded, GPU idle. Generalizes the already-tracked
+    "no liveness/stall detection" gap (previously scoped to hosted/NIM runs only) to local
+    `web_search` too. Fix: `tools/web.py::_run_with_daemon_timeout` — a real `threading.Thread(daemon=True)`
+    with `.join(timeout)`, not a bare `asyncio.wait_for(asyncio.to_thread(...))`. That distinction
+    mattered in practice: a plain `wait_for` DOES unblock the awaiting coroutine on time, but its
+    underlying executor thread is not a daemon thread, so if the search call never actually returns
+    (confirmed against two real GitHub issues, `HKUDS/nanobot#2804` and `microsoft/amplifier#219`,
+    describing `ddgs`'s `primp` Rust HTTP client blocking below anything asyncio can interrupt), the
+    orphaned thread then blocks the WHOLE PROCESS from exiting cleanly at the end of a run — verified
+    directly with a `time.sleep(999)`-hung call: bare `wait_for`/`to_thread` times out the caller
+    fine but the process itself never exits; the daemon-thread version times out the caller AND lets
+    the process exit cleanly. `settings.web_search.timeout_seconds` (default 20), shared by both
+    `web_search`'s two attempts and the pre-run `probe_search_health` check
+    (`src/engine/tui.py`, `run_cli`). Process-based isolation (spawn+kill a subprocess) was
+    considered and rejected — it would require calling `ddgs` from a picklable module-level worker,
+    breaking the existing in-process `ddgs.DDGS` monkeypatch test in `test_structural_checks.py`
+    since a subprocess re-imports fresh, unpatched modules; the daemon-thread approach closes the
+    same gap (including the exit-hang) without that cost.
+  - **Sub-agent status widgets had no staleness indication.** *(Fixed 2026-07-14.)*
+    (`src/engine/tui.py`, `handle_agent_update`). Unlike `ProcessingWidget`/`ToolCallWidget`'s
+    animated timers, the per-sub-agent `Static` widget showed `"▶ {agent_name} executing..."` with
+    no timer and no upper bound — if the underlying dispatch never resolved (exactly what the stall
+    above causes), it stayed frozen on "executing" forever with zero visual signal anything was
+    wrong. Same bug *class* as the already-fixed `ProcessingWidget` elapsed-counter issue, but that
+    fix never got applied here — this is what "stuck agent" looked like from the user's side that
+    night. Fix: new `SubAgentStatusWidget` class (mirrors `ProcessingWidget`'s animated-dots +
+    live elapsed-seconds pattern exactly), swapped in at the one mount site in
+    `handle_agent_update`; `mark_finished(elapsed)` replaces the old one-shot `.update(...)` call
+    on completion. Also wired into `/stop`'s existing widget-cleanup block (alongside
+    `ToolCallWidget`/`ProcessingWidget`/`ThinkingWidget`) so a manually-stopped run marks these
+    stopped too instead of leaving them frozen mid-animation — a related gap the bare `Static`
+    couldn't have supported anyway (no `mark_stopped` method existed to call).
   - Full prioritized fix plan (strip-punct fix → search timeout → sub-agent error nudge → widget
-    staleness indicator) was written to a local plan file during triage; not yet implemented.
+    staleness indicator) was written to a local plan file during triage. All four items fixed
+    2026-07-14 — see "Done" above/below.
+  - **Builder's `write_workspace_file` quota was shared with the Planner and every prior Builder
+    dispatch, with no guaranteed headroom of its own.** *(Fixed 2026-07-14.)* On a long, many-retry
+    run, the shared pool could be exhausted by the time a later corrective Builder dispatch needed
+    it, degrading Builder to narrating the report as chat text instead of writing it — the same
+    "narrate instead of write" failure the Planner used to be prone to, now one level down.
+    `retry_quota_topup` already topped up the pool on every completion-check retry, so this wasn't
+    starved by DEFAULT config, but a config with a low `write_workspace_file` limit/topup would
+    starve Builder specifically. Fix: new `engine/completion.py::_ensure_builder_write_quota_headroom`,
+    called right before every `_dispatch_build_review_fix` dispatch (after the existing per-attempt
+    `topup_quota_pool`) — tops up ONLY `write_workspace_file`, and only by the exact headroom this
+    one cycle could need (2 units: Builder's initial rewrite + one possible corrective Fix pass),
+    not a blanket amount that would also quietly inflate the Planner's own budget. Chose this over
+    the other option on the table (a separate Builder-reserved quota pool) because a reserved pool
+    would work against `build_quota_pool`'s deliberate one-shared-cumulative-pool-per-role design,
+    not just extend it. New unit tests in `test_structural_checks.py` (near-exhausted pool topped
+    up to exactly 2 headroom, a pool with plenty already left untouched — no silent inflation —
+    and a pool missing the key entirely, no `KeyError`).
 
 ## Planned (not started)
 
-- **`_strip_trailing_punct` doesn't strip trailing `*`** (`src/utils/grounding.py:59-63`, found
-  2026-07-13) — false-positive `not_grounded` on Builder's `**[Title](URL)**` citation style.
-  Smallest, highest-confidence fix of the four findings above; not yet applied.
-- **Sub-agent "tool not found"/"argument parsing failed" errors have no retry/nudge path** (found
-  2026-07-13) — `_run_single_task` in `src/engine/orchestrator.py` needs a tool-result-level
-  sibling of the existing `malformed_tool_call_nudge`, since these SDK errors surface as in-band
-  text, not exceptions. **Pattern to model it on (verified 2026-07-13 via a 3-model research pass,
-  cross-checked against the real docs, not taken on trust)**: LangGraph's `RetryPolicy` design —
-  classify the in-band error text into retryable (timeout, rate-limit, transient parse garble) vs.
-  fatal (hallucinated tool name, genuinely malformed schema) before deciding whether to nudge-and-
-  retry or surface it, rather than one blanket retry policy for every error shape.
-- **`web_search`/`probe_search_health` can hang indefinitely, no outer timeout** (found 2026-07-13,
-  `src/tools/web.py`) — root cause of the 2026-07-13 stall. **Root cause confirmed independently
-  2026-07-13** against two real live GitHub issues describing the identical failure
-  (`HKUDS/nanobot#2804`, `microsoft/amplifier#219`): `ddgs`'s underlying `primp` Rust HTTP client
-  can block below the level `asyncio.wait_for`/`asyncio.to_thread` can actually interrupt — a plain
-  coroutine-level timeout wrapper may not reliably fix it. **Fix should be process-based
-  isolation** (spawn the search call in a subprocess, kill the subprocess on timeout), not just
-  `asyncio.wait_for` around `asyncio.to_thread(_do_search)` as originally scoped — that thread-level
-  version is the fallback if process isolation proves too heavy for a single search call.
-- **Sub-agent status widgets show "running" with no staleness signal** (found 2026-07-13,
-  `src/engine/tui.py`'s `handle_agent_update`) — lowest priority of the four above, cosmetic once
-  the search-timeout fix makes real stalls rare.
-- **Builder's `write_workspace_file` quota is shared with the Planner and every prior Builder
-  dispatch, not its own separate pool** — found live 2026-07-13 (see "Findings from live testing"
-  above): on a long, many-retry run, the shared pool can be exhausted by the time a later
-  corrective Builder dispatch needs it, and Builder then narrates the report as chat text instead
-  of writing it — the same "narrate instead of write" failure the Planner used to be prone to, now
-  one level down. `retry_quota_topup` already tops up the pool on every completion-check retry, so
-  this isn't currently starved by DEFAULT config, but a config with a low
-  `write_workspace_file` limit/topup would starve Builder specifically. Options not yet evaluated:
-  a small Builder-reserved slice of the quota, or making `retry_quota_topup` top up more
-  aggressively specifically when a Build→Review→Fix cycle is about to run.
 - **`web_search`/`context_budget_chars` blind spot for Planner-escalated problems** (see the
   Builder entry above) — `missing_findings`/`findings_ungrounded`/`not_delegated` still inject
   nudges into the Planner's own `current_input`, uncounted by the context-budget guard. Lower
@@ -530,3 +582,20 @@ Status as of 2026-07-13.
   reranking, Gemma 4 12B) happened to be individually sound but were not verified by that response
   itself — treat as unsourced until independently re-checked, which is what happened before either
   was added to "Planned" above.
+- **`platoyaoxu/pdfdownload`** (reviewed 2026-07-14, user-supplied link, directly relevant given the
+  same-day ScienceDirect/Cloudflare Turnstile investigation above): a personal Elsevier/ScienceDirect
+  batch PDF downloader — `DrissionPage` opens each DOI in a real visible Chromium tab, a companion
+  `AutoClick.py` subprocess does OS-level `pyautogui` screenshot/template-match clicking (real mouse
+  input, not CDP-synthetic) against user-supplied PNGs of the Cloudflare checkbox and the download
+  button, with a human physically present to solve anything the templates can't handle. Confirms our
+  own finding from the same investigation: it's very plausibly beating Turnstile specifically because
+  `pyautogui` drives genuinely trusted OS-level input events, not CDP's synthetic `Input.dispatchMouseEvent`
+  — a more fundamental distinction than `navigator.webdriver` or Playwright-vs-DrissionPage as
+  libraries. **Not adopted, on the same principle already applied to ScienceDirect above**: its entire
+  purpose is defeating anti-bot protection to bulk-scrape copyrighted publisher content (the repo's
+  own `.gitignore` excludes downloaded PDFs "copyrighted & large," so the author knows what this is) —
+  that doesn't belong in DeepDelve's default fetch path even though the "real trusted input" technique
+  is a genuinely interesting, confirmed data point. Secondary code-quality notes for the record, not
+  actionable for us: no timeout anywhere in either the click-watch loop or the download-wait loop (a
+  wrong screen resolution or an inaccessible paper hangs the whole batch indefinitely), and the
+  `images/` template folder it depends on isn't shipped in the repo, so it isn't runnable as-is.
