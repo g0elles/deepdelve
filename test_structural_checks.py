@@ -725,7 +725,15 @@ def main():
     # run_completion_check must dispatch a fresh-context Builder (+PeerReviewer check) instead of
     # nudging the Planner's own current_input, when a dispatch_task callable is provided AND both
     # roles are registered. The core regression this guards against: current_input must come back
-    # UNCHANGED from the input passed in (that's the actual context-growth fix). ---
+    # UNCHANGED from the input passed in (that's the actual context-growth fix).
+    #
+    # 2026-07-14 chaining update: a successful dispatch no longer returns immediately — it
+    # `continue`s straight into the next completion-check iteration inside the SAME
+    # run_completion_check call (see that function's docstring). So these mocks must actually
+    # write grounded content into _IN_MEMORY_FS (not just return canned strings) — otherwise the
+    # chained re-check sees the identical unresolved problem, tries to dispatch again, and exhausts
+    # the mock's side_effect list. Once the mock genuinely fixes the artifact, the chain converges
+    # to should_retry=False within this one call (flipped from should_retry=True pre-chaining). ---
     def _builder_dispatch_scenario():
         from tools.fs import _IN_MEMORY_FS
         from tools.core import tool_quotas_ctx as q_ctx
@@ -735,6 +743,8 @@ def main():
         class _FakeSubAgentConfig:
             def __init__(self, name):
                 self.name = name
+
+        _CLEAN_REPORT = f"- el pais avanza de forma sostenida segun cifras oficiales [gov]({_SRC})"
 
         _orig_ws8 = _config.cfg.get("settings", {}).get("workspace")
         _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
@@ -750,63 +760,87 @@ def main():
             q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5}})
             available_sub_agents_ctx.set([_FakeSubAgentConfig("Builder"), _FakeSubAgentConfig("PeerReviewer")])
 
-            # (a) PeerReviewer returns REVIEW: CLEAN -> exactly 2 dispatches (Builder, PeerReviewer),
-            # current_input unchanged, one completion_check_attempts row recorded.
+            # (a) PeerReviewer returns REVIEW: CLEAN -> exactly 2 dispatches (Builder, PeerReviewer);
+            # Builder's mocked write actually grounds final_report.md, so the chained re-check finds
+            # nothing wrong and converges within this call: should_retry=False, current_input
+            # unchanged, one completion_check_attempts row recorded.
             with tempfile.TemporaryDirectory() as tmpdir_a:
+                _IN_MEMORY_FS.pop("final_report.md", None)
                 rs = RunState(tmpdir_a)
                 run_state_ctx.set(rs)
                 msgs = []
-                dispatch = AsyncMock(side_effect=[
-                    "## Result for BuilderFix_attempt1\nWrote report\n---",
-                    "REVIEW: CLEAN\nNo issues found.",
-                ])
+
+                async def _side_effect_a(name, instructions, role):
+                    if role == "Builder":
+                        _IN_MEMORY_FS["final_report.md"] = _CLEAN_REPORT
+                        return "## Result for BuilderFix_attempt1\nWrote report\n---"
+                    return "REVIEW: CLEAN\nNo issues found."
+
+                dispatch = AsyncMock(side_effect=_side_effect_a)
                 orig_input = "q"
                 should_retry, new_input = _asyncio.run(run_completion_check(
                     query="q", current_input=orig_input, run_state=rs, notify=msgs.append,
                     dispatch_task=dispatch))
-                assert should_retry
+                assert not should_retry, (
+                    "a Builder dispatch that genuinely fixes the artifact must converge within "
+                    "this call instead of returning control to the Planner", msgs)
                 assert new_input == orig_input, ("current_input must stay unchanged on Builder-fixable dispatch", new_input)
                 assert dispatch.call_count == 2, dispatch.call_args_list
                 assert dispatch.call_args_list[0].args[2] == "Builder", dispatch.call_args_list
                 assert dispatch.call_args_list[1].args[2] == "PeerReviewer", dispatch.call_args_list
-                assert rs.data["completion_check_attempts"][-1]["problem"] == "missing_artifact"
-                assert len(rs.data["completion_check_attempts"]) == 1
+                assert rs.data["completion_check_attempts"][0]["problem"] == "missing_artifact"
 
             # (b) PeerReviewer returns REVIEW: ISSUES FOUND -> exactly 3 dispatches
-            # (Builder, PeerReviewer, Builder again), current_input still unchanged.
+            # (Builder, PeerReviewer, Builder again); the corrective Builder pass grounds the
+            # report, so the chain still converges to should_retry=False, current_input unchanged.
             with tempfile.TemporaryDirectory() as tmpdir_b:
+                _IN_MEMORY_FS.pop("final_report.md", None)
                 rs = RunState(tmpdir_b)
                 run_state_ctx.set(rs)
                 msgs = []
-                dispatch = AsyncMock(side_effect=[
-                    "## Result for BuilderFix_attempt1\nWrote report\n---",
-                    "REVIEW: ISSUES FOUND:\n- citation doesn't trace to findings.md",
-                    "## Result for BuilderFix_attempt1_reviewed\nFixed report\n---",
-                ])
+
+                async def _side_effect_b(name, instructions, role):
+                    if role == "Builder":
+                        if "_reviewed" in name:
+                            _IN_MEMORY_FS["final_report.md"] = _CLEAN_REPORT
+                        else:
+                            _IN_MEMORY_FS["final_report.md"] = "- some claim with no citation at all"
+                        return "## Result for BuilderFix\nWrote report\n---"
+                    return "REVIEW: ISSUES FOUND:\n- citation doesn't trace to findings.md"
+
+                dispatch = AsyncMock(side_effect=_side_effect_b)
                 orig_input = "q"
                 should_retry, new_input = _asyncio.run(run_completion_check(
                     query="q", current_input=orig_input, run_state=rs, notify=msgs.append,
                     dispatch_task=dispatch))
-                assert should_retry
+                assert not should_retry, msgs
                 assert new_input == orig_input
                 assert dispatch.call_count == 3, dispatch.call_args_list
                 assert dispatch.call_args_list[2].args[2] == "Builder", dispatch.call_args_list
 
             # (c) PeerReviewer response missing the REVIEW: sentinel entirely -> conservative
-            # fallback treats it as ISSUES FOUND, still 3 dispatches (fail conservative, not silent).
+            # fallback treats it as ISSUES FOUND, still 3 dispatches (fail conservative, not
+            # silent); the corrective pass still grounds the report so the chain converges.
             with tempfile.TemporaryDirectory() as tmpdir_c:
+                _IN_MEMORY_FS.pop("final_report.md", None)
                 rs = RunState(tmpdir_c)
                 run_state_ctx.set(rs)
                 msgs = []
-                dispatch = AsyncMock(side_effect=[
-                    "## Result for BuilderFix_attempt1\nWrote report\n---",
-                    "Looks fine to me, no complaints.",
-                    "## Result for BuilderFix_attempt1_reviewed\nFixed report\n---",
-                ])
+
+                async def _side_effect_c(name, instructions, role):
+                    if role == "Builder":
+                        if "_reviewed" in name:
+                            _IN_MEMORY_FS["final_report.md"] = _CLEAN_REPORT
+                        else:
+                            _IN_MEMORY_FS["final_report.md"] = "- some claim with no citation at all"
+                        return "## Result for BuilderFix\nWrote report\n---"
+                    return "Looks fine to me, no complaints."
+
+                dispatch = AsyncMock(side_effect=_side_effect_c)
                 should_retry, new_input = _asyncio.run(run_completion_check(
                     query="q", current_input="q", run_state=rs, notify=msgs.append,
                     dispatch_task=dispatch))
-                assert should_retry
+                assert not should_retry, msgs
                 assert dispatch.call_count == 3, (
                     "a malformed/missing REVIEW: sentinel must be treated conservatively as "
                     "ISSUES FOUND, not silently accepted", dispatch.call_args_list)
@@ -814,6 +848,7 @@ def main():
             # (d) Builder/PeerReviewer not both registered -> falls back to classic
             # inject-into-Planner behavior, dispatch_task never called.
             with tempfile.TemporaryDirectory() as tmpdir_d:
+                _IN_MEMORY_FS.pop("final_report.md", None)
                 rs = RunState(tmpdir_d)
                 run_state_ctx.set(rs)
                 msgs = []
@@ -869,8 +904,15 @@ def main():
     # --- FindingsWriter Write->Review->Fix dispatch loop (2026-07-14 architecture change: the
     # Planner no longer writes findings.md itself — see _FINDINGS_WRITER_FIXABLE_PROBLEMS /
     # _build_findings_source_material / src/prompts.py's FINDINGS_WRITER_INSTRUCTIONS). Mirrors
-    # _builder_dispatch_scenario above exactly, one artifact earlier: current_input must come back
-    # UNCHANGED (the same context-growth fix, now applied to findings.md too). ---
+    # _builder_dispatch_scenario above, one artifact earlier: current_input must come back
+    # UNCHANGED (the same context-growth fix, now applied to findings.md too).
+    #
+    # 2026-07-14 chaining update: since required_artifact is final_report.md, fixing findings.md
+    # alone is not enough for the chain to converge — the very next iteration re-checks and (if
+    # final_report.md is still missing) finds a fresh missing_artifact problem. So the PRIMARY
+    # case here (a) registers Builder too and asserts the full FindingsWriter->Builder chain
+    # converges in one run_completion_check call. A narrower variant (d) pins the fallback that
+    # still applies once the chain needs a writer role that isn't registered. ---
     def _findings_writer_dispatch_scenario():
         from tools.fs import _IN_MEMORY_FS
         from tools.core import tool_quotas_ctx as q_ctx
@@ -880,6 +922,8 @@ def main():
         class _FakeSubAgentConfig:
             def __init__(self, name):
                 self.name = name
+
+        _CLEAN_REPORT = f"- el pais avanza de forma sostenida segun cifras oficiales [gov]({_SRC})"
 
         _orig_ws9 = _config.cfg.get("settings", {}).get("workspace")
         _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
@@ -893,58 +937,87 @@ def main():
             _IN_MEMORY_FS["sources/page.md"] = _SOURCE_TEXT
             # No findings.md yet -- the missing_findings shape.
             q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5}})
-            available_sub_agents_ctx.set([_FakeSubAgentConfig("FindingsWriter"), _FakeSubAgentConfig("PeerReviewer")])
+            available_sub_agents_ctx.set([
+                _FakeSubAgentConfig("FindingsWriter"), _FakeSubAgentConfig("PeerReviewer"),
+                _FakeSubAgentConfig("Builder"),
+            ])
 
-            # (a) missing_findings, PeerReviewer returns REVIEW: CLEAN -> exactly 2 dispatches
-            # (FindingsWriter, PeerReviewer), current_input unchanged.
+            # (a) [PRIMARY CHAIN] missing_findings, FindingsWriter genuinely writes findings.md,
+            # PeerReviewer CLEAN -> the chain immediately re-checks, finds final_report.md still
+            # missing (missing_artifact), dispatches Builder, PeerReviewer CLEAN again -> converges
+            # to should_retry=False within this ONE call. Exactly 4 dispatches total
+            # (FindingsWriter, PeerReviewer, Builder, PeerReviewer), current_input unchanged — the
+            # single best proof of the behavior this chaining fix exists for.
             with tempfile.TemporaryDirectory() as tmpdir_a:
+                _IN_MEMORY_FS.pop("findings.md", None)
+                _IN_MEMORY_FS.pop("final_report.md", None)
                 rs = RunState(tmpdir_a)
                 rs.add_finding(_SRC, "the real finding a dispatched Searcher actually returned")
                 run_state_ctx.set(rs)
                 msgs = []
-                dispatch = AsyncMock(side_effect=[
-                    "## Result for FindingsWriterFix_attempt1\nWrote findings.md\n---",
-                    "REVIEW: CLEAN\nNo issues found.",
-                ])
+
+                async def _side_effect_a(name, instructions, role):
+                    if role == "FindingsWriter":
+                        _IN_MEMORY_FS["findings.md"] = _FINDINGS_OK
+                        return "## Result for FindingsWriterFix_attempt1\nWrote findings.md\n---"
+                    if role == "Builder":
+                        _IN_MEMORY_FS["final_report.md"] = _CLEAN_REPORT
+                        return "## Result for BuilderFix_attempt1\nWrote report\n---"
+                    return "REVIEW: CLEAN\nNo issues found."
+
+                dispatch = AsyncMock(side_effect=_side_effect_a)
                 orig_input = "q"
                 should_retry, new_input = _asyncio.run(run_completion_check(
                     query="q", current_input=orig_input, run_state=rs, notify=msgs.append,
                     dispatch_task=dispatch))
-                assert should_retry
+                assert not should_retry, (
+                    "a FindingsWriter dispatch that genuinely fixes findings.md must chain "
+                    "straight into the Builder dispatch for final_report.md, converging within "
+                    "this call instead of returning control to the Planner in between", msgs)
                 assert new_input == orig_input, ("current_input must stay unchanged on FindingsWriter-fixable dispatch", new_input)
-                assert dispatch.call_count == 2, dispatch.call_args_list
+                assert dispatch.call_count == 4, dispatch.call_args_list
                 assert dispatch.call_args_list[0].args[2] == "FindingsWriter", dispatch.call_args_list
                 assert dispatch.call_args_list[1].args[2] == "PeerReviewer", dispatch.call_args_list
+                assert dispatch.call_args_list[2].args[2] == "Builder", dispatch.call_args_list
+                assert dispatch.call_args_list[3].args[2] == "PeerReviewer", dispatch.call_args_list
                 # The real finding must actually reach FindingsWriter's dispatch instructions —
                 # this is the whole point (a fresh context with no Planner conversation still
                 # needs the real evidence, via _build_findings_source_material).
                 write_instructions = dispatch.call_args_list[0].args[1]
                 assert _SRC in write_instructions, "real fetched URL must reach FindingsWriter's instructions"
-                assert rs.data["completion_check_attempts"][-1]["problem"] == "missing_findings"
+                assert rs.data["completion_check_attempts"][0]["problem"] == "missing_findings"
 
             # (b) findings_ungrounded (findings.md exists but cites nothing real), ISSUES FOUND ->
             # exactly 3 dispatches (FindingsWriter, PeerReviewer, FindingsWriter again).
+            # final_report.md is pre-seeded with grounded content so the chain converges right
+            # after findings.md is fixed, without needing to involve Builder at all here — that
+            # combination is covered by (a) above.
             with tempfile.TemporaryDirectory() as tmpdir_b:
                 _IN_MEMORY_FS["findings.md"] = "Some claim with no source at all."
+                _IN_MEMORY_FS["final_report.md"] = _CLEAN_REPORT
                 rs = RunState(tmpdir_b)
                 rs.add_finding(_SRC, "the real finding a dispatched Searcher actually returned")
                 run_state_ctx.set(rs)
                 msgs = []
-                dispatch = AsyncMock(side_effect=[
-                    "## Result for FindingsWriterFix_attempt1\nWrote findings.md\n---",
-                    "REVIEW: ISSUES FOUND:\n- a finding's figure doesn't match its source",
-                    "## Result for FindingsWriterFix_attempt1_reviewed\nFixed findings.md\n---",
-                ])
+
+                async def _side_effect_b(name, instructions, role):
+                    if role == "FindingsWriter":
+                        _IN_MEMORY_FS["findings.md"] = _FINDINGS_OK
+                        return "## Result for FindingsWriterFix\nWrote findings.md\n---"
+                    return "REVIEW: ISSUES FOUND:\n- a finding's figure doesn't match its source"
+
+                dispatch = AsyncMock(side_effect=_side_effect_b)
                 orig_input = "q"
                 should_retry, new_input = _asyncio.run(run_completion_check(
                     query="q", current_input=orig_input, run_state=rs, notify=msgs.append,
                     dispatch_task=dispatch))
-                assert should_retry
+                assert not should_retry, msgs
                 assert new_input == orig_input
                 assert dispatch.call_count == 3, dispatch.call_args_list
                 assert dispatch.call_args_list[2].args[2] == "FindingsWriter", dispatch.call_args_list
-                assert rs.data["completion_check_attempts"][-1]["problem"] == "findings_ungrounded"
+                assert rs.data["completion_check_attempts"][0]["problem"] == "findings_ungrounded"
                 _IN_MEMORY_FS.pop("findings.md", None)
+                _IN_MEMORY_FS.pop("final_report.md", None)
 
             # (c) FindingsWriter/PeerReviewer not both registered -> falls back to the classic
             # inject-into-Planner path, dispatch_task never called.
@@ -969,6 +1042,49 @@ def main():
                 injected = new_input[-1].contents[0].text
                 assert "call write_workspace_file" not in injected.lower(), (
                     "Planner-facing fallback must not instruct a call to a tool it doesn't have", injected)
+                available_sub_agents_ctx.set([
+                    _FakeSubAgentConfig("FindingsWriter"), _FakeSubAgentConfig("PeerReviewer"),
+                ])
+
+            # (d) [NARROW FALLBACK VARIANT] FindingsWriter+PeerReviewer registered but Builder is
+            # NOT -> FindingsWriter genuinely fixes findings.md (2 dispatches, chain continues),
+            # the chain's next iteration hits missing_artifact for final_report.md, and since no
+            # Builder is registered that class of problem falls back to the classic
+            # inject-into-Planner path instead of dispatching further -> should_retry=True,
+            # current_input GROWS (the one case in this scenario where it does), dispatch never
+            # called a 3rd time. Pins "falls back to classic path once the chain runs out of
+            # registered writers" explicitly.
+            with tempfile.TemporaryDirectory() as tmpdir_d:
+                _IN_MEMORY_FS.pop("findings.md", None)
+                _IN_MEMORY_FS.pop("final_report.md", None)
+                rs = RunState(tmpdir_d)
+                rs.add_finding(_SRC, "the real finding a dispatched Searcher actually returned")
+                run_state_ctx.set(rs)
+                msgs = []
+
+                async def _side_effect_d(name, instructions, role):
+                    if role == "FindingsWriter":
+                        _IN_MEMORY_FS["findings.md"] = _FINDINGS_OK
+                        return "## Result for FindingsWriterFix\nWrote findings.md\n---"
+                    return "REVIEW: CLEAN\nNo issues found."
+
+                dispatch = AsyncMock(side_effect=_side_effect_d)
+                orig_input = "q"
+                should_retry, new_input = _asyncio.run(run_completion_check(
+                    query="q", current_input=orig_input, run_state=rs, notify=msgs.append,
+                    dispatch_task=dispatch))
+                assert should_retry, (
+                    "once findings.md is fixed but final_report.md still needs an unregistered "
+                    "Builder, the chain must fall back to the classic Planner nudge, not loop "
+                    "forever or silently drop the problem", msgs)
+                assert isinstance(new_input, list) and new_input[-1] is not orig_input, (
+                    "the classic fallback for the still-unresolved missing_artifact problem must "
+                    "still grow current_input", new_input)
+                assert dispatch.call_count == 2, dispatch.call_args_list
+                assert dispatch.call_args_list[0].args[2] == "FindingsWriter", dispatch.call_args_list
+                assert dispatch.call_args_list[1].args[2] == "PeerReviewer", dispatch.call_args_list
+                assert rs.data["completion_check_attempts"][-1]["problem"] == "missing_artifact"
+                _IN_MEMORY_FS.pop("findings.md", None)
         finally:
             _IN_MEMORY_FS.clear()
             _IN_MEMORY_FS.update(saved_fs)

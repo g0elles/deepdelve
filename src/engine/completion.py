@@ -650,6 +650,20 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
 
     Returns (should_retry: bool, new_current_input). Caller is responsible for looping while
     should_retry is True, same as before.
+
+    A successful Write->Review->Fix dispatch (Builder or FindingsWriter) does NOT return control
+    to the Planner — it `continue`s straight into the next completion-check iteration inside this
+    same call, chaining through as many writer dispatches as the retry budget allows (e.g.
+    FindingsWriter fixes findings.md -> immediately checks final_report.md -> dispatches Builder
+    -> checks again -> clean -> returns). This is deliberate: the Planner has no memory of a fix
+    cycle just running and would otherwise burn a real LLM turn re-deciding what to do, sometimes
+    delegating more research for what was actually a downstream writer bug (confirmed live
+    2026-07-14: a repeated Builder citation error cost 25 minutes/35 URLs of Planner-driven
+    "more research" turns before the retry budget forced the existing salvage fallback to end it).
+    Only the classic inject-into-Planner path, the final-verdict/salvage path, and the exception
+    handler return control to the caller now. A persistently-failing chain now looks like one
+    longer `run_completion_check` call instead of many short Planner round-trips — same
+    `attempt < max_attempts` ceiling, no new infinite-loop risk.
     """
     req_artifact = config.cfg.get("settings", {}).get("workspace", {}).get("required_artifact", None)
     if not req_artifact:
@@ -664,191 +678,195 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
         "max_completion_check_attempts", DEFAULT_MAX_COMPLETION_CHECK_ATTEMPTS
     )
 
-    attempt = run_state.attempt
-
     try:
-        quotas = tool_quotas_ctx.get()
-        files = get_workspace_files()
-        ctx = Ctx(
-            req_artifact=req_artifact,
-            attempt=attempt,
-            max_attempts=max_attempts,
-            delegated=bool(quotas and quotas.get("delegate_tasks", {}).get("used", 0) > 0),
-            files=files,
-            content=get_workspace_file_content(req_artifact) if req_artifact in files else None,
-            quotas=quotas,
-            run_state=run_state,
-        )
+        while True:
+            attempt = run_state.attempt
+            quotas = tool_quotas_ctx.get()
+            files = get_workspace_files()
+            ctx = Ctx(
+                req_artifact=req_artifact,
+                attempt=attempt,
+                max_attempts=max_attempts,
+                delegated=bool(quotas and quotas.get("delegate_tasks", {}).get("used", 0) > 0),
+                files=files,
+                content=get_workspace_file_content(req_artifact) if req_artifact in files else None,
+                quotas=quotas,
+                run_state=run_state,
+            )
 
-        # Detecting the problem (or lack of one) never consumes the retry budget —
-        # only actually retrying does. Otherwise a success on the final allowed
-        # attempt is never recognized as a success (it just falls through silently).
-        verdict = next((v for check in COMPLETION_CHECKS if (v := check(ctx)) is not None), None)
-        # grounding_check.enabled is the section's master switch — before this guard it was a
-        # documented no-op (config_template.yaml shipped it, nothing read it; 2026-07-12 audit,
-        # G2). The pre-grounding checks above are structural, not grounding, and still run.
-        if verdict is None and config.cfg.get("settings", {}).get("grounding_check", {}).get("enabled", True):
-            ctx.grounding_problem = await real_grounding_problem(ctx.content or "")
-            verdict = next((v for check in GROUNDING_CHECKS if (v := check(ctx)) is not None), None)
-        problem = verdict.problem if verdict else None
+            # Detecting the problem (or lack of one) never consumes the retry budget —
+            # only actually retrying does. Otherwise a success on the final allowed
+            # attempt is never recognized as a success (it just falls through silently).
+            verdict = next((v for check in COMPLETION_CHECKS if (v := check(ctx)) is not None), None)
+            # grounding_check.enabled is the section's master switch — before this guard it was a
+            # documented no-op (config_template.yaml shipped it, nothing read it; 2026-07-12 audit,
+            # G2). The pre-grounding checks above are structural, not grounding, and still run.
+            if verdict is None and config.cfg.get("settings", {}).get("grounding_check", {}).get("enabled", True):
+                ctx.grounding_problem = await real_grounding_problem(ctx.content or "")
+                verdict = next((v for check in GROUNDING_CHECKS if (v := check(ctx)) is not None), None)
+            problem = verdict.problem if verdict else None
 
-        run_state.sync_fetched_urls()
-        # detail = the full human-readable verdict text (e.g. exactly which claim/URL failed),
-        # not just the short problem label — previously only shown live via notify() and lost
-        # once the terminal scrolled, so answering "why did attempt N fail" required re-parsing
-        # the raw session-event JSON instead of just reading _run_state.json.
-        run_state.record_attempt(attempt, problem, len(get_fetched_urls()),
-                                  detail=verdict.warning if verdict else None)
+            run_state.sync_fetched_urls()
+            # detail = the full human-readable verdict text (e.g. exactly which claim/URL failed),
+            # not just the short problem label — previously only shown live via notify() and lost
+            # once the terminal scrolled, so answering "why did attempt N fail" required re-parsing
+            # the raw session-event JSON instead of just reading _run_state.json.
+            run_state.record_attempt(attempt, problem, len(get_fetched_urls()),
+                                      detail=verdict.warning if verdict else None)
 
-        # Escalate early rather than granting the full attempt budget to a nudge that's already
-        # proven ineffective. Confirmed live 2026-07-12: missing_artifact repeated 5 times
-        # verbatim in one run — the model answered each one with confident "no further action
-        # needed" prose and never once attempted write_workspace_file, burning wall-clock and
-        # tool-call quota on retries that had already shown they don't work. Once the SAME
-        # problem has now fired this many times in a row, fall straight through to the
-        # final-verdict path (quarantine-restore or salvage) instead of granting more identical
-        # retries — it preserves whatever real content already exists rather than grinding an
-        # already-exhausted approach further. check_missing_artifact's own escalating wording
-        # (see its docstring) still gets one shot at each of these attempts first; this only
-        # trims how many total attempts a provably-stuck pattern gets to burn.
-        CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD = 3
-        if problem == "missing_artifact":
-            consecutive = 0
-            for a in reversed(run_state.data.get("completion_check_attempts", [])):
-                if a.get("problem") == "missing_artifact":
-                    consecutive += 1
-                else:
-                    break
-            if consecutive >= CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD:
-                attempt = max_attempts
+            # Escalate early rather than granting the full attempt budget to a nudge that's already
+            # proven ineffective. Confirmed live 2026-07-12: missing_artifact repeated 5 times
+            # verbatim in one run — the model answered each one with confident "no further action
+            # needed" prose and never once attempted write_workspace_file, burning wall-clock and
+            # tool-call quota on retries that had already shown they don't work. Once the SAME
+            # problem has now fired this many times in a row, fall straight through to the
+            # final-verdict path (quarantine-restore or salvage) instead of granting more identical
+            # retries — it preserves whatever real content already exists rather than grinding an
+            # already-exhausted approach further. check_missing_artifact's own escalating wording
+            # (see its docstring) still gets one shot at each of these attempts first; this only
+            # trims how many total attempts a provably-stuck pattern gets to burn.
+            CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD = 3
+            if problem == "missing_artifact":
+                consecutive = 0
+                for a in reversed(run_state.data.get("completion_check_attempts", [])):
+                    if a.get("problem") == "missing_artifact":
+                        consecutive += 1
+                    else:
+                        break
+                if consecutive >= CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD:
+                    attempt = max_attempts
 
-        if verdict and attempt < max_attempts:
-            run_state.attempt = attempt + 1
+            if verdict and attempt < max_attempts:
+                run_state.attempt = attempt + 1
 
-            if problem == "findings_ungrounded":
-                _quarantine_artifact("findings.md", attempt + 1)
-            elif problem in _QUARANTINE_PROBLEMS:
-                _quarantine_artifact(req_artifact, attempt + 1)
+                if problem == "findings_ungrounded":
+                    _quarantine_artifact("findings.md", attempt + 1)
+                elif problem in _QUARANTINE_PROBLEMS:
+                    _quarantine_artifact(req_artifact, attempt + 1)
 
-            # Per-attempt quota top-up: without this, a retry shares the same already-exhausted
-            # pool as the failed attempt it's correcting (see plan doc diagnosis point 2) and
-            # structurally can't recover on a complex query.
-            pool = tool_quotas_ctx.get()
-            if pool is not None:
-                topup_quota_pool(pool)
+                # Per-attempt quota top-up: without this, a retry shares the same already-exhausted
+                # pool as the failed attempt it's correcting (see plan doc diagnosis point 2) and
+                # structurally can't recover on a complex query.
+                pool = tool_quotas_ctx.get()
+                if pool is not None:
+                    topup_quota_pool(pool)
 
-            # Write->Review->Fix: for artifact-authoring problems, dispatch a fresh-context writer
-            # role (+PeerReviewer check) instead of nudging the Planner's own conversation — see
-            # _dispatch_writer_review_fix and run_completion_check's docstring. Defensive: requires
-            # BOTH roles registered, and any dispatch failure falls back to the classic path for
-            # this cycle rather than losing the retry entirely.
-            caller_sub_agents = available_sub_agents_ctx.get()
-            has_peer_reviewer = caller_sub_agents and any(c.name == "PeerReviewer" for c in caller_sub_agents)
+                # Write->Review->Fix: for artifact-authoring problems, dispatch a fresh-context writer
+                # role (+PeerReviewer check) instead of nudging the Planner's own conversation — see
+                # _dispatch_writer_review_fix and run_completion_check's docstring. Defensive: requires
+                # BOTH roles registered, and any dispatch failure falls back to the classic path for
+                # this cycle rather than losing the retry entirely.
+                caller_sub_agents = available_sub_agents_ctx.get()
+                has_peer_reviewer = caller_sub_agents and any(c.name == "PeerReviewer" for c in caller_sub_agents)
 
-            if dispatch_task is not None and problem in _BUILDER_FIXABLE_PROBLEMS:
-                has_builder_pair = has_peer_reviewer and any(c.name == "Builder" for c in caller_sub_agents)
-                if has_builder_pair:
-                    notify(f"**System ({attempt + 1}/{max_attempts}):** {verdict.warning} (dispatching Builder to rewrite, not the Planner)")
-                    if pool is not None:
-                        _ensure_writer_quota_headroom(pool)
-                    try:
-                        builder_instructions = (
-                            f"Rewrite '{req_artifact}' from findings.md, fixing this specific problem:\n"
-                            f"{verdict.inject}\n\nWrite the corrected file now via write_workspace_file."
-                        )
-                        await _dispatch_writer_review_fix(dispatch_task, "Builder", req_artifact, builder_instructions, attempt, notify)
-                        run_state.save()
-                        return True, current_input
-                    except Exception:
-                        notify(f"**System ({attempt + 1}/{max_attempts}):** Builder dispatch failed — falling back to asking the Planner directly.")
-
-            elif dispatch_task is not None and problem in _FINDINGS_WRITER_FIXABLE_PROBLEMS:
-                has_findings_writer_pair = has_peer_reviewer and any(c.name == "FindingsWriter" for c in caller_sub_agents)
-                if has_findings_writer_pair:
-                    notify(f"**System ({attempt + 1}/{max_attempts}):** {verdict.warning} (dispatching FindingsWriter to rewrite, not the Planner)")
-                    if pool is not None:
-                        _ensure_writer_quota_headroom(pool)
-                    try:
-                        # Deliberately NOT verdict.inject — that text is worded for the PLANNER
-                        # fallback path (mentions delegate_tasks, "you have no write_workspace_file
-                        # tool") and would be actively confusing to FindingsWriter, which has the
-                        # opposite tool set (can write, can't delegate). FindingsWriter gets its
-                        # own problem-appropriate directive plus its real evidence base instead.
-                        if problem == "findings_ungrounded":
-                            write_directive = (
-                                "The previous findings.md draft was fabricated or wholesale "
-                                "ungrounded and has been moved aside. Rebuild it now, strictly "
-                                "from the real research results below — never from your own "
-                                "prior knowledge."
+                if dispatch_task is not None and problem in _BUILDER_FIXABLE_PROBLEMS:
+                    has_builder_pair = has_peer_reviewer and any(c.name == "Builder" for c in caller_sub_agents)
+                    if has_builder_pair:
+                        notify(f"**System ({attempt + 1}/{max_attempts}):** {verdict.warning} (dispatching Builder to rewrite, not the Planner)")
+                        if pool is not None:
+                            _ensure_writer_quota_headroom(pool)
+                        try:
+                            builder_instructions = (
+                                f"Rewrite '{req_artifact}' from findings.md, fixing this specific problem:\n"
+                                f"{verdict.inject}\n\nWrite the corrected file now via write_workspace_file."
                             )
-                        else:
-                            write_directive = "findings.md has never been written yet. Write it now from the real research results below."
-                        findings_writer_instructions = (
-                            f"{write_directive}\n\n{_build_findings_source_material(run_state)}\n\n"
-                            f"Write the file now via write_workspace_file."
-                        )
-                        await _dispatch_writer_review_fix(dispatch_task, "FindingsWriter", "findings.md", findings_writer_instructions, attempt, notify)
-                        run_state.save()
-                        return True, current_input
-                    except Exception:
-                        notify(f"**System ({attempt + 1}/{max_attempts}):** FindingsWriter dispatch failed — falling back to asking the Planner directly.")
+                            await _dispatch_writer_review_fix(dispatch_task, "Builder", req_artifact, builder_instructions, attempt, notify)
+                            run_state.save()
+                            # Chained, not returned — see docstring. Loops straight into the next
+                            # completion-check iteration instead of handing a turn back to the Planner.
+                            continue
+                        except Exception:
+                            notify(f"**System ({attempt + 1}/{max_attempts}):** Builder dispatch failed — falling back to asking the Planner directly.")
 
-            notify(f"**System ({attempt + 1}/{max_attempts}):** {verdict.warning}")
-            new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
-            new_inputs.append(Message("user", [{"type": "text", "text": verdict.inject}]))
-            run_state.save()
-            return True, new_inputs
+                elif dispatch_task is not None and problem in _FINDINGS_WRITER_FIXABLE_PROBLEMS:
+                    has_findings_writer_pair = has_peer_reviewer and any(c.name == "FindingsWriter" for c in caller_sub_agents)
+                    if has_findings_writer_pair:
+                        notify(f"**System ({attempt + 1}/{max_attempts}):** {verdict.warning} (dispatching FindingsWriter to rewrite, not the Planner)")
+                        if pool is not None:
+                            _ensure_writer_quota_headroom(pool)
+                        try:
+                            # Deliberately NOT verdict.inject — that text is worded for the PLANNER
+                            # fallback path (mentions delegate_tasks, "you have no write_workspace_file
+                            # tool") and would be actively confusing to FindingsWriter, which has the
+                            # opposite tool set (can write, can't delegate). FindingsWriter gets its
+                            # own problem-appropriate directive plus its real evidence base instead.
+                            if problem == "findings_ungrounded":
+                                write_directive = (
+                                    "The previous findings.md draft was fabricated or wholesale "
+                                    "ungrounded and has been moved aside. Rebuild it now, strictly "
+                                    "from the real research results below — never from your own "
+                                    "prior knowledge."
+                                )
+                            else:
+                                write_directive = "findings.md has never been written yet. Write it now from the real research results below."
+                            findings_writer_instructions = (
+                                f"{write_directive}\n\n{_build_findings_source_material(run_state)}\n\n"
+                                f"Write the file now via write_workspace_file."
+                            )
+                            await _dispatch_writer_review_fix(dispatch_task, "FindingsWriter", "findings.md", findings_writer_instructions, attempt, notify)
+                            run_state.save()
+                            # Chained, not returned — see docstring. Loops straight into the next
+                            # completion-check iteration instead of handing a turn back to the Planner.
+                            continue
+                        except Exception:
+                            notify(f"**System ({attempt + 1}/{max_attempts}):** FindingsWriter dispatch failed — falling back to asking the Planner directly.")
 
-        if verdict:
-            # Retry budget is exhausted and a real problem still exists. The old project silently
-            # accepted whatever was left at this point with no indication to the user that the output
-            # is unverified or even absent — a genuinely observed failure mode in testing (both
-            # "wrote something ungrounded" and, separately, "never wrote anything at all" have been
-            # seen live), not a hypothetical one. Surface exactly which case this is instead of
-            # asserting a file exists when it might not.
-            # Name a sick search layer explicitly — confirmed live (2026-07-11): DDG throttling made
-            # two different models' runs fail in ways that looked exactly like model fabrication.
-            health = get_search_health()
-            if health["calls"] >= 4 and health["failures"] * 2 >= health["calls"]:
-                notify(f"**System (final):** ⚠️ web_search failed {health['failures']}/{health['calls']} "
-                       f"times this run (throttling or outage) — this failure is likely environmental, "
-                       f"not a model problem. Re-run later before drawing conclusions about the model.")
-            # The check the quarantined draft actually failed (the final-turn problem is usually
-            # just missing_artifact — the model never rewrote after quarantine).
-            quarantine_reason = next(
-                (a["problem"] for a in reversed(run_state.data.get("completion_check_attempts", []))
-                 if a.get("problem") in _QUARANTINE_PROBLEMS), problem)
-            if req_artifact in get_workspace_files():
-                notify(f"**System (final):** Retry budget exhausted with an unresolved issue ({problem}). "
-                       f"`{req_artifact}` exists but could NOT be fully verified this run — treat its "
-                       f"claims as unconfirmed. This was not silently accepted.")
-            elif problem == "missing_artifact" and _restore_quarantined_draft(req_artifact, quarantine_reason):
-                notify(f"**System (final):** The model never rewrote `{req_artifact}` after its draft "
-                       f"was quarantined ({quarantine_reason}) — restored the quarantined draft, "
-                       f"loudly labeled with the unresolved check. A real draft that failed one "
-                       f"known check beats salvaged narration; review the flagged claims before "
-                       f"trusting it.")
-            else:
-                # _find_last_substantial_text scans the TUI's session event history — lazy import,
-                # engine.tui imports this module at load time.
-                from engine.tui import _find_last_substantial_text
-                if problem == "missing_artifact" and _salvage_narrated_report(req_artifact, _find_last_substantial_text() or last_assistant_text):
-                    # Structural fallback, not another prompt nudge — see _salvage_narrated_report's
-                    # docstring for why: nudging alone has proven insufficient for this exact pattern
-                    # across two independent projects now.
-                    notify(f"**System (final):** The model never called write_workspace_file despite "
-                           f"repeated nudges, but had already narrated a substantial response. "
-                           f"Auto-recovered it into `{req_artifact}`, clearly marked as unverified salvage "
-                           f"content — this bypassed the grounding check entirely and MUST be reviewed "
-                           f"before trusting it.")
-                else:
+                notify(f"**System ({attempt + 1}/{max_attempts}):** {verdict.warning}")
+                new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
+                new_inputs.append(Message("user", [{"type": "text", "text": verdict.inject}]))
+                run_state.save()
+                return True, new_inputs
+
+            if verdict:
+                # Retry budget is exhausted and a real problem still exists. The old project silently
+                # accepted whatever was left at this point with no indication to the user that the output
+                # is unverified or even absent — a genuinely observed failure mode in testing (both
+                # "wrote something ungrounded" and, separately, "never wrote anything at all" have been
+                # seen live), not a hypothetical one. Surface exactly which case this is instead of
+                # asserting a file exists when it might not.
+                # Name a sick search layer explicitly — confirmed live (2026-07-11): DDG throttling made
+                # two different models' runs fail in ways that looked exactly like model fabrication.
+                health = get_search_health()
+                if health["calls"] >= 4 and health["failures"] * 2 >= health["calls"]:
+                    notify(f"**System (final):** ⚠️ web_search failed {health['failures']}/{health['calls']} "
+                           f"times this run (throttling or outage) — this failure is likely environmental, "
+                           f"not a model problem. Re-run later before drawing conclusions about the model.")
+                # The check the quarantined draft actually failed (the final-turn problem is usually
+                # just missing_artifact — the model never rewrote after quarantine).
+                quarantine_reason = next(
+                    (a["problem"] for a in reversed(run_state.data.get("completion_check_attempts", []))
+                     if a.get("problem") in _QUARANTINE_PROBLEMS), problem)
+                if req_artifact in get_workspace_files():
                     notify(f"**System (final):** Retry budget exhausted with an unresolved issue ({problem}). "
-                           f"`{req_artifact}` was never written — no report was produced this run. This was "
-                           f"not silently accepted as a success.")
+                           f"`{req_artifact}` exists but could NOT be fully verified this run — treat its "
+                           f"claims as unconfirmed. This was not silently accepted.")
+                elif problem == "missing_artifact" and _restore_quarantined_draft(req_artifact, quarantine_reason):
+                    notify(f"**System (final):** The model never rewrote `{req_artifact}` after its draft "
+                           f"was quarantined ({quarantine_reason}) — restored the quarantined draft, "
+                           f"loudly labeled with the unresolved check. A real draft that failed one "
+                           f"known check beats salvaged narration; review the flagged claims before "
+                           f"trusting it.")
+                else:
+                    # _find_last_substantial_text scans the TUI's session event history — lazy import,
+                    # engine.tui imports this module at load time.
+                    from engine.tui import _find_last_substantial_text
+                    if problem == "missing_artifact" and _salvage_narrated_report(req_artifact, _find_last_substantial_text() or last_assistant_text):
+                        # Structural fallback, not another prompt nudge — see _salvage_narrated_report's
+                        # docstring for why: nudging alone has proven insufficient for this exact pattern
+                        # across two independent projects now.
+                        notify(f"**System (final):** The model never called write_workspace_file despite "
+                               f"repeated nudges, but had already narrated a substantial response. "
+                               f"Auto-recovered it into `{req_artifact}`, clearly marked as unverified salvage "
+                               f"content — this bypassed the grounding check entirely and MUST be reviewed "
+                               f"before trusting it.")
+                    else:
+                        notify(f"**System (final):** Retry budget exhausted with an unresolved issue ({problem}). "
+                               f"`{req_artifact}` was never written — no report was produced this run. This was "
+                               f"not silently accepted as a success.")
 
-        run_state.set_plan(get_workspace_file_content("_todos.md") or "")
-        run_state.save()
-        return False, current_input
+            run_state.set_plan(get_workspace_file_content("_todos.md") or "")
+            run_state.save()
+            return False, current_input
     except Exception:
         # Deliberately non-fatal (a crashed CHECK must never kill a run that produced work), but
         # never silent again — this bare swallow hid a real completion-check crash on a live
