@@ -799,6 +799,113 @@ def main():
 
     contextvars.copy_context().run(_topical_relevance_scenario)
 
+    # --- ROADMAP Phase 5: coverage accounting (RunState.coverage(), pure-function, no fetched-fs
+    # dependency) ---
+    def _coverage_scenario():
+        from utils.run_state import RunState
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # No findings at all -> vacuously "fully covered" (ratio 1.0, total 0) -- an empty run
+            # must never look like a coverage FAILURE, that's missing_findings/not_delegated's job.
+            rs = RunState(tmpdir)
+            cov = rs.coverage()
+            assert cov == {"total": 0, "covered": 0, "ratio": 1.0, "uncovered_task_names": []}, cov
+
+            # A single top-level task with a real fetched URL -> fully covered.
+            rs2 = RunState(tmpdir)
+            rs2.add_finding("https://a.example.co/x", "summary", task_name="Background", depth=1)
+            cov2 = rs2.coverage()
+            assert cov2 == {"total": 1, "covered": 1, "ratio": 1.0, "uncovered_task_names": []}, cov2
+
+            # Nested Analyzer-tier (depth=2) findings with no URL of their own must NOT count
+            # against coverage -- that's expected, not a gap (see coverage()'s own docstring).
+            rs3 = RunState(tmpdir)
+            rs3.add_finding("https://a.example.co/x", "summary", task_name="Background", depth=1)
+            rs3.add_finding("Background", "analyzer summary, no new URL", task_name="Analyze x", depth=2)
+            cov3 = rs3.coverage()
+            assert cov3 == {"total": 1, "covered": 1, "ratio": 1.0, "uncovered_task_names": []}, cov3
+
+            # Three top-level tasks, only one with a real URL -> thin (ratio 1/3).
+            rs4 = RunState(tmpdir)
+            rs4.add_finding("https://a.example.co/x", "summary", task_name="Background", depth=1)
+            rs4.add_finding("Comparison A", "found nothing usable", task_name="Comparison A", depth=1)
+            rs4.add_finding("Comparison B", "found nothing usable", task_name="Comparison B", depth=1)
+            cov4 = rs4.coverage()
+            assert cov4["total"] == 3 and cov4["covered"] == 1, cov4
+            assert abs(cov4["ratio"] - 1 / 3) < 1e-9, cov4
+            assert set(cov4["uncovered_task_names"]) == {"Comparison A", "Comparison B"}, cov4
+
+    _coverage_scenario()
+
+    # --- check_thin_coverage wiring (mirrors _line_claim_scenario's directness -- pure RunState
+    # setup, no fetched-fs dependency needed since this check doesn't read workspace content) ---
+    def _thin_coverage_wiring_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        from tools.core import tool_quotas_ctx as q_ctx
+        from utils.run_state import RunState
+
+        _orig_ws10 = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            _IN_MEMORY_FS.clear()
+            reset_fetched_urls()
+            q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5}})
+
+            # (a) 1/3 top-level tasks covered -> thin_coverage fires BEFORE missing_findings even
+            # gets a chance to (COMPLETION_CHECKS order), current_input grows via the classic path
+            # (not Builder/FindingsWriter-fixable -- this needs new delegation, not a rewrite).
+            with tempfile.TemporaryDirectory() as tmpdir_a:
+                rs = RunState(tmpdir_a)
+                rs.add_finding("https://a.example.co/x", "summary", task_name="Background", depth=1)
+                rs.add_finding("Comparison A", "found nothing usable", task_name="Comparison A", depth=1)
+                rs.add_finding("Comparison B", "found nothing usable", task_name="Comparison B", depth=1)
+                run_state_ctx.set(rs)
+                msgs = []
+                should_retry, new_input = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append))
+                recorded = rs.data["completion_check_attempts"][-1]["problem"]
+                assert recorded == "thin_coverage", (recorded, msgs)
+                assert should_retry
+                assert isinstance(new_input, list) and len(new_input) == 2, new_input
+                assert "Comparison A" in msgs[-1] and "1/3" in msgs[-1], msgs
+
+            # (b) a single-task query that succeeded -> never flagged, regardless of "breadth"
+            # (min_tasks gate wouldn't even matter here since ratio is already 1.0).
+            with tempfile.TemporaryDirectory() as tmpdir_b:
+                rs = RunState(tmpdir_b)
+                rs.add_finding("https://a.example.co/x", "summary", task_name="Simple lookup", depth=1)
+                run_state_ctx.set(rs)
+                msgs = []
+                should_retry, _ = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append))
+                recorded = rs.data["completion_check_attempts"][-1]["problem"]
+                assert recorded != "thin_coverage", (recorded, msgs)
+
+            # (c) 1/2 covered, but min_tasks default is 2 so this DOES have enough signal to fire
+            # -- confirms the threshold math itself (1/2 == 0.5, NOT below threshold 0.5 -> must
+            # NOT fire, since the check is "below threshold", not "at or below").
+            with tempfile.TemporaryDirectory() as tmpdir_c:
+                rs = RunState(tmpdir_c)
+                rs.add_finding("https://a.example.co/x", "summary", task_name="Background", depth=1)
+                rs.add_finding("Comparison A", "found nothing usable", task_name="Comparison A", depth=1)
+                run_state_ctx.set(rs)
+                msgs = []
+                should_retry, _ = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append))
+                recorded = rs.data["completion_check_attempts"][-1]["problem"]
+                assert recorded != "thin_coverage", (
+                    "ratio exactly AT threshold (0.5) must not fire -- only below it", recorded, msgs)
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            if _orig_ws10 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws10
+
+    contextvars.copy_context().run(_thin_coverage_wiring_scenario)
+
     # --- missing_artifact escalation (live case 2026-07-12: 24 real fetched URLs + a populated
     # findings.md, but the model still got this nudge 5x verbatim and never once attempted
     # write_workspace_file). Two behaviors added: findings.md content quoted directly in the

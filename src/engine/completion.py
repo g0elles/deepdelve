@@ -79,6 +79,64 @@ def check_not_delegated(ctx: Ctx) -> Optional[Verdict]:
     )
 
 
+def check_thin_coverage(ctx: Ctx) -> Optional[Verdict]:
+    """ROADMAP Phase 5 ("Coverage accounting / ResearchMap") — distinct from every other check in
+    this module: those all verify whether content that ALREADY EXISTS is grounded; this instead
+    asks whether the Planner's own top-level research plan actually paid off, catching a report
+    that could be perfectly grounded (every citation traces to a real fetch) yet still be thin
+    because most of the Planner's own delegated angles came back with nothing usable and got
+    quietly dropped rather than surfaced or retried. Reuses RunState.coverage() — see its own
+    docstring for why this is built entirely from already-reliable, model-independent structural
+    data (per-task fetch attribution, delegation depth) rather than a new Planner-authored schema.
+
+    Conservative by construction, same philosophy as every other check here: fires only when a
+    MAJORITY of top-level tasks came back with no real source (ratio below threshold, default
+    0.5) AND there are enough of them for that ratio to mean something (min_tasks, default 2) — a
+    single-task query (the common case for a simple factual lookup) that succeeded is 1.0
+    regardless of "breadth" and never trips this; a single-task query that failed is caught by
+    missing_findings/missing_artifact already, not this. Escalates like every other repeat-prone
+    check here on a second consecutive occurrence — a nudge that already failed to move the ratio
+    isn't worth repeating verbatim."""
+    cov_cfg = config.cfg.get("settings", {}).get("coverage_check", {})
+    if not cov_cfg.get("enabled", True):
+        return None
+    threshold = cov_cfg.get("threshold", 0.5)
+    min_tasks = cov_cfg.get("min_tasks", 2)
+    coverage = ctx.run_state.coverage()
+    if coverage["total"] < min_tasks or coverage["ratio"] >= threshold:
+        return None
+
+    prior_same = 0
+    for a in reversed(ctx.run_state.data.get("completion_check_attempts", [])):
+        if a.get("problem") == "thin_coverage":
+            prior_same += 1
+        else:
+            break
+
+    uncovered_list = ", ".join(f"'{t}'" for t in coverage["uncovered_task_names"][:5])
+    if prior_same == 0:
+        directive = (
+            f"Only {coverage['covered']} of {coverage['total']} research tasks you delegated "
+            f"actually turned up a real source ({uncovered_list} came back empty). Do NOT write "
+            f"the final report around only the tasks that worked — delegate_tasks again for the "
+            f"uncovered angles, phrased differently or with a narrower query if the first attempt "
+            f"was too broad or too specific to find anything."
+        )
+    else:
+        directive = (
+            f"Coverage is STILL thin after a prior warning ({coverage['covered']}/{coverage['total']} "
+            f"tasks with a real source). If you have already tried rephrasing and genuinely cannot "
+            f"find sources for {uncovered_list}, say so explicitly in the report as an acknowledged "
+            f"gap rather than silently omitting it — do not keep re-delegating the exact same query."
+        )
+
+    return Verdict(
+        "thin_coverage",
+        f"Only {coverage['covered']}/{coverage['total']} delegated research tasks produced a real source ({uncovered_list}). Pushing agent to cover the gap or acknowledge it.",
+        f"SYSTEM WARNING: {ctx.last_chance_prefix}{directive}",
+    )
+
+
 def check_findings_ungrounded(ctx: Ctx) -> Optional[Verdict]:
     """findings.md (Pass 1) was previously never grounding-checked at all — only
     final_report.md was. Confirmed live: a Planner that abandons real delegation partway
@@ -504,6 +562,7 @@ def check_not_grounded(ctx: Ctx) -> Optional[Verdict]:
 # A new check is one function above + one entry here — and one row in the verdict matrix test.
 COMPLETION_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
     check_not_delegated,
+    check_thin_coverage,
     check_findings_ungrounded,
     check_missing_findings,
     check_missing_artifact,
