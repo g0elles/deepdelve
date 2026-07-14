@@ -329,6 +329,25 @@ Status as of 2026-07-14.
   whole-line term-overlap and wasn't touched by this pass — same latent multi-citation-per-line gap
   could exist there too; flagged, not yet fixed, out of this milestone's scope.
 - **`check_excluded_topic` — report-write-time enforcement of query exclusions, closing the gap in the "Hard exclusion rules" finding below.** `delegate_tasks` already skipped DISPATCHING a task whose own topic matched an explicit query exclusion (`_extract_excluded_topics`), but did nothing to stop that topic showing up as its own section in the final report anyway, recalled from a sibling task's tangential findings. New `engine/completion.py::check_excluded_topic` (a `GROUNDING_CHECKS` entry, `_BUILDER_FIXABLE_PROBLEMS` member) reuses the exact same `_extract_excluded_topics` parser, now applied to `final_report.md`'s own h1-h3 heading sections (`utils/grounding.py::split_into_heading_sections`, extracted from the existing `find_uncited_claim_lines` section-scoping logic so both share one implementation) — deliberately heading-scoped rather than whole-document substring matching, so a topic mentioned once in passing prose doesn't false-positive the way a bare match would. New verdict-matrix row in `test_structural_checks.py` (query exclusion + a report with its own "## Sector Agritech" section).
+- **Phase 2 of the approved 6-phase plan: cross-source contradiction detection (FEVER-style, Thorne
+  et al., NAACL 2018, `fever.ai`).** Depends on Phase 1's claim segmentation
+  (`decompose_claim_segments`). New `utils/grounding.py::find_cross_source_contradictions`: builds
+  a (subject_phrase, figure) index of every OTHER fetched source's own claims
+  (`_extract_figure_claims`, each subject paired with its NEAREST same-line figure by character
+  distance, not a full cross-product — avoids cross-contaminating unrelated subjects sharing a
+  line), then for each report claim segment, checks whether a DIFFERENT fetched source (one not
+  cited on that segment) reports a same-kind (`_figure_kind` — never a year against a percentage)
+  but numerically different figure for the same subject, unmentioned anywhere else in the report.
+  Distinct from `claim_unsupported`: the cited source really does support the claim — this instead
+  catches the report silently picking a side of a real disagreement between two fetched sources
+  without saying so. New `engine/completion.py::check_cross_source_contradiction`
+  (`GROUNDING_CHECKS` entry, `_BUILDER_FIXABLE_PROBLEMS` member — Builder is told to surface both
+  figures rather than pick one). New verdict-matrix row (two fetched sources reporting 12% vs 18%
+  for "Sector Fintech", report cites only the 12% one) plus isolated pure-function sanity checks
+  during development that caught and fixed a real bug before it shipped: an early version paired
+  every subject with every number on a line regardless of kind, so a line naming both a year and
+  an unrelated percentage spuriously "contradicted" any other source's differing percentage for a
+  totally unrelated reason — fixed by the same-kind guard and nearest-figure pairing.
 
 ## Findings from live testing (not yet acted on / informational)
 
@@ -489,12 +508,6 @@ Status as of 2026-07-14.
   Phase 6 B4 TUI/CLI loop unification (deferred last, highest regression risk). Sequenced by
   ROADMAP's own stated priority + dependency order + risk, not file order below.
 - **Address the grounding check's topical-relevance gap** — some form of "is this source actually about the claimed subject," not just "was it fetched and does it share terms." Unclear whether this needs an LLM judge (this local model class has proven unreliable as its own judge elsewhere in this project) or a cheaper heuristic. *(Partially mitigated 2026-07-12: scope matching is now case-insensitive and charset-correct, and stub shells can no longer ground anything.)* **Concrete candidate mechanism found 2026-07-13** (verified real, not an LLM judge): a lightweight CPU cross-encoder reranker (`BAAI/bge-reranker-v2-m3`, ~278M params) scoring (claim, source) pairs directly — as a semantic sanity check layered *after* the existing term-overlap check, the same way the NLI entailment check is already layered on top of it. Would have caught the GOA-the-algorithm-vs-Goa-the-Indian-state acronym collision the existing stack missed.
-- **Cross-source contradiction detection** (found 2026-07-13, FEVER-style: Thorne et al., NAACL
-  2018, `fever.ai`) — currently missing entirely: when two fetched sources disagree on a figure
-  (e.g. one says $12B revenue, another says $13.4B), the report silently picks one. Cluster claims
-  by subject, detect disagreement among their bound evidence, and require the Builder to surface
-  the conflict explicitly rather than smoothing it over. Not an LLM judging which source is right —
-  just flagging that they disagree. Fits the integrity-first priority.
 - **Coverage accounting / ResearchMap** (found 2026-07-13) — track topic-completeness (e.g. per
   planned research slot: status, evidence count, confidence) so the completion check can require a
   coverage threshold, not just "enough tokens written." Complements the Builder loop without

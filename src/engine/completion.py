@@ -16,7 +16,10 @@ import config
 from agent_framework import Message
 from tools import tool_quotas_ctx, get_workspace_files, get_workspace_file_content
 from utils.run_state import get_fetched_urls, get_search_health
-from utils.grounding import fully_ungrounded, real_grounding_problem, split_into_heading_sections
+from utils.grounding import (
+    fully_ungrounded, real_grounding_problem, split_into_heading_sections,
+    find_cross_source_contradictions,
+)
 from engine.orchestrator import topup_quota_pool, available_sub_agents_ctx, _extract_excluded_topics
 
 DEFAULT_MAX_COMPLETION_CHECK_ATTEMPTS = 3
@@ -440,6 +443,28 @@ def check_excluded_topic(ctx: Ctx) -> Optional[Verdict]:
     return None
 
 
+def check_cross_source_contradiction(ctx: Ctx) -> Optional[Verdict]:
+    """ROADMAP Phase 2 (cross-source contradiction detection, FEVER-style — depends on Phase 1's
+    claim segmentation). A claim's own citation can pass claim_grounding_problem's term-overlap
+    check (the cited source really does say what's claimed) while a DIFFERENT fetched source
+    disagrees on the same named subject's figure — and the report never surfaces that
+    disagreement anywhere. Distinct from claim_unsupported: this isn't fabrication, it's a real
+    disagreement between two real fetched sources that got silently resolved by picking one side.
+    See utils.grounding.find_cross_source_contradictions for the conservative
+    same-subject-phrase + differing-figure detection (exact 2+-word proper-noun match required,
+    the conflicting figure must not already appear anywhere else in the report)."""
+    if not ctx.content:
+        return None
+    hits = find_cross_source_contradictions(ctx.content)
+    if not hits:
+        return None
+    return Verdict(
+        "cross_source_contradiction",
+        f"`{ctx.req_artifact}` states a figure that a DIFFERENT fetched source disagrees with, unacknowledged ({hits[0]}). Pushing agent to surface the conflict.",
+        f"SYSTEM WARNING: {ctx.last_chance_prefix}'{ctx.req_artifact}' states a figure for a subject where a DIFFERENT source you actually fetched this run reports a conflicting number, and the report never mentions the disagreement: {hits[0]}. Do not silently pick a side — rewrite that claim to surface BOTH figures (e.g. \"Source A reports X, while Source B reports Y\") rather than stating only one as fact.",
+    )
+
+
 def check_not_grounded(ctx: Ctx) -> Optional[Verdict]:
     """The generic hard gate: at least one cited URL matches nothing actually fetched this run."""
     gp = ctx.grounding_problem
@@ -471,6 +496,7 @@ GROUNDING_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
     check_nli_unsupported,
     check_uncited_claims,
     check_excluded_topic,
+    check_cross_source_contradiction,
     check_not_grounded,  # generic catch-all: fires on ANY grounding problem — keep it LAST
 ]
 
@@ -489,7 +515,8 @@ _QUARANTINE_PROBLEMS = ("not_grounded", "claim_unsupported", "non_url_citation",
 # delegate, so that one still falls through to the classic inject-into-Planner path below.
 _BUILDER_FIXABLE_PROBLEMS = ("missing_artifact", "not_grounded", "claim_unsupported",
                              "non_url_citation", "regulation_unsupported", "stub_source",
-                             "nli_unsupported", "uncited_claims", "excluded_topic_present")
+                             "nli_unsupported", "uncited_claims", "excluded_topic_present",
+                             "cross_source_contradiction")
 
 # Findings-authoring problems, fixable by a fresh-context FindingsWriter (+ PeerReviewer check)
 # from this run's REAL structured results (see _build_findings_source_material) — the Planner

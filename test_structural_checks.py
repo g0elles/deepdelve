@@ -509,6 +509,19 @@ def main():
                                f"## Sector Agritech\n- el sector agritech crecio de forma notable segun analistas [gov]({_SRC})\n")},
          "excluded_topic_present", "explicitly excluded",
          "Do a market research of Colombia, excluding Agritech."),
+        # Live-motivated case (ROADMAP Phase 2, FEVER-style): the report's own citation genuinely
+        # supports its claim (12%, from fintech_a), but a DIFFERENT fetched source (fintech_b,
+        # never cited on this line) reports a conflicting figure (18%) for the SAME subject, and
+        # the report never surfaces that disagreement anywhere.
+        ("cross_source_contradiction", True, {"findings.md": _FINDINGS_OK,
+          "final_report.md": "- Sector Fintech grew 12% in 2024 [gov](https://gov.example.co/fintech-a)"},
+         "cross_source_contradiction", "a DIFFERENT fetched source",
+         "", [
+             ("https://gov.example.co/fintech-a", "sources/fintech_a.md",
+              "Source-URL: https://gov.example.co/fintech-a\n\nSector Fintech grew 12% in 2024 according to official figures."),
+             ("https://gov.example.co/fintech-b", "sources/fintech_b.md",
+              "Source-URL: https://gov.example.co/fintech-b\n\nSector Fintech grew 18% in 2024 according to a different analysis."),
+         ]),
         # Clean pass: grounded findings, report cites the fetched source, no checkable claim
         # contradicting it -> no problem recorded, no retry.
         ("clean_pass", True, {"findings.md": _FINDINGS_OK,
@@ -519,6 +532,7 @@ def main():
     with tempfile.TemporaryDirectory() as tmpdir:
         for _row_name, _delegated, _files, _expected, _phrase, *_rest in matrix:
             _query = _rest[0] if _rest else ""
+            _extra_fetches = _rest[1] if len(_rest) > 1 else []
 
             def _matrix_row():
                 from tools.fs import _IN_MEMORY_FS
@@ -543,6 +557,9 @@ def main():
                     # trip over its mere existence); only the stub_source row cites it.
                     record_fetched_url(_STUB_SRC, filename="sources/stub.md", stub="paywall marker")
                     _IN_MEMORY_FS["sources/stub.md"] = "Source-URL: " + _STUB_SRC + "\n\nSUSCRÍBETE"
+                    for _url, _fn, _content in _extra_fetches:
+                        record_fetched_url(_url, filename=_fn)
+                        _IN_MEMORY_FS[_fn] = _content
                     _IN_MEMORY_FS.update(_files)
                     q_ctx.set({"delegate_tasks": {"used": 1 if _delegated else 0, "limit": 5}})
                     rs = RunState(tmpdir)
