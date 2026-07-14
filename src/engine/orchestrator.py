@@ -1,6 +1,7 @@
 import os
 import asyncio
 import re
+import time
 from agent_framework.openai import OpenAIChatCompletionClient
 from agent_framework import tool, AgentSession
 from tools import with_quota, think_tool, QuotaAbortException
@@ -296,6 +297,21 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
     global _session
     client = _build_client()
 
+    # Run-wide wall-clock ceiling for EVERY sub-agent dispatch (Searcher/Analyzer/Builder/
+    # FindingsWriter/PeerReviewer), computed once per run and shared by every _run_single_task
+    # call below -- same settings.max_run_minutes budget/semantics engine/tui.py's run_cli
+    # already applies to the Planner's own top-level stream. Closes a real, confirmed-live gap
+    # (2026-07-14): _run_single_task's stream loop had NO deadline of any kind, so a sub-agent
+    # turn that runs away into a pathologically long generation (confirmed live: one Gemma4 turn
+    # decoded 19,908+ tokens, still actively generating, no repetition/stall) was invisible to
+    # every budget in this project and relied entirely on the raw openai-SDK HTTP client's blunt
+    # default ~600s connection timeout -- which then discards the ENTIRE in-progress response and
+    # raises a generic error, instead of cutting the turn short gracefully with whatever text had
+    # already been generated (exactly the failure mode run_cli's own 2026-07-12 fix docstring
+    # describes and was built to prevent, just never propagated to this sibling code path).
+    _run_max_minutes = config.cfg.get("settings", {}).get("max_run_minutes", 0) or 0
+    _run_budget_deadline = (time.monotonic() + _run_max_minutes * 60) if _run_max_minutes else None
+
     # Computed here (not inline where used) so both the Planner's own instructions AND the
     # Builder sub-agent's instructions (formatted inside _run_single_task below) can reference
     # {report_style_instructions}/{citation_format_instructions} — Builder is now the only role
@@ -464,7 +480,37 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
 
                         try:
                             stream = sub_agent.run(current_input, stream=True)
-                            async for update in stream:
+                            # Manually driven __anext__ + asyncio.wait_for, NOT `async for update
+                            # in stream` -- same fix as engine/tui.py's run_cli (2026-07-12), now
+                            # ported here (2026-07-14) after the identical failure mode was
+                            # confirmed live at this exact call site: a plain async-for only
+                            # checks a deadline once it actually RECEIVES an update, so a stream
+                            # that goes a very long time between updates (or one single very long
+                            # generation) is invisible to any deadline until it finally yields
+                            # something. Racing each __anext__() against the remaining run budget
+                            # via asyncio.wait_for fires the cutoff on a real wall-clock timer
+                            # regardless of how long the stream goes quiet.
+                            stream_iter = stream.__aiter__()
+                            while True:
+                                if _run_budget_deadline:
+                                    remaining = _run_budget_deadline - time.monotonic()
+                                    if remaining <= 0:
+                                        final_text += (
+                                            f"\n\n[SYSTEM: task '{task_name}' cut short -- "
+                                            f"max_run_minutes ({_run_max_minutes}) exceeded.]")
+                                        break
+                                else:
+                                    remaining = None
+                                try:
+                                    update = await asyncio.wait_for(stream_iter.__anext__(), timeout=remaining)
+                                except asyncio.TimeoutError:
+                                    final_text += (
+                                        f"\n\n[SYSTEM: task '{task_name}' cut short -- "
+                                        f"max_run_minutes ({_run_max_minutes}) exceeded (stream "
+                                        f"produced no update before the deadline).]")
+                                    break
+                                except StopAsyncIteration:
+                                    break
                                 if subagent_callback:
                                     await subagent_callback(update, is_subagent=True, agent_name=agent_name)
                                 for c in update.contents:

@@ -4,6 +4,40 @@ Status as of 2026-07-14.
 
 ## Done
 
+- **Sub-agent dispatches had NO wall-clock deadline at all — a real, live-confirmed gap, fixed.**
+  `engine/tui.py`'s `run_cli` already races each stream update against `settings.max_run_minutes`
+  via `asyncio.wait_for(stream_iter.__anext__(), timeout=remaining)` instead of a plain `async for`
+  (2026-07-12 fix, because a plain async-for only checks a deadline once it actually RECEIVES an
+  update — invisible to a stream that goes silent for a long time). That fix was never propagated
+  to `engine/orchestrator.py::_run_single_task`, the code path EVERY Searcher/Analyzer/Builder/
+  FindingsWriter/PeerReviewer dispatch goes through — it used a bare `async for update in stream:`
+  with zero deadline, relying entirely on the raw openai-SDK HTTP client's blunt ~600s default
+  connection timeout, which then discards the whole in-progress response and raises a generic
+  error instead of degrading gracefully. **Root-caused live (2026-07-14)**, during Phase 4 smoke
+  testing, after the user pushed back on accepting repeated live-run timeouts as "just model
+  slowness" without further investigation — correctly, since the real cause turned out to be
+  structural: cross-referenced `journalctl -u ollama` against the exact failure window and found
+  two requests that returned HTTP 500 after hanging exactly `10m0s` and `6m24s`. The `10m0s` one
+  was NOT stuck — `ollama`'s own `print_timing` log showed it continuously, validly decoding
+  tokens the entire time (steady ~33 tok/s, no gaps) up to 19,908+ tokens when the connection was
+  force-closed — `600s × ~33 tok/s ≈ 19,800 tokens`, matching almost exactly. A single sub-agent
+  turn ran away into a very long generation with no early-cutoff mechanism watching it at all.
+  Fix: `create_local_agent` now computes `_run_budget_deadline` once per run (same
+  `max_run_minutes` setting, same semantics as `run_cli`'s own top-level guard — shared because
+  `create_local_agent` is called once per run and used by both `run_cli` and `run_agent`/TUI, so
+  this closes the gap on both surfaces at once, no separate TUI-specific change needed), and
+  `_run_single_task`'s stream loop now uses the identical `asyncio.wait_for`-racing pattern instead
+  of a bare `async for`, degrading gracefully into `final_text` with a clear `[SYSTEM: task '...'
+  cut short...]` marker instead of losing the whole turn to a raw connection-timeout exception.
+  Verified the core mechanism in isolation (a stream that hangs 999s against a 1s deadline is cut
+  off at ~1.00s, not 999s) before considering this done. Full suite + `ruff check .` pass.
+  **This also retroactively explains several "timeout" observations during today's earlier Phase
+  2-4 live smoke tests** that had been attributed to model slowness/complexity — those diagnoses
+  weren't necessarily wrong (Gemma4's genuine slowness and a separate `qwen3:4b` tool-repetition
+  pattern were both independently confirmed too, see "Findings from live testing" below), but this
+  structural gap was the common thread making ANY of those failure modes catastrophic (total loss
+  of the turn, no graceful degrade) instead of just slow.
+
 - **3-tier domain-specialized architecture**: `Planner -> {WebSearcher, AcademicSearcher, PeerReviewer} -> {DocumentAnalyzer, DataAnalyzer}`. `PeerReviewer` is a Planner-tier delegate (independent critique, findings.md or, in report mode, final_report.md), not part of the Searcher→Analyzer chain. *(2026-07-13: a `Builder` Planner-tier delegate was added — see the "Builder sub-agent + Build→Review→Fix loop" entry below. 2026-07-14: a `FindingsWriter` Planner-tier delegate was added the same way, one artifact earlier — see "Planner now only plans and delegates" below. Five Planner-tier delegates total now: WebSearcher, AcademicSearcher, PeerReviewer, Builder, FindingsWriter.)*
 - **Planner now only plans and delegates — it cannot write ANY file.** *(2026-07-14, user-driven design question: "the planner should only plan and delegate... giving the planner the job of writing the findings will poison context.")* Previously the Planner wrote `findings.md` itself (the only artifact-writing job it still had after Builder was split out for `final_report.md`) — a real, inconsistent gap: a `findings_ungrounded`/`missing_findings` retry grew the PLANNER'S OWN conversation exactly the way Builder was invented to prevent for `final_report.md`. Confirmed live the same day, independent of this fix: a benchmark run hit 4 consecutive `findings_ungrounded` retries and exhausted its budget with nothing ever written. Fix: new `FindingsWriter` Planner-tier delegate (`src/prompts.py::FINDINGS_WRITER_INSTRUCTIONS`, `src/app.py::findings_writer_agent`), dispatched exclusively by `engine/completion.py`'s generalized Write→Review→Fix loop (renamed from Build→Review→Fix — `_dispatch_build_review_fix` → `_dispatch_writer_review_fix`, now shared by both Builder and FindingsWriter; `_ensure_builder_write_quota_headroom` → `_ensure_writer_quota_headroom` for the same reason) when `missing_findings`/`findings_ungrounded` fires. FindingsWriter never sees the Planner's conversation — its dispatch instructions are built entirely from `RunState`'s structured `data["findings"]` (`{source_url, summary}` per dispatched task, populated automatically by every Searcher/Analyzer call — see `_build_findings_source_material`), plus `read_workspace_file`/`grep_workspace_file` access to go deeper into a raw fetched source if a summary isn't detailed enough. The Planner's `write_workspace_file` tool was removed entirely (`src/app.py`) — it is now structurally incapable of writing any file, the same way it's already structurally incapable of researching. `PLANNER_INSTRUCTIONS` rewritten accordingly (job ends at delegation; `PeerReviewer`/`Builder`/`FindingsWriter` all removed from its Delegation Routing, since none are ever Planner-dispatched anymore). Fallback verdict text for both problems rewritten to never instruct a `write_workspace_file` call the Planner can't make. New test coverage: `_findings_writer_dispatch_scenario` in `test_structural_checks.py`, mirroring `_builder_dispatch_scenario` (CLEAN review, ISSUES FOUND review with corrective re-dispatch, malformed-sentinel conservative handling, missing-registration fallback that doesn't reference the removed tool).
   - **Live-verified end-to-end, two real runs, same day**: architecture confirmed working correctly — `FindingsWriter`/`Builder` both dispatch via their own independent Write→Review→Fix loops, `PeerReviewer` catches real issues in both (confirmed: flagged a genuine `findings.md` problem, triggering a real corrective FindingsWriter re-dispatch; separately flagged a `claim_unsupported` citation in `final_report.md`), and `current_input` stays provably unchanged across dispatches (no context growth) exactly as designed. Traced one flagged citation to its root cause to confirm layer independence, not just redundancy: `findings.md` correctly recorded that `python.org`'s landing page has NO biographical content about Python's creator (a truthful negative finding); Builder then cited `python.org` in support of a creator claim anyway on its own initiative — a downstream synthesis error introduced AFTER FindingsWriter's own review, caught by a completely separate check, not something that leaked through from bad `findings.md` content.
@@ -630,6 +664,25 @@ Status as of 2026-07-14.
     to `WebSearcher`, rather than routing both identically. Instructions detail (143-171 chars) sits
     between Bonsai's terse style (73-102) and Gemma 4's richer one (289-356). Not yet run through
     the full sales-forecasting benchmark — that's the same next step as Bonsai-8B above.
+    - **New reliability finding (2026-07-14, Phase 4 smoke-test session)**: as `FindingsWriter` on
+      a trivially simple factual query ("boiling point of water at sea level"), `qwen3:4b` called
+      `write_workspace_file` **10 times in a row** with near-identical content (confirmed via the
+      persisted session log: every call succeeded cleanly, "Wrote 'findings.md' to disk.", no
+      error/rejection anywhere) instead of recognizing the file was already correctly written and
+      stopping — only the existing `write_workspace_file` quota (10) correctly halted it, with a
+      clear "you MUST summarize... and state you had to stop due to quota limits" message. Not a
+      hang, not a code bug — the quota mechanism worked exactly as designed; this is a genuine
+      `qwen3:4b` tool-calling non-convergence pattern, distinct in shape from Gemma4's own
+      documented reasoning-loop tendency (repeated `delegate_tasks`/narration without a real tool
+      call) and gpt-oss's hallucinated-tool-name pattern — same broader "small local model doesn't
+      recognize task completion" failure class, third distinct flavor of it now observed across
+      three different models in this project. Real cost: burned enough wall-clock across 2 separate
+      live smoke-test attempts (this model, this exact query) to exceed a 15-20 min budget each
+      time, purely on redundant `write_workspace_file` calls before the run ever reached its later
+      stages. Not yet run through the full sales-forecasting benchmark, so unclear if this is
+      systemic to `qwen3:4b`'s FindingsWriter behavior specifically or an isolated occurrence —
+      flagged as a real data point for the eventual full bake-off comparison, not yet a
+      disqualification.
 - **B4: unify the duplicated TUI/CLI run loop.** `src/engine/tui.py` hosts two ~150-line
   stream/approval/retry loops — `run_cli` (headless) and `run_agent`/`BasicTuiAgent` (interactive)
   — that duplicate most of the same run-lifecycle logic instead of sharing one implementation.
