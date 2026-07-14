@@ -106,6 +106,20 @@ settings:
   # completion check jumps straight to its final verdict, so labeling and report salvage still
   # run and the run ends with an explicit outcome. A qwen3.6 run once ran 64 minutes unbounded.
   max_run_minutes: 45
+  # Wall-clock budget in minutes for EACH sub-agent dispatch (Searcher/Analyzer/Builder/
+  # FindingsWriter/PeerReviewer) — independent of max_run_minutes above, deliberately: that's a
+  # whole-RUN ceiling shared by every turn, so a single runaway sub-agent call racing against it
+  # (both anchored to roughly the same run-start clock) gets cancelled by whichever fires first,
+  # not necessarily this one — which means it provides no protection against ONE slow call among
+  # MANY quick ones early in a long run with plenty of budget still left. This is a fresh,
+  # independent per-dispatch timer instead (0 = no limit). Confirmed live 2026-07-14: a single
+  # sub-agent turn continuously, validly decoded 19,908+ tokens (steady ~33 tok/s per
+  # journalctl -u ollama's own print_timing log — not stuck, just an unusually long generation)
+  # before the openai SDK's own blunt ~600s default connection timeout killed it and threw a raw
+  # exception, which then triggered an ungraceful retry that hit the same pattern again. Not a
+  # hard kill, same policy as max_run_minutes: the turn is cut short gracefully (whatever text was
+  # generated so far is kept, with a clear marker), not lost to a raw connection error.
+  sub_agent_timeout_minutes: 10
   # Per-agent-stream context budget in CHARACTERS (0 = off). Local models run at num_ctx ~16384
   # tokens (~65K chars); on overflow Ollama silently truncates from the TOP — eating the system
   # prompt mid-run, which looks exactly like model collapse. When an agent's streamed content

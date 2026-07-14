@@ -248,6 +248,22 @@ def _build_client():
     from openai import AsyncOpenAI
     api_cfg = config.cfg["api"]
     api_key = os.getenv("OPENAI_API_KEY", "dummy")
+    # Explicit timeout, comfortably LONGER than both settings.max_run_minutes AND
+    # settings.sub_agent_timeout_minutes, not the openai SDK's own default (600s / 10 minutes) —
+    # found live 2026-07-14, same investigation as _run_single_task's new wait_for-based deadline
+    # below: a runaway Gemma4 generation was continuously, validly decoding tokens (confirmed via
+    # journalctl -u ollama's print_timing log) when the SDK's own blunt 600s connection timeout
+    # silently killed it and threw a raw exception, which then triggered an ungraceful retry that
+    # ran into the SAME pattern again (a second, ~6m24s hang). Without this, the SDK's shorter
+    # default ALWAYS wins the race against our own explicit, graceful cutoffs whenever either
+    # budget is configured to more than 10 minutes (the template defaults are 45 and 10) — making
+    # those mechanisms dead code in realistic configs, only ever exercised by an artificially short
+    # override like a quick smoke test. Setting the SDK's timeout to run comfortably past both
+    # ensures OUR explicit, graceful cutoffs are what actually fire first.
+    _max_run_minutes = config.cfg.get("settings", {}).get("max_run_minutes", 0) or 0
+    _sub_timeout_minutes = config.cfg.get("settings", {}).get("sub_agent_timeout_minutes", 0) or 0
+    sdk_timeout = max(_max_run_minutes * 60, _sub_timeout_minutes * 60, 0) + 300
+    sdk_timeout = max(sdk_timeout, 3600)
     return OpenAIChatCompletionClient(
         base_url=api_cfg["openai_base_url"],
         api_key=api_key,
@@ -256,6 +272,7 @@ def _build_client():
             base_url=api_cfg["openai_base_url"],
             api_key=api_key,
             max_retries=api_cfg.get("max_retries", 6),
+            timeout=sdk_timeout,
         ),
     )
 
@@ -297,20 +314,27 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
     global _session
     client = _build_client()
 
-    # Run-wide wall-clock ceiling for EVERY sub-agent dispatch (Searcher/Analyzer/Builder/
-    # FindingsWriter/PeerReviewer), computed once per run and shared by every _run_single_task
-    # call below -- same settings.max_run_minutes budget/semantics engine/tui.py's run_cli
-    # already applies to the Planner's own top-level stream. Closes a real, confirmed-live gap
-    # (2026-07-14): _run_single_task's stream loop had NO deadline of any kind, so a sub-agent
-    # turn that runs away into a pathologically long generation (confirmed live: one Gemma4 turn
-    # decoded 19,908+ tokens, still actively generating, no repetition/stall) was invisible to
-    # every budget in this project and relied entirely on the raw openai-SDK HTTP client's blunt
-    # default ~600s connection timeout -- which then discards the ENTIRE in-progress response and
-    # raises a generic error, instead of cutting the turn short gracefully with whatever text had
-    # already been generated (exactly the failure mode run_cli's own 2026-07-12 fix docstring
-    # describes and was built to prevent, just never propagated to this sibling code path).
-    _run_max_minutes = config.cfg.get("settings", {}).get("max_run_minutes", 0) or 0
-    _run_budget_deadline = (time.monotonic() + _run_max_minutes * 60) if _run_max_minutes else None
+    # Per-DISPATCH wall-clock ceiling for EVERY sub-agent call (Searcher/Analyzer/Builder/
+    # FindingsWriter/PeerReviewer) -- settings.sub_agent_timeout_minutes, deliberately INDEPENDENT
+    # of settings.max_run_minutes (see that key's own config_template.yaml comment for why: a
+    # shared/anchored-to-run-start deadline races against the Planner's own top-level guard and
+    # typically loses -- asyncio.wait_for's cancellation propagates from the outer coroutine down
+    # through the inner one as soon as the OUTER timeout fires, pre-empting the inner deadline's
+    # own check before it ever gets a chance to fire on its own terms; confirmed live 2026-07-14,
+    # a same-value test showed the inner marker text never actually appeared in the session log).
+    # This value alone (read once per run here, applied fresh per dispatch inside
+    # _run_single_task below) is what actually closes the gap: _run_single_task's stream loop
+    # previously had NO deadline of any kind, so a single sub-agent turn that ran away into a
+    # pathologically long generation (confirmed live: one Gemma4 turn decoded 19,908+ tokens,
+    # continuously and validly, no repetition/stall -- see journalctl -u ollama's own print_timing
+    # log) was invisible to every budget in this project and relied entirely on the raw
+    # openai-SDK HTTP client's blunt default ~600s connection timeout, which discards the ENTIRE
+    # in-progress response and raises a generic error instead of cutting the turn short gracefully
+    # with whatever text had already been generated (exactly the failure mode run_cli's own
+    # 2026-07-12 fix docstring describes and was built to prevent, just never propagated to this
+    # sibling code path -- see _build_client's own sdk_timeout comment for the matching fix on the
+    # SDK's own blunt timeout, which would otherwise still win the race in realistic configs).
+    _sub_agent_timeout_minutes = config.cfg.get("settings", {}).get("sub_agent_timeout_minutes", 0) or 0
 
     # Computed here (not inline where used) so both the Planner's own instructions AND the
     # Builder sub-agent's instructions (formatted inside _run_single_task below) can reference
@@ -474,6 +498,13 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                     context_budget = get_context_budget()
                     stream_chars = 0
                     budget_nudged = False
+                    # Fresh per-DISPATCH deadline (not per internal retry-turn below, and not
+                    # shared with any other concurrent/sequential dispatch) -- covers this whole
+                    # sub-agent call's total wall-clock budget, same "one deadline for the whole
+                    # thing" semantics max_run_minutes already applies to the Planner's own run.
+                    task_deadline = (
+                        time.monotonic() + _sub_agent_timeout_minutes * 60
+                    ) if _sub_agent_timeout_minutes else None
                     while has_requests:
                         has_requests = False
                         user_input_requests = []
@@ -492,12 +523,12 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                             # regardless of how long the stream goes quiet.
                             stream_iter = stream.__aiter__()
                             while True:
-                                if _run_budget_deadline:
-                                    remaining = _run_budget_deadline - time.monotonic()
+                                if task_deadline:
+                                    remaining = task_deadline - time.monotonic()
                                     if remaining <= 0:
                                         final_text += (
                                             f"\n\n[SYSTEM: task '{task_name}' cut short -- "
-                                            f"max_run_minutes ({_run_max_minutes}) exceeded.]")
+                                            f"sub_agent_timeout_minutes ({_sub_agent_timeout_minutes}) exceeded.]")
                                         break
                                 else:
                                     remaining = None
@@ -506,8 +537,8 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                                 except asyncio.TimeoutError:
                                     final_text += (
                                         f"\n\n[SYSTEM: task '{task_name}' cut short -- "
-                                        f"max_run_minutes ({_run_max_minutes}) exceeded (stream "
-                                        f"produced no update before the deadline).]")
+                                        f"sub_agent_timeout_minutes ({_sub_agent_timeout_minutes}) exceeded "
+                                        f"(stream produced no update before the deadline).]")
                                     break
                                 except StopAsyncIteration:
                                     break
