@@ -1,4 +1,5 @@
 import re
+from typing import Optional
 import config
 from utils.run_state import get_fetched_urls
 from tools.fs import get_workspace_file_content
@@ -69,6 +70,21 @@ def _strip_trailing_punct(url: str) -> str:
     return url
 
 
+# Shared by extract_salient_terms below and find_cross_source_contradictions (ROADMAP Phase 2) —
+# both need the same "what counts as a real proper-noun subject phrase" definition.
+_PROPER_NOUN_PHRASE_RE = re.compile(r'\b[A-Z][a-zA-Z0-9]*(?:\s+[A-Z][a-zA-Z0-9]*){1,4}\b')
+
+
+def _normalize_proper_noun_phrase(raw: str) -> Optional[str]:
+    """Strip leading stopwords instead of discarding the whole phrase — "The Python Programming
+    Language" used to be thrown away entirely because "The" matched the stopword list. Returns
+    None if nothing real is left (a bare stopword run)."""
+    words = raw.split()
+    while words and words[0] in _PROPER_NOUN_STOPWORDS:
+        words.pop(0)
+    return " ".join(words) if words else None
+
+
 def extract_salient_terms(text: str) -> set:
     """Extract checkable, hard-to-coincidentally-reproduce tokens: numbers/versions/years/percentages,
     and multi-word capitalized phrases (proper nouns/titles). Deliberately cheap and deterministic
@@ -77,14 +93,10 @@ def extract_salient_terms(text: str) -> set:
     if not text:
         return set()
     terms = set(re.findall(r'\b\d+(?:\.\d+)+\b|\b\d{4}\b|\b\d+%\b', text))
-    for m in re.finditer(r'\b[A-Z][a-zA-Z0-9]*(?:\s+[A-Z][a-zA-Z0-9]*){1,4}\b', text):
-        # Strip leading stopwords instead of discarding the whole phrase — "The Python Programming
-        # Language" used to be thrown away entirely because "The" matched the stopword list.
-        words = m.group(0).split()
-        while words and words[0] in _PROPER_NOUN_STOPWORDS:
-            words.pop(0)
-        if words:
-            terms.add(" ".join(words))
+    for m in _PROPER_NOUN_PHRASE_RE.finditer(text):
+        normalized = _normalize_proper_noun_phrase(m.group(0))
+        if normalized:
+            terms.add(normalized)
     return terms
 
 
@@ -526,6 +538,106 @@ def claim_grounding_problem(report: str) -> str | None:
     if not unsupported:
         return None
     return f"claim_unsupported:{', '.join(unsupported[:3])}"
+
+
+def _figure_kind(figure: str) -> str:
+    """Classifies a figure string so find_cross_source_contradictions only ever compares like
+    with like (a percentage against a percentage, never a bare year against a percentage) —
+    without this, a line naming both a year and an unrelated percentage would "contradict" any
+    other source mentioning a different percentage for a totally different reason, pure noise."""
+    if figure.endswith('%'):
+        return "percent"
+    if re.fullmatch(r'(?:19|20)\d{2}', figure):
+        return "year"
+    if re.match(r'(?:USD|COP|EUR)', figure):
+        return "currency"
+    return "decimal"
+
+
+def _extract_figure_claims(text: str) -> list[tuple[str, str]]:
+    """Per-line (subject_phrase, figure) pairs: every real 2+-word proper-noun subject phrase on
+    a line, paired with its NEAREST checkable number on that SAME line (by character distance,
+    not a full cross-product) — the minimal "a claim about subject X states figure Y" unit
+    find_cross_source_contradictions clusters on. Nearest-pairing, not every-pairing, because a
+    line naming two different subjects with two different figures (e.g. "Sector A grew 12% while
+    Sector B grew 8%") must bind each subject to ITS OWN nearby figure, not get cross-paired with
+    the other subject's — a full cross-product would manufacture a fake "contradiction" between
+    unrelated claims that happen to share a line. subject_phrase is lowercased for exact-match
+    clustering (case rarely carries meaning for whether two mentions are "the same subject")."""
+    pairs = []
+    for line in (text or "").splitlines():
+        subject_matches = []
+        for m in _PROPER_NOUN_PHRASE_RE.finditer(line):
+            normalized = _normalize_proper_noun_phrase(m.group(0))
+            if normalized:
+                subject_matches.append((normalized.lower(), m.start(), m.end()))
+        figure_matches = [(m.group(0), m.start(), m.end()) for m in _NUMERIC_CLAIM_RE.finditer(line)]
+        if not subject_matches or not figure_matches:
+            continue
+        for subject, s_start, s_end in subject_matches:
+            figure, _, _ = min(
+                figure_matches,
+                key=lambda f: min(abs(f[1] - s_end), abs(s_start - f[2])),
+            )
+            pairs.append((subject, figure))
+    return pairs
+
+
+def find_cross_source_contradictions(report: str) -> list[str]:
+    """ROADMAP Phase 2 (FEVER-style cross-source disagreement detection, Thorne et al., NAACL
+    2018) — depends on Phase 1's claim segmentation (decompose_claim_segments). Distinct from
+    every other check in this file: those verify a claim against ITS OWN cited source; this asks
+    whether the CHOICE of source itself hid a real disagreement the reader was never told about.
+    When two fetched sources report a DIFFERENT figure for the SAME named subject (e.g. one says
+    Sector X grew 12%, another says 15%), and the report cites one of them for that subject
+    without ever mentioning the other source's conflicting figure anywhere in the report, that's a
+    silently-resolved contradiction. Not an LLM judging which figure is right — only that TWO
+    fetched sources disagree and the report picked a side without saying so.
+
+    Conservative by construction: requires an EXACT match on a real 2+-word proper-noun subject
+    phrase shared between the report's citing segment and a DIFFERENT fetched source's own line,
+    a figure of the SAME KIND (see _figure_kind — never a year against a percentage) that is
+    numerically DIFFERENT on that other source's line for the same subject, and the differing
+    figure must not already appear anywhere else in the report (a report that already surfaces
+    both figures has done the job this check exists to force — not a false-flag)."""
+    fetched = _fetched_url_files()
+    prose = split_prose_from_sources(report)
+    ref_map = parse_academic_references(report)
+
+    per_file_claims: dict[str, list[tuple[str, str]]] = {}
+    for fn in set(fetched.values()):
+        content = _source_body(get_workspace_file_content(fn) or "")
+        if len(content.strip()) < 50:
+            continue
+        per_file_claims[fn] = _extract_figure_claims(content)
+
+    hits = []
+    seen = set()
+    for line in prose.splitlines():
+        for segment in decompose_claim_segments(line):
+            cited_files = _line_cited_files(segment, fetched, ref_map)
+            if not cited_files:
+                continue
+            for subject, figure in _extract_figure_claims(segment):
+                for other_fn, other_claims in per_file_claims.items():
+                    if other_fn in cited_files:
+                        continue  # comparing a source against itself proves nothing
+                    for other_subject, other_figure in other_claims:
+                        if other_subject != subject or other_figure == figure:
+                            continue
+                        if _figure_kind(other_figure) != _figure_kind(figure):
+                            continue  # never compare a year against a percentage, etc.
+                        if other_figure in report:
+                            continue  # already surfaced elsewhere -- not silent
+                        key = (subject, figure, other_figure)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        hits.append(
+                            f"'{subject}': report states {figure!r} but a DIFFERENT fetched "
+                            f"source ({other_fn}) states {other_figure!r} for the same subject, "
+                            f"unmentioned in the report")
+    return hits
 
 
 _nli_model = None
