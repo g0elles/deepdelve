@@ -2227,6 +2227,7 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
                     # final-verdict path (labeling + salvage), same as an exhausted attempt budget.
                     run_state.attempt = 10**6
 
+                prior_input_len = len(current_input) if isinstance(current_input, list) else 1
                 should_continue, current_input = await run_completion_check(
                     query=prompt, current_input=current_input, run_state=run_state, notify=_cli_notify,
                     last_assistant_text=turn_text,
@@ -2234,6 +2235,20 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
                 )
                 if should_continue:
                     has_requests = True
+                    # context_budget_chars blind spot (ROADMAP "Planned"): a Write->Review->Fix
+                    # dispatch success returns current_input UNCHANGED (nothing to count), but the
+                    # classic inject-into-Planner path (not_delegated when both writer pairs are
+                    # registered; any of missing_findings/findings_ungrounded/missing_artifact too
+                    # if a writer role isn't registered) appends a real message to current_input
+                    # entirely outside the stream loop that run_stream_chars normally measures.
+                    # Without this, that text could in principle grow the Planner's context on
+                    # repeat with no accounting at all. Only count what was actually appended here.
+                    if isinstance(current_input, list) and len(current_input) > prior_input_len:
+                        for injected_msg in current_input[prior_input_len:]:
+                            for c in getattr(injected_msg, "contents", None) or []:
+                                text = getattr(c, "text", None)
+                                if text:
+                                    run_stream_chars += len(text)
 
         run_state.save()
         _write_log(force=True)
