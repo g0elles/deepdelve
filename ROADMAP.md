@@ -348,6 +348,26 @@ Status as of 2026-07-14.
   every subject with every number on a line regardless of kind, so a line naming both a year and
   an unrelated percentage spuriously "contradicted" any other source's differing percentage for a
   totally unrelated reason — fixed by the same-kind guard and nearest-figure pairing.
+- **Phase 3 of the approved 6-phase plan: xQuAD-style search-result diversity reranking** (Santos,
+  Peng, Macdonald, Ounis, *Explicit Search Result Diversification through Sub-Queries*, ECIR 2010).
+  DDGS already ranks by its own relevance signal, but several near-duplicate results for the same
+  angle commonly dominate the top of that ranking — addresses the already-documented "scaling down
+  scope did not improve grounding rate" finding (a 5-source run still only surfaced ~5 genuinely
+  distinct sources, thin discovery even at small scope). New `tools/web.py::_diversity_rerank`:
+  greedily reorders `web_search`'s results by MARGINAL new aspect-term coverage instead of raw
+  rank — DDGS's own #1 always stays first (preserving its relevance judgment for the single best
+  result), then each subsequent pick is whichever remaining result adds the most new aspect terms
+  (`_result_aspect_terms`, a deliberately looser local term extractor than
+  `utils.grounding.extract_salient_terms` — a short snippet needs single-word distinguishing terms,
+  not just 2+-word capitalized phrases, same reasoning `orchestrator.py`'s `_extract_scope_entities`
+  already documents for not reusing `extract_salient_terms` either). Pure reranking, no LLM call,
+  no new dependency. Single integration point (`web_search`, right after search-health recording,
+  before the auto-fetch slice) improves both consumers downstream — the auto-fetch selection and
+  the returned snippet ordering — without touching either consumer directly. New tests in
+  `test_structural_checks.py`: a near-duplicate-heavy case (3 near-identical fintech results + 1
+  genuinely distinct agritech result — the distinct one gets promoted to position 2), empty/single-
+  result edge cases, an already-diverse case (order preserved), and direct `_result_aspect_terms`
+  stopword/length-filter assertions.
 
 ## Findings from live testing (not yet acted on / informational)
 
@@ -500,25 +520,18 @@ Status as of 2026-07-14.
 
 ## Planned (not started)
 
-- **6-phase plan approved 2026-07-14 for the items below** (Phase 1 done — see "Done" above): Phase
-  1 claim-level grounding upgrade (this section, DONE) → Phase 2 cross-source contradiction
-  detection (depends on Phase 1's claim clustering) → Phase 3 xQuAD diversity reranking
-  (independent) → Phase 4 topical-relevance cross-encoder reranker (independent, new soft
-  dependency) → Phase 5 coverage accounting/ResearchMap (independent, Planner schema change) →
-  Phase 6 B4 TUI/CLI loop unification (deferred last, highest regression risk). Sequenced by
-  ROADMAP's own stated priority + dependency order + risk, not file order below.
+- **6-phase plan approved 2026-07-14 for the items below** (Phases 1-3 done — see "Done" above):
+  Phase 1 claim-level grounding upgrade (DONE) → Phase 2 cross-source contradiction detection
+  (DONE) → Phase 3 xQuAD diversity reranking (DONE) → Phase 4 topical-relevance cross-encoder
+  reranker (independent, new soft dependency) → Phase 5 coverage accounting/ResearchMap
+  (independent, Planner schema change) → Phase 6 B4 TUI/CLI loop unification (deferred last,
+  highest regression risk). Sequenced by ROADMAP's own stated priority + dependency order + risk,
+  not file order below.
 - **Address the grounding check's topical-relevance gap** — some form of "is this source actually about the claimed subject," not just "was it fetched and does it share terms." Unclear whether this needs an LLM judge (this local model class has proven unreliable as its own judge elsewhere in this project) or a cheaper heuristic. *(Partially mitigated 2026-07-12: scope matching is now case-insensitive and charset-correct, and stub shells can no longer ground anything.)* **Concrete candidate mechanism found 2026-07-13** (verified real, not an LLM judge): a lightweight CPU cross-encoder reranker (`BAAI/bge-reranker-v2-m3`, ~278M params) scoring (claim, source) pairs directly — as a semantic sanity check layered *after* the existing term-overlap check, the same way the NLI entailment check is already layered on top of it. Would have caught the GOA-the-algorithm-vs-Goa-the-Indian-state acronym collision the existing stack missed.
 - **Coverage accounting / ResearchMap** (found 2026-07-13) — track topic-completeness (e.g. per
   planned research slot: status, evidence count, confidence) so the completion check can require a
   coverage threshold, not just "enough tokens written." Complements the Builder loop without
   touching it — a Planner-side addition. Moderate effort (needs a Planner output schema change).
-- **xQuAD-style result-diversity reranking** (found 2026-07-13, Santos, Peng, Macdonald, Ounis,
-  *Explicit Search Result Diversification through Sub-Queries*, ECIR 2010) — distinct from the
-  topical-relevance cross-encoder above: this targets search-result *diversity*, not relevance.
-  Reranks candidate results to maximize coverage of unexplored aspects of a query instead of
-  returning 5 near-duplicate results for the same angle — a discovery-quality lever, addresses the
-  "Scaling down scope did not improve grounding rate" / thin-discovery findings already in this
-  file. Low-medium cost, pure reranker, no LLM changes.
 - **Local-model bake-off: Gemma 4 12B, Bonsai-8B, and `qwen3:4b` vs. `gpt-oss:20b`** (found/verified 2026-07-13,
   smoke-tested and partially live-tested 2026-07-14) — two real local-model candidates surfaced by
   a 3-model research pass, independently verified (not taken on trust — one of the three research

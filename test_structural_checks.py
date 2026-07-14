@@ -273,6 +273,40 @@ def main():
     finally:
         _ddgs.DDGS = _real_ddgs
 
+    # --- ROADMAP Phase 3: xQuAD-style search-result diversity reranking (pure function, no
+    # network) — DDGS's own #1 must stay first (preserve its relevance judgment for the single
+    # best result), but a genuinely distinct result buried behind several near-duplicates of the
+    # top result must get promoted ahead of them. ---
+    from tools.web import _diversity_rerank, _result_aspect_terms
+
+    _dup_results = [
+        {"title": "Fintech regulation update Colombia 2024", "snippet": "New rules for fintech lending platforms in Colombia."},
+        {"title": "Colombia fintech regulation overview", "snippet": "Fintech lending regulation changes summarized for 2024."},
+        {"title": "Fintech regulatory changes Colombia", "snippet": "Colombia updates fintech lending regulation this year."},
+        {"title": "Agritech subsidies expand in rural Colombia", "snippet": "Government announces new agritech subsidy program for farmers."},
+    ]
+    _reranked = _diversity_rerank(_dup_results)
+    assert _reranked[0] == _dup_results[0], (
+        "DDGS's own #1 result must stay first -- diversity reranking augments its relevance "
+        "judgment, it doesn't discard it", _reranked)
+    assert _reranked[1]["title"] == _dup_results[3]["title"], (
+        "a genuinely distinct result (agritech) must be promoted ahead of near-duplicate "
+        "fintech results that add no new aspect coverage", [r["title"] for r in _reranked])
+    # Edge cases: must never crash on 0 or 1 results, and must not mutate order when already diverse.
+    assert _diversity_rerank([]) == []
+    assert _diversity_rerank([_dup_results[0]]) == [_dup_results[0]]
+    _distinct_results = [
+        {"title": "Fintech sector overview Colombia", "snippet": "Lending platforms and digital banks."},
+        {"title": "Agritech subsidies rural Colombia", "snippet": "Farmers receive new government subsidy program."},
+        {"title": "Healthtech investment trends Colombia", "snippet": "Telemedicine startups attract venture funding."},
+    ]
+    assert _diversity_rerank(_distinct_results) == _distinct_results, (
+        "already-diverse results (no near-duplicates) must keep their original relevance order")
+    # _result_aspect_terms itself: stopwords and short words excluded, real terms kept.
+    _terms = _result_aspect_terms({"title": "The Fintech Sector", "snippet": "Grew with new rules"})
+    assert "fintech" in _terms and "sector" in _terms and "grew" in _terms, _terms
+    assert "the" not in _terms and "with" not in _terms and "new" not in _terms, _terms
+
     # --- run-resume helpers (--resume-run: reattach to an interrupted run instead of restarting) ---
     from engine.tui import load_resume_state, build_resume_input, _clarify_verdict
     from tools.fs import session_dir_ctx
