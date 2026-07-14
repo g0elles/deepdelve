@@ -484,19 +484,78 @@ Status as of 2026-07-13.
   returning 5 near-duplicate results for the same angle — a discovery-quality lever, addresses the
   "Scaling down scope did not improve grounding rate" / thin-discovery findings already in this
   file. Low-medium cost, pure reranker, no LLM changes.
-- **Local-model bake-off: Gemma 4 12B and Bonsai-8B vs. `gpt-oss:20b`** (found/verified 2026-07-13)
-  — two real local-model candidates surfaced by a 3-model research pass, independently verified
-  (not taken on trust — one of the three research responses fabricated citations, see below).
-  **Gemma 4 12B** (Google, Apache 2.0, released April/June 2026): dense, encoder-free multimodal,
-  ~7.1-7.6GB at Q4_K_M GGUF (~6.7GB on the QAT Q4_0 build) — comfortably inside the 16GB ceiling.
-  **Bonsai-8B** (PrismML, Apache 2.0): trained natively at 1-bit precision, 1.15GB, scores 73.3% on
-  BFCL (format-compliance tool-calling) — beating every model PrismML tested — but drops to 43.8%
-  on NexusRaven (semantic API understanding) vs. Qwen3.5-9B's 75%, a real and confirmed weakness on
-  complex tool semantics, not smoothed over in the source. Next step: pull both via Ollama, run a
-  real tool-calling smoke test against DeepDelve's actual tool schemas (mirrors how Tongyi was
-  vetted) before committing either to a full benchmark run — Bonsai's NexusRaven gap in particular
-  needs checking against DeepDelve's actual multi-step delegation calls, not just isolated
-  function-call formatting.
+- **Local-model bake-off: Gemma 4 12B, Bonsai-8B, and `qwen3:4b` vs. `gpt-oss:20b`** (found/verified 2026-07-13,
+  smoke-tested and partially live-tested 2026-07-14) — two real local-model candidates surfaced by
+  a 3-model research pass, independently verified (not taken on trust — one of the three research
+  responses fabricated citations, see below). **Gemma 4 12B** (Google, Apache 2.0, released
+  April/June 2026): dense, encoder-free multimodal, ~7.1-7.6GB at Q4_K_M GGUF (~6.7GB on the QAT
+  Q4_0 build) — comfortably inside the 16GB ceiling. **Bonsai-8B** (PrismML, Apache 2.0): trained
+  natively at 1-bit precision, 1.15GB, scores 73.3% on BFCL (format-compliance tool-calling) —
+  beating every model PrismML tested — but drops to 43.8% on NexusRaven (semantic API
+  understanding) vs. Qwen3.5-9B's 75%, a real and confirmed weakness on complex tool semantics, not
+  smoothed over in the source.
+  - **Derived `deepdelve-*` tags created** (`FROM <base>`, `PARAMETER num_ctx 16384`, matching the
+    project's existing `deepdelve-gpt-oss` pattern) for both, plus two more candidates the user
+    separately surfaced: `granite3.1-dense:8b` (IBM, Apache 2.0, 5.0GB, 128K context, model card
+    claims function-calling) and `phi4-mini:3.8b` (Microsoft, 2.5GB, 128K context, model card
+    claims function-calling) — both attractive on paper for being lightweight with a large context
+    window. Also fixed a real hygiene issue found along the way: the `SetneufPT`-uploaded Gemma 4
+    Ollama tag ships a baked-in `SYSTEM "You are a coding agent. Be concise."` default (verified
+    live it's fully overridden by DeepDelve's own system prompt at runtime, so not a functional
+    bug — but cleaned up in `deepdelve-gemma4-12b`'s Modelfile regardless, since the default is
+    actively misleading for a research agent).
+  - **Tool-calling smoke test (2026-07-14), DeepDelve's real `delegate_tasks` schema (2-task nested
+    array, `task_name`/`instructions`/`agent_id`), direct `/v1/chat/completions` calls**:
+    **`granite3.1-dense` and `phi4-mini` both FAIL outright** — despite each model card explicitly
+    claiming function-calling support, and Ollama's own capability introspection listing `tools`,
+    both narrated the tool call as literal text (`<tool_call>[{"arguments":...` /
+    `[{"type":"delegate_tasks","tasks":...`) instead of emitting a real structured `tool_calls`
+    response, every single attempt. Identical failure *class* already documented for
+    `devstral:24b` in this same file — a model that narrates perfectly-formatted JSON instead of
+    calling the tool is exactly as unusable here as one that can't format JSON at all, since
+    DeepDelve is 100% tool-call-driven with no narration fallback. **Both disqualified, pulls
+    removed** (`ollama rm granite3.1-dense:8b deepdelve-granite3.1-dense phi4-mini:3.8b
+    deepdelve-phi4-mini`) — not worth carrying disk space for models that fail the first, cheapest
+    gate. **`deepdelve-bonsai-8b` and `deepdelve-gemma4-12b` both PASS** — real structured
+    `tool_calls`, correctly shaped 2-task array, valid `task_name`/`agent_id` on both; Gemma 4's
+    instructions fields were notably more detailed (289-356 chars) than Bonsai's (73-102 chars),
+    a first hint in Bonsai's favor of the NexusRaven-flagged semantic-thinness concern above,
+    though not yet confirmed at full-benchmark scale.
+  - **First real end-to-end benchmark data point, Gemma 4 12B (2026-07-14)**: ran the standing
+    sales-forecasting benchmark (`eval/sales_forecasting_benchmark.md`) live end-to-end, config
+    pointed at `SetneufPT/Gemma4-12B-IT-QAT_Q4_64K_16GB-GPU:latest`. Result: **`Report: NOT
+    WRITTEN`** after 33 minutes (1998s) — but a clean, honest failure, not a stall or a silently-
+    accepted fabrication, and this run is what actually validated the same day's 5 reliability
+    fixes end-to-end: `web_search` 26/26 calls succeeded with zero failures (the timeout fix never
+    even needed to fire), 27 real sources fetched, the grounding check correctly rejected 4
+    straight ungrounded `findings.md` attempts, and the process exited cleanly with a clear
+    forensic verdict instead of hanging. The actual failure was model-specific: 22 occurrences of
+    `delegate_tasks call rejected` (sub-agents repeatedly submitting placeholder/pronoun-only/
+    cross-task-dependent instructions — the existing validator's already-detailed guidance, not a
+    missing-nudge gap), and a visible reasoning-loop pattern near the end ("Wait, I'll just do it.
+    *(Action)*", repeated ~13 times with no actual tool call) before `context_budget_chars` cut the
+    turn short. Same failure *shape* as `mistral-nemo` (README "Model choice" table): passes an
+    isolated schema smoke test, ceilings on the real multi-step benchmark. Not yet run for
+    Bonsai-8B — that's the next concrete step, same query, before drawing a final verdict on either
+    candidate vs. the current `gpt-oss:20b` default.
+  - **`qwen3:4b` added as a fourth candidate (2026-07-14)**, specifically sought out as "Bonsai-like
+    but more context": user asked for smaller/lighter alternatives with a bigger context window
+    than Bonsai's 64K. Checked and rejected first: Microsoft's official `BitNet b1.58-2B-4T` doesn't
+    even run on Ollama (needs Microsoft's own separate `bitnet.cpp` runtime, incompatible with
+    llama.cpp) and caps around 4-8K context regardless; PrismML's own newer "Ternary Bonsai" family
+    (1.58-bit, released 2026-04-16, same company as Bonsai-8B) turned out to be a context
+    *downgrade*, not an upgrade — 4096 tokens via llama.cpp/Ollama, worse than the original 1-bit
+    Bonsai-8B's 64K. `qwen3:4b` (Alibaba, Apache 2.0) is the real find: 2.5GB Q4_K_M, **262144
+    native context** (4x Bonsai's 64K, in the same size class as the disqualified `phi4-mini`),
+    established Ollama tool-calling track record in this project already (`qwen2.5-coder`,
+    `qwen3.6` both work). Derived tag `deepdelve-qwen3-4b` created (`num_ctx 16384`, same pattern).
+    **Passed the real `delegate_tasks` smoke test cleanly**: real structured `tool_calls`, correctly
+    shaped 2-task array, valid `task_name`/`agent_id` — and showed real semantic routing judgment
+    at this early stage, not just format compliance: correctly sent the more academic/technical task
+    ("hybrid statistical+DL forecasting methods") to `AcademicSearcher` and the cultural/retail task
+    to `WebSearcher`, rather than routing both identically. Instructions detail (143-171 chars) sits
+    between Bonsai's terse style (73-102) and Gemma 4's richer one (289-356). Not yet run through
+    the full sales-forecasting benchmark — that's the same next step as Bonsai-8B above.
 - **B4: unify the duplicated TUI/CLI run loop.** `src/engine/tui.py` hosts two ~150-line
   stream/approval/retry loops — `run_cli` (headless) and `run_agent`/`BasicTuiAgent` (interactive)
   — that duplicate most of the same run-lifecycle logic instead of sharing one implementation.
