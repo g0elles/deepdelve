@@ -545,7 +545,7 @@ class BasicTuiAgent(App):
     #command-list { height: auto; max-height: 15; padding: 0 1; }
     """
 
-    SLASH_COMMANDS = [("/stop", "Stop execution"), ("/new", "New conversation"), ("/exit", "Quit app"), ("/toggle_thinking", "Toggle reasoning trace capability"), ("/toggle_persistence", "Toggle session history saving"), ("/config", "Show current configuration"), ("/files", "Browse memory workspace files"), ("/sessions", "List saved sessions"), ("/resume", "Resume a saved session"), ("/resume-run", "Reattach an interrupted research run")]
+    SLASH_COMMANDS = [("/stop", "Stop execution"), ("/new", "New conversation"), ("/exit", "Quit app"), ("/toggle_thinking", "Toggle reasoning trace capability"), ("/toggle_persistence", "Toggle session history saving"), ("/toggle_headless_fetch", "Toggle headless-browser retry for bot-blocked fetches"), ("/config", "Show current configuration"), ("/files", "Browse memory workspace files"), ("/sessions", "List saved sessions"), ("/resume", "Resume a saved session"), ("/resume-run", "Reattach an interrupted research run")]
     def __init__(self, builder, session_to_resume: str = None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.builder = builder
@@ -589,13 +589,16 @@ class BasicTuiAgent(App):
         memory_color = "green" if config.cfg["settings"].get("enable_conversational_memory", False) else "red"
         persistence_val = "ON" if config.cfg["settings"].get("enable_session_persistence", False) else "OFF"
         persistence_color = "green" if config.cfg["settings"].get("enable_session_persistence", False) else "red"
+        headless_on = config.cfg["settings"].get("fetch", {}).get("headless_fallback", True)
+        headless_fallback = "ON" if headless_on else "OFF"
+        headless_fallback_color = "green" if headless_on else "red"
 
         config_path = getattr(config, "_CONFIG_PATH", "Unknown")
         workspace_type = config.cfg.get("settings", {}).get("workspace", {}).get("type", "memory")
         workspace_dir = config.cfg.get("settings", {}).get("workspace", {}).get("dir", ".")
         workspace_disp = f"Disk ({workspace_dir})" if workspace_type == "disk" else "In-Memory"
 
-        status_line = f"  [dim]Config Loaded:[/dim] [bright_black]{config_path}[/bright_black]  [dim]Workspace:[/dim] [yellow]{workspace_disp}[/yellow]\n  [dim]Endpoint:[/dim] [cyan]{endpoint}[/cyan]  [dim]Model:[/dim] [cyan]{model}[/cyan]  [dim]Thinking:[/dim] [{thinking_color}]{thinking}[/{thinking_color}]  [dim]Conv Memory:[/dim] [{memory_color}]{memory}[/{memory_color}]\n  [dim]Session ID:[/dim] [bright_black]{_current_session_id}[/bright_black]  [dim]Persistence:[/dim] [{persistence_color}]{persistence_val}[/{persistence_color}]"
+        status_line = f"  [dim]Config Loaded:[/dim] [bright_black]{config_path}[/bright_black]  [dim]Workspace:[/dim] [yellow]{workspace_disp}[/yellow]\n  [dim]Endpoint:[/dim] [cyan]{endpoint}[/cyan]  [dim]Model:[/dim] [cyan]{model}[/cyan]  [dim]Thinking:[/dim] [{thinking_color}]{thinking}[/{thinking_color}]  [dim]Conv Memory:[/dim] [{memory_color}]{memory}[/{memory_color}]\n  [dim]Session ID:[/dim] [bright_black]{_current_session_id}[/bright_black]  [dim]Persistence:[/dim] [{persistence_color}]{persistence_val}[/{persistence_color}]  [dim]Headless Fetch:[/dim] [{headless_fallback_color}]{headless_fallback}[/{headless_fallback_color}]"
 
         auto_approve_warning = "\n\n  [bold red blink]⚠️ AUTO-APPROVE OVERRIDE ACTIVE - ALL INTERACTIVE SAFEGUARDS BYPASSED[/bold red blink]" if getattr(config, 'AUTO_APPROVE', False) else ""
 
@@ -711,6 +714,15 @@ class BasicTuiAgent(App):
             state = "ON" if config.cfg["settings"]["enable_thinking"] else "OFF"
             chat = self.query_one("#chat-container", VerticalScroll)
             chat.mount(Static(Markdown(f"**System:**\nThinking capability is now **{state}**"), classes="agent-bubble"))
+            chat.scroll_end(animate=False)
+        elif query == "/toggle_headless_fetch":
+            # Session-only, like report_style/search_mode — NOT in _PERSISTABLE_SETTINGS_KEYS, so
+            # no save_config() call (mirrors why report_style's --style flag never persists either).
+            fetch_settings = config.cfg["settings"].setdefault("fetch", {})
+            fetch_settings["headless_fallback"] = not fetch_settings.get("headless_fallback", True)
+            state = "ON" if fetch_settings["headless_fallback"] else "OFF"
+            chat = self.query_one("#chat-container", VerticalScroll)
+            chat.mount(Static(Markdown(f"**System:**\nHeadless-browser fetch fallback is now **{state}**"), classes="agent-bubble"))
             chat.scroll_end(animate=False)
         elif query == "/toggle_persistence":
             config.cfg["settings"]["enable_session_persistence"] = not config.cfg["settings"].get("enable_session_persistence", False)
@@ -1885,6 +1897,9 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
     persistence_val = "ON" if config.cfg.get("settings", {}).get("enable_session_persistence", False) else "OFF"
     persistence_color = "32" if persistence_val == "ON" else "31"
 
+    headless_fallback = "ON" if config.cfg.get("settings", {}).get("fetch", {}).get("headless_fallback", True) else "OFF"
+    headless_fallback_color = "32" if headless_fallback == "ON" else "31"
+
     sid = "N/A (Memory disabled)" if not session else _current_session_id
 
     auto_approve_warning = "\n  \033[5;31m⚠️ AUTO-APPROVE OVERRIDE ACTIVE - ALL INTERACTIVE SAFEGUARDS BYPASSED\033[0m" if getattr(config, 'AUTO_APPROVE', False) else ""
@@ -1893,7 +1908,7 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
         f"\n\033[1;32m{config.APP_TITLE} (Headless Mode)\033[0m\n"
         f"  \033[2mConfig Loaded:\033[0m \033[90m{config_path}\033[0m  \033[2mWorkspace:\033[0m \033[33m{workspace_disp}\033[0m\n"
         f"  \033[2mEndpoint:\033[0m \033[36m{endpoint}\033[0m  \033[2mModel:\033[0m \033[36m{model}\033[0m  \033[2mThinking:\033[0m \033[{thinking_color}m{thinking}\033[0m  \033[2mConv Memory:\033[0m \033[{memory_color}m{memory}\033[0m\n"
-        f"  \033[2mSession ID:\033[0m \033[90m{sid}\033[0m  \033[2mPersistence:\033[0m \033[{persistence_color}m{persistence_val}\033[0m"
+        f"  \033[2mSession ID:\033[0m \033[90m{sid}\033[0m  \033[2mPersistence:\033[0m \033[{persistence_color}m{persistence_val}\033[0m  \033[2mHeadless Fetch:\033[0m \033[{headless_fallback_color}m{headless_fallback}\033[0m"
         f"{auto_approve_warning}\n"
     )
 

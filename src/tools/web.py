@@ -7,6 +7,7 @@ from agent_framework import tool
 from tools.core import with_quota
 from tools.fs import _get_safe_path, _get_workspace_type, _IN_MEMORY_FS
 from utils.run_state import record_fetched_url
+from utils.browser_fetch import fetch_via_headless_browser
 
 
 def _looks_like_redirect_stub(md_content: str) -> str | None:
@@ -103,10 +104,22 @@ def _strip_boilerplate_html(html_text: str) -> tuple[bytes, dict]:
         for tag in soup(["script", "style", "nav", "footer", "header", "aside", "noscript", "iframe", "svg"]):
             tag.extract()
         boilerplate = re.compile(r'cookie|consent|advert|sidebar|popup|newsletter|subscribe-banner|site-header|site-footer', re.IGNORECASE)
+        # Size-guarded: a real cookie banner/ad slot/popup is always short chrome (confirmed
+        # live 2026-07-14: under a few hundred chars on every real example seen). This regex is a
+        # SUBSTRING match, so it also matches unrelated layout classes that happen to contain one
+        # of these words as part of a compound token — e.g. Springer's own article-body wrapper is
+        # classed `eds-l-with-sidebar` (a CSS grid layout hint, "content area next to a sidebar"),
+        # which matched "sidebar" and silently deleted the entire 220K-char article body, leaving
+        # only the cookie-consent banner behind — a real paper then looked exactly like a stub.
+        # Any match this large is far more likely to be a mislabeled content wrapper than genuine
+        # chrome, so it's left alone rather than extracted.
+        _BOILERPLATE_MAX_CHARS = 3000
         for tag in soup.find_all(attrs={"class": boilerplate}):
-            tag.extract()
+            if len(tag.get_text(strip=True)) <= _BOILERPLATE_MAX_CHARS:
+                tag.extract()
         for tag in soup.find_all(attrs={"id": boilerplate}):
-            tag.extract()
+            if len(tag.get_text(strip=True)) <= _BOILERPLATE_MAX_CHARS:
+                tag.extract()
         for tag in soup.find_all("meta"):
             if tag.get("charset") or (tag.get("http-equiv") or "").lower() == "content-type":
                 tag.extract()
@@ -140,8 +153,16 @@ def _fetch_raw(url: str, convert_to_md: bool = True, _redirect_depth: int = 0):
     Streams the body instead of buffering it whole via httpx.get, so a URL over _MAX_FETCH_BYTES
     is caught (via Content-Length when the server sends one, or by aborting mid-stream when it
     doesn't) before the full body is ever held in memory.
+
+    HTML path only: if the plain fetch looks like a bot-wall stub (see _stub_reason), retries once
+    via a headless browser (settings.fetch.headless_fallback, default on; no-op if Playwright isn't
+    installed) before giving up — see utils.browser_fetch.fetch_via_headless_browser.
     """
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
+    # A 2021-vintage Chrome UA (91.x) here previously triggered publisher-side "your browser is
+    # outdated" version-sniffing blocks (confirmed live 2026-07-14 against ScienceDirect, which
+    # returns an HTTP 400 block page for it) even though the request itself was otherwise fine —
+    # bumped to a current build.
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"}
     with httpx.stream("GET", url, headers=headers, timeout=30, follow_redirects=True) as resp:
         content_length = resp.headers.get("content-length")
         if content_length and content_length.isdigit() and int(content_length) > _MAX_FETCH_BYTES:
@@ -224,6 +245,42 @@ def _fetch_raw(url: str, convert_to_md: bool = True, _redirect_depth: int = 0):
             # BeautifulSoup fallback for HTML
             soup = BeautifulSoup(cleaned_html, "html.parser")
             md_content = '\n'.join(line for line in (l.strip() for l in soup.get_text(separator='\n').splitlines()) if line)
+
+        # Headless-browser retry for pages that bot-walled the plain httpx GET (Akamai/Cloudflare
+        # JS challenges, browser-version-sniffing blocks — confirmed live 2026-07-14 against
+        # Springer/ScienceDirect/MDPI, see ROADMAP.md). Only engages when the plain fetch already
+        # looks like a stub, so it never adds latency to the common case. Re-runs the SAME
+        # boilerplate-strip + markitdown/BeautifulSoup pipeline on the browser-rendered HTML rather
+        # than duplicating parsing logic; only replaces md_content/metadata if the retry actually
+        # produced real content, so a failed/unavailable/still-blocked retry leaves the original
+        # stub result (and its accurate stub flag) untouched.
+        if _stub_reason(md_content):
+            import config as app_config
+            headless_enabled = app_config.cfg.get("settings", {}).get("fetch", {}).get("headless_fallback", True)
+            if headless_enabled:
+                rendered_html = fetch_via_headless_browser(str(resp_url))
+                if rendered_html:
+                    retry_cleaned_html, retry_metadata = _strip_boilerplate_html(rendered_html)
+                    retry_md_content = None
+                    try:
+                        from utils.parsers import convert_to_markdown
+                        import tempfile
+                        with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="wb") as tmp:
+                            tmp.write(retry_cleaned_html)
+                            tmp_path = tmp.name
+                        try:
+                            retry_md_content = convert_to_markdown(tmp_path)
+                        finally:
+                            os.unlink(tmp_path)
+                    except ImportError:
+                        pass
+                    if not retry_md_content:
+                        retry_soup = BeautifulSoup(retry_cleaned_html, "html.parser")
+                        retry_md_content = '\n'.join(
+                            line for line in (l.strip() for l in retry_soup.get_text(separator='\n').splitlines()) if line
+                        )
+                    if not _stub_reason(retry_md_content):
+                        md_content, metadata = retry_md_content, retry_metadata
 
         # Follow a client-side redirect stub one hop (real HTTP redirects are already handled by
         # follow_redirects=True above — this catches the ones that aren't, see
@@ -660,7 +717,7 @@ async def verify_url_live(url: str, timeout: float = 5.0) -> bool:
     deterministically by the engine's grounding check (per CYC2002tommy's DOI-verification idea)."""
     def _check():
         try:
-            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"}
             resp = httpx.head(url, headers=headers, timeout=timeout, follow_redirects=True)
             if resp.status_code >= 400:
                 # Some servers reject HEAD; retry with a lightweight GET before giving up.

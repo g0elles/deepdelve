@@ -49,6 +49,19 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["ruff"]
+# Headless/headed-browser (Playwright) fetch fallback for pages that bot-wall a plain httpx GET
+# (Akamai/Cloudflare JS challenges, browser-version-sniffing blocks, or a headless-specific
+# fingerprint block — confirmed live 2026-07-14 against Springer/ScienceDirect/MDPI, see
+# ROADMAP.md and utils/browser_fetch.py). Optional because it's a genuinely heavy dependency: the
+# pip package alone doesn't include a browser — `playwright install chromium` is a separate
+# ~150-300MB download. `pyvirtualdisplay` lets a real (non-headless) Chromium run under a virtual
+# X display on a display-less Linux server (needs the system `Xvfb` binary too — e.g. `apt install
+# xvfb` — pyvirtualdisplay is just the Python wrapper around it); headed recovers sites headless
+# alone can't (confirmed live: MDPI). Both fail open at runtime if unavailable (see
+# utils/browser_fetch.py's soft-import guards): an environment that skips this extra, or has no
+# Xvfb, still runs every other fetch path unaffected — it just falls back to headless, or skips
+# the retry entirely if Playwright itself isn't installed.
+browser = ["playwright>=1.48.0,<2.0.0", "pyvirtualdisplay>=3.0,<4.0"]
 
 [project.scripts]
 deepdelve = "app:cli_main"

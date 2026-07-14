@@ -65,6 +65,7 @@ The full history (with live-test evidence for each) is in `ROADMAP.md`. The head
 - **Per-attempt quota top-up, artifact quarantine before nudging, and history-scanning salvage** for a narrated-but-never-written report — all structural fixes, not prompt tuning, for failure modes that prompt tuning alone didn't resolve in testing.
 - **Detailed tool-call validation errors** (`client.function_invocation_configuration["include_detailed_errors"]`): a rejected tool call shows the real Pydantic reason (e.g. "query: Input should be a valid string, got list") instead of a bare "Argument parsing failed." — this was the single most common error signature in real session logs (41 occurrences in one day) and was previously undiagnosable, for the model as well as for debugging.
 - **`RunState`** (`utils/run_state.py`) persists fetched URLs, findings, and completion-check attempts per run as `_run_state.json`, independent of the model's own narration.
+- **Headless/headed-browser fetch fallback** (`src/utils/browser_fetch.py`, optional `playwright`+`pyvirtualdisplay` extra — see Setup): a fetch that comes back looking like a bot-wall stub (Akamai blocks, browser-version-sniffing blocks, headless-specific fingerprint blocks) gets one retry — real (non-headless) Chromium first if a display or virtual Xvfb display is available, headless otherwise — reusing the same boilerplate-strip/markdown pipeline as the plain fetch. Recovers real sources a scripted client alone can't reach (confirmed live against Springer, and against MDPI with the headed path specifically). Deliberate non-goal: a genuine Cloudflare Turnstile challenge (confirmed live against ScienceDirect) resists both headless and headed Chromium — it's automation/CDP-fingerprint detection, not a timing problem — and DeepDelve doesn't attempt to spoof past it; that source correctly falls through to the stub flag instead.
 
 ## Setup
 
@@ -82,6 +83,22 @@ python -m venv venv
 source venv/bin/activate
 pip install -e .
 ```
+
+**Optional: headless/headed-browser fetch fallback.** Some publishers (confirmed live 2026-07-14:
+Springer, ScienceDirect, MDPI) bot-wall a plain HTTP fetch — a UA-sniffing block, a JS challenge,
+or a headless-specific fingerprint block — so a real, citable paper can come back looking like a
+fake/stub source. Installing Playwright lets `fetch_url_to_workspace` retry once via Chromium
+before giving up (`src/utils/browser_fetch.py`, `settings.fetch.headless_fallback`, default on,
+no-op if not installed). It tries a real (non-headless) browser first — confirmed live to recover
+sites headless alone couldn't (MDPI) — falling back to headless if no display is available:
+```bash
+pip install -e ".[browser]"
+playwright install chromium
+```
+On a display-less Linux server, also install system `Xvfb` (`sudo apt install xvfb` or your
+distro's equivalent) so the headed browser has a virtual display to run against —
+`pyvirtualdisplay` (bundled in the `browser` extra) manages it automatically. Without `Xvfb`, the
+fallback still works, just headless-only (recovers Springer, not MDPI's stricter block).
 
 ### 2. Model & Endpoint
 
@@ -173,7 +190,7 @@ In the TUI, the first message of a conversation gets a one-shot intake check (`c
 
 ## Eval Harness
 
-`eval/` is a headless-run + score harness. `dataset.jsonl` ships with 3 items: a simple factual lookup, a comparative query, and a paper-plus-related-work academic query.
+`eval/` is a headless-run + score harness. `dataset.jsonl` ships with 4 items: a simple factual lookup, a comparative query, a paper-plus-related-work academic query, and the Colombia B2B niche-research query used for the 13-run benchmark above (weighted multi-criteria rubric — see `eval/colombia_b2b_benchmark.md`).
 
 ```bash
 python eval/evaluate.py --runs 3
