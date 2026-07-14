@@ -16,7 +16,7 @@ from agent_framework import Message
 from tools import tool_quotas_ctx, get_workspace_files, get_workspace_file_content
 from utils.run_state import get_fetched_urls, get_search_health
 from utils.grounding import fully_ungrounded, real_grounding_problem
-from engine.orchestrator import topup_quota_pool
+from engine.orchestrator import topup_quota_pool, available_sub_agents_ctx
 
 DEFAULT_MAX_COMPLETION_CHECK_ATTEMPTS = 3
 
@@ -439,6 +439,16 @@ _QUARANTINE_PROBLEMS = ("not_grounded", "claim_unsupported", "non_url_citation",
                         "regulation_unsupported", "stub_source", "nli_unsupported",
                         "findings_ungrounded")
 
+# Problems fixable by rewriting `req_artifact` from the SAME findings.md, no new research needed —
+# dispatched to a fresh-context Builder (+ PeerReviewer check) by run_completion_check's
+# Build->Review->Fix loop instead of growing the Planner's own conversation. The complement
+# (missing_findings, findings_ungrounded, not_delegated) genuinely needs more/different research,
+# which only the Planner can decide and delegate, so those still fall through to the classic
+# inject-into-Planner path below.
+_BUILDER_FIXABLE_PROBLEMS = ("missing_artifact", "not_grounded", "claim_unsupported",
+                             "non_url_citation", "regulation_unsupported", "stub_source",
+                             "nli_unsupported", "uncited_claims")
+
 
 def _quarantine_artifact(req_artifact: str, attempt: int) -> None:
     """Rename the bad artifact out of the model's visible workspace instead of just telling it to
@@ -516,10 +526,56 @@ def _salvage_narrated_report(req_artifact: str, last_assistant_text: str) -> boo
         return False
 
 
-async def run_completion_check(query: str, current_input, run_state: "RunState", notify, last_assistant_text: str = ""):  # noqa: F821 — utils.run_state.RunState, annotation only
+async def _dispatch_build_review_fix(dispatch_task, req_artifact: str, verdict: "Verdict", attempt: int, notify) -> None:
+    """Build -> Review -> Fix, all fresh-context sub-agent dispatches, none of which touch the
+    Planner's own conversation. Caller (run_completion_check) is responsible for quarantine,
+    quota top-up, and run_state bookkeeping around this call — this function only runs the
+    dispatch sequence. Raises on any dispatch failure so the caller can fall back to the classic
+    inject-into-Planner path for this cycle rather than silently doing nothing.
+
+    Capped at 3 dispatches total (Build, Review, optional Fix) — no unbounded nesting."""
+    builder_instructions = (
+        f"Rewrite '{req_artifact}' from findings.md, fixing this specific problem:\n"
+        f"{verdict.inject}\n\nWrite the corrected file now via write_workspace_file."
+    )
+    await dispatch_task(f"BuilderFix_attempt{attempt + 1}", builder_instructions, "Builder")
+
+    review = await dispatch_task(
+        f"ReviewFix_attempt{attempt + 1}",
+        f"Review '{req_artifact}' against findings.md for accuracy and coherence. "
+        f"Start your response with exactly 'REVIEW: CLEAN' or 'REVIEW: ISSUES FOUND:'.",
+        "PeerReviewer",
+    )
+
+    # Conservative parse: anything other than an explicit CLEAN verdict (including a missing
+    # sentinel — the model didn't follow format) is treated as issues found, so a formatting slip
+    # never lets an unreviewed report slip through.
+    review_text = review if isinstance(review, str) else str(review)
+    is_clean = "REVIEW: CLEAN" in review_text and "REVIEW: ISSUES FOUND:" not in review_text
+    if is_clean:
+        notify(f"**System ({attempt + 1}):** PeerReviewer found no issues with the rebuilt `{req_artifact}`.")
+        return
+
+    notify(f"**System ({attempt + 1}):** PeerReviewer flagged issues in the rebuilt `{req_artifact}` — dispatching one corrective Builder pass.")
+    fix_instructions = (
+        f"PeerReviewer critiqued your last draft of '{req_artifact}'. Fix every issue it raised, "
+        f"using only findings.md as your source of facts, then rewrite the file:\n\n{review_text}"
+    )
+    await dispatch_task(f"BuilderFix_attempt{attempt + 1}_reviewed", fix_instructions, "Builder")
+
+
+async def run_completion_check(query: str, current_input, run_state: "RunState", notify, last_assistant_text: str = "", dispatch_task=None):  # noqa: F821 — utils.run_state.RunState, annotation only
     """Runs the 3-tier completion check (delegated? artifact exists? really grounded?) plus the
     structural fixes: per-attempt quota top-up, artifact quarantine, run-state persistence, and
     (as a last resort) salvaging a narrated-but-never-written report instead of losing it.
+
+    `dispatch_task`, when provided (see engine.orchestrator._run_single_task / create_local_agent's
+    3-tuple return), enables the Build->Review->Fix loop for `_BUILDER_FIXABLE_PROBLEMS`: instead
+    of injecting a nudge into the Planner's own `current_input` (which never shrinks across a
+    run), a fresh Builder sub-agent rewrites the artifact and a fresh PeerReviewer checks the
+    result, entirely outside the Planner's conversation. When `dispatch_task` is None (or the
+    caller's registered sub-agents don't include both "Builder" and "PeerReviewer"), every problem
+    falls back to the classic inject-into-Planner behavior unconditionally.
 
     Returns (should_retry: bool, new_current_input). Caller is responsible for looping while
     should_retry is True, same as before.
@@ -598,8 +654,6 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
         if verdict and attempt < max_attempts:
             run_state.attempt = attempt + 1
 
-            notify(f"**System ({attempt + 1}/{max_attempts}):** {verdict.warning}")
-
             if problem == "findings_ungrounded":
                 _quarantine_artifact("findings.md", attempt + 1)
             elif problem in _QUARANTINE_PROBLEMS:
@@ -612,6 +666,25 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
             if pool is not None:
                 topup_quota_pool(pool)
 
+            # Build->Review->Fix: for artifact-authoring problems, dispatch fresh-context Builder
+            # (+PeerReviewer check) instead of nudging the Planner's own conversation — see
+            # _dispatch_build_review_fix and run_completion_check's docstring. Defensive: requires
+            # BOTH roles registered, and any dispatch failure falls back to the classic path for
+            # this cycle rather than losing the retry entirely.
+            if dispatch_task is not None and problem in _BUILDER_FIXABLE_PROBLEMS:
+                caller_sub_agents = available_sub_agents_ctx.get()
+                has_builder_pair = caller_sub_agents and any(c.name == "Builder" for c in caller_sub_agents) \
+                    and any(c.name == "PeerReviewer" for c in caller_sub_agents)
+                if has_builder_pair:
+                    notify(f"**System ({attempt + 1}/{max_attempts}):** {verdict.warning} (dispatching Builder to rewrite, not the Planner)")
+                    try:
+                        await _dispatch_build_review_fix(dispatch_task, req_artifact, verdict, attempt, notify)
+                        run_state.save()
+                        return True, current_input
+                    except Exception:
+                        notify(f"**System ({attempt + 1}/{max_attempts}):** Builder dispatch failed — falling back to asking the Planner directly.")
+
+            notify(f"**System ({attempt + 1}/{max_attempts}):** {verdict.warning}")
             new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
             new_inputs.append(Message("user", [{"type": "text", "text": verdict.inject}]))
             run_state.save()

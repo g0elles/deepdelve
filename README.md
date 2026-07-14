@@ -13,9 +13,9 @@ Planner
   |                                    |                          |
   v                                    v                          v
 WebSearcher                  AcademicSearcher              PeerReviewer
-(general web research)     (papers, citations,        (independent critique of
-  |                          related work)              findings.md — fresh
-  |                                    |                 context, no new research)
+(general web research)     (papers, citations,        (fresh-context critique —
+  |                          related work)              findings.md OR, in report
+  |                                    |                 mode, final_report.md)
   +-- delegate_tasks, routed by content type -----+
   |                                               |
   v                                               v
@@ -23,24 +23,47 @@ DocumentAnalyzer                          DataAnalyzer
 (prose/HTML extraction)              (tables, code, numbers, citations —
                                        verbatim pulls; also the only tool
                                        with extract_structured_data)
+
+engine/completion.py's Build->Review->Fix loop (NOT the Planner):
+  missing/failed final_report.md --> Builder writes it --> PeerReviewer
+  reviews it (report mode) --> Builder fixes if flagged --> re-checked
 ```
 
-- **Planner**: plans in bounded, named slots (`background`/`comparison`/`related_work`/`verification` — never an open-ended task list), dispatches specialists, runs an adaptive planning loop (observe results, replan if something's missing or contradictory), and writes `final_report.md` in two passes: extract findings verbatim into `findings.md`, then self-critique (optionally delegating to `PeerReviewer` for deep/academic queries) before writing the final report.
+- **Planner**: plans in bounded, named slots (`background`/`comparison`/`related_work`/`verification` — never an open-ended task list), dispatches specialists, runs an adaptive planning loop (observe results, replan if something's missing or contradictory), and writes `findings.md` (Pass 1: verbatim extraction), optionally delegating to `PeerReviewer` to critique it before considering its own turn done. The Planner never writes or delegates `final_report.md` itself — see Builder below.
+- **Builder**: NOT dispatched by the Planner — a Planner-tier delegate dispatched exclusively by the completion-check system (`src/engine/completion.py`'s Build→Review→Fix loop), in a fresh context, once `findings.md` is ready. Writes/rewrites `final_report.md` from `findings.md`, then a fresh `PeerReviewer` dispatch reviews the result (`REVIEW: CLEAN` / `REVIEW: ISSUES FOUND:`); if flagged, Builder is re-dispatched once with the critique folded in. All of this happens outside the Planner's own conversation — retries never grow the Planner's context, which was the actual point (see "Context management" below).
 - **WebSearcher / AcademicSearcher**: search and fetch. Specialist summaries are grounding-checked *before* they reach the Planner, not just at final-report time.
-- **PeerReviewer**: Planner-tier delegate for an independent, fresh-context critique of `findings.md`.
+- **PeerReviewer**: Planner-tier delegate for an independent, fresh-context critique — of `findings.md` when the Planner dispatches it (Pass 2), or of `final_report.md` when the Build→Review→Fix loop dispatches it (same role, different target artifact named in its task instructions).
 - **DocumentAnalyzer / DataAnalyzer**: read/extract from downloaded files. `DataAnalyzer` also has `extract_structured_data` for tables/code/JSON blocks.
 
 Tool access is withheld from each parent so it's structurally forced to delegate rather than short-circuit the chain — see each role's Delegation Routing block in `src/prompts.py`.
+
+## Context management
+
+The Planner's own conversation only ever grows across a run (no compaction/pruning exists in the
+underlying agent-framework session) — every completion-check retry historically meant appending
+another nudge message and re-showing the model its own prior rejected drafts, which risks the
+model's attention degrading well before any hard token limit is hit ("context poisoning"). The
+**Builder + Build→Review→Fix loop** (`src/engine/completion.py`) is the structural fix: for
+artifact-authoring problems (missing report, ungrounded citation, unsupported claim, etc.), the
+completion-check system dispatches a fresh-context Builder directly — never touching the Planner's
+`current_input` — instead of nudging the Planner to fix it itself. Only genuinely strategic
+failures that need new research (`missing_findings`, `findings_ungrounded`, `not_delegated`) still
+escalate to the Planner's own conversation, since only the Planner can decide what to delegate next.
+`settings.context_budget_chars` (below) remains a second, independent guard against a single
+sub-agent stream itself growing too large.
 
 ## Key structural fixes over the prototype
 
 The full history (with live-test evidence for each) is in `ROADMAP.md`. The headline ones:
 
-- **Real grounding check**: cross-references every cited URL against URLs actually fetched this run (`utils/grounding.py`), not a substring check — with a path-segment boundary, so a fetched `.../article` can't ground a decorated fabrication like `.../article-fake-2024`. A second, content-level layer flags a citation whose source shares zero checkable facts with the claim next to it. A third layer catches a claim attributed to something that isn't a URL at all (a bare `(DANE, 2020)` parenthetical, a `Source: <prose>` line) — unverifiable in exactly the same way a fabricated URL is, but invisible to a check that only looks for `https?://`. A fourth catches a regulation identifier ("Ley 1906 de 2021") cited to a genuinely-fetched source whose content never mentions that number. A fifth refuses citations to **stub fetches** — a URL that answered HTTP 200 with a paywall/not-found shell is recorded as `stub` at fetch time and can neither pass the URL gate nor support any claim (closes the invented-URL-plus-soft-404 hole found live in run 14). A sixth (`uncited_claims`) catches claims structurally decoupled from citations — a table of figures plus a detached "Source URLs" list passes every line-scoped check vacuously, so ≥3 figure-bearing lines in a section with no URL fail the check even when every listed URL is real. Runs both on the final report and on each specialist's summary before it reaches the Planner. `findings.md` (Pass 1) is gated too: it must exist before `final_report.md` is accepted, and a wholesale-fabricated one (zero real citations) is quarantined. The verdict logic lives in `src/engine/completion.py` as an ordered check list, pinned by `test_structural_checks.py`'s verdict matrix.
+- **Real grounding check**: cross-references every cited URL against URLs actually fetched this run (`utils/grounding.py`), not a substring check — with a path-segment boundary, so a fetched `.../article` can't ground a decorated fabrication like `.../article-fake-2024`. A second, content-level layer flags a citation whose source shares zero checkable facts with the claim next to it. A third layer catches a claim attributed to something that isn't a URL at all (a bare `(DANE, 2020)` parenthetical, a `Source: <prose>` line) — unverifiable in exactly the same way a fabricated URL is, but invisible to a check that only looks for `https?://`. A fourth catches a regulation identifier ("Ley 1906 de 2021") cited to a genuinely-fetched source whose content never mentions that number. A fifth refuses citations to **stub fetches** — a URL that answered HTTP 200 with a paywall/not-found shell is recorded as `stub` at fetch time and can neither pass the URL gate nor support any claim (closes the invented-URL-plus-soft-404 hole found live in run 14). A sixth (`uncited_claims`) catches claims structurally decoupled from citations — a table of figures plus a detached "Source URLs" list passes every line-scoped check vacuously, so ≥3 figure-bearing lines in a section with no URL fail the check even when every listed URL is real. A seventh, **NLI entailment check** (`settings.grounding_check.nli_verify`, `cross-encoder/nli-deberta-v3-small`, CPU-only) catches a citation whose claim shares checkable terms with its source (so the term-overlap check alone passes it) but is actually CONTRADICTED by what the source says — e.g. a paper title quoted with one word swapped — running only on lines that already passed term-overlap, on the source's own best-matching paragraph window. Runs both on the final report and on each specialist's summary before it reaches the Planner. `findings.md` (Pass 1) is gated too: it must exist before `final_report.md` is accepted, and a wholesale-fabricated one (zero real citations) is quarantined. The verdict logic lives in `src/engine/completion.py` as an ordered check list, pinned by `test_structural_checks.py`'s verdict matrix.
+- **Build→Review→Fix loop for `final_report.md`** (`src/engine/completion.py`): the completion-check system, not the Planner, owns getting the report written and correct — see "Context management" above. A dedicated `Builder` sub-agent writes/rewrites it from `findings.md`, `PeerReviewer` independently checks the result in a fresh context, and Builder gets one corrective re-dispatch if flagged, all before the Planner ever sees anything.
+- **Fetch-time metadata extraction** (`tools/web.py::_extract_html_metadata`): title/author/published-date are pulled from the same BeautifulSoup parse already done for boilerplate-stripping and written as `Title:`/`Authors:`/`Published:` header lines alongside `Source-URL:` — eliminates the need for a separate sub-agent dispatch just to extract a paper's byline.
 - **Fetched pages decoded by their real charset** (strict UTF-8 → HTTP header → meta tag → cp1252 fallback, stale charset meta tags scrubbed before markdown conversion) — mojibake had silently gutted every accent-bearing Spanish term match in the grounding checks on the benchmark's flagship language.
 - **Fetched files carry provenance**: everything a run fetches lands in the run folder's `sources/` subdirectory with `Source-URL: <true url>` as line 1, so a cited claim can be traced to the exact bytes it came from; the run root holds only `final_report.md`, `findings.md`, `_todos.md`, and `_run_state.json`.
 - **`web_search` auto-fetches its top result's full content** — there's no snippet-only path left for a model to stop at (`settings.web_search.auto_fetch_top`), which was the single biggest lever on real answer quality.
 - **Per-attempt quota top-up, artifact quarantine before nudging, and history-scanning salvage** for a narrated-but-never-written report — all structural fixes, not prompt tuning, for failure modes that prompt tuning alone didn't resolve in testing.
+- **Detailed tool-call validation errors** (`client.function_invocation_configuration["include_detailed_errors"]`): a rejected tool call shows the real Pydantic reason (e.g. "query: Input should be a valid string, got list") instead of a bare "Argument parsing failed." — this was the single most common error signature in real session logs (41 occurrences in one day) and was previously undiagnosable, for the model as well as for debugging.
 - **`RunState`** (`utils/run_state.py`) persists fetched URLs, findings, and completion-check attempts per run as `_run_state.json`, independent of the model's own narration.
 
 ## Setup
@@ -140,7 +163,7 @@ In the TUI, the first message of a conversation gets a one-shot intake check (`c
 ## Config highlights (`config_template.yaml`)
 
 - `settings.quotas` / `settings.retry_quota_topup` — global, cumulative-across-all-agents tool-call budgets, with extra headroom on a completion-check retry.
-- `settings.grounding_check` — `content_level_check`, `non_url_citation_check`, `regulation_id_check`, `check_findings`, `verify_specialist_output`, `verify_scope_relevance`, `live_http_verify`.
+- `settings.grounding_check` — `content_level_check`, `non_url_citation_check`, `regulation_id_check`, `check_findings`, `verify_specialist_output`, `verify_scope_relevance`, `live_http_verify`, `nli_verify` (entailment check, on by default — first run pays a one-time CPU model download/load cost).
 - `settings.search_mode: heavy` — search deeper and auto-fetch more top results per call.
 - `settings.search_backend` — `auto` rotates/falls back across ddgs's 10+ engines; a pinned single engine is a single point of failure (live-confirmed: DDG throttling made whole runs look like model fabrication).
 - `settings.max_run_minutes` — wall-clock budget for headless runs; on expiry the completion check jumps to its final verdict instead of hard-killing.
@@ -163,6 +186,10 @@ python eval/results_viewer.py
 - Huang, Chen, Zhang, et al. *Deep Research Agents: A Systematic Examination and Roadmap*. [arXiv:2506.18096](https://arxiv.org/abs/2506.18096)
 - Xu, Peng. *A Comprehensive Survey of Deep Research: Systems, Methodologies, and Applications*. [arXiv:2506.12594](https://arxiv.org/abs/2506.12594)
 - Xi, Lin, Xiao, et al. *A Survey of LLM-based Deep Search Agents*. [arXiv:2508.05668](https://arxiv.org/abs/2508.05668)
+- *Plan-and-Execute agentic architectures* survey work, e.g. [arXiv:2509.08646](https://arxiv.org/abs/2509.08646) — the established pattern the Builder + Build→Review→Fix loop maps onto: decouple planning (decompose, can use a cheaper/more strategic pass) from execution (carries out + retries mechanically), re-planning only on genuine failure rather than every step. Directly informed by the observation that DeepDelve's Planner conversation grows unboundedly across a run with no compaction (a documented "context poisoning" risk) and that the existing `delegate_tasks` mechanism already gives every dispatched sub-agent a genuinely fresh context — the fix is routing report-writing retries through that mechanism instead of the Planner's own conversation.
+- Min, Krishna, Lyu, et al. *FActScore: Fine-grained Atomic Evaluation of Factual Precision in Long Form Text Generation*. [arXiv:2305.14251](https://arxiv.org/abs/2305.14251) — decompose-then-verify pattern (break a generation into atomic checkable facts, score each independently) that the grounding layer's line-scoped checks already followed in spirit; cited as prior art motivating the NLI entailment check (`nli_unsupported_problem`) below.
+- Anonymous. *HALT-RAG: A Task-Adaptable Framework for Hallucination Detection with Calibrated NLI Ensembles and Abstention*. [arXiv:2509.07475](https://arxiv.org/abs/2509.07475) — source of the "layer NLI entailment on top of lexical/term-overlap checks, don't replace them" design choice for `nli_unsupported_problem`: HALT-RAG's own finding is that combining NLI with lexical signals outperforms either alone, which is why the entailment check only runs on claim lines that already passed the existing term-overlap check rather than gating independently.
+- Anthropic. *How we built our multi-agent research system*. [anthropic.com/engineering/multi-agent-research-system](https://www.anthropic.com/engineering/multi-agent-research-system) — independent confirmation that a multi-agent research architecture (lead agent delegating to parallel subagents with their own fresh context) beat a single agent by 90.2% on Anthropic's own internal research eval, validating DeepDelve's existing Planner→Searchers→Analyzers shape and directly informing the Builder + Build→Review→Fix loop's decision to route report-writing retries through a fresh-context sub-agent dispatch rather than the Planner's own growing conversation.
 - [`kyuz0/deep-research-agent`](https://github.com/kyuz0/deep-research-agent) — base architecture this was forked from.
 - [`CYC2002tommy/Deep-Research-Agent`](https://github.com/CYC2002tommy/Deep-Research-Agent) — source of the "full-text reading is mandatory" and content-level claim-grounding ideas.
 - [`nashsu/llm_wiki`](https://github.com/nashsu/llm_wiki) — source of the `findings.md` → `final_report.md` two-pass pattern and the structured run-state idea.

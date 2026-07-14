@@ -1182,7 +1182,7 @@ class BasicTuiAgent(App):
 
         try:
             # Create agent (re-reads config) and get session (None if conversational memory disabled)
-            agent, session = create_local_agent(builder=self.builder, subagent_callback=ui_callback)
+            agent, session, dispatch_task = create_local_agent(builder=self.builder, subagent_callback=ui_callback)
             current_input = query
             has_requests = True
             malformed_retries = 0
@@ -1382,6 +1382,7 @@ class BasicTuiAgent(App):
                     should_continue, current_input = await run_completion_check(
                         query=query, current_input=current_input, run_state=run_state, notify=_tui_notify,
                         last_assistant_text=turn_msg.text if turn_msg else "",
+                        dispatch_task=dispatch_task,
                     )
                     if should_continue:
                         has_requests = True
@@ -1824,7 +1825,7 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
     elif prompt:
         log_prompt(prompt)
 
-    agent, session = create_local_agent(builder=builder, subagent_callback=cli_subagent_callback, session_data=session_data)
+    agent, session, dispatch_task = create_local_agent(builder=builder, subagent_callback=cli_subagent_callback, session_data=session_data)
 
     if prompt_file:
         try:
@@ -2155,6 +2156,7 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
                 should_continue, current_input = await run_completion_check(
                     query=prompt, current_input=current_input, run_state=run_state, notify=_cli_notify,
                     last_assistant_text=turn_text,
+                    dispatch_task=dispatch_task,
                 )
                 if should_continue:
                     has_requests = True

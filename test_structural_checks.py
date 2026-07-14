@@ -700,6 +700,149 @@ def main():
 
     contextvars.copy_context().run(_missing_artifact_escalation_scenario)
 
+    # --- Builder Build->Review->Fix dispatch loop (see engine/completion.py's
+    # _dispatch_build_review_fix / _BUILDER_FIXABLE_PROBLEMS): for artifact-authoring problems,
+    # run_completion_check must dispatch a fresh-context Builder (+PeerReviewer check) instead of
+    # nudging the Planner's own current_input, when a dispatch_task callable is provided AND both
+    # roles are registered. The core regression this guards against: current_input must come back
+    # UNCHANGED from the input passed in (that's the actual context-growth fix). ---
+    def _builder_dispatch_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        from tools.core import tool_quotas_ctx as q_ctx
+        from unittest.mock import AsyncMock
+        from engine.orchestrator import available_sub_agents_ctx
+
+        class _FakeSubAgentConfig:
+            def __init__(self, name):
+                self.name = name
+
+        _orig_ws8 = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
+        _orig_gc8 = _config.cfg.get("settings", {}).get("grounding_check")
+        _config.cfg["settings"]["grounding_check"] = {"nli_verify": False}
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            _IN_MEMORY_FS.clear()
+            reset_fetched_urls()
+            record_fetched_url(_SRC, filename="sources/page.md")
+            _IN_MEMORY_FS["sources/page.md"] = _SOURCE_TEXT
+            _IN_MEMORY_FS["findings.md"] = _FINDINGS_OK
+            q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5}})
+            available_sub_agents_ctx.set([_FakeSubAgentConfig("Builder"), _FakeSubAgentConfig("PeerReviewer")])
+
+            # (a) PeerReviewer returns REVIEW: CLEAN -> exactly 2 dispatches (Builder, PeerReviewer),
+            # current_input unchanged, one completion_check_attempts row recorded.
+            with tempfile.TemporaryDirectory() as tmpdir_a:
+                rs = RunState(tmpdir_a)
+                run_state_ctx.set(rs)
+                msgs = []
+                dispatch = AsyncMock(side_effect=[
+                    "## Result for BuilderFix_attempt1\nWrote report\n---",
+                    "REVIEW: CLEAN\nNo issues found.",
+                ])
+                orig_input = "q"
+                should_retry, new_input = _asyncio.run(run_completion_check(
+                    query="q", current_input=orig_input, run_state=rs, notify=msgs.append,
+                    dispatch_task=dispatch))
+                assert should_retry
+                assert new_input == orig_input, ("current_input must stay unchanged on Builder-fixable dispatch", new_input)
+                assert dispatch.call_count == 2, dispatch.call_args_list
+                assert dispatch.call_args_list[0].args[2] == "Builder", dispatch.call_args_list
+                assert dispatch.call_args_list[1].args[2] == "PeerReviewer", dispatch.call_args_list
+                assert rs.data["completion_check_attempts"][-1]["problem"] == "missing_artifact"
+                assert len(rs.data["completion_check_attempts"]) == 1
+
+            # (b) PeerReviewer returns REVIEW: ISSUES FOUND -> exactly 3 dispatches
+            # (Builder, PeerReviewer, Builder again), current_input still unchanged.
+            with tempfile.TemporaryDirectory() as tmpdir_b:
+                rs = RunState(tmpdir_b)
+                run_state_ctx.set(rs)
+                msgs = []
+                dispatch = AsyncMock(side_effect=[
+                    "## Result for BuilderFix_attempt1\nWrote report\n---",
+                    "REVIEW: ISSUES FOUND:\n- citation doesn't trace to findings.md",
+                    "## Result for BuilderFix_attempt1_reviewed\nFixed report\n---",
+                ])
+                orig_input = "q"
+                should_retry, new_input = _asyncio.run(run_completion_check(
+                    query="q", current_input=orig_input, run_state=rs, notify=msgs.append,
+                    dispatch_task=dispatch))
+                assert should_retry
+                assert new_input == orig_input
+                assert dispatch.call_count == 3, dispatch.call_args_list
+                assert dispatch.call_args_list[2].args[2] == "Builder", dispatch.call_args_list
+
+            # (c) PeerReviewer response missing the REVIEW: sentinel entirely -> conservative
+            # fallback treats it as ISSUES FOUND, still 3 dispatches (fail conservative, not silent).
+            with tempfile.TemporaryDirectory() as tmpdir_c:
+                rs = RunState(tmpdir_c)
+                run_state_ctx.set(rs)
+                msgs = []
+                dispatch = AsyncMock(side_effect=[
+                    "## Result for BuilderFix_attempt1\nWrote report\n---",
+                    "Looks fine to me, no complaints.",
+                    "## Result for BuilderFix_attempt1_reviewed\nFixed report\n---",
+                ])
+                should_retry, new_input = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append,
+                    dispatch_task=dispatch))
+                assert should_retry
+                assert dispatch.call_count == 3, (
+                    "a malformed/missing REVIEW: sentinel must be treated conservatively as "
+                    "ISSUES FOUND, not silently accepted", dispatch.call_args_list)
+
+            # (d) Builder/PeerReviewer not both registered -> falls back to classic
+            # inject-into-Planner behavior, dispatch_task never called.
+            with tempfile.TemporaryDirectory() as tmpdir_d:
+                rs = RunState(tmpdir_d)
+                run_state_ctx.set(rs)
+                msgs = []
+                available_sub_agents_ctx.set([_FakeSubAgentConfig("Builder")])  # PeerReviewer missing
+                dispatch = AsyncMock()
+                orig_input = "q"
+                should_retry, new_input = _asyncio.run(run_completion_check(
+                    query="q", current_input=orig_input, run_state=rs, notify=msgs.append,
+                    dispatch_task=dispatch))
+                assert should_retry
+                dispatch.assert_not_called()
+                assert isinstance(new_input, list) and len(new_input) == 2, (
+                    "missing-registration fallback must still inject the classic nudge", new_input)
+                available_sub_agents_ctx.set([_FakeSubAgentConfig("Builder"), _FakeSubAgentConfig("PeerReviewer")])
+
+            # (e) A Planner-escalated problem (missing_findings) must NEVER dispatch Builder, even
+            # with a fully-registered pair and a working dispatch_task — it needs new research, not
+            # a rewrite, so it must still grow current_input via the classic nudge path.
+            with tempfile.TemporaryDirectory() as tmpdir_e:
+                _IN_MEMORY_FS.pop("findings.md", None)
+                rs = RunState(tmpdir_e)
+                run_state_ctx.set(rs)
+                msgs = []
+                dispatch = AsyncMock()
+                orig_input = "q"
+                should_retry, new_input = _asyncio.run(run_completion_check(
+                    query="q", current_input=orig_input, run_state=rs, notify=msgs.append,
+                    dispatch_task=dispatch))
+                assert should_retry
+                dispatch.assert_not_called()
+                assert isinstance(new_input, list) and new_input[-1] is not orig_input, (
+                    "missing_findings must still use the classic inject-into-Planner path", new_input)
+                assert rs.data["completion_check_attempts"][-1]["problem"] == "missing_findings"
+                _IN_MEMORY_FS["findings.md"] = _FINDINGS_OK
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            if _orig_ws8 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws8
+            if _orig_gc8 is None:
+                _config.cfg["settings"].pop("grounding_check", None)
+            else:
+                _config.cfg["settings"]["grounding_check"] = _orig_gc8
+
+    contextvars.copy_context().run(_builder_dispatch_scenario)
+
     # --- missing_findings escalation (live case 2026-07-13): a real run produced literally ZERO
     # content (no tool call, no text) in response to this exact nudge for 6 consecutive attempts,
     # then genuinely self-corrected with real findings.md content on the 7th. Unlike
@@ -1509,6 +1652,23 @@ def main():
     assert not _looks_like_tool_error("## Result for background\n**Findings**\n\n- real content")
     assert not _looks_like_tool_error("")
     assert not _looks_like_tool_error(None)
+
+    # --- create_local_agent must return a 3-tuple (agent, session, dispatch_task) — a caller
+    # still unpacking 2 values is a hard ValueError, not a silent bug, but worth pinning since
+    # engine/completion.py's Build->Review->Fix loop depends on the 3rd element being callable
+    # and resolving agent_id via the SAME available_sub_agents_ctx the Planner itself uses. ---
+    def _create_local_agent_shape_scenario():
+        from engine.orchestrator import create_local_agent
+        from engine.sdk import AgentBuilder
+
+        builder = AgentBuilder(name="TestPlanner", description="test", instructions="You are a test agent.", tools=[])
+        result = create_local_agent(builder=builder)
+        assert isinstance(result, tuple) and len(result) == 3, (
+            "create_local_agent must return (agent, session, dispatch_task)", result)
+        agent, session, dispatch_task = result
+        assert callable(dispatch_task), "3rd element (dispatch_task) must be callable"
+
+    contextvars.copy_context().run(_create_local_agent_shape_scenario)
 
     print("All structural-check assertions passed.")
 
