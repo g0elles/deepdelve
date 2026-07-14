@@ -389,6 +389,27 @@ def check_nli_unsupported(ctx: Ctx) -> Optional[Verdict]:
     )
 
 
+def check_topical_mismatch(ctx: Ctx) -> Optional[Verdict]:
+    """ROADMAP Phase 4: a citation passed both lexical term-overlap (check_claim_unsupported) and
+    NLI entailment (check_nli_unsupported) — the terms line up and nothing is contradicted — but a
+    cross-encoder reranker judges the source as topically UNRELATED to the claim's actual subject.
+    Distinct failure mode from both upstream checks: catches an acronym collision like GOA (the
+    Grasshopper Optimization Algorithm) vs. Goa (the Indian state) — 'GOA'/'Goa' term-overlap
+    passes and the sentences aren't strictly contradictory (an EV-policy claim about Goa doesn't
+    CONTRADICT an algorithm claim, it's just about something else), so neither upstream layer
+    catches it; only a semantic relevance judgment does. See
+    utils.grounding.topical_relevance_problem for the conservative threshold and reused evidence
+    set (the exact same claim/source pairs the NLI check already matched)."""
+    gp = ctx.grounding_problem
+    if not (gp and gp.startswith("topical_mismatch")):
+        return None
+    return Verdict(
+        "topical_mismatch",
+        f"`{ctx.req_artifact}` cites a source that shares terms with the claim and isn't contradicted by it, but a topical-relevance check found the source is about a different subject entirely ({gp}).",
+        f"SYSTEM WARNING: '{ctx.req_artifact}' cites a real, fetched source that shares words with a claim but appears to be about a DIFFERENT SUBJECT entirely, not the one the claim is actually about ({gp}). This is the acronym-collision pattern (e.g. a source about a place or organization that happens to share an abbreviation with the real subject). The previous draft has been moved aside. Re-check that the cited source is genuinely about the claim's real subject, not just sharing a term or acronym with it, and rewrite or drop the claim if it isn't.{_redelegate_directive(ctx)}",
+    )
+
+
 def check_uncited_claims(ctx: Ctx) -> Optional[Verdict]:
     """The report's citations are all real, but its claims are structurally decoupled from
     them — figure-bearing claim lines with no citation on the line (e.g. a table of numbers
@@ -494,6 +515,7 @@ GROUNDING_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
     check_regulation_unsupported,
     check_non_url_citation,
     check_nli_unsupported,
+    check_topical_mismatch,
     check_uncited_claims,
     check_excluded_topic,
     check_cross_source_contradiction,
@@ -506,7 +528,7 @@ GROUNDING_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
 # quarantines findings.md instead of the artifact) — one list, no second copy to forget.
 _QUARANTINE_PROBLEMS = ("not_grounded", "claim_unsupported", "non_url_citation",
                         "regulation_unsupported", "stub_source", "nli_unsupported",
-                        "findings_ungrounded")
+                        "topical_mismatch", "findings_ungrounded")
 
 # Problems fixable by rewriting `req_artifact` from the SAME findings.md, no new research needed —
 # dispatched to a fresh-context Builder (+ PeerReviewer check) by run_completion_check's
@@ -515,8 +537,8 @@ _QUARANTINE_PROBLEMS = ("not_grounded", "claim_unsupported", "non_url_citation",
 # delegate, so that one still falls through to the classic inject-into-Planner path below.
 _BUILDER_FIXABLE_PROBLEMS = ("missing_artifact", "not_grounded", "claim_unsupported",
                              "non_url_citation", "regulation_unsupported", "stub_source",
-                             "nli_unsupported", "uncited_claims", "excluded_topic_present",
-                             "cross_source_contradiction")
+                             "nli_unsupported", "topical_mismatch", "uncited_claims",
+                             "excluded_topic_present", "cross_source_contradiction")
 
 # Findings-authoring problems, fixable by a fresh-context FindingsWriter (+ PeerReviewer check)
 # from this run's REAL structured results (see _build_findings_source_material) — the Planner

@@ -173,6 +173,22 @@ settings:
     # available — an offline/air-gapped run is never blocked by this. Set false to disable if it
     # proves noisy, or if sentence-transformers isn't installed.
     nli_verify: true
+    # Fourth layer, beyond term-overlap AND entailment: for a claim that passed BOTH of those (the
+    # cited source shares terms and doesn't contradict the claim), is the source actually about
+    # the SAME SUBJECT, or just superficially similar? Catches acronym/homograph collisions term-
+    # overlap and entailment both miss by construction — e.g. a claim about the Grasshopper
+    # Optimization Algorithm ("GOA") citing a source that's actually about the Indian state of Goa
+    # ("Goa"): 'GOA'/'Goa' term-overlap passes, and an EV-policy sentence about Goa doesn't
+    # CONTRADICT an algorithm claim (it's just unrelated), so NLI never flags it either. A
+    # cross-encoder reranker (BAAI/bge-reranker-v2-m3, sentence-transformers, same soft dependency
+    # as nli_verify above -- NOT an additional pip package, just a second checkpoint through the
+    # same already-installed library, ~1.1GB additional download on first use) scores each
+    # (claim, source-passage) pair for topical relevance directly. Conservative threshold (only a
+    # CLEARLY unrelated pair, near 0, fires -- see topical_relevance_threshold below). Fails open
+    # if the model/dependency isn't available. Set false to disable if it proves noisy, or if
+    # sentence-transformers isn't installed.
+    topical_relevance_check: true
+    topical_relevance_threshold: 0.1   # 0-1 relevance score below which a pair is flagged (lower = stricter gate, fewer false positives)
     # Catches a claim attributed to something that isn't a URL at all — a bare "(DANE, 2020)"
     # parenthetical or a "Source: <prose>" line — which extract_cited_urls never sees since it only
     # recognizes https?:// patterns. Confirmed live: a report can have real, fetched-and-verified

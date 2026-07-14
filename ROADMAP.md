@@ -368,10 +368,38 @@ Status as of 2026-07-14.
   genuinely distinct agritech result — the distinct one gets promoted to position 2), empty/single-
   result edge cases, an already-diverse case (order preserved), and direct `_result_aspect_terms`
   stopword/length-filter assertions.
+- **Phase 4 of the approved 6-phase plan: topical-relevance cross-encoder reranker.** Third-stage
+  grounding check, layered after `claim_grounding_problem` (term-overlap) and
+  `nli_unsupported_problem` (entailment) — reuses the exact same evidence set as the NLI check
+  (extracted into a new shared `_grounded_claim_pairs` helper, factored out of both functions) but
+  asks a different question: is the cited source actually about the SAME SUBJECT as the claim, not
+  just lexically overlapping and non-contradictory? Fixes the GOA-algorithm-vs-Goa-state acronym
+  collision above — 'GOA'/'Goa' term-overlap passes and an EV-policy sentence about Goa doesn't
+  *contradict* an algorithm claim (it's just unrelated), so neither upstream layer can catch it.
+  New `utils/grounding.py::_get_topical_relevance_model`/`topical_relevance_problem`: a second
+  `sentence-transformers` `CrossEncoder` checkpoint, `BAAI/bge-reranker-v2-m3` — **not a new pip
+  dependency**, `sentence-transformers` is already installed for the NLI check, this just loads a
+  second checkpoint through the same library. Constructed with an explicit `Sigmoid` activation so
+  `.predict()` returns a 0-1 relevance probability directly. New `engine/completion.py::check_topical_mismatch`
+  (`GROUNDING_CHECKS`/`_QUARANTINE_PROBLEMS`/`_BUILDER_FIXABLE_PROBLEMS` member, mirrors
+  `check_nli_unsupported`'s string-prefix-matching pattern exactly). New config keys
+  `settings.grounding_check.topical_relevance_check`/`topical_relevance_threshold` (default 0.1),
+  documented in `config_template.yaml`. **Verified against the REAL checkpoint, not just the
+  mocked test** (`test_structural_checks.py`'s `_topical_relevance_scenario` mocks the model the
+  same way `_nli_verify_scenario` does, to keep the suite fast/offline): loaded the real model
+  standalone and scored the exact GOA/Goa pair — the irrelevant (Goa-state) pair scored **0.023**,
+  the relevant (GOA-algorithm) pair scored **0.997**, a huge margin either side of the 0.1
+  threshold, confirming the Sigmoid-activation design assumption was correct before it ever
+  reached a live run. **Real bug caught and fixed during this same pass**: the new check's config
+  gate wasn't included in the test suite's existing `nli_verify: False` guards (4 call sites),
+  so the first full-suite run after wiring it in silently loaded the REAL, unmocked
+  bge-reranker-v2-m3 model — the exact anti-pattern that guard was built to prevent, now closed at
+  all 4 sites plus a 5th (`_nli_verify_scenario` itself, which needed `topical_relevance_check:
+  false` added since it deliberately leaves `nli_verify` on).
 
 ## Findings from live testing (not yet acted on / informational)
 
-- **Grounding check verifies provenance, not topical relevance.** A live GOA (Grasshopper Optimization Algorithm) research query got a citation from `globaldrivetozero.org` — actually fetched, and sharing surface terms like "GOA"/"Goa" — that's actually about the Indian state of Goa's EV policy, not the algorithm. The URL-presence + term-overlap check passed it because it only checks "was this fetched" and "do terms overlap," not "is this source about the same subject." Acronym collisions are the clearest way to trigger this; unclear how common the failure mode is outside them.
+- **Grounding check verifies provenance, not topical relevance.** A live GOA (Grasshopper Optimization Algorithm) research query got a citation from `globaldrivetozero.org` — actually fetched, and sharing surface terms like "GOA"/"Goa" — that's actually about the Indian state of Goa's EV policy, not the algorithm. The URL-presence + term-overlap check passed it because it only checks "was this fetched" and "do terms overlap," not "is this source about the same subject." Acronym collisions are the clearest way to trigger this; unclear how common the failure mode is outside them. **Fixed 2026-07-14 — see "Done" (Phase 4, `topical_relevance_problem`).**
 - **JS-gated pages return bot-challenge stubs, not content.** Several fetches (Cloudflare "Just a moment...", a "Human Verification" page, a Prezi slide deck) came back as 16-18 byte stubs since the fetcher doesn't execute JavaScript. *(Fixed for most cases — see "Done": headless/headed-browser fetch fallback, 2026-07-14. Recovers Springer (headless-sufficient) and MDPI (needed headed). NOT a universal fix: a genuine Cloudflare Turnstile challenge (ScienceDirect) resists both headless AND headed Chromium regardless of patience or `navigator.webdriver` spoofing — confirmed to be automation/CDP-fingerprint detection, not a solvable timing issue, and deliberately not pursued further; see the ScienceDirect sub-bullet above for the full investigation. Still correctly falls through to the stub flag rather than silently failing.)*
 - **A citation being present in a report's "Sources" list doesn't mean it was fetched.** Across several market-research runs, more than half of named sources were routinely never actually fetched (recalled from the model's training data) — and when independently fact-checked, specific statistics tied to unfetched sources were measurably wrong, usually understated.
 - **Hard exclusion rules ("do not research sector X") repeatedly fail to hold**, confirmed across at least 2 independent runs with different prompt wordings: an explicitly-excluded "Agricultural"/"agribusiness" sector got researched and included in the final report anyway — once purely from memory, once with the model actually delegating and fetching a real source for the excluded sector. Simply naming the exclusion in the prompt isn't enough; `delegate_tasks`'s existing dispatch-time skip (`_extract_excluded_topics`) only stopped NEW research on the topic, not the topic showing up in the final report anyway via a sibling task's tangential findings. **Fixed 2026-07-14** — see "Done" below (`check_excluded_topic`).
@@ -520,14 +548,12 @@ Status as of 2026-07-14.
 
 ## Planned (not started)
 
-- **6-phase plan approved 2026-07-14 for the items below** (Phases 1-3 done — see "Done" above):
+- **6-phase plan approved 2026-07-14 for the items below** (Phases 1-4 done — see "Done" above):
   Phase 1 claim-level grounding upgrade (DONE) → Phase 2 cross-source contradiction detection
   (DONE) → Phase 3 xQuAD diversity reranking (DONE) → Phase 4 topical-relevance cross-encoder
-  reranker (independent, new soft dependency) → Phase 5 coverage accounting/ResearchMap
-  (independent, Planner schema change) → Phase 6 B4 TUI/CLI loop unification (deferred last,
-  highest regression risk). Sequenced by ROADMAP's own stated priority + dependency order + risk,
-  not file order below.
-- **Address the grounding check's topical-relevance gap** — some form of "is this source actually about the claimed subject," not just "was it fetched and does it share terms." Unclear whether this needs an LLM judge (this local model class has proven unreliable as its own judge elsewhere in this project) or a cheaper heuristic. *(Partially mitigated 2026-07-12: scope matching is now case-insensitive and charset-correct, and stub shells can no longer ground anything.)* **Concrete candidate mechanism found 2026-07-13** (verified real, not an LLM judge): a lightweight CPU cross-encoder reranker (`BAAI/bge-reranker-v2-m3`, ~278M params) scoring (claim, source) pairs directly — as a semantic sanity check layered *after* the existing term-overlap check, the same way the NLI entailment check is already layered on top of it. Would have caught the GOA-the-algorithm-vs-Goa-the-Indian-state acronym collision the existing stack missed.
+  reranker (DONE) → Phase 5 coverage accounting/ResearchMap (independent, Planner schema change) →
+  Phase 6 B4 TUI/CLI loop unification (deferred last, highest regression risk). Sequenced by
+  ROADMAP's own stated priority + dependency order + risk, not file order below.
 - **Coverage accounting / ResearchMap** (found 2026-07-13) — track topic-completeness (e.g. per
   planned research slot: status, evidence count, confidence) so the completion check can require a
   coverage threshold, not just "enough tokens written." Complements the Builder loop without

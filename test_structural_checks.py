@@ -580,7 +580,7 @@ def main():
                 # suite" depend on network access. Confirmed live: exactly this happened before
                 # this line was added.
                 _orig_gc3 = _config.cfg.get("settings", {}).get("grounding_check")
-                _config.cfg["settings"]["grounding_check"] = {"nli_verify": False}
+                _config.cfg["settings"]["grounding_check"] = {"nli_verify": False, "topical_relevance_check": False}
                 saved_fs = dict(_IN_MEMORY_FS)
                 try:
                     _IN_MEMORY_FS.clear()
@@ -650,6 +650,12 @@ def main():
 
         _orig_ws6 = _config.cfg.get("settings", {}).get("workspace")
         _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
+        # nli_verify stays on (that's what this scenario tests), but topical_relevance_check must
+        # be off -- otherwise the entailment/neutral sub-case below (NLI returns None) falls
+        # through to a REAL, unmocked topical-relevance model load, same anti-pattern the matrix's
+        # own nli_verify:False guard exists to prevent (see its comment above).
+        _orig_gc6 = _config.cfg.get("settings", {}).get("grounding_check")
+        _config.cfg["settings"]["grounding_check"] = {"topical_relevance_check": False}
         saved_fs = dict(_IN_MEMORY_FS)
         try:
             _IN_MEMORY_FS.clear()
@@ -704,8 +710,94 @@ def main():
                 _config.cfg["settings"].pop("workspace", None)
             else:
                 _config.cfg["settings"]["workspace"] = _orig_ws6
+            if _orig_gc6 is None:
+                _config.cfg["settings"].pop("grounding_check", None)
+            else:
+                _config.cfg["settings"]["grounding_check"] = _orig_gc6
 
     contextvars.copy_context().run(_nli_verify_scenario)
+
+    # --- ROADMAP Phase 4: topical-relevance cross-encoder reranker (the GOA-algorithm vs.
+    # Goa-the-Indian-state acronym collision from ROADMAP "Findings from live testing" — term
+    # overlap passes ('2024' shared) and NLI wouldn't contradict it (an EV-policy sentence doesn't
+    # CONTRADICT an algorithm claim, it's just unrelated), so only a topical-relevance judgment
+    # catches it. Real BAAI/bge-reranker-v2-m3 isn't loaded in this fast suite -- mocked at
+    # utils.grounding._get_topical_relevance_model to test WIRING correctness, same boundary as
+    # _nli_verify_scenario above. ---
+    def _topical_relevance_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        from tools.core import tool_quotas_ctx as q_ctx
+        from unittest.mock import patch
+        import utils.grounding as _grounding_mod
+
+        class _FakeRerankerModel:
+            def __init__(self, score):
+                self._score = score
+            def predict(self, pairs):
+                return [self._score for _ in pairs]
+
+        _orig_ws7 = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
+        # nli_verify off (this scenario isn't testing NLI wiring, and leaving it on would call the
+        # real NLI model unmocked -- same anti-pattern the matrix's own guard exists to prevent).
+        _orig_gc7 = _config.cfg.get("settings", {}).get("grounding_check")
+        _config.cfg["settings"]["grounding_check"] = {"nli_verify": False}
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            _IN_MEMORY_FS.clear()
+            reset_fetched_urls()
+            _goa_src = "https://goa.example.co/ev-policy"
+            _goa_source_text = ("Source-URL: " + _goa_src + "\n\n"
+                                 "Goa announced new electric vehicle incentives for residents "
+                                 "in 2024, part of the state's broader transport policy. " * 3)
+            record_fetched_url(_goa_src, filename="sources/goa_page.md")
+            _IN_MEMORY_FS["sources/goa_page.md"] = _goa_source_text
+            _IN_MEMORY_FS["findings.md"] = f"- hallado ({_goa_src})"
+            # Shares the checkable term '2024' with the source, so claim_grounding_problem's
+            # term-overlap passes outright -- exactly the failure shape this check exists for.
+            claim_line = f"- The GOA algorithm improved convergence results in 2024 [source]({_goa_src})"
+            _IN_MEMORY_FS["final_report.md"] = claim_line
+            q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5}})
+
+            # Low relevance score mocked -> topical_mismatch verdict, quarantined, distinctive nudge.
+            with patch.object(_grounding_mod, "_get_topical_relevance_model", return_value=_FakeRerankerModel(0.01)):
+                with tempfile.TemporaryDirectory() as tmpdir7a:
+                    rs = RunState(tmpdir7a)
+                    run_state_ctx.set(rs)
+                    msgs = []
+                    should_retry, _ = _asyncio.run(run_completion_check(
+                        query="q", current_input="q", run_state=rs, notify=msgs.append))
+                    recorded = rs.data["completion_check_attempts"][-1]["problem"]
+                    assert recorded == "topical_mismatch", (recorded, msgs)
+                    assert should_retry
+                    assert "different subject" in msgs[-1] or "DIFFERENT SUBJECT" in msgs[-1], msgs
+
+            # High relevance score mocked -> clean pass, confirming the new check doesn't regress
+            # the existing clean-pass path once wired in.
+            with patch.object(_grounding_mod, "_get_topical_relevance_model", return_value=_FakeRerankerModel(0.95)):
+                with tempfile.TemporaryDirectory() as tmpdir7b:
+                    rs = RunState(tmpdir7b)
+                    run_state_ctx.set(rs)
+                    msgs = []
+                    should_retry, _ = _asyncio.run(run_completion_check(
+                        query="q", current_input="q", run_state=rs, notify=msgs.append))
+                    recorded = rs.data["completion_check_attempts"][-1]["problem"]
+                    assert recorded is None, (recorded, msgs)
+                    assert not should_retry
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            if _orig_ws7 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws7
+            if _orig_gc7 is None:
+                _config.cfg["settings"].pop("grounding_check", None)
+            else:
+                _config.cfg["settings"]["grounding_check"] = _orig_gc7
+
+    contextvars.copy_context().run(_topical_relevance_scenario)
 
     # --- missing_artifact escalation (live case 2026-07-12: 24 real fetched URLs + a populated
     # findings.md, but the model still got this nudge 5x verbatim and never once attempted
@@ -813,7 +905,7 @@ def main():
         _orig_ws8 = _config.cfg.get("settings", {}).get("workspace")
         _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
         _orig_gc8 = _config.cfg.get("settings", {}).get("grounding_check")
-        _config.cfg["settings"]["grounding_check"] = {"nli_verify": False}
+        _config.cfg["settings"]["grounding_check"] = {"nli_verify": False, "topical_relevance_check": False}
         saved_fs = dict(_IN_MEMORY_FS)
         try:
             _IN_MEMORY_FS.clear()
@@ -992,7 +1084,7 @@ def main():
         _orig_ws9 = _config.cfg.get("settings", {}).get("workspace")
         _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
         _orig_gc9 = _config.cfg.get("settings", {}).get("grounding_check")
-        _config.cfg["settings"]["grounding_check"] = {"nli_verify": False}
+        _config.cfg["settings"]["grounding_check"] = {"nli_verify": False, "topical_relevance_check": False}
         saved_fs = dict(_IN_MEMORY_FS)
         try:
             _IN_MEMORY_FS.clear()
@@ -1314,7 +1406,7 @@ def main():
         # Not testing NLI-specific behavior here -- the well-formed case below has genuine
         # term-overlap and would otherwise silently load the real HuggingFace model (see the
         # matrix's own nli_verify:False guard above for why that's undesirable in this suite).
-        _config.cfg["settings"]["grounding_check"] = {"nli_verify": False}
+        _config.cfg["settings"]["grounding_check"] = {"nli_verify": False, "topical_relevance_check": False}
         saved_fs = dict(_IN_MEMORY_FS)
         try:
             _IN_MEMORY_FS.clear()

@@ -684,29 +684,14 @@ def _select_relevant_window(claim_terms: set, source_text: str, window_size: int
     return window[:2500]  # hard cap regardless — a single huge paragraph must not blow past this
 
 
-def nli_unsupported_problem(report: str) -> str | None:
-    """Second-stage grounding check beyond claim_grounding_problem's term-overlap: for each report
-    prose line whose citation resolves to a fetched source AND already PASSED term-overlap (shares
-    >=1 salient term with that source), does a small NLI cross-encoder actually judge the claim as
-    entailed by the source's most relevant passage — or does it CONTRADICT what the source says,
-    despite the shared terms?
-
-    Confirmed live 2026-07-12 (NVIDIA NIM gpt-oss-20b benchmark run): a report cited a real,
-    fetched arXiv paper whose title was quoted with one word swapped ('Dual Causal Network' vs the
-    real 'Dual Correlation Network') — enough shared capitalized-phrase/number overlap to pass
-    claim_grounding_problem's zero-overlap gate outright, while the specific claim sentence isn't
-    actually what the source says. Per HALT-RAG's combine-lexical-and-NLI finding: this deliberately
-    runs ONLY on lines term-overlap already passed — the zero-overlap wholesale-fabrication cases
-    are already caught cheaply upstream; this is the harder tier those miss.
-
-    Flags ONLY on **contradiction**, never on **neutral** — neutral is the expected, common case
-    for a claim that legitimately paraphrases or summarizes its source (NLI's precision on
-    'neutral' vs. 'not explicitly stated' is poor, and treating it as a failure would over-flag
-    ordinary paraphrase). Conservative by construction, same as every other check in this file.
-    Fails open (returns None) if the model isn't available — see _get_nli_model. The model is
-    loaded (or, when mocked/unavailable, checked) only AFTER pairs is confirmed non-empty below —
-    a report with no NLI-checkable line (e.g. every citation's claim already had no checkable term
-    at all, claim_grounding_problem's own job) must not pay the model-load cost for nothing."""
+def _grounded_claim_pairs(report: str) -> list[tuple[str, str, str]]:
+    """Shared by nli_unsupported_problem and topical_relevance_problem (ROADMAP Phase 4): every
+    report prose line whose citation resolves to a fetched source AND already passed
+    claim_grounding_problem's term-overlap check — the same evidence set, just handed to two
+    different second-stage classifiers (entailment vs. topical relevance) instead of duplicating
+    this matching loop twice. Returns (window, claim_line_text, display_citation) triples, where
+    window is _select_relevant_window's best-overlapping passage from the source (sized for a
+    short claim/evidence classifier, not whole-document input)."""
     prose = split_prose_from_sources(report)
     fetched = _fetched_url_files()
     ref_map = parse_academic_references(report)
@@ -732,8 +717,33 @@ def nli_unsupported_problem(report: str) -> str | None:
                 continue  # term-overlap didn't pass for this file -- claim_grounding_problem's job
             window = _select_relevant_window(line_terms, content)
             pairs.append((window, stripped_line.strip(), display[0]))
-            break  # one passing source is enough evidence to NLI-check this line against
+            break  # one passing source is enough evidence to classify this line against
+    return pairs
 
+
+def nli_unsupported_problem(report: str) -> str | None:
+    """Second-stage grounding check beyond claim_grounding_problem's term-overlap: for each
+    (window, claim, citation) triple _grounded_claim_pairs already matched, does a small NLI
+    cross-encoder actually judge the claim as entailed by the source's most relevant passage — or
+    does it CONTRADICT what the source says, despite the shared terms?
+
+    Confirmed live 2026-07-12 (NVIDIA NIM gpt-oss-20b benchmark run): a report cited a real,
+    fetched arXiv paper whose title was quoted with one word swapped ('Dual Causal Network' vs the
+    real 'Dual Correlation Network') — enough shared capitalized-phrase/number overlap to pass
+    claim_grounding_problem's zero-overlap gate outright, while the specific claim sentence isn't
+    actually what the source says. Per HALT-RAG's combine-lexical-and-NLI finding: this deliberately
+    runs ONLY on lines term-overlap already passed — the zero-overlap wholesale-fabrication cases
+    are already caught cheaply upstream; this is the harder tier those miss.
+
+    Flags ONLY on **contradiction**, never on **neutral** — neutral is the expected, common case
+    for a claim that legitimately paraphrases or summarizes its source (NLI's precision on
+    'neutral' vs. 'not explicitly stated' is poor, and treating it as a failure would over-flag
+    ordinary paraphrase). Conservative by construction, same as every other check in this file.
+    Fails open (returns None) if the model isn't available — see _get_nli_model. The model is
+    loaded (or, when mocked/unavailable, checked) only AFTER pairs is confirmed non-empty below —
+    a report with no NLI-checkable line (e.g. every citation's claim already had no checkable term
+    at all, claim_grounding_problem's own job) must not pay the model-load cost for nothing."""
+    pairs = _grounded_claim_pairs(report)
     if not pairs:
         return None
 
@@ -748,6 +758,70 @@ def nli_unsupported_problem(report: str) -> str | None:
     if not contradicted:
         return None
     return f"nli_unsupported:{', '.join(contradicted[:3])}"
+
+
+_topical_relevance_model = None
+_topical_relevance_load_failed = False
+
+
+def _get_topical_relevance_model():
+    """Lazy, process-wide singleton — same pattern as _get_nli_model, a second CPU-only
+    sentence-transformers CrossEncoder checkpoint (BAAI/bge-reranker-v2-m3, ~278M params). NOT a
+    new pip dependency — sentence-transformers is already a core dependency for the NLI check
+    above; this only downloads/loads a second checkpoint through the same already-installed
+    library. Constructed with an explicit Sigmoid activation so .predict() returns a 0-1 relevance
+    probability directly (BAAI's own documented usage for this checkpoint), rather than a raw
+    logit the caller would have to transform itself. Fails OPEN (returns None) on any load error,
+    same philosophy as every other check in this module."""
+    global _topical_relevance_model, _topical_relevance_load_failed
+    if _topical_relevance_model is not None or _topical_relevance_load_failed:
+        return _topical_relevance_model
+    try:
+        from sentence_transformers import CrossEncoder
+        import torch
+        _topical_relevance_model = CrossEncoder(
+            "BAAI/bge-reranker-v2-m3", device="cpu", activation_fn=torch.nn.Sigmoid())
+    except Exception:
+        _topical_relevance_load_failed = True
+    return _topical_relevance_model
+
+
+def topical_relevance_problem(report: str) -> str | None:
+    """ROADMAP Phase 4: third-stage grounding check, layered after claim_grounding_problem
+    (lexical term-overlap) and nli_unsupported_problem (entailment/contradiction) — a cross-encoder
+    reranker scoring (claim, source-passage) pairs for TOPICAL relevance, not entailment or
+    lexical overlap. Catches a real, documented gap neither of those two layers can: the GOA (the
+    Grasshopper Optimization Algorithm) vs. Goa (the Indian state) acronym collision (ROADMAP
+    "Findings from live testing") — 'GOA'/'Goa' term-overlap passes outright, and NLI entailment
+    can score neutral/borderline since the sentences aren't strictly contradictory (an EV-policy
+    sentence about Goa doesn't CONTRADICT a claim about an algorithm, it's just about something
+    else entirely) — only a semantic relevance judgment catches that the source is about a
+    completely different subject than the claim.
+
+    Reuses the exact same evidence set as the NLI check (_grounded_claim_pairs — a line whose
+    citation already passed term-overlap), so this never re-flags what the cheaper upstream checks
+    would already catch on their own; it only adds a check those two structurally cannot make.
+    Conservative threshold (default 0.1, `settings.grounding_check.topical_relevance_threshold`):
+    bge-reranker-v2-m3 scores a genuinely relevant pair close to 1.0, so only a CLEARLY unrelated
+    pair (near 0) fires — a merely thin or terse-but-relevant match must not trip this. Fails open
+    (returns None) if the model isn't available, same as every other check in this module."""
+    pairs = _grounded_claim_pairs(report)
+    if not pairs:
+        return None
+
+    model = _get_topical_relevance_model()
+    if model is None:
+        return None
+
+    threshold = config.cfg.get("settings", {}).get("grounding_check", {}).get(
+        "topical_relevance_threshold", 0.1)
+    # bge-reranker convention is (query, passage) -- the CLAIM is the query, the source window is
+    # the passage being judged relevant or not to it.
+    scores = model.predict([(c, w) for w, c, _ in pairs])
+    irrelevant = [display for (score, (_, __, display)) in zip(scores, pairs) if score < threshold]
+    if not irrelevant:
+        return None
+    return f"topical_mismatch:{', '.join(irrelevant[:3])}"
 
 
 def fully_ungrounded(content: str) -> str | None:
@@ -830,6 +904,11 @@ async def real_grounding_problem(content: str) -> str | None:
 
     if gc_cfg.get("nli_verify", True):
         problem = nli_unsupported_problem(content)
+        if problem:
+            return problem
+
+    if gc_cfg.get("topical_relevance_check", True):
+        problem = topical_relevance_problem(content)
         if problem:
             return problem
 
