@@ -4,39 +4,59 @@ Status as of 2026-07-14.
 
 ## Done
 
-- **Sub-agent dispatches had NO wall-clock deadline at all — a real, live-confirmed gap, fixed.**
-  `engine/tui.py`'s `run_cli` already races each stream update against `settings.max_run_minutes`
-  via `asyncio.wait_for(stream_iter.__anext__(), timeout=remaining)` instead of a plain `async for`
-  (2026-07-12 fix, because a plain async-for only checks a deadline once it actually RECEIVES an
-  update — invisible to a stream that goes silent for a long time). That fix was never propagated
-  to `engine/orchestrator.py::_run_single_task`, the code path EVERY Searcher/Analyzer/Builder/
-  FindingsWriter/PeerReviewer dispatch goes through — it used a bare `async for update in stream:`
-  with zero deadline, relying entirely on the raw openai-SDK HTTP client's blunt ~600s default
-  connection timeout, which then discards the whole in-progress response and raises a generic
-  error instead of degrading gracefully. **Root-caused live (2026-07-14)**, during Phase 4 smoke
-  testing, after the user pushed back on accepting repeated live-run timeouts as "just model
-  slowness" without further investigation — correctly, since the real cause turned out to be
-  structural: cross-referenced `journalctl -u ollama` against the exact failure window and found
-  two requests that returned HTTP 500 after hanging exactly `10m0s` and `6m24s`. The `10m0s` one
-  was NOT stuck — `ollama`'s own `print_timing` log showed it continuously, validly decoding
-  tokens the entire time (steady ~33 tok/s, no gaps) up to 19,908+ tokens when the connection was
-  force-closed — `600s × ~33 tok/s ≈ 19,800 tokens`, matching almost exactly. A single sub-agent
-  turn ran away into a very long generation with no early-cutoff mechanism watching it at all.
-  Fix: `create_local_agent` now computes `_run_budget_deadline` once per run (same
-  `max_run_minutes` setting, same semantics as `run_cli`'s own top-level guard — shared because
-  `create_local_agent` is called once per run and used by both `run_cli` and `run_agent`/TUI, so
-  this closes the gap on both surfaces at once, no separate TUI-specific change needed), and
-  `_run_single_task`'s stream loop now uses the identical `asyncio.wait_for`-racing pattern instead
-  of a bare `async for`, degrading gracefully into `final_text` with a clear `[SYSTEM: task '...'
-  cut short...]` marker instead of losing the whole turn to a raw connection-timeout exception.
-  Verified the core mechanism in isolation (a stream that hangs 999s against a 1s deadline is cut
-  off at ~1.00s, not 999s) before considering this done. Full suite + `ruff check .` pass.
-  **This also retroactively explains several "timeout" observations during today's earlier Phase
-  2-4 live smoke tests** that had been attributed to model slowness/complexity — those diagnoses
-  weren't necessarily wrong (Gemma4's genuine slowness and a separate `qwen3:4b` tool-repetition
-  pattern were both independently confirmed too, see "Findings from live testing" below), but this
-  structural gap was the common thread making ANY of those failure modes catastrophic (total loss
-  of the turn, no graceful degrade) instead of just slow.
+- **Sub-agent dispatches had NO wall-clock deadline at all — a real, live-confirmed gap, fixed and
+  live-verified.** `engine/tui.py`'s `run_cli` already races each stream update against
+  `settings.max_run_minutes` via `asyncio.wait_for(stream_iter.__anext__(), timeout=remaining)`
+  instead of a plain `async for` (2026-07-12 fix, because a plain async-for only checks a deadline
+  once it actually RECEIVES an update — invisible to a stream that goes silent for a long time).
+  That fix was never propagated to `engine/orchestrator.py::_run_single_task`, the code path EVERY
+  Searcher/Analyzer/Builder/FindingsWriter/PeerReviewer dispatch goes through — it used a bare
+  `async for update in stream:` with zero deadline, relying entirely on the raw openai-SDK HTTP
+  client's blunt ~600s default connection timeout, which then discards the whole in-progress
+  response and raises a generic error instead of degrading gracefully.
+  - **Root-caused live (2026-07-14)**, during Phase 4 smoke testing, after the user pushed back on
+    accepting repeated live-run timeouts as "just model slowness" without further investigation —
+    correctly, since the real cause turned out to be structural: cross-referenced
+    `journalctl -u ollama` against the exact failure window and found two requests that returned
+    HTTP 500 after hanging exactly `10m0s` and `6m24s`. The `10m0s` one was NOT stuck — `ollama`'s
+    own `print_timing` log showed it continuously, validly decoding tokens the entire time (steady
+    ~33 tok/s, no gaps) up to 19,908+ tokens when the connection was force-closed —
+    `600s × ~33 tok/s ≈ 19,800 tokens`, matching almost exactly. A single sub-agent turn ran away
+    into a very long generation with no early-cutoff mechanism watching it at all.
+  - **First fix attempt was itself incomplete, caught by live verification, not just the unit
+    suite**: an initial version gave `_run_single_task` the SAME `max_run_minutes` deadline as
+    `run_cli`'s own top-level guard, anchored to the same run-start clock. Live-tested with a tight
+    `max_run_minutes: 2` — a cutoff DID fire, but checking the persisted
+    `~/.deepdelve/sessions/session_<id>.json` UI-event log showed the new inner marker text never
+    actually appeared; the OUTER guard's cancellation had propagated down through `asyncio.wait_for`
+    and pre-empted the inner one before its own deadline check ever got a chance to run on its own
+    terms — meaning in realistic configs (max_run_minutes=45) the new code was effectively dead,
+    providing no protection against ONE runaway call among MANY quick ones early in a long run.
+  - **Real fix**: new, INDEPENDENT `settings.sub_agent_timeout_minutes` (default 10), a fresh
+    per-DISPATCH deadline computed at the start of each `_run_single_task` call (not shared with
+    the run-wide clock or any other dispatch) — closes the actual gap (one runaway call) instead of
+    just duplicating the whole-run ceiling. Also bumped `_build_client`'s `AsyncOpenAI` `timeout=`
+    to run comfortably past both `max_run_minutes` and `sub_agent_timeout_minutes` — otherwise the
+    SDK's own blunt ~600s default keeps winning the race against either of our graceful cutoffs
+    whenever a configured budget exceeds 10 minutes (both template defaults do), making them dead
+    code in any realistic config, only ever exercised by an artificially short override.
+  - **Live-verified the corrected fix directly**: ran with `max_run_minutes: 45` (generous, so the
+    outer guard has no reason to fire) and `sub_agent_timeout_minutes: 1` (tight) — a sub-agent
+    dispatch was cut short within a minute, and the Planner's own next turn literally said "The
+    task timed out, but the capital of Italy is a well-known fact (Rome)... I stop delegation
+    immediately," proving the graceful marker text reached the Planner and it correctly adapted
+    instead of hanging, retrying blindly, or crashing.
+  - Verified the core `asyncio.wait_for`-racing mechanism in isolation too (a stream that hangs
+    999s against a 1s deadline is cut off at ~1.00s, not 999s). Full suite + `ruff check .` pass.
+  - `_run_budget_deadline` shared across `run_cli`/`run_agent` (both call `create_local_agent`
+    once per run) — no separate TUI-specific change needed to close this gap on both surfaces.
+  - **This also retroactively explains several "timeout" observations during today's earlier Phase
+    2-4 live smoke tests** that had been attributed to model slowness/complexity — those diagnoses
+    weren't necessarily wrong (Gemma4's genuine slowness and a separate `qwen3:4b` tool-repetition
+    pattern were both independently confirmed too, see "Findings from live testing" below), but this
+    structural gap was the common thread making ANY of those failure modes catastrophic (total loss
+    of the turn, no graceful degrade, occasionally a doomed retry into the same pattern) instead of
+    just slow.
 
 - **3-tier domain-specialized architecture**: `Planner -> {WebSearcher, AcademicSearcher, PeerReviewer} -> {DocumentAnalyzer, DataAnalyzer}`. `PeerReviewer` is a Planner-tier delegate (independent critique, findings.md or, in report mode, final_report.md), not part of the Searcher→Analyzer chain. *(2026-07-13: a `Builder` Planner-tier delegate was added — see the "Builder sub-agent + Build→Review→Fix loop" entry below. 2026-07-14: a `FindingsWriter` Planner-tier delegate was added the same way, one artifact earlier — see "Planner now only plans and delegates" below. Five Planner-tier delegates total now: WebSearcher, AcademicSearcher, PeerReviewer, Builder, FindingsWriter.)*
 - **Planner now only plans and delegates — it cannot write ANY file.** *(2026-07-14, user-driven design question: "the planner should only plan and delegate... giving the planner the job of writing the findings will poison context.")* Previously the Planner wrote `findings.md` itself (the only artifact-writing job it still had after Builder was split out for `final_report.md`) — a real, inconsistent gap: a `findings_ungrounded`/`missing_findings` retry grew the PLANNER'S OWN conversation exactly the way Builder was invented to prevent for `final_report.md`. Confirmed live the same day, independent of this fix: a benchmark run hit 4 consecutive `findings_ungrounded` retries and exhausted its budget with nothing ever written. Fix: new `FindingsWriter` Planner-tier delegate (`src/prompts.py::FINDINGS_WRITER_INSTRUCTIONS`, `src/app.py::findings_writer_agent`), dispatched exclusively by `engine/completion.py`'s generalized Write→Review→Fix loop (renamed from Build→Review→Fix — `_dispatch_build_review_fix` → `_dispatch_writer_review_fix`, now shared by both Builder and FindingsWriter; `_ensure_builder_write_quota_headroom` → `_ensure_writer_quota_headroom` for the same reason) when `missing_findings`/`findings_ungrounded` fires. FindingsWriter never sees the Planner's conversation — its dispatch instructions are built entirely from `RunState`'s structured `data["findings"]` (`{source_url, summary}` per dispatched task, populated automatically by every Searcher/Analyzer call — see `_build_findings_source_material`), plus `read_workspace_file`/`grep_workspace_file` access to go deeper into a raw fetched source if a summary isn't detailed enough. The Planner's `write_workspace_file` tool was removed entirely (`src/app.py`) — it is now structurally incapable of writing any file, the same way it's already structurally incapable of researching. `PLANNER_INSTRUCTIONS` rewritten accordingly (job ends at delegation; `PeerReviewer`/`Builder`/`FindingsWriter` all removed from its Delegation Routing, since none are ever Planner-dispatched anymore). Fallback verdict text for both problems rewritten to never instruct a `write_workspace_file` call the Planner can't make. New test coverage: `_findings_writer_dispatch_scenario` in `test_structural_checks.py`, mirroring `_builder_dispatch_scenario` (CLEAN review, ISSUES FOUND review with corrective re-dispatch, malformed-sentinel conservative handling, missing-registration fallback that doesn't reference the removed tool).
