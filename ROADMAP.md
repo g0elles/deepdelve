@@ -1038,10 +1038,58 @@ Status as of 2026-07-14.
     programmatic verifier is enough — this session's own bake-off/benchmark run logs could
     plausibly seed real (task, correct-tool-call) examples rather than hand-authoring a dataset
     from scratch.
-  - **Still not started** — this was a feasibility scan, not a scoped plan. Real remaining
-    unknowns before committing time: how rough the RDNA4-specific ROCm training path actually is
-    in practice (only found via hands-on testing, not docs), and how large a reward-labeled
-    dataset extracted from existing run logs would actually be before deciding if it's enough.
+  - **HANDS-ON SMOKE TEST DONE 2026-07-14 — GRPO CONFIRMED WORKING on this exact GPU.** Real
+    breakthrough, not just research: built a bare venv (`~/.venvs/rocm-grpo-test`, NOT `/mnt/
+    nuevovol` — `python3 -m venv --copies` still fails there, NTFS has zero symlink support even
+    with `--copies`, so venvs must live on root/ext4; pip cache and HF model weights CAN and
+    should go to the NTFS mount to protect root's limited space, same pattern as `HF_HOME`
+    already in `~/.bashrc`). Installed `torch==2.10.0+rocm7.0` (`pip install torch --index-url
+    https://download.pytorch.org/whl/rocm7.0` — NOT rocm6.4, which resolves but is the wrong
+    generation for this card) + `transformers`/`trl`/`peft`/`accelerate`. `torch.cuda
+    .get_device_properties(0).gcnArchName` correctly reports `gfx1200` (RDNA4) — no Docker, no
+    NTFS/containerd blocker at all (that constraint was specific to Docker's overlayfs
+    snapshotter, not to a native pip/PyTorch install, which is just regular files).
+    - **One real blocker hit and fixed**: `GRPOTrainer`'s `accelerate` auto device-mapping tried
+      to shard the model across BOTH GPUs on this machine — the discrete RX 9060 XT (`gfx1200`,
+      in PyTorch's compiled `get_arch_list()`) AND the Ryzen iGPU (`AMD Radeon Graphics`, some
+      RDNA2 arch NOT in that compiled list) — crashing with `torch.AcceleratorError: HIP error:
+      invalid device function` inside a trivial RoPE `.float()` cast, the multi-GPU auto-split
+      being the actual cause, not the op itself. **Fix**: `export HIP_VISIBLE_DEVICES=0` before
+      launching, isolating just the discrete card. Confirmed the iGPU was the culprit by first
+      verifying plain `AutoModelForCausalLM.generate()` (no accelerate multi-device logic)
+      already worked fine even without this env var.
+    - **Real GRPO training ran end-to-end on the GPU**, 2 steps, `Qwen/Qwen2.5-0.5B-Instruct`, a
+      toy arithmetic task with a mechanical/verifiable reward (exact-match on the correct
+      answer): reward mean went 0.5 -> 1.0 across the 2 steps (real policy-gradient improvement,
+      `grad_norm` nonzero on step 1), ~5 seconds total train time. Full working script preserved
+      at the bottom of this entry for the next session to reuse directly.
+    - **Real disk cost, budget for it next time**: root hit 1.7GB free / 99% used by the end (the
+      venv alone was 13GB, entirely on root — there is no way around this given NTFS's symlink
+      limitation) — same emergency shape as the earlier vLLM investigation. Cleaned up
+      immediately after the test (`rm -rf ~/.venvs/rocm-grpo-test`), back to ~20GB free. The pip
+      cache (9.4GB) and HF model cache were left on the NTFS mount (`/mnt/nuevovol/Projects/AI
+      shit/LLvm Models/{pip-cache,huggingface}`) specifically so a future re-run reinstalls from
+      cache instead of re-downloading the ~5GB torch wheel — but the venv itself will need to be
+      rebuilt on root again, and root is the tight resource here (only ~20GB free even at
+      baseline), not VRAM or the GPU stack. **Scaling up to a real target model (`qwen3:4b`-class,
+      not the 0.5B toy) needs a real plan for root disk budget, not just "install it again."**
+    - **Conclusion**: the core technical risk (does GRPO training actually execute on this
+      specific RDNA4 card without Docker) is RESOLVED, positively. What's left before a real
+      fine-tune is scoping work, not more feasibility-proving: (1) root disk budget for a bigger
+      model's venv+cache, (2) building the actual DeepDelve-tool-call verifiable reward function
+      (not the toy arithmetic one here), (3) assembling/extracting the training dataset from real
+      run logs, (4) deciding the target model (`qwen3:4b` is the natural first pick, already a
+      known-decent tool-caller from the bake-off).
+    - **Reusable smoke-test script preserved**: `session_status/scripts/grpo_smoke_test.py`
+      (gitignored along with the rest of `session_status/`, but persists on disk across
+      sessions). Loads `Qwen/Qwen2.5-0.5B-Instruct` via `trl.GRPOTrainer`, 4 toy arithmetic
+      prompts x4 repeats, a `correctness_reward` function doing exact-match on the expected
+      number, `GRPOConfig(max_steps=2, num_generations=4, per_device_train_batch_size=4,
+      max_completion_length=8, bf16=False, fp16=False)`. Swap `MODEL`, the dataset, and the
+      reward function for a real DeepDelve tool-call fine-tune. Recreate the venv (`python3 -m
+      venv ~/.venvs/rocm-grpo-test` — NOT on `/mnt/nuevovol`), `pip install torch --index-url
+      https://download.pytorch.org/whl/rocm7.0 && pip install transformers trl peft accelerate
+      numpy`, `export HIP_VISIBLE_DEVICES=0` before running.
 ## Evaluated and rejected
 
 - Large/small model dispatcher: rejected 2026-07-11 — benchmark showed small models fail sub-agent reasoning (nemo 2/10); revisit only if a small model scores ≥5 on the Colombia rubric solo.
