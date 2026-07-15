@@ -564,6 +564,24 @@ Status as of 2026-07-14.
   (same smoke test that caught the `_is_citation_only_line` cross-source-contradiction bug above).
   Committed `2e4758f`. This was the last open phase of the 2026-07-14 6-phase plan — all 6 phases
   now done.
+- **`claim_grounding_problem`/`_grounded_claim_pairs` false-positive on citation-only sub-bullets —
+  FIXED 2026-07-14, commit `061c10a`.** Root-caused a live Eiffel Tower smoke-test failure that
+  burned its entire 8-attempt retry budget on `claim_unsupported`: both flagged claims ("2 years,
+  2 months and 5 days", "assembly began July 1, 1887, completed twenty-two months later") were
+  verbatim in the fetched source — a genuine false positive, not model fabrication. This project's
+  own Builder output shape puts a claim on one line and its citation on a SEPARATE
+  `- Source: [Title](url).` sub-bullet; the bare sub-bullet was being processed as its own claim
+  segment, and `extract_salient_terms` pulled "Official Eiffel Tower" out of the citation's own
+  editorialized anchor text as if it were a checkable fact — then failed it because that exact
+  phrase (the writer's own paraphrase) doesn't appear verbatim in the source.
+  `_is_citation_only_line` already existed for exactly this line shape (built for
+  `_extract_figure_claims`/cross-source-contradiction, 2026-07-14 earlier this same day) but was
+  never applied here. Now guarded in both functions. New test:
+  `_citation_only_subbullet_scenario`, reproducing the real failing report/source directly rather
+  than a synthetic case. **Live end-to-end re-verification**: the exact same query re-run
+  end-to-end produced zero `claim_unsupported` occurrences (vs. 6 consecutive + retry-budget-
+  exhausted before), converging cleanly by attempt 4 in 490.0s vs. the prior run's 1017.9s wasted
+  grinding on the false positive.
 ## Findings from live testing (not yet acted on / informational)
 
 - **Grounding check verifies provenance, not topical relevance.** A live GOA (Grasshopper Optimization Algorithm) research query got a citation from `globaldrivetozero.org` — actually fetched, and sharing surface terms like "GOA"/"Goa" — that's actually about the Indian state of Goa's EV policy, not the algorithm. The URL-presence + term-overlap check passed it because it only checks "was this fetched" and "do terms overlap," not "is this source about the same subject." Acronym collisions are the clearest way to trigger this; unclear how common the failure mode is outside them. **Fixed 2026-07-14 — see "Done" (Phase 4, `topical_relevance_problem`).**
