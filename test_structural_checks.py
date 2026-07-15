@@ -1542,6 +1542,113 @@ def main():
 
     contextvars.copy_context().run(_findings_writer_dispatch_scenario)
 
+    # --- _dispatch_writer_review_fix clean-check hardening (Bonsai-8B bake-off finding,
+    # 2026-07-14): a model confident enough to fabricate 'REVIEW: CLEAN' without ever calling
+    # read_workspace_file used to defeat the review entirely. Now cross-checked against the
+    # read_workspace_file quota's used-count delta -- a CLEAN verdict with zero new reads is
+    # treated as ISSUES FOUND instead of trusted. Only applies when the quota is actually tracked
+    # (pool has the key) -- a config with it untracked must fail OPEN, not distrust every review,
+    # which is what every OTHER scenario in this file (none of which populate that quota key)
+    # implicitly already relies on staying unaffected. ---
+    def _clean_check_read_verification_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        from tools.core import tool_quotas_ctx as q_ctx
+        from unittest.mock import AsyncMock
+        from engine.orchestrator import available_sub_agents_ctx
+
+        class _FakeSubAgentConfig:
+            def __init__(self, name):
+                self.name = name
+
+        _orig_ws10 = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "findings.md"}
+        _orig_gc10 = _config.cfg.get("settings", {}).get("grounding_check")
+        _config.cfg["settings"]["grounding_check"] = {"nli_verify": False, "topical_relevance_check": False}
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            available_sub_agents_ctx.set([
+                _FakeSubAgentConfig("FindingsWriter"), _FakeSubAgentConfig("PeerReviewer"),
+            ])
+
+            # (a) PeerReviewer says CLEAN but never touches read_workspace_file -> must be treated
+            # as ISSUES FOUND, forcing a corrective FindingsWriter pass (3 dispatches total).
+            with tempfile.TemporaryDirectory() as tmpdir_a:
+                _IN_MEMORY_FS.clear()
+                reset_fetched_urls()
+                record_fetched_url(_SRC, filename="sources/page.md")
+                _IN_MEMORY_FS["sources/page.md"] = _SOURCE_TEXT
+                rs = RunState(tmpdir_a)
+                rs.add_finding(_SRC, "a real finding")
+                run_state_ctx.set(rs)
+                msgs = []
+                q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5},
+                           "read_workspace_file": {"used": 0, "limit": 30}})
+
+                async def _side_effect_fabricated(name, instructions, role):
+                    if role == "FindingsWriter":
+                        _IN_MEMORY_FS["findings.md"] = _FINDINGS_OK
+                        return "## Result\nWrote findings.md\n---"
+                    # PeerReviewer claims CLEAN without ever calling read_workspace_file (the
+                    # pool's 'used' count is never incremented by this fake dispatch).
+                    return "REVIEW: CLEAN\nThe file looks well-structured."
+
+                dispatch = AsyncMock(side_effect=_side_effect_fabricated)
+                orig_input = "q"
+                should_retry, new_input = _asyncio.run(run_completion_check(
+                    query="q", current_input=orig_input, run_state=rs, notify=msgs.append,
+                    dispatch_task=dispatch))
+                assert dispatch.call_count == 3, (
+                    "a fabricated CLEAN with zero real reads must trigger the corrective Fix pass, "
+                    "not be trusted", dispatch.call_args_list)
+                assert dispatch.call_args_list[2].args[2] == "FindingsWriter", dispatch.call_args_list
+                assert any("flagged issues" in m for m in msgs), (
+                    "must be notified as issues-found, not as a clean pass", msgs)
+                assert not any("found no issues" in m for m in msgs), msgs
+
+            # (b) PeerReviewer says CLEAN and DOES increment read_workspace_file's used count ->
+            # trusted as before (2 dispatches, converges).
+            with tempfile.TemporaryDirectory() as tmpdir_b:
+                _IN_MEMORY_FS.clear()
+                reset_fetched_urls()
+                record_fetched_url(_SRC, filename="sources/page.md")
+                _IN_MEMORY_FS["sources/page.md"] = _SOURCE_TEXT
+                rs = RunState(tmpdir_b)
+                rs.add_finding(_SRC, "a real finding")
+                run_state_ctx.set(rs)
+                msgs = []
+                q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5},
+                           "read_workspace_file": {"used": 0, "limit": 30}})
+
+                async def _side_effect_honest(name, instructions, role):
+                    if role == "FindingsWriter":
+                        _IN_MEMORY_FS["findings.md"] = _FINDINGS_OK
+                        return "## Result\nWrote findings.md\n---"
+                    q_ctx.get()["read_workspace_file"]["used"] += 1  # simulates a real read
+                    return "REVIEW: CLEAN\nThe file looks well-structured."
+
+                dispatch = AsyncMock(side_effect=_side_effect_honest)
+                orig_input = "q"
+                should_retry, new_input = _asyncio.run(run_completion_check(
+                    query="q", current_input=orig_input, run_state=rs, notify=msgs.append,
+                    dispatch_task=dispatch))
+                assert dispatch.call_count == 2, (
+                    "a CLEAN verdict backed by a real read must still be trusted", dispatch.call_args_list)
+                assert any("found no issues" in m for m in msgs), msgs
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            if _orig_ws10 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws10
+            if _orig_gc10 is None:
+                _config.cfg["settings"].pop("grounding_check", None)
+            else:
+                _config.cfg["settings"]["grounding_check"] = _orig_gc10
+
+    contextvars.copy_context().run(_clean_check_read_verification_scenario)
+
     # --- Builder write_workspace_file quota headroom (ROADMAP "Planned": a Build->Review->Fix
     # cycle can burn up to 2 write_workspace_file calls — Builder's initial rewrite plus one
     # corrective Fix pass — against the same shared pool the Planner's own findings.md writes draw

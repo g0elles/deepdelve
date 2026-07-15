@@ -726,6 +726,13 @@ async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artif
     Capped at 3 dispatches total (Write, Review, optional Fix) — no unbounded nesting."""
     await dispatch_task(f"{writer_role}Fix_attempt{attempt + 1}", write_instructions, writer_role)
 
+    # Snapshot read_workspace_file's usage count BEFORE dispatching PeerReviewer, so a fabricated
+    # "REVIEW: CLEAN" that never actually opened the file can be caught below (see is_clean gate).
+    # None (not 0) when the quota isn't tracked at all -- distinguishes "can't verify" from "verified
+    # zero reads," so a config with this quota disabled doesn't get falsely distrusted.
+    pool = tool_quotas_ctx.get()
+    reads_before = pool.get("read_workspace_file", {}).get("used") if pool else None
+
     review = await dispatch_task(
         f"ReviewFix_attempt{attempt + 1}",
         f"Review '{req_artifact}' for accuracy and coherence. "
@@ -738,6 +745,23 @@ async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artif
     # never lets an unreviewed artifact slip through.
     review_text = review if isinstance(review, str) else str(review)
     is_clean = "REVIEW: CLEAN" in review_text and "REVIEW: ISSUES FOUND:" not in review_text
+
+    # Confirmed live (Bonsai-8B bake-off, 2026-07-14): a model confident enough to fabricate the
+    # sentinel currently defeats the review entirely -- it answered "REVIEW: CLEAN...well-structured
+    # report..." for a findings.md it never opened and that never existed on disk. A real review
+    # MUST have called read_workspace_file at least once; if the quota shows zero new reads despite
+    # a CLEAN verdict, treat it exactly like an ISSUES FOUND verdict instead of trusting it.
+    if is_clean and reads_before is not None:
+        reads_after = pool.get("read_workspace_file", {}).get("used")
+        if reads_after == reads_before:
+            is_clean = False
+            review_text = (
+                "REVIEW: ISSUES FOUND: PeerReviewer claimed 'REVIEW: CLEAN' without ever calling "
+                f"read_workspace_file on '{req_artifact}' -- a review with no evidence it actually "
+                "read the file is not trustworthy. Re-read the file for real this time before "
+                "judging it."
+            )
+
     if is_clean:
         notify(f"**System ({attempt + 1}):** PeerReviewer found no issues with the rebuilt `{req_artifact}`.")
         return
