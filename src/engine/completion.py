@@ -770,11 +770,27 @@ def _build_findings_source_material(run_state: "RunState") -> str:  # noqa: F821
     dispatched task (Searcher tier AND nested Analyzer tier alike — see
     engine/orchestrator.py::_run_single_task's `run_state.add_finding` call, which fires
     unconditionally on every task, not just top-level ones), so this is a complete record of the
-    run's real research, not a lossy approximation of it."""
+    run's real research, not a lossy approximation of it.
+
+    Deduplicated by exact (source_url, summary) match before serializing — every completion-check
+    retry that re-delegates the same task_name re-adds a finding without ever removing the stale
+    one from the earlier round, so across a multi-attempt run the raw list accumulates exact
+    repeats (confirmed live 2026-07-14: 25 entries for ~8-10 distinct pieces of research, e.g. the
+    same `colombia_cultural_factors` summary appearing identically 5 times). Left as-is in
+    `run_state.data` itself — `coverage()` only checks per-task_name presence of a real URL, which
+    duplicates don't affect, and the raw list is the audit trail other tooling may want intact."""
     findings = run_state.data.get("findings", [])
     urls = run_state.data.get("fetched_urls", [])
+    seen = set()
+    deduped = []
+    for f in findings:
+        key = (f.get("source_url"), f.get("summary"))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(f)
     findings_block = "\n\n".join(
-        f"### Source: {f.get('source_url')}\n{f.get('summary', '')}" for f in findings
+        f"### Source: {f.get('source_url')}\n{f.get('summary', '')}" for f in deduped
     ) or "(no findings recorded yet)"
     fetched_block = "\n".join(
         f"- {u.get('url')} (saved as {u.get('filename')})" for u in urls
