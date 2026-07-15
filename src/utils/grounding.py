@@ -719,38 +719,51 @@ def _select_relevant_window(claim_terms: set, source_text: str, window_size: int
 
 def _grounded_claim_pairs(report: str) -> list[tuple[str, str, str]]:
     """Shared by nli_unsupported_problem and topical_relevance_problem (ROADMAP Phase 4): every
-    report prose line whose citation resolves to a fetched source AND already passed
+    report prose CLAIM SEGMENT whose citation resolves to a fetched source AND already passed
     claim_grounding_problem's term-overlap check — the same evidence set, just handed to two
     different second-stage classifiers (entailment vs. topical relevance) instead of duplicating
     this matching loop twice. Returns (window, claim_line_text, display_citation) triples, where
     window is _select_relevant_window's best-overlapping passage from the source (sized for a
-    short claim/evidence classifier, not whole-document input)."""
+    short claim/evidence classifier, not whole-document input).
+
+    SEGMENT-scoped via decompose_claim_segments, not whole-line (ROADMAP "Residual note" on the
+    Phase 1 claim-level grounding upgrade, closed 2026-07-14): claim_grounding_problem was fixed
+    to check each citation-bearing segment of a multi-claim line against only its OWN cited
+    source, but this function still compared WHOLE-LINE terms against whichever source happened
+    to be cited anywhere on the line — a multi-claim line ("Sector A grew 12% [gov](url1), while
+    Sector B declined 3% [news](url2)") could pass NLI/topical-relevance on claim A's own
+    entailment while silently attributing the display citation and evidence window to the WRONG
+    claim if segment iteration order didn't line up, and vice versa. Same latent gap class as the
+    one Phase 1 already closed for claim_grounding_problem; a line with zero or one citation
+    decomposes to `[line]` unchanged, so this is a strict refinement, not a behavior change for
+    the common single-citation-per-line case."""
     prose = split_prose_from_sources(report)
     fetched = _fetched_url_files()
     ref_map = parse_academic_references(report)
 
     pairs = []  # (window, claim_line_text, display_citation)
     for line in prose.splitlines():
-        display = (extract_cited_urls(line) + [m.group(0) for m in _PARENTHETICAL_CITATION_RE.finditer(line)])
-        if not display:
-            continue
-        stripped_line = re.sub(r'https?://[^\s\)\]\}"\'>【】]+', '', line)
-        line_terms = extract_salient_terms(stripped_line)
-        if not line_terms:
-            continue
-        files = _line_cited_files(line, fetched, ref_map)
-        if not files:
-            continue
-        for fn in files:
-            content = _source_body(get_workspace_file_content(fn) or "")
-            if len(content.strip()) < 50:
+        for segment in decompose_claim_segments(line):
+            display = (extract_cited_urls(segment) + [m.group(0) for m in _PARENTHETICAL_CITATION_RE.finditer(segment)])
+            if not display:
                 continue
-            source_terms = extract_salient_terms(content)
-            if not (line_terms & source_terms):
-                continue  # term-overlap didn't pass for this file -- claim_grounding_problem's job
-            window = _select_relevant_window(line_terms, content)
-            pairs.append((window, stripped_line.strip(), display[0]))
-            break  # one passing source is enough evidence to classify this line against
+            stripped_segment = re.sub(r'https?://[^\s\)\]\}"\'>【】]+', '', segment)
+            segment_terms = extract_salient_terms(stripped_segment)
+            if not segment_terms:
+                continue
+            files = _line_cited_files(segment, fetched, ref_map)
+            if not files:
+                continue
+            for fn in files:
+                content = _source_body(get_workspace_file_content(fn) or "")
+                if len(content.strip()) < 50:
+                    continue
+                source_terms = extract_salient_terms(content)
+                if not (segment_terms & source_terms):
+                    continue  # term-overlap didn't pass for this file -- claim_grounding_problem's job
+                window = _select_relevant_window(segment_terms, content)
+                pairs.append((window, stripped_segment.strip(), display[0]))
+                break  # one passing source is enough evidence to classify this segment against
     return pairs
 
 
