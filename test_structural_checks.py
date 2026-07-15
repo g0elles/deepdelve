@@ -2279,6 +2279,62 @@ def main():
 
     contextvars.copy_context().run(_line_claim_scenario)
 
+    # --- claim_grounding_problem must skip citation-only sub-bullets, not treat their own anchor
+    # text as a checkable claim (live false positive, 2026-07-14, Eiffel Tower smoke test): a
+    # genuinely-grounded report using "claim on one line, '- Source: [Title](url).' on the next"
+    # (this project's own Builder output shape, distinct from the inline "[gov](url)" same-line
+    # style tested above) burned its ENTIRE retry budget (6 consecutive claim_unsupported verdicts)
+    # because extract_salient_terms pulled "Official Eiffel Tower" out of the citation's own
+    # editorialized anchor text "[Official Eiffel Tower website](url)" and flagged it for not
+    # appearing verbatim in the source -- even though the actual claims (verbatim figures) WERE
+    # genuinely present in the fetched source. Root-caused directly against the real failing run's
+    # saved report + fetched source (research_output/what_year_was_the_eiffel_tower_completed_
+    # 20260714_215912/), reproduced here as a minimal regression case. ---
+    def _citation_only_subbullet_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        _orig_ws12 = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory"}
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            _IN_MEMORY_FS.clear()
+            reset_fetched_urls()
+            record_fetched_url("https://www.toureiffel.paris/en/the-monument/history", filename="sources/tour.md")
+            _IN_MEMORY_FS["sources/tour.md"] = (
+                "Source-URL: https://www.toureiffel.paris/en/the-monument/history\n\n"
+                "The first digging work started on the 26th January 1887. On the 31st March 1889, "
+                "the Tower had been finished in record time - 2 years, 2 months and 5 days.\n\n"
+                "The assembly of the supports began on July 1, 1887 and was completed twenty-two "
+                "months later.")
+            report = (
+                "3. **Construction duration** - The total build time was 2 years, 2 months and 5 "
+                "days, spanning from 26 January 1887 to 31 March 1889.\n"
+                "   - Source: [Official Eiffel Tower website](https://www.toureiffel.paris/en/the-monument/history).\n\n"
+                "4. **Assembly of supports claim** - The official website states that the assembly "
+                "of supports began on 1 July 1887 and was completed twenty-two months later.\n"
+                "   - Source: [Official Eiffel Tower website](https://www.toureiffel.paris/en/the-monument/history)."
+            )
+            assert claim_grounding_problem(report) is None, (
+                "a genuinely-grounded report using a separate '- Source: [Title](url).' sub-bullet "
+                "must not be flagged just because the citation's own descriptive anchor text "
+                "('Official Eiffel Tower') doesn't literally appear in the source")
+            # Same fix, same shape, ported to _grounded_claim_pairs -- must not surface the
+            # citation-only sub-bullet as a (window, claim, display) pair either.
+            from utils.grounding import _grounded_claim_pairs
+            pairs = _grounded_claim_pairs(report)
+            for _, claim_text, _display in pairs:
+                assert claim_text.strip() != "- Source: [Official Eiffel Tower website]", (
+                    "a bare citation sub-bullet must never surface as a claim pair", pairs)
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            if _orig_ws12 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws12
+
+    contextvars.copy_context().run(_citation_only_subbullet_scenario)
+
     # --- _grounded_claim_pairs (shared by nli_unsupported_problem/topical_relevance_problem) must
     # be SEGMENT-scoped via decompose_claim_segments, same fix class already shipped for
     # claim_grounding_problem above (ROADMAP "Residual note" on the Phase 1 claim-level grounding
