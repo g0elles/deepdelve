@@ -2,8 +2,9 @@ import os
 import asyncio
 import re
 import time
+from dataclasses import dataclass
 from agent_framework.openai import OpenAIChatCompletionClient
-from agent_framework import tool, AgentSession
+from agent_framework import tool, AgentSession, Message
 from tools import with_quota, think_tool, QuotaAbortException
 from utils.run_state import run_state_ctx, task_fetched_urls_ctx, scope_entities_ctx
 from prompts import (
@@ -202,6 +203,62 @@ def malformed_tool_call_nudge(e: BaseException) -> str | None:
             "plain, valid JSON string arguments — avoid backslashes except \\\\, \\\", and \\n."
         )
     return None
+
+
+async def iter_agent_stream(stream, deadline: float | None):
+    """Drive one agent-framework stream, yielding each update, cut off by an optional wall-clock
+    deadline (time.monotonic()-based). Replaces a plain `async for` with a manually-driven
+    stream.__aiter__() + asyncio.wait_for(..., timeout=remaining) loop so a stream that goes
+    silent for a long time still gets cut off — a plain async-for only re-checks the deadline once
+    it actually receives an update (found live 2026-07-12, ROADMAP.md). deadline=None means
+    unbounded: asyncio.wait_for(fut, timeout=None) is a plain unbounded await per the stdlib docs,
+    so a TUI caller (no max_run_minutes) gets behavior identical to a plain async-for. Raises
+    asyncio.TimeoutError to the caller on cutoff (does not swallow it) — callers own their own
+    notification text and run_state mutation; this generator only owns iteration mechanics.
+    Shared by run_cli (headless, real deadline) and run_agent (TUI, deadline=None) in
+    engine/tui.py — extracted 2026-07-14 (ROADMAP "B4") specifically so a future change to the
+    deadline-racing mechanics can't land in only one of the two call sites, the same drift pattern
+    that already once left run_agent without the malformed-tool-call retry logic below."""
+    stream_iter = stream.__aiter__()
+    while True:
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise asyncio.TimeoutError()
+        else:
+            remaining = None
+        try:
+            update = await asyncio.wait_for(stream_iter.__anext__(), timeout=remaining)
+        except StopAsyncIteration:
+            return
+        yield update
+
+
+@dataclass
+class MalformedRetryResult:
+    should_retry: bool
+    new_current_input: object
+    force_final_verdict: bool
+    reraise: bool
+    new_malformed_retries: int
+
+
+def classify_malformed_retry(e: BaseException, malformed_retries: int, current_input,
+                              max_retries: int = 2) -> MalformedRetryResult:
+    """Pure decision logic for the malformed-tool-call retry pattern shared by run_cli and
+    run_agent (engine/tui.py). Does not touch stdout/widgets/run_state — callers still do their
+    own surface-specific notification and apply force_final_verdict/reraise to their own control
+    flow. Kept pure so it's unit-testable with a fake exception, no event loop, no I/O. Extracted
+    2026-07-14 (ROADMAP "B4") after this exact retry logic was once found missing from run_agent
+    ("added later for parity") — a single implementation removes that drift risk going forward."""
+    nudge = malformed_tool_call_nudge(e)
+    if nudge and malformed_retries < max_retries:
+        new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
+        new_inputs.append(Message("user", [{"type": "text", "text": nudge}]))
+        return MalformedRetryResult(True, new_inputs, False, False, malformed_retries + 1)
+    if not nudge:
+        return MalformedRetryResult(False, current_input, False, True, malformed_retries)
+    return MalformedRetryResult(False, current_input, True, False, malformed_retries)
 
 
 _FUNC_NOT_FOUND_RE = re.compile(r'Requested function "([^"]+)" not found')

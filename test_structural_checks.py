@@ -622,6 +622,78 @@ def main():
 
             contextvars.copy_context().run(_matrix_row)
 
+    # --- find_cross_source_contradictions: citation-only lines must never be treated as claims.
+    # Live-confirmed false positive (2026-07-14, real Iceland-population TUI run): an agency name
+    # ("Statistics Iceland") appearing ONLY inside a `- Source: [Title - Statistics Iceland](url)`
+    # citation attribution in the report, and dozens of times across a long fetched Wikipedia
+    # article as bare source attribution / image captions / reference-list entries, got paired
+    # with unrelated nearby years by _extract_figure_claims's nearest-figure heuristic -- firing a
+    # phantom cross_source_contradiction on every single Builder rewrite (report never actually
+    # said anything wrong), an unfixable, non-converging retry loop. ---
+    def _cross_source_citation_line_scenario():
+        from utils.grounding import find_cross_source_contradictions, _is_citation_only_line
+
+        assert _is_citation_only_line(
+            "- Source: [The population on 1 January 2025 - Statistics Iceland]"
+            "(https://statice.is/publications/news-archive/inhabitants/the-population-on-1-january-2025/)"
+        )
+        assert _is_citation_only_line('2. [↑](#cite_ref-2) ["Population by origin"](https://example.com).')
+        # Genuine prose must NOT be classified as citation-only, even with a link or a subject
+        # name inside it -- only bibliographic/attribution-only lines are excluded.
+        assert not _is_citation_only_line(
+            "The population of Iceland from 1703 to 2017, using data from Statistics Iceland."
+        )
+        assert not _is_citation_only_line(
+            "There is a slight discrepancy between the annual growth rate indicated by the "
+            "primary Statistics Iceland data (~1.5%) and the trajectory suggested by the "
+            "Wikipedia projection (~394,530)."
+        )
+
+        def _fake_scenario():
+            from tools.fs import _IN_MEMORY_FS
+            saved_fs = dict(_IN_MEMORY_FS)
+            try:
+                _IN_MEMORY_FS.clear()
+                reset_fetched_urls()
+                report = (
+                    "As of January 1, 2025, the official population of Iceland was **389,444**.\n"
+                    "- Source: [The population on 1 January 2025 - Statistics Iceland]"
+                    "(https://statice.is/pop-2025)\n"
+                )
+                record_fetched_url("https://statice.is/pop-2025", filename="sources/statice.md")
+                _IN_MEMORY_FS["sources/statice.md"] = (
+                    "Source-URL: https://statice.is/pop-2025\n\n"
+                    "The population on 1 January 2025 was 389,444."
+                )
+                record_fetched_url("https://en.wikipedia.org/wiki/Demographics_of_Iceland", filename="sources/wiki.md")
+                # Real-shape reproduction: "Statistics Iceland" as bare attribution in a caption
+                # (2017, unrelated to any population figure) plus a numbered reference-list entry
+                # citing "Statistics Iceland" again (2024) -- neither is a genuine competing claim.
+                _IN_MEMORY_FS["sources/wiki.md"] = (
+                    "Source-URL: https://en.wikipedia.org/wiki/Demographics_of_Iceland\n\n"
+                    "The population of Iceland from 1703 to 2017, using data from Statistics Iceland.\n\n"
+                    '2. [↑](#cite_ref-2) ["Population by origin"](https://example.com). '
+                    "*Statistics Iceland*. Retrieved 2024-01-01."
+                )
+                hits = find_cross_source_contradictions(report)
+                assert hits == [], hits
+            finally:
+                _IN_MEMORY_FS.clear()
+                _IN_MEMORY_FS.update(saved_fs)
+                reset_fetched_urls()
+
+        _orig_ws_csc = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
+        try:
+            contextvars.copy_context().run(_fake_scenario)
+        finally:
+            if _orig_ws_csc is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws_csc
+
+    _cross_source_citation_line_scenario()
+
     # --- NLI grounding verification (live case 2026-07-12, NVIDIA NIM gpt-oss-20b benchmark run):
     # a citation to a real, fetched source whose claim shares terms with it (passes
     # content_level_check) but is actually contradicted by the source's real content (a paper
@@ -847,6 +919,101 @@ def main():
             _NON_RESEARCH_DISPATCH_ROLES)
 
     _non_research_dispatch_roles_scenario()
+
+    # --- ROADMAP "B4": run_cli/run_agent's duplicated malformed-tool-call retry logic extracted
+    # into classify_malformed_retry (engine/orchestrator.py) -- pure decision logic, no event loop,
+    # no I/O, unit-testable directly with a fake exception. ---
+    def _malformed_retry_scenario():
+        from engine.orchestrator import classify_malformed_retry
+
+        class _FakeMalformedError(Exception):
+            def __str__(self):
+                return "error parsing tool call: bad escape"
+
+        class _FakeOtherError(Exception):
+            def __str__(self):
+                return "some unrelated failure"
+
+        # 1. Recognized class, under retry budget -> should_retry True, nudge appended, counter bumped.
+        r = classify_malformed_retry(_FakeMalformedError(), malformed_retries=0, current_input="query")
+        assert r.should_retry and not r.reraise and not r.force_final_verdict
+        assert r.new_malformed_retries == 1
+        assert isinstance(r.new_current_input, list) and len(r.new_current_input) == 2
+        assert r.new_current_input[0] == "query"
+
+        # 2. Recognized class, list current_input -> appended, not replaced/wrapped again.
+        r2 = classify_malformed_retry(_FakeMalformedError(), malformed_retries=0, current_input=["a", "b"])
+        assert r2.new_current_input == ["a", "b", r2.new_current_input[-1]]
+
+        # 3. Recognized class, retry budget exhausted (== max_retries) -> force_final_verdict, no retry.
+        r3 = classify_malformed_retry(_FakeMalformedError(), malformed_retries=2, current_input="q")
+        assert not r3.should_retry and r3.force_final_verdict and not r3.reraise
+        assert r3.new_malformed_retries == 2  # unchanged when not retrying
+
+        # 4. Unrecognized exception class -> reraise True, no retry, no final-verdict force, counter
+        #    unchanged, current_input echoed back untouched.
+        r4 = classify_malformed_retry(_FakeOtherError(), malformed_retries=0, current_input="q")
+        assert r4.reraise and not r4.should_retry and not r4.force_final_verdict
+        assert r4.new_current_input == "q"
+        assert r4.new_malformed_retries == 0
+
+        # 5. Boundary: exactly max_retries-1 still retries (last allowed retry).
+        r5 = classify_malformed_retry(_FakeMalformedError(), malformed_retries=1, current_input="q")
+        assert r5.should_retry and r5.new_malformed_retries == 2
+
+    _malformed_retry_scenario()
+
+    # --- ROADMAP "B4": run_cli's deadline-racing stream iteration (previously inline, manually
+    # driving stream.__aiter__() + asyncio.wait_for) extracted into iter_agent_stream
+    # (engine/orchestrator.py), now shared with run_agent (TUI, deadline=None). ---
+    async def _iter_agent_stream_scenario():
+        import asyncio as _asyncio
+        import time as _time
+        from engine.orchestrator import iter_agent_stream
+
+        class _FakeStream:
+            def __init__(self, items, delays=None):
+                self._items = list(items)
+                self._delays = delays or [0] * len(self._items)
+            def __aiter__(self):
+                return self._gen()
+            async def _gen(self):
+                for item, delay in zip(self._items, self._delays):
+                    if delay:
+                        await _asyncio.sleep(delay)
+                    yield item
+
+        # deadline=None: unbounded, yields everything, no exception.
+        out = [u async for u in iter_agent_stream(_FakeStream(["a", "b", "c"]), None)]
+        assert out == ["a", "b", "c"]
+
+        # deadline far in the future: same as unbounded for a fast fake stream.
+        out2 = [u async for u in iter_agent_stream(_FakeStream(["x"]), _time.monotonic() + 5)]
+        assert out2 == ["x"]
+
+        # deadline already passed: first __anext__ should raise asyncio.TimeoutError immediately,
+        # yielding nothing.
+        got_timeout = False
+        try:
+            async for _ in iter_agent_stream(_FakeStream(["a"]), _time.monotonic() - 1):
+                pass
+        except _asyncio.TimeoutError:
+            got_timeout = True
+        assert got_timeout
+
+        # deadline that expires mid-stream (between item 1 and item 2, via an injected delay) ->
+        # partial yield then TimeoutError, not silently truncated/swallowed.
+        seen = []
+        got_timeout2 = False
+        try:
+            async for u in iter_agent_stream(_FakeStream(["a", "b"], delays=[0, 0.3]), _time.monotonic() + 0.1):
+                seen.append(u)
+        except _asyncio.TimeoutError:
+            got_timeout2 = True
+        assert seen == ["a"] and got_timeout2
+
+    import asyncio as _asyncio_b4
+    _asyncio_b4.run(_iter_agent_stream_scenario())
 
     # --- check_thin_coverage wiring (mirrors _line_claim_scenario's directness -- pure RunState
     # setup, no fetched-fs dependency needed since this check doesn't read workspace content) ---
