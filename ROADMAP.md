@@ -597,9 +597,26 @@ Status as of 2026-07-14.
   both fired as literal function-call names in one live run (heuristic-algorithms sales-forecasting
   query), 3 occurrences total. Each one only cost a turn (clean error, `malformed_tool_call_nudge`
   path, sub-agent recovered without stalling) but three in a single run is a real pattern worth its
-  own investigation, not noise to fold into the filename fix. Open question: is this addressable
-  with tighter tool-schema framing in the prompt, or a harder reliability ceiling for this model
-  class — unclear without a dedicated look.
+  own investigation, not noise to fold into the filename fix.
+  - **Investigated 2026-07-14 — no code fix, re-tested live, existing infra already covers it.**
+    Re-ran the EXACT same benchmark query live (`research_output/i_want_documentation_on_heuristic_
+    algoritms_for_de_20260714_225720/`, 939.3s, clean pass, converged by attempt 3): **zero**
+    hallucinated-tool-name errors this time, out of 11 total tool errors recorded (all legitimate —
+    a real missing-field validation error, a real missing file, expected quota-exhaustion
+    messages). Doesn't prove the underlying tendency is gone (one run against one prior run is weak
+    evidence either way — could be genuine improvement from the many structural fixes shipped since
+    2026-07-12, or just run-to-run variance), but two things make further code investment
+    unjustified without stronger recurrence evidence: (1) the tool schema the model sees is the
+    real, structural OpenAI-style function-calling schema (name/description/params passed via the
+    API's own `tools` parameter), not prose — occasional hallucination despite having the correct
+    schema in context is a generation-sampling failure, not a missing-information one, so "tighter
+    prompt framing" was never likely to help; (2) `tool_result_error_nudge`
+    (`src/engine/orchestrator.py:268`, shipped 2026-07-14, AFTER this finding was first recorded)
+    already generically pattern-matches the exact `Requested function "..." not found` error text
+    and gives a corrective nudge — so even if this recurs, it's no longer a silently-wasted turn,
+    it costs at most one extra turn with real guidance, same fix that already closed the "zero
+    recovery path" gap for this exact error class. Revisit only if this resurfaces with real
+    frequency data across multiple runs, not as a standalone investment.
 - **gpt-oss endgame-collapse reproduced again, fresh data point (2026-07-12), now also observed
   INSIDE Builder (2026-07-13).** Same live run above: 9 completion-check attempts, cascading
   `web_search`/`grep_workspace_file`/`fetch_url_to_workspace` quota exhaustion across multiple
