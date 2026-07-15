@@ -289,6 +289,31 @@ class PromptInput(Input):
                 self._history.append(val)
         self._history_index = -1
 
+    def on_click(self, event: events.Click) -> None:
+        # Right-click paste (ROADMAP.md "TUI QoE improvements", 2026-07-14): the write-side
+        # clipboard pattern (_copy_to_system_clipboard, try wl-copy/xclip before OSC52) has a
+        # natural read-side mirror here -- reading the system clipboard from a terminal app has no
+        # portable stdlib path, so this shells out the same way the write side does. button == 3
+        # is right-click (SGR mouse protocol: button = (buttons + 1) & 3, confirmed against this
+        # project's installed textual/_xterm_parser.py). Left/middle clicks fall through to
+        # Input's own default cursor-placement handling (_on_mouse_down), untouched by this.
+        if event.button != 3:
+            return
+        text = _paste_from_system_clipboard()
+        if text:
+            selection = self.selection
+            if selection.is_empty:
+                self.insert_text_at_cursor(text)
+            else:
+                self.replace(text, *selection)
+        else:
+            self.app.notify(
+                "Clipboard paste failed — no wl-paste/xclip found, or clipboard is empty. "
+                "Install xclip (X11) or wl-clipboard (Wayland).",
+                severity="warning",
+            )
+        event.stop()
+
 class ApprovalWidget(Static):
     def __init__(self, action: str, agent_name: str = "Agent", arguments: str = ""):
         super().__init__(classes="agent-bubble")
@@ -355,14 +380,32 @@ class ThinkingWidget(Collapsible):
 
 
 class AgentMessageWidget(Static):
+    """Same click-to-copy affordance as UserMessageWidget (see _copy_to_system_clipboard below) --
+    previously only the user's own prompt had this; the agent's actual answers/reports (what "the
+    console" means in practice) required select-then-Ctrl+C, far less discoverable in a terminal
+    app (ROADMAP.md "TUI QoE improvements", 2026-07-14 usability finding)."""
     def __init__(self, author: str):
-        super().__init__(Markdown(f"**{author}:** "), classes="agent-bubble")
+        super().__init__(Markdown(f"**{author} (Click to Copy):** "), classes="agent-bubble")
         self.author = author
         self.text = ""
 
     def append_text(self, new_text: str):
         self.text += new_text
-        self.update(Markdown(f"**{self.author}:**\n{self.text}"))
+        self.update(Markdown(f"**{self.author} (Click to Copy):**\n{self.text}"))
+
+    def on_click(self) -> None:
+        try:
+            if _copy_to_system_clipboard(self.text):
+                self.app.notify("Copied to clipboard!")
+            else:
+                self.app.copy_to_clipboard(self.text)
+                self.app.notify(
+                    "Copied via terminal escape sequence (OSC52) — no xclip/wl-copy found. "
+                    "If it didn't actually land in your clipboard, install xclip (X11) or "
+                    "wl-clipboard (Wayland)."
+                )
+        except Exception as e:
+            self.app.notify(f"Copy failed: {e}", severity="error")
 
 def _copy_to_system_clipboard(text: str) -> bool:
     """Best-effort direct clipboard write via system tools (Wayland/X11), tried before falling
@@ -381,6 +424,23 @@ def _copy_to_system_clipboard(text: str) -> bool:
             except Exception:
                 continue
     return False
+
+
+def _paste_from_system_clipboard() -> str | None:
+    """Read-side mirror of _copy_to_system_clipboard, same wl-clipboard/xclip tool pair, same
+    fails-open-to-None-on-any-error posture -- there is no portable stdlib way to read the system
+    clipboard from a terminal app, and no OSC52 equivalent for reads (that escape sequence is
+    write-only by design in every terminal that implements it)."""
+    import subprocess
+    import shutil
+    for cmd in (["wl-paste", "--no-newline"], ["xclip", "-selection", "clipboard", "-o"]):
+        if shutil.which(cmd[0]):
+            try:
+                result = subprocess.run(cmd, capture_output=True, timeout=2, check=True)
+                return result.stdout.decode("utf-8", errors="replace")
+            except Exception:
+                continue
+    return None
 
 
 class UserMessageWidget(Static):
