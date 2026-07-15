@@ -824,12 +824,18 @@ Status as of 2026-07-14.
     read-then-reason-then-write composition, while its simpler single-shot Searcher/Analyzer tool
     calls (web_search, fetch, read/grep) worked reliably throughout the same run. Also exposes a
     real structural gap worth considering separately: `_dispatch_writer_review_fix`'s clean-check
-    only string-matches `"REVIEW: CLEAN"` in the response text, with no verification that a
+    only string-matched `"REVIEW: CLEAN"` in the response text, with no verification that a
     `read_workspace_file` call actually happened first — a model confident enough to fabricate the
-    sentinel currently defeats the review entirely. Not fixed this session (a candidate follow-up,
-    not yet scoped) — this is a model-reliability finding, not a code bug, and the disqualification
-    stands regardless of whether that gap gets hardened later. **Bonsai-8B ruled out as a
-    `gpt-oss:20b` replacement.**
+    sentinel could defeat the review entirely. This is a model-reliability finding, not a code bug,
+    and the disqualification stands regardless. **Bonsai-8B ruled out as a `gpt-oss:20b`
+    replacement.** **Hardening fixed 2026-07-14** (`src/engine/completion.py::_dispatch_writer_review_fix`,
+    commit `bfd2cd5`): cross-checks the `read_workspace_file` quota's used-count delta around the
+    PeerReviewer dispatch — a CLEAN verdict with zero new reads is now treated as ISSUES FOUND,
+    forcing the existing corrective Fix pass instead of being trusted. Fails open when the quota
+    isn't tracked at all, so a config without it doesn't get every review falsely distrusted. New
+    tests in `test_structural_checks.py` (`_clean_check_read_verification_scenario`): a fabricated
+    CLEAN with zero reads forces the corrective pass, a CLEAN backed by a real read is still
+    trusted.
   - **`qwen3:4b` added as a fourth candidate (2026-07-14)**, specifically sought out as "Bonsai-like
     but more context": user asked for smaller/lighter alternatives with a bigger context window
     than Bonsai's 64K. Checked and rejected first: Microsoft's official `BitNet b1.58-2B-4T` doesn't
