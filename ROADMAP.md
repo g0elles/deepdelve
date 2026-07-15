@@ -547,6 +547,20 @@ Status as of 2026-07-14.
       and `final_report.md` both written, PeerReviewer passed clean on the `final_report.md`
       re-check, real grounded citations (ABS + Wikipedia). Full suite + `ruff check .` pass
       throughout. Committed `3dd349a`.
+- **Phase 6 / B4: unify `run_cli`/`run_agent`'s stream-iteration + retry logic — DONE.** The two
+  genuinely duplicated pieces between headless (`run_cli`) and TUI (`run_agent`) extracted into
+  shared helpers in `engine/orchestrator.py`: `iter_agent_stream(stream, deadline)` (async
+  generator racing each update against an optional wall-clock deadline via `asyncio.wait_for`,
+  replacing `run_cli`'s inline manual `stream_iter`/`while True` loop; `deadline=None`, the TUI's
+  case with no wall-clock limit by design, is behavior-identical to a plain `async for` per
+  `asyncio.wait_for`'s own documented semantics, so `run_agent` gets the same iteration mechanics
+  for free with zero behavior change) and `classify_malformed_retry(...)` (pure decision logic for
+  the malformed-tool-call retry pattern, previously copy-pasted between both call sites and once
+  found missing from `run_agent` entirely — callers keep their own stdout/widget notification,
+  only the retry decision itself is shared). CI green, both CLI and TUI live-verified this session
+  (same smoke test that caught the `_is_citation_only_line` cross-source-contradiction bug above).
+  Committed `2e4758f`. This was the last open phase of the 2026-07-14 6-phase plan — all 6 phases
+  now done.
 ## Findings from live testing (not yet acted on / informational)
 
 - **Grounding check verifies provenance, not topical relevance.** A live GOA (Grasshopper Optimization Algorithm) research query got a citation from `globaldrivetozero.org` — actually fetched, and sharing surface terms like "GOA"/"Goa" — that's actually about the Indian state of Goa's EV policy, not the algorithm. The URL-presence + term-overlap check passed it because it only checks "was this fetched" and "do terms overlap," not "is this source about the same subject." Acronym collisions are the clearest way to trigger this; unclear how common the failure mode is outside them. **Fixed 2026-07-14 — see "Done" (Phase 4, `topical_relevance_problem`).**
@@ -698,12 +712,12 @@ Status as of 2026-07-14.
 
 ## Planned (not started)
 
-- **6-phase plan approved 2026-07-14 — Phases 1-5 done, see "Done" above.** Phase 1 claim-level
+- **6-phase plan approved 2026-07-14 — ALL 6 PHASES DONE, see "Done" above.** Phase 1 claim-level
   grounding upgrade → Phase 2 cross-source contradiction detection → Phase 3 xQuAD diversity
   reranking → Phase 4 topical-relevance cross-encoder reranker → Phase 5 coverage accounting/
-  ResearchMap (all DONE) → **Phase 6 B4 TUI/CLI loop unification (deferred last, highest
-  regression risk — the only phase still open, see its own entry below).** Sequenced by ROADMAP's
-  own stated priority + dependency order + risk, not file order below.
+  ResearchMap → Phase 6 B4 TUI/CLI loop unification (deferred last, highest regression risk —
+  completed and live-verified `2e4758f`). Sequenced by ROADMAP's own stated priority + dependency
+  order + risk, not file order below. Nothing left open from this plan.
 - **TUI QoE improvements** (researched 2026-07-14, not yet scoped/implemented) — triggered by a
   real usability complaint mid-Phase-6 smoke test ("copying from the console, not only the
   prompt", right-click paste, "a lot of QoE changes"). Investigated the actual installed Textual
@@ -733,8 +747,9 @@ Status as of 2026-07-14.
     source metadata; `TabbedContent` to split findings/report/sources instead of one scrolling
     feed; `SelectionList` for multi-file/multi-seed-URL picking).
   - **Explicitly deferred, not scoped into a phase yet** — user chose to record as a backlog item
-    rather than implement immediately, given Phase 6 and the model bake-off (below) are already
-    open. Next session should scope a concrete subset (the `AgentMessageWidget` copy button +
+    rather than implement immediately, given Phase 6 (now shipped, see "Done") and the model
+    bake-off (below) were the priority at the time. Next session should scope a concrete subset (the
+    `AgentMessageWidget` copy button +
     right-click paste are the two smallest, most directly user-requested items) before touching
     the framework-capability survey items, which need real prioritization first.
 - **Local-model bake-off: Gemma 4 12B, Bonsai-8B, and `qwen3:4b` vs. `gpt-oss:20b`** (found/verified 2026-07-13,
