@@ -554,6 +554,34 @@ def _figure_kind(figure: str) -> str:
     return "decimal"
 
 
+_MARKDOWN_LINK_RE = re.compile(r'\[[^\]]*\]\([^)]*\)')
+_CITATION_LINE_PREFIX_RE = re.compile(r'^\s*(?:[-*]|\d+[.)]|\[[↑\d]+\])\s*(?:source|retrieved)?\s*:?\s*', re.IGNORECASE)
+
+
+def _is_citation_only_line(line: str) -> bool:
+    """True for a bibliographic/citation line — a `- Source: [Title](URL)` attribution, a
+    numbered reference-list entry (`12. ↑ ["Title"](url). *Publisher*. Retrieved ...`), or any
+    line that is essentially just markdown link(s) plus punctuation — as opposed to a genuine
+    prose sentence that happens to contain a link. Confirmed live 2026-07-14: an agency name used
+    only as a citation attribution (e.g. 'Statistics Iceland' appearing solely inside
+    `- Source: [... - Statistics Iceland](url)` and dozens of times across a long fetched
+    Wikipedia article's own reference list / image captions) got treated by
+    _extract_figure_claims as a genuine claim subject, spuriously pairing it with an unrelated
+    nearby year/figure and firing a false cross-source-contradiction. A citation line is not a
+    claim — it names WHERE information came from, not WHAT was claimed — so it must never
+    contribute a (subject, figure) pair."""
+    stripped = (line or "").strip()
+    if not stripped:
+        return True
+    without_links = _MARKDOWN_LINK_RE.sub("", stripped)
+    without_prefix = _CITATION_LINE_PREFIX_RE.sub("", without_links).strip()
+    # Whatever remains after stripping markdown links and a leading bullet/number/"Source:"
+    # marker: if it's short and has no real alphabetic content (just punctuation, italics
+    # markers, dates, footnote refs), the line was never more than a citation to begin with.
+    remaining_letters = re.sub(r'[^a-zA-Z]', '', without_prefix)
+    return len(remaining_letters) < 8
+
+
 def _extract_figure_claims(text: str) -> list[tuple[str, str]]:
     """Per-line (subject_phrase, figure) pairs: every real 2+-word proper-noun subject phrase on
     a line, paired with its NEAREST checkable number on that SAME line (by character distance,
@@ -563,9 +591,14 @@ def _extract_figure_claims(text: str) -> list[tuple[str, str]]:
     Sector B grew 8%") must bind each subject to ITS OWN nearby figure, not get cross-paired with
     the other subject's — a full cross-product would manufacture a fake "contradiction" between
     unrelated claims that happen to share a line. subject_phrase is lowercased for exact-match
-    clustering (case rarely carries meaning for whether two mentions are "the same subject")."""
+    clustering (case rarely carries meaning for whether two mentions are "the same subject").
+    Citation-only lines (_is_citation_only_line) are skipped entirely — a bibliographic
+    attribution or reference-list entry is not a claim, and treating one as such is exactly the
+    live-confirmed false-positive class this guard exists to close."""
     pairs = []
     for line in (text or "").splitlines():
+        if _is_citation_only_line(line):
+            continue
         subject_matches = []
         for m in _PROPER_NOUN_PHRASE_RE.finditer(line):
             normalized = _normalize_proper_noun_phrase(m.group(0))

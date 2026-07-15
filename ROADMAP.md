@@ -402,6 +402,26 @@ Status as of 2026-07-14.
   every subject with every number on a line regardless of kind, so a line naming both a year and
   an unrelated percentage spuriously "contradicted" any other source's differing percentage for a
   totally unrelated reason — fixed by the same-kind guard and nearest-figure pairing.
+  - **Second real bug, found live 2026-07-14 during Phase 6's TUI smoke test, fixed and
+    live-verified.** A citation attribution (an organization name appearing ONLY inside a
+    `- Source: [Title - Statistics Iceland](url)` line, and dozens of times across a long fetched
+    Wikipedia article as bare source attribution / image captions / reference-list entries, never
+    as the subject of an actual claim) got treated by `_extract_figure_claims` as a genuine claim
+    subject, paired with an unrelated nearby year by the nearest-figure heuristic — firing
+    `cross_source_contradiction` on the exact same phantom issue after every single Builder
+    rewrite, a structurally unfixable, non-converging retry loop (Builder can't satisfy a check
+    based on a false premise). Caught only because the user pushed back on accepting the loop at
+    face value ("you're not analyzing the run properly") rather than assuming it was Phase 6's
+    stream-handling. Fixed with new `utils/grounding.py::_is_citation_only_line` — a line is
+    bibliographic, not a claim, if fewer than 8 letters of real text remain after stripping
+    markdown links and a leading bullet/number/"Source:" marker; `_extract_figure_claims` now
+    skips citation-only lines entirely, on both the report's own prose and each fetched source's
+    raw content. Verified two ways: (1) pure reproduction against the real saved report +
+    Wikipedia source from the killed run, confirming `find_cross_source_contradictions` went from
+    a real hit to `[]`; (2) a fresh live re-run of the identical query converged in 1 Builder cycle
+    and 307.2s (vs. 5+ cycles and never converging before). New regression test
+    `_cross_source_citation_line_scenario` in `test_structural_checks.py`, confirmed not to weaken
+    the existing genuine-contradiction verdict-matrix row.
 - **Phase 3 of the approved 6-phase plan: xQuAD-style search-result diversity reranking** (Santos,
   Peng, Macdonald, Ounis, *Explicit Search Result Diversification through Sub-Queries*, ECIR 2010).
   DDGS already ranks by its own relevance signal, but several near-duplicate results for the same
@@ -684,6 +704,39 @@ Status as of 2026-07-14.
   ResearchMap (all DONE) → **Phase 6 B4 TUI/CLI loop unification (deferred last, highest
   regression risk — the only phase still open, see its own entry below).** Sequenced by ROADMAP's
   own stated priority + dependency order + risk, not file order below.
+- **TUI QoE improvements** (researched 2026-07-14, not yet scoped/implemented) — triggered by a
+  real usability complaint mid-Phase-6 smoke test ("copying from the console, not only the
+  prompt", right-click paste, "a lot of QoE changes"). Investigated the actual installed Textual
+  8.2.8 source (not assumed from memory) rather than guessing at framework capabilities:
+  - **Likely already works, needs live confirmation, not new code**: click-drag text selection +
+    `Ctrl+C` copy — `ALLOW_SELECT = True` is the framework default at `Widget`/`Screen`/`App`
+    level, and `Screen.BINDINGS` already binds `ctrl+c` → `action_copy_text`
+    (`textual/screen.py`); `BasicTuiAgent` doesn't override any of this.
+  - **Real, confirmed gap**: `UserMessageWidget` (the user's own prompt) has a click-to-copy
+    button (`on_click` → `_copy_to_system_clipboard`/OSC52 fallback); `AgentMessageWidget` (the
+    agent's actual answers/reports — what "the console" means here) has no equivalent. A one-click
+    affordance is far more discoverable than "select text then Ctrl+C" in a terminal app. Small,
+    low-risk fix mirroring the existing `UserMessageWidget` pattern.
+  - **Right-click paste**: not implemented, not free — reading the system clipboard from a
+    terminal app has no portable stdlib path. The existing write-side pattern
+    (`_copy_to_system_clipboard`: try `wl-copy`/`xclip` before OSC52) has a natural read-side
+    mirror (`wl-paste`/`xclip -o`) on right-click in `PromptInput`, inserting at cursor.
+  - **Unused framework capabilities surfaced, not yet scoped into concrete work**: command palette
+    (`ENABLE_COMMAND_PALETTE`, `Ctrl+P`, separate from the hand-built `/`-command `OptionList`
+    picker); widget maximize/minimize (`action_maximize`/`action_minimize`, blow up one
+    `RichLog`/`AgentMessageWidget` to full-screen); theming system (`register_theme`/
+    `available_themes` — currently one fixed CSS theme); `textual.suggester.Suggester`/
+    `SuggestFromList` (inline autocomplete-as-you-type, vs. the hand-rolled `_render_cmd_list`
+    filtering); `notify()` toasts (used only in copy-error paths today — could surface background
+    events, e.g. a sub-agent finishing while scrolled away); unused built-in widgets that map onto
+    real needs (`Tree` for `_todos.md`'s plan or the workspace file list; `DataTable` for fetched-
+    source metadata; `TabbedContent` to split findings/report/sources instead of one scrolling
+    feed; `SelectionList` for multi-file/multi-seed-URL picking).
+  - **Explicitly deferred, not scoped into a phase yet** — user chose to record as a backlog item
+    rather than implement immediately, given Phase 6 and the model bake-off (below) are already
+    open. Next session should scope a concrete subset (the `AgentMessageWidget` copy button +
+    right-click paste are the two smallest, most directly user-requested items) before touching
+    the framework-capability survey items, which need real prioritization first.
 - **Local-model bake-off: Gemma 4 12B, Bonsai-8B, and `qwen3:4b` vs. `gpt-oss:20b`** (found/verified 2026-07-13,
   smoke-tested and partially live-tested 2026-07-14) — two real local-model candidates surfaced by
   a 3-model research pass, independently verified (not taken on trust — one of the three research

@@ -4,7 +4,7 @@ from textual.app import App, ComposeResult
 from textual.widgets import Input, OptionList, Static, Collapsible, RichLog, Button
 from textual.containers import VerticalScroll, Horizontal, Vertical
 from rich.markdown import Markdown
-from engine.orchestrator import create_local_agent, reset_session, delegation_depth_ctx, build_quota_pool
+from engine.orchestrator import create_local_agent, reset_session, delegation_depth_ctx, build_quota_pool, iter_agent_stream
 import engine.orchestrator as orchestrator_module
 import asyncio
 import json
@@ -1292,7 +1292,13 @@ class BasicTuiAgent(App):
                 self._safe_scroll_end(chat)
 
                 try:
-                    async for update in stream:
+                    # iter_agent_stream(stream, None) (engine/orchestrator.py, shared with run_cli
+                    # since 2026-07-14, ROADMAP "B4") is behavior-identical to a plain `async for`
+                    # here — deadline=None means asyncio.wait_for never times out — kept as a
+                    # shared call so a future change to the iteration mechanics can't land in only
+                    # one of the two surfaces. The TUI deliberately has no wall-clock deadline of
+                    # its own (a user can /stop).
+                    async for update in iter_agent_stream(stream, None):
                         await self.handle_agent_update(update, state, chat, is_subagent=False)
 
                         if hasattr(update, "user_input_requests") and update.user_input_requests:
@@ -1328,10 +1334,17 @@ class BasicTuiAgent(App):
                     # a corrective nudge before degrading gracefully (added 2026-07-12 after an
                     # uncaught crash there); this path previously had NO retry at all, just an
                     # immediate error widget with no further progress on that turn.
-                    from engine.orchestrator import malformed_tool_call_nudge
-                    nudge = malformed_tool_call_nudge(e)
-                    if nudge and malformed_retries < 2:
-                        malformed_retries += 1
+                    # classify_malformed_retry (engine/orchestrator.py) is the pure decision logic
+                    # shared with run_cli's identical retry pattern, extracted 2026-07-14 (ROADMAP
+                    # "B4"). NOTE: unlike run_cli, this call site deliberately does NOT act on
+                    # result.reraise -- run_agent has never re-raised on an unrecognized exception
+                    # here (it falls through to the same error-widget path as a recognized-but-
+                    # exhausted one, with no force_final_verdict either), and this refactor
+                    # preserves that exact pre-existing behavior rather than silently changing it.
+                    from engine.orchestrator import classify_malformed_retry
+                    result = classify_malformed_retry(e, malformed_retries, current_input)
+                    malformed_retries = result.new_malformed_retries
+                    if result.should_retry:
                         p_widget = state.get("processing_widget")
                         if p_widget:
                             p_widget.stop()
@@ -1340,9 +1353,7 @@ class BasicTuiAgent(App):
                             f"[yellow]Model emitted a malformed tool call — retrying the turn "
                             f"({malformed_retries}/2).[/yellow]", classes="agent-bubble"))
                         chat.scroll_end(animate=False)
-                        new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
-                        new_inputs.append(Message("user", [{"type": "text", "text": nudge}]))
-                        current_input = new_inputs
+                        current_input = result.new_current_input
                         has_requests = True
                         continue
 
@@ -1354,7 +1365,7 @@ class BasicTuiAgent(App):
                         chat.mount(Static(f"[red]Error: {str(e)}[/red]", classes="agent-bubble"))
                     chat.scroll_end(animate=False)
 
-                    if nudge:
+                    if result.force_final_verdict:
                         # Retry budget exhausted for this SPECIFIC, already-recognized failure
                         # class -- force the completion check straight to its final-verdict path
                         # (quarantine-restore/salvage) instead of leaving the turn as a bare error
@@ -2071,85 +2082,71 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
 
             try:
                 stream = agent.run(current_input, session=session, stream=True)
-                # Manually driven __anext__ + asyncio.wait_for, NOT `async for update in stream`
-                # (found live, 2026-07-12): the plain async-for version only checks budget_deadline
-                # once it actually RECEIVES an update — if the underlying stream goes a very long
-                # time between updates (confirmed with Tongyi-DeepResearch: one single massive
-                # <think> block round-tripped 1h6min+ past a configured max_run_minutes: 60 with
-                # the GPU still actively generating and zero cutoff), the deadline check never gets
-                # a chance to run at all. Racing each __anext__() against the remaining budget via
-                # asyncio.wait_for fires the cutoff on a real wall-clock timer regardless of how
-                # long the stream goes quiet, and needs no assumption about how finely the
-                # underlying model/framework chunks its output.
-                stream_iter = stream.__aiter__()
-                while True:
-                    if budget_deadline:
-                        remaining = budget_deadline - time.monotonic()
-                        if remaining <= 0:
+                # iter_agent_stream (engine/orchestrator.py) races each update against
+                # budget_deadline via asyncio.wait_for instead of a plain `async for update in
+                # stream` (found live, 2026-07-12): the plain async-for version only checks the
+                # deadline once it actually RECEIVES an update — if the underlying stream goes a
+                # very long time between updates (confirmed with Tongyi-DeepResearch: one single
+                # massive <think> block round-tripped 1h6min+ past a configured max_run_minutes: 60
+                # with the GPU still actively generating and zero cutoff), the deadline check never
+                # gets a chance to run at all. Shared with run_agent (TUI, deadline=None) since
+                # 2026-07-14 (ROADMAP "B4") so this mechanism can't drift between the two surfaces.
+                try:
+                    async for update in iter_agent_stream(stream, budget_deadline if budget_deadline else None):
+                        run_stream_chars += stream_content_chars(update)
+                        if context_budget and run_stream_chars > context_budget:
                             sys.stdout.write(
-                                f"\n\033[91m[System] max_run_minutes ({max_run_minutes}) exceeded — "
+                                f"\n\033[91m[System] context_budget_chars ({context_budget}) exceeded — "
                                 f"cutting the current turn short.\033[0m\n"
                             )
                             break
-                    else:
-                        remaining = None
-                    try:
-                        update = await asyncio.wait_for(stream_iter.__anext__(), timeout=remaining)
-                    except asyncio.TimeoutError:
-                        sys.stdout.write(
-                            f"\n\033[91m[System] max_run_minutes ({max_run_minutes}) exceeded — "
-                            f"cutting the current turn short (stream produced no update before the "
-                            f"deadline).\033[0m\n"
-                        )
-                        break
-                    except StopAsyncIteration:
-                        break
-                    run_stream_chars += stream_content_chars(update)
-                    if context_budget and run_stream_chars > context_budget:
-                        sys.stdout.write(
-                            f"\n\033[91m[System] context_budget_chars ({context_budget}) exceeded — "
-                            f"cutting the current turn short.\033[0m\n"
-                        )
-                        break
-                    for content in update.contents:
-                        if content.type == "text" and content.text:
-                            log_stream_content("Agent", "text", {"text": content.text})
-                            sys.stdout.write(content.text)
-                            sys.stdout.flush()
-                            turn_text += content.text
-                        elif content.type == "function_call":
-                            call_id = getattr(content, "call_id", None)
-                            name = getattr(content, "name", None)
-                            arguments = getattr(content, "arguments", "") or ""
-                            log_stream_content("Agent", "function_call", {
-                                "call_id": call_id, "name": name, "arguments": arguments
-                            })
-                            if call_id:
-                                sys.stdout.write(f"\n\033[96m[Agent] Calling {name}...\033[0m\n")
-                        elif content.type == "function_result":
-                            call_id = getattr(content, "call_id", None)
-                            result = getattr(content, "result", "")
-                            log_stream_content("Agent", "function_result", {
-                                "call_id": call_id, "result": str(result)
-                            })
-                    if getattr(update, "user_input_requests", None):
-                        user_input_requests.extend(update.user_input_requests)
+                        for content in update.contents:
+                            if content.type == "text" and content.text:
+                                log_stream_content("Agent", "text", {"text": content.text})
+                                sys.stdout.write(content.text)
+                                sys.stdout.flush()
+                                turn_text += content.text
+                            elif content.type == "function_call":
+                                call_id = getattr(content, "call_id", None)
+                                name = getattr(content, "name", None)
+                                arguments = getattr(content, "arguments", "") or ""
+                                log_stream_content("Agent", "function_call", {
+                                    "call_id": call_id, "name": name, "arguments": arguments
+                                })
+                                if call_id:
+                                    sys.stdout.write(f"\n\033[96m[Agent] Calling {name}...\033[0m\n")
+                            elif content.type == "function_result":
+                                call_id = getattr(content, "call_id", None)
+                                result = getattr(content, "result", "")
+                                log_stream_content("Agent", "function_result", {
+                                    "call_id": call_id, "result": str(result)
+                                })
+                        if getattr(update, "user_input_requests", None):
+                            user_input_requests.extend(update.user_input_requests)
+                except asyncio.TimeoutError:
+                    sys.stdout.write(
+                        f"\n\033[91m[System] max_run_minutes ({max_run_minutes}) exceeded — "
+                        f"cutting the current turn short.\033[0m\n"
+                    )
             except BaseException as e:
                 from tools import QuotaAbortException
                 if isinstance(e, QuotaAbortException) or type(e).__name__ == "QuotaAbortException":
                     sys.stdout.write(f"\n\033[91m[System] Task forcefully aborted: {str(e)}\033[0m\n")
                     break
-                from engine.orchestrator import malformed_tool_call_nudge
-                nudge = malformed_tool_call_nudge(e)
-                if nudge and malformed_retries < 2:
-                    malformed_retries += 1
+                # classify_malformed_retry (engine/orchestrator.py) is the pure decision logic
+                # shared with run_agent's identical retry pattern, extracted 2026-07-14 (ROADMAP
+                # "B4") after this exact logic was once found missing from run_agent ("added later
+                # for parity"). This call site keeps its own stdout notification and run_state
+                # mutation; the helper only classifies and builds the retry current_input.
+                from engine.orchestrator import classify_malformed_retry
+                result = classify_malformed_retry(e, malformed_retries, current_input)
+                malformed_retries = result.new_malformed_retries
+                if result.should_retry:
                     sys.stdout.write(f"\n\033[93m[System] Model emitted a malformed tool call — retrying the turn ({malformed_retries}/2).\033[0m\n")
-                    new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
-                    new_inputs.append(Message("user", [{"type": "text", "text": nudge}]))
-                    current_input = new_inputs
+                    current_input = result.new_current_input
                     has_requests = True
                     continue
-                if not nudge:
+                if result.reraise:
                     # A genuinely unrecognized exception (not the malformed-tool-call class at
                     # all) — still a real crash, not something this loop knows how to degrade
                     # gracefully.
