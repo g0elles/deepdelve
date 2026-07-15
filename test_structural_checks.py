@@ -2444,6 +2444,29 @@ def main():
 
     contextvars.copy_context().run(_create_local_agent_shape_scenario)
 
+    # --- _build_findings_source_material must dedupe exact (source_url, summary) repeats before
+    # serializing into FindingsWriter's prompt (2026-07-14 live finding: every completion-check
+    # retry that re-delegates the same task_name re-adds a finding without removing the stale one,
+    # so a real run accumulated 25 entries for ~8-10 distinct pieces of research, with some summaries
+    # appearing identically 5 times — genuine content was getting diluted/dropped by FindingsWriter
+    # under the bloat rather than something Colombia-specific). Distinct summaries for the SAME
+    # source_url (a legitimately different retry result) must both survive. ---
+    def _findings_dedup_scenario():
+        from engine.completion import _build_findings_source_material
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rs = RunState(tmpdir)
+            rs.add_finding(_SRC, "same summary text", task_name="background", depth=1)
+            rs.add_finding(_SRC, "same summary text", task_name="background", depth=1)  # exact repeat
+            rs.add_finding(_SRC, "same summary text", task_name="background", depth=1)  # exact repeat
+            rs.add_finding(_SRC, "a genuinely different summary", task_name="background", depth=1)
+            material = _build_findings_source_material(rs)
+            assert material.count("same summary text") == 1, (
+                "exact-duplicate findings must be collapsed to one entry", material)
+            assert "a genuinely different summary" in material
+
+    contextvars.copy_context().run(_findings_dedup_scenario)
+
     print("All structural-check assertions passed.")
 
 
