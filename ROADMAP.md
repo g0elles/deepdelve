@@ -788,9 +788,33 @@ Status as of 2026-07-14.
     missing-nudge gap), and a visible reasoning-loop pattern near the end ("Wait, I'll just do it.
     *(Action)*", repeated ~13 times with no actual tool call) before `context_budget_chars` cut the
     turn short. Same failure *shape* as `mistral-nemo` (README "Model choice" table): passes an
-    isolated schema smoke test, ceilings on the real multi-step benchmark. Not yet run for
-    Bonsai-8B — that's the next concrete step, same query, before drawing a final verdict on either
-    candidate vs. the current `gpt-oss:20b` default.
+    isolated schema smoke test, ceilings on the real multi-step benchmark.
+  - **Bonsai-8B benchmark result (2026-07-14): `Report: NOT WRITTEN` after 484.3s — DISQUALIFIED
+    for a more severe reason than Gemma 4's.** Ran the same standing sales-forecasting benchmark,
+    config pointed at `deepdelve-bonsai-8b`. Research itself worked completely fine: 22 real
+    findings recorded, 15 real sources fetched, zero `web_search` failures — the failure is
+    entirely isolated to the FindingsWriter/PeerReviewer writer-tier roles. Traced through the
+    persisted session log turn-by-turn (not just the final verdict): `FindingsWriterFix_attempt1`
+    through `attempt8` each "Finished" and PeerReviewer "found no issues" each time, yet
+    `check_missing_findings` kept re-firing every single retry and `findings.md` never existed on
+    disk at all by the end. Root cause confirmed by reading the actual logged tool calls:
+    `FindingsWriterFix_attempt1`'s only event was a bare, empty `text` response — it **never
+    called `write_workspace_file`**. `ReviewFix_attempt1` **never called `read_workspace_file`**
+    either — it went straight to `"REVIEW: CLEAN"\n\nThe file findings.md appears to be a
+    well-structured report...` for a file it never opened and that never existed. This repeated
+    across all 8 attempts before the retry budget exhausted. Distinct from and worse than every
+    other failure flavor documented in this project so far (Gemma 4's reasoning loops, `qwen3:4b`'s
+    repeated-identical-write-calls below, gpt-oss's hallucinated tool names): those all at least
+    attempt real tool calls; Bonsai-8B skipped tool calls entirely in a role requiring
+    read-then-reason-then-write composition, while its simpler single-shot Searcher/Analyzer tool
+    calls (web_search, fetch, read/grep) worked reliably throughout the same run. Also exposes a
+    real structural gap worth considering separately: `_dispatch_writer_review_fix`'s clean-check
+    only string-matches `"REVIEW: CLEAN"` in the response text, with no verification that a
+    `read_workspace_file` call actually happened first — a model confident enough to fabricate the
+    sentinel currently defeats the review entirely. Not fixed this session (a candidate follow-up,
+    not yet scoped) — this is a model-reliability finding, not a code bug, and the disqualification
+    stands regardless of whether that gap gets hardened later. **Bonsai-8B ruled out as a
+    `gpt-oss:20b` replacement.**
   - **`qwen3:4b` added as a fourth candidate (2026-07-14)**, specifically sought out as "Bonsai-like
     but more context": user asked for smaller/lighter alternatives with a bigger context window
     than Bonsai's 64K. Checked and rejected first: Microsoft's official `BitNet b1.58-2B-4T` doesn't
@@ -825,18 +849,37 @@ Status as of 2026-07-14.
       live smoke-test attempts (this model, this exact query) to exceed a 15-20 min budget each
       time, purely on redundant `write_workspace_file` calls before the run ever reached its later
       stages. Not yet run through the full sales-forecasting benchmark, so unclear if this is
-      systemic to `qwen3:4b`'s FindingsWriter behavior specifically or an isolated occurrence —
-      flagged as a real data point for the eventual full bake-off comparison, not yet a
-      disqualification.
-- **B4: unify the duplicated TUI/CLI run loop.** `src/engine/tui.py` hosts two ~150-line
-  stream/approval/retry loops — `run_cli` (headless) and `run_agent`/`BasicTuiAgent` (interactive)
-  — that duplicate most of the same run-lifecycle logic instead of sharing one implementation.
-  Deliberately deferred 2026-07-12 (user chose "safe parts now, defer the risky merge"): this
-  exact code has caused 2 historical regressions (checkmark-on-error bug, the `--resume-run`
-  TUI-parity gap), so a structural merge needs its own careful pass rather than being bundled into
-  an unrelated feature commit. Until merged, CLAUDE.md's TUI/CLI parity rule is the mitigation —
-  every new CLI-surfaced capability must be checked against the TUI for an equivalent by hand.
-
+      systemic to `qwen3:4b`'s FindingsWriter behavior specifically or an isolated occurrence.
+    - **Full sales-forecasting benchmark result (2026-07-14): inconclusive, not a verdict.** Ran
+      the same standing benchmark as Bonsai-8B/Gemma 4 above, config pointed at
+      `deepdelve-qwen3-4b`. The research phase completed cleanly (Colombia-specific holidays/
+      paydays identified from Banco de la República, cultural cross-check against Latin American
+      market studies, top-5 ML techniques evaluated) and the Planner correctly recognized
+      completion and stopped delegating. The Write→Review→Fix cycle then began
+      (`FindingsWriterFix_attempt1` → `ReviewFix_attempt1` flagged issues → corrective pass), but
+      the whole process was killed by the smoke test's own 40-minute outer `timeout` before it
+      could finish. Confirmed via `journalctl -u ollama` this was NOT a hang: right up to the kill
+      moment, Ollama was actively, continuously decoding a response (steady ~59-62 tok/s, climbing
+      token count, no stall) — a fairly high volume of smaller, somewhat repetitive tool calls in
+      earlier sub-agent turns (consistent with the redundant-tool-call finding above) ate enough of
+      the budget that the writer-tier cycle didn't have room left to converge, not that the model
+      got stuck. Recorded as inconclusive rather than a pass or fail — user chose not to re-run
+      with a longer cap this session; **re-running with more wall-clock budget is the next concrete
+      step before drawing any verdict on `qwen3:4b`** vs. `gpt-oss:20b`. Flagged as a real data
+      point for the eventual full bake-off comparison, not yet a disqualification.
+- **`gpt-oss:20b` re-confirmed live (2026-07-14), same benchmark, same session**: `deepdelve-gpt-oss`
+  produced a real, grounded `final_report.md` in 1079.1s, 15 sources fetched, 0 search failures,
+  passing the NLI entailment check along the way (one `nli_unsupported` retry, corrected). First
+  fresh confirmation this session that the documented default actually still passes end-to-end,
+  directly alongside the same-day Bonsai-8B/`qwen3:4b`/Gemma-4 attempts on the identical query —
+  the only one of the four to produce a written report at all. Content covers the heuristic-
+  optimization side of the query well (PSO, GA, moving-average, rule-of-thumb) but drops the
+  Colombia-specific cultural-context research the run itself actually did earlier (holidays/
+  paydays from Banco de la República were researched but never made it into the final report) and
+  doesn't surface the gold reference's DL-architecture families — a real report, correctly
+  grounded, but likely a partial (not top) score against the full manual rubric if formally scored.
+  Not manually scored this session (would need a careful pass against
+  `eval/reference/sales_forecasting_deepseek.md`).
 ## Candidates from the 2026-07-12 reference-repo review (see README References)
 
 - **Engine-driven iterative deepening** (from `dzhng/deep-research`): a STRUCTURAL refine loop —
