@@ -511,6 +511,19 @@ def claim_grounding_problem(report: str) -> str | None:
     source_terms_cache: dict = {}
     for line in prose.splitlines():
         for segment in decompose_claim_segments(line):
+            # A bare `- Source: [Title](url).` sub-bullet is a citation ATTRIBUTION, not a claim
+            # (see _is_citation_only_line) -- skipping it here closes a false-positive class this
+            # check didn't have until it existed: extract_salient_terms pulls the citation's own
+            # ANCHOR TEXT ("Official Eiffel Tower" from "[Official Eiffel Tower website](url)") as
+            # if it were a checkable fact, then flags it because that editorialized phrase (the
+            # writer's own paraphrase, not something literally in the source) doesn't appear
+            # verbatim in the source content -- confirmed live 2026-07-14, a genuinely-supported
+            # report (both cited claims verbatim in the fetched source) still burned its entire
+            # retry budget on this exact false positive, repeatedly, across 6 completion-check
+            # attempts. Same guard already applied to _extract_figure_claims for the identical
+            # false-positive class in cross-source-contradiction detection.
+            if _is_citation_only_line(segment):
+                continue
             display = (extract_cited_urls(segment) + [m.group(0) for m in _PARENTHETICAL_CITATION_RE.finditer(segment)])
             if not display:
                 continue
@@ -744,6 +757,11 @@ def _grounded_claim_pairs(report: str) -> list[tuple[str, str, str]]:
     pairs = []  # (window, claim_line_text, display_citation)
     for line in prose.splitlines():
         for segment in decompose_claim_segments(line):
+            # See claim_grounding_problem's identical guard for why: a bare `- Source: [Title](url).`
+            # attribution line is not a claim, and its own citation anchor text ("Official Eiffel
+            # Tower" from "[Official Eiffel Tower website](url)") is not a checkable fact.
+            if _is_citation_only_line(segment):
+                continue
             display = (extract_cited_urls(segment) + [m.group(0) for m in _PARENTHETICAL_CITATION_RE.finditer(segment)])
             if not display:
                 continue
