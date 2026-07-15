@@ -726,15 +726,22 @@ Status as of 2026-07-14.
     `Ctrl+C` copy — `ALLOW_SELECT = True` is the framework default at `Widget`/`Screen`/`App`
     level, and `Screen.BINDINGS` already binds `ctrl+c` → `action_copy_text`
     (`textual/screen.py`); `BasicTuiAgent` doesn't override any of this.
-  - **Real, confirmed gap**: `UserMessageWidget` (the user's own prompt) has a click-to-copy
-    button (`on_click` → `_copy_to_system_clipboard`/OSC52 fallback); `AgentMessageWidget` (the
-    agent's actual answers/reports — what "the console" means here) has no equivalent. A one-click
-    affordance is far more discoverable than "select text then Ctrl+C" in a terminal app. Small,
-    low-risk fix mirroring the existing `UserMessageWidget` pattern.
-  - **Right-click paste**: not implemented, not free — reading the system clipboard from a
-    terminal app has no portable stdlib path. The existing write-side pattern
-    (`_copy_to_system_clipboard`: try `wl-copy`/`xclip` before OSC52) has a natural read-side
-    mirror (`wl-paste`/`xclip -o`) on right-click in `PromptInput`, inserting at cursor.
+  - **`AgentMessageWidget` click-to-copy — DONE 2026-07-14, commit `577fd53`.** Mirrors
+    `UserMessageWidget`'s existing `on_click` → `_copy_to_system_clipboard`/OSC52 fallback pattern
+    exactly — one-click copy on the agent's actual answers/reports, not just the user's own
+    prompt.
+  - **Right-click paste — DONE 2026-07-14, commit `577fd53`.** New
+    `engine/tui.py::_paste_from_system_clipboard` (read-side mirror of
+    `_copy_to_system_clipboard`: `wl-paste --no-newline` / `xclip -o -selection clipboard`, no
+    OSC52 equivalent since that escape sequence is write-only) wired into `PromptInput.on_click`
+    on `button == 3` (right-click, confirmed against this project's installed
+    `textual/_xterm_parser.py`'s SGR mouse-button mapping), inserting at cursor / replacing the
+    current selection. Live-verified: a real `_copy_to_system_clipboard` → `_paste_from_system_clipboard`
+    round trip returned the exact original text. Required installing `wl-clipboard` on the dev
+    machine — neither it nor `xclip` was present beforehand, so this had never actually worked via
+    either mechanism (copy silently fell back to OSC52, unverified; paste had no fallback at all).
+    Worth checking for on any fresh setup — without one of these two tools, paste always shows a
+    "clipboard paste failed" warning instead of pasting.
   - **Unused framework capabilities surfaced, not yet scoped into concrete work**: command palette
     (`ENABLE_COMMAND_PALETTE`, `Ctrl+P`, separate from the hand-built `/`-command `OptionList`
     picker); widget maximize/minimize (`action_maximize`/`action_minimize`, blow up one
