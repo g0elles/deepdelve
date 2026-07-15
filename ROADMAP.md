@@ -1016,7 +1016,32 @@ Status as of 2026-07-14.
     investigation into why the full system prompt specifically breaks it.
 ## Stretch
 
-- **RL fine-tuning for tool-call reliability** (GRPO/PPO on the actual Planner/Searcher schema) — targets the fetch-skipping/tool-call-reliability root cause directly instead of catching it after the fact. Needs real training infrastructure; not started.
+- **RL fine-tuning for tool-call reliability** (GRPO/PPO on the actual Planner/Searcher schema) —
+  targets the fetch-skipping/tool-call-reliability root cause directly instead of catching it
+  after the fact. Not started, but a quick research pass (2026-07-14) found this more feasible on
+  this hardware than "needs real training infrastructure" implied:
+  - **Hardware is viable now**: the RX 9060 XT got official ROCm 7.0.2+ support this year; PyTorch
+    installs via pip with ROCm support and trains "out of the box" per AMD's own docs. Real
+    caveat: AMD's own tooling/docs primarily target MI-series datacenter cards, consumer RDNA
+    support (including RDNA4) is "real but secondary" — expect rougher edges than a straight
+    NVIDIA path.
+  - **Unsloth has an AMD-maintained GRPO integration**, with AMD's own official ROCm AI Developer
+    Hub tutorial for GRPO training an 8B model. VRAM-wise: Qwen3-1.7B GRPO fits in ~5GB, 7B/8B fits
+    comfortably in 16GB — maps directly onto `qwen3:4b`, a model already in this project's own
+    bake-off (currently "inconclusive," pending a longer test run) and already sized well within
+    the proven budget.
+  - **GRPO needs a verifiable reward, not an LLM-judge score** — for tool-call reliability
+    specifically, that reward is cheap to build from infrastructure this project already has:
+    valid `delegate_tasks` schema, a real registered tool name (not hallucinated — exactly
+    `tool_result_error_nudge`'s existing error patterns), `write_workspace_file` actually called
+    when required. Research suggests ~1,000 good examples / a few thousand prompts + a
+    programmatic verifier is enough — this session's own bake-off/benchmark run logs could
+    plausibly seed real (task, correct-tool-call) examples rather than hand-authoring a dataset
+    from scratch.
+  - **Still not started** — this was a feasibility scan, not a scoped plan. Real remaining
+    unknowns before committing time: how rough the RDNA4-specific ROCm training path actually is
+    in practice (only found via hands-on testing, not docs), and how large a reward-labeled
+    dataset extracted from existing run logs would actually be before deciding if it's enough.
 ## Evaluated and rejected
 
 - Large/small model dispatcher: rejected 2026-07-11 — benchmark showed small models fail sub-agent reasoning (nemo 2/10); revisit only if a small model scores ≥5 on the Colombia rubric solo.
