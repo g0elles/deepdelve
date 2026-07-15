@@ -2279,6 +2279,64 @@ def main():
 
     contextvars.copy_context().run(_line_claim_scenario)
 
+    # --- _grounded_claim_pairs (shared by nli_unsupported_problem/topical_relevance_problem) must
+    # be SEGMENT-scoped via decompose_claim_segments, same fix class already shipped for
+    # claim_grounding_problem above (ROADMAP "Residual note" on the Phase 1 claim-level grounding
+    # upgrade, closed 2026-07-14) — a same-line multi-claim case must not let one claim's window
+    # get attributed to the wrong citation, or one claim's own evidence get diluted by the other
+    # claim's terms. Pure-function test (no NLI model load needed; _grounded_claim_pairs itself has
+    # no model dependency, only its two callers do). ---
+    def _grounded_claim_pairs_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        from utils.grounding import _grounded_claim_pairs
+        _orig_ws11 = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory"}
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            _IN_MEMORY_FS.clear()
+            reset_fetched_urls()
+            record_fetched_url("https://gov.example.co/exportaciones", filename="sources/exp.md")
+            _IN_MEMORY_FS["sources/exp.md"] = (
+                "Source-URL: https://gov.example.co/exportaciones\n\n"
+                "Las exportaciones de cacao de Colombia alcanzaron USD 265.1 millones en 2024, "
+                "segun cifras oficiales de la entidad nacional de estadistica.")
+            record_fetched_url("https://gov.example.co/agro", filename="sources/agro.md")
+            _IN_MEMORY_FS["sources/agro.md"] = (
+                "Source-URL: https://gov.example.co/agro\n\n"
+                "El sector agropecuario crecio 8% en el primer trimestre de 2025, impulsado "
+                "por la demanda internacional de cafe.")
+            same_line = (
+                "- Cacao: USD 265.1 millones en 2024 [gov](https://gov.example.co/exportaciones), "
+                "mientras el agro crecio 8% en 2025 [gov](https://gov.example.co/agro)")
+            pairs = _grounded_claim_pairs(same_line)
+            assert len(pairs) == 2, (
+                "a same-line two-claim, two-citation report must yield two separate pairs, not one "
+                "merged whole-line pair", pairs)
+            by_display = {display: (window, claim) for window, claim, display in pairs}
+            assert "https://gov.example.co/exportaciones" in by_display
+            assert "https://gov.example.co/agro" in by_display
+            cacao_window, cacao_claim = by_display["https://gov.example.co/exportaciones"]
+            agro_window, agro_claim = by_display["https://gov.example.co/agro"]
+            # Each claim segment's own text must not bleed into the other's -- the cacao claim
+            # text must not contain "agro"/"cafe" and vice versa (the exact drift the whole-line
+            # version was vulnerable to: one segment's terms diluting or misattributing evidence
+            # meant for the other).
+            assert "cacao" in cacao_claim.lower() and "agro" not in cacao_claim.lower(), cacao_claim
+            assert "agro" in agro_claim.lower() and "cacao" not in agro_claim.lower(), agro_claim
+            # Each window must come from ITS OWN cited source, not the other claim's.
+            assert "cacao" in cacao_window.lower() or "exportaciones" in cacao_window.lower(), cacao_window
+            assert "agropecuario" in agro_window.lower(), agro_window
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            if _orig_ws11 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws11
+
+    contextvars.copy_context().run(_grounded_claim_pairs_scenario)
+
     # --- quarantined-draft restore beats narration salvage (runs 11/13's endgame) ---
     from engine.tui import _restore_quarantined_draft
 
