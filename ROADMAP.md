@@ -378,10 +378,13 @@ Status as of 2026-07-14.
   assertions (single-citation invariance, 2-citation split, trailing-uncited-text handling) plus a
   live-shaped same-line scenario in `test_structural_checks.py` (a genuinely-supported cacao claim
   and a fabricated software claim sharing one line, each with its own distinct citation — correctly
-  flags only the fabricated one, by its own citation, not the supported one's). **Residual note**:
-  `nli_unsupported_problem` (the separate second-stage NLI check) still does its own independent
-  whole-line term-overlap and wasn't touched by this pass — same latent multi-citation-per-line gap
-  could exist there too; flagged, not yet fixed, out of this milestone's scope.
+  flags only the fabricated one, by its own citation, not the supported one's). **Residual note
+  — CLOSED 2026-07-14, commit `fa2e562`**: `nli_unsupported_problem`/`topical_relevance_problem`
+  (both driven by the shared `_grounded_claim_pairs`) had the same latent whole-line term-overlap
+  gap this pass fixed for `claim_grounding_problem` — now ported to
+  `utils/grounding.py::_grounded_claim_pairs`, iterating `decompose_claim_segments(line)` the same
+  way. New test: `_grounded_claim_pairs_scenario` (pure function, no NLI model load needed) pins a
+  same-line two-claim case yielding two correctly segment-scoped pairs.
 - **`check_excluded_topic` — report-write-time enforcement of query exclusions, closing the gap in the "Hard exclusion rules" finding below.** `delegate_tasks` already skipped DISPATCHING a task whose own topic matched an explicit query exclusion (`_extract_excluded_topics`), but did nothing to stop that topic showing up as its own section in the final report anyway, recalled from a sibling task's tangential findings. New `engine/completion.py::check_excluded_topic` (a `GROUNDING_CHECKS` entry, `_BUILDER_FIXABLE_PROBLEMS` member) reuses the exact same `_extract_excluded_topics` parser, now applied to `final_report.md`'s own h1-h3 heading sections (`utils/grounding.py::split_into_heading_sections`, extracted from the existing `find_uncited_claim_lines` section-scoping logic so both share one implementation) — deliberately heading-scoped rather than whole-document substring matching, so a topic mentioned once in passing prose doesn't false-positive the way a bare match would. New verdict-matrix row in `test_structural_checks.py` (query exclusion + a report with its own "## Sector Agritech" section).
 - **Phase 2 of the approved 6-phase plan: cross-source contradiction detection (FEVER-style, Thorne
   et al., NAACL 2018, `fever.ai`).** Depends on Phase 1's claim segmentation
