@@ -590,6 +590,33 @@ Status as of 2026-07-14.
 - **Hard exclusion rules ("do not research sector X") repeatedly fail to hold**, confirmed across at least 2 independent runs with different prompt wordings: an explicitly-excluded "Agricultural"/"agribusiness" sector got researched and included in the final report anyway — once purely from memory, once with the model actually delegating and fetching a real source for the excluded sector. Simply naming the exclusion in the prompt isn't enough; `delegate_tasks`'s existing dispatch-time skip (`_extract_excluded_topics`) only stopped NEW research on the topic, not the topic showing up in the final report anyway via a sibling task's tangential findings. **Fixed 2026-07-14** — see "Done" below (`check_excluded_topic`).
 - **Non-URL "citations" evade the grounding check entirely.** A live report sourced several claims to `"Expert opinion from a cold storage facility manager in Colombia"` — not URL-shaped, so `extract_cited_urls` never sees it, even though it's exactly as ungrounded as a fabricated URL. The grounding check's whole model is "cross-reference cited URLs against fetched URLs" — a citation with no URL at all currently gets a free pass. **Fixed — see "Done" above (`non_url_citation_check`).**
 - **Scaling down scope (12 sectors → 5) improved surface polish, not actual grounding rate.** A 5-sector re-run produced far more plausible-looking, consistently-formatted citations than a 12-sector run, but cross-referencing against `_run_state.json`'s real `fetched_urls` showed most of them were still fabricated — only 5 URLs were ever fetched all run, while the final report cited well over twice that many distinct domains. Fewer sectors did not proportionally reduce the fabrication rate.
+- **Shared cumulative `web_search` quota pool can starve a specific task of the ability to
+  synthesize what it already fetched (2026-07-14).** Live sales-forecasting benchmark run
+  (`research_output/i_want_documentation_on_heuristic_algoritms_for_de_20260714_225720/`): the
+  final report was well-grounded on its technical content but silently dropped the Colombia
+  cultural-context section (holidays/paydays) ENTIRELY, despite the query explicitly requiring it
+  and the research genuinely happening — NOT the same bug as the FindingsWriter dedup fix shipped
+  earlier this session (that fix worked correctly here; the empty-summary entry reached
+  FindingsWriter's material intact, there was just nothing usable in it).
+  `SubAgent_Colombian cultural events affecting sales` was dispatched 4 separate times across the
+  run's retries. Dispatch #1 genuinely fetched 2 real sources
+  (`timeanddate.com/holidays/colombia/2024`, an ADP payroll-calendar article) but its
+  `RunState.add_finding` entries have EMPTY summaries — it fetched but never got to actually
+  analyze/synthesize before being cut off. Dispatch #4 (the last one) has a real summary, but it's
+  just an apology: *"I've reached the maximum number of web-search calls allowed for this session
+  (15). No sources were successfully fetched..."* Root cause: `web_search`'s quota
+  (`build_quota_pool`) is ONE shared, cumulative pool across every sub-agent in the run — other
+  tasks (particularly "Top 5 common heuristic algorithms," which shows heavy repeated web activity
+  in this run's findings) burned through the pool first, so by the time the Colombia task got
+  redispatched on retries #3/#4, the shared quota was already exhausted, and it could never finish
+  analyzing the sources it originally fetched. **Not yet fixed or scoped** — candidate angles worth
+  considering: (a) a per-task reserved minimum quota allotment, (b) protecting/ring-fencing a
+  task's remaining quota once it's shown real fetch activity (distinguishing "genuinely
+  progressing but interrupted" from "never started"), (c) some kind of fairness/round-robin
+  ordering across redispatched tasks instead of first-come-first-served on a shared pool. Distinct
+  from `retry_quota_topup` (which already tops up the pool between completion-check ROUNDS) —
+  this is about fairness WITHIN a round, across concurrently/sequentially dispatched sibling
+  tasks sharing the same pool.
 
 - **gpt-oss hallucinates entire tool names, not just filenames (2026-07-12).** Distinct from the
   fuzzy-filename problem fixed this session (a real tool called with a garbled argument) — this is
