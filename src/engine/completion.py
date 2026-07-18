@@ -664,7 +664,11 @@ def _salvage_narrated_report(req_artifact: str, last_assistant_text: str) -> boo
     well-formatted report as chat text instead of ever calling write_workspace_file, across the
     entire retry budget. Rather than throw away real content because a specific tool call didn't
     fire, auto-persist the model's own last substantial response — clearly marked as unverified
-    salvage, not a substitute for the grounding check. Returns True if a salvage write happened."""
+    salvage, not a substitute for the grounding check. Returns True if a salvage write happened.
+    Two callers: `_dispatch_writer_review_fix` (immediately after each Write dispatch, so a
+    narrating model gets salvaged on attempt 1 instead of burning the whole retry budget first —
+    added 2026-07-18) and `run_completion_check`'s final-verdict path (the original, last-resort
+    use, for the classic inject-into-Planner flow when no writer-role dispatch is configured)."""
     if not last_assistant_text or len(last_assistant_text.strip()) < 200:
         return False
     try:
@@ -724,7 +728,33 @@ async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artif
     rather than silently doing nothing.
 
     Capped at 3 dispatches total (Write, Review, optional Fix) — no unbounded nesting."""
-    await dispatch_task(f"{writer_role}Fix_attempt{attempt + 1}", write_instructions, writer_role)
+    write_result = await dispatch_task(f"{writer_role}Fix_attempt{attempt + 1}", write_instructions, writer_role)
+
+    # Immediate narration salvage (2026-07-18 bake-off finding): a writer role "Finishing" its
+    # turn is NOT the same as it having called write_workspace_file — confirmed live twice this
+    # session (qwen2.5:3b-instruct as FindingsWriter, same root cause already documented for
+    # Bonsai-8B) that a model can narrate a complete, well-formatted draft as chat text and never
+    # touch the tool, every single attempt, burning the FULL completion-check retry budget on
+    # "still missing" before giving up. The project already had `_salvage_narrated_report` for
+    # exactly this text pattern, but it only ran as a LAST-RESORT at final-verdict time, and only
+    # for `missing_artifact` (final_report.md) — `missing_findings` (FindingsWriter/findings.md)
+    # had no equivalent path at all, which is exactly the case that burned qwen2.5:3b-instruct's
+    # entire budget (254.6s, 8/8 attempts, `findings.md` never written). Checking and salvaging
+    # HERE, immediately after the Write dispatch, instead of waiting for the caller's final-verdict
+    # fallback, means a narrating model gets a real (clearly flagged, unverified) draft on attempt
+    # 1 — which then goes through the SAME PeerReviewer/Fix cycle and grounding checks a genuine
+    # write would, rather than looping blind on a file that will never appear on its own. Shared by
+    # both writer roles (Builder AND FindingsWriter) since this helper already is.
+    from tools.fs import _get_safe_path
+    path = _get_safe_path(req_artifact)
+    if not (path and os.path.exists(path)):
+        write_text = write_result if isinstance(write_result, str) else str(write_result)
+        if _salvage_narrated_report(req_artifact, write_text):
+            notify(
+                f"**System ({attempt + 1}):** {writer_role} narrated `{req_artifact}` as chat text "
+                f"instead of calling `write_workspace_file` — auto-recovered its own content as the "
+                f"artifact (flagged unverified) instead of retrying blind."
+            )
 
     # Snapshot read_workspace_file's usage count BEFORE dispatching PeerReviewer, so a fabricated
     # "REVIEW: CLEAN" that never actually opened the file can be caught below (see is_clean gate).

@@ -582,6 +582,58 @@ Status as of 2026-07-14.
   end-to-end produced zero `claim_unsupported` occurrences (vs. 6 consecutive + retry-budget-
   exhausted before), converging cleanly by attempt 4 in 490.0s vs. the prior run's 1017.9s wasted
   grinding on the false positive.
+- **`_dispatch_writer_review_fix` immediate narration salvage — IMPLEMENTED 2026-07-18, live
+  verification in progress.** Targets the "writer role Finishes its turn without ever calling
+  `write_workspace_file`" failure class (Bonsai-8B, `qwen2.5:3b-instruct`) at its root: the
+  project already had `_salvage_narrated_report` for a model that narrates a complete report as
+  chat text instead of calling the tool, but it only ran as a LAST-RESORT at final-verdict time,
+  and only for `missing_artifact` — `missing_findings` (the FindingsWriter case, the one that
+  actually burned `qwen2.5:3b-instruct`'s full 8-attempt budget) had no equivalent path at all.
+  Now checked immediately after every Write dispatch inside `_dispatch_writer_review_fix` itself
+  (shared by both Builder and FindingsWriter): if `req_artifact` is still missing but the dispatch
+  returned ≥200 chars of real text, that text is persisted as the artifact right away, clearly
+  flagged `AUTO-RECOVERED DRAFT`, and flows into the same PeerReviewer/Fix cycle and grounding
+  checks a genuine write would — instead of looping blind on a file that will never appear on its
+  own. New test coverage: `_immediate_narration_salvage_scenario` (salvage fires, correctly
+  flagged, converges in 2 dispatches) and a negative-case scenario confirming a real write is
+  never clobbered by salvage logic. Does not touch `COMPLETION_CHECKS`/`GROUNDING_CHECKS`/any
+  `Verdict` — `test_structural_checks.py` run and passing regardless per project rule.
+  **Live re-test against the exact case that motivated it (`qwen2.5:3b-instruct`, same
+  sales-forecasting benchmark) surfaced a more precise root cause than assumed**: this model's
+  `FindingsWriterFix` dispatches return a **genuinely empty response** (confirmed via the
+  persisted session log: zero events, no tool call, no text at all — not a narrated report), the
+  exact same symptom already documented for Bonsai-8B, not the "narrates full content instead of
+  calling the tool" pattern the fix targets. Salvage correctly declines to act (nothing above the
+  200-char floor to recover) rather than fabricating content from nothing. **Conclusion: the fix
+  is verified correct and safe, but doesn't rescue THIS specific model's failure shape** — it
+  would still help a model that genuinely narrates substantial content instead of calling the
+  tool (the originally-documented pattern, seen in the reference project this was forked from
+  too). Whether `qwen2.5:3b-instruct` is rescuable at all needs a different angle (e.g. option 4
+  below, keep it out of the writer role entirely) if pursued further.
+  - **Full re-run completed 2026-07-18, confirms the diagnosis: `Report: NOT WRITTEN`, still
+    `missing_findings`, 8/8 attempts, 3524.3s (58.7 min — vs. 254.6s on the original run) with the
+    live default `sub_agent_timeout_minutes: 10` in effect. `findings.md` still never existed on
+    disk at any point across all 9 dispatches (0 through the final `_reviewed` pass) — confirmed
+    via the run folder listing (`_run_state.json`/`sources/` only) and the persisted session log
+    (zero `FindingsWriterFix*`-sourced events across the ENTIRE run, meaning every single
+    dispatch, not just attempt 1, returned nothing usable).** The 14x wall-clock increase traces
+    to one specific event, confirmed live via `journalctl -u ollama`'s own `print_timing` output
+    (not assumed): the final corrective pass (`FindingsWriterFix_attempt8_reviewed`) decoded
+    **45,000+ tokens continuously at ~80 tok/s**, blew past its own 16K context window once
+    (forcing a `context shift, n_discard = 8189`), and was still running when checked — a second,
+    independent confirmation of the "runaway generation with no natural stop point" failure class
+    this project already fixed the missing GUARD for (README: "Independent per-dispatch wall-clock
+    deadline," originally found via a Gemma4 19,908-token case) — `sub_agent_timeout_minutes`
+    correctly cut it off rather than hanging forever, but whatever text existed at cutoff still
+    wasn't real content (0 events recorded), so nothing was salvageable even from that dispatch.
+    **Final verdict: `qwen2.5:3b-instruct` genuinely has no recoverable content to give in the
+    FindingsWriter role, empty responses and runaway non-answers alike — this is a harder failure
+    than "narrates instead of writing," and no structural salvage can rescue a dispatch that
+    produces nothing at all.** Confirms option 1 (structural fix) is exhausted for this specific
+    candidate; option 2 (keep it out of the writer role, use it only for Searcher/Analyzer-tier
+    work where it has shown real capability — 3 sources fetched cleanly, 0 search failures, both
+    runs) is the next thing worth trying if this model is revisited.
+
 ## Findings from live testing (not yet acted on / informational)
 
 - **Full grounding/completion-check compliance audit (2026-07-18), all 12 README-claimed guarantees
@@ -791,6 +843,37 @@ Status as of 2026-07-14.
 
 ## Planned (not started)
 
+- **Strategic options for the "no small local model is reliable enough" gap (discussed
+  2026-07-18, after the bake-off reached 10 tried candidates, 9 disqualified).** The project's own
+  stated local-only philosophy is already satisfied — `gpt-oss:20b` at 13GB, comfortably inside a
+  16-17GB VRAM budget, is the one candidate with a full benchmark pass. The real open question is
+  whether a LIGHTER default is achievable, given every smaller candidate has failed at agentic
+  coordination specifically (schema encoding, writer-role omission, or ignoring a corrective
+  nudge), not raw single-tool-call capability — a known, industry-wide small-model gap, not
+  something one more checkpoint is likely to dodge. Four options, in the order agreed to try them:
+  1. **Structural fix instead of a new model** (in progress): sidestep failures in the engine
+     rather than training/prompting around them. First instance: the immediate narration-salvage
+     fix above. Cheapest lever, most aligned with this project's existing track record ("fix it in
+     the engine, not the prompt").
+  2. **Heterogeneous role tiering, reconsidered**: a UNIFORM small-model dispatcher was tried and
+     rejected 2026-07-11 (nemo scored 2/10 across every role). But the bake-off now shows small
+     models are fine at Searcher/Analyzer-tier work (single tool calls) and fail specifically as
+     Planner/Writer (the roles needing multi-step self-correction) — so run a light model
+     (`qwen3:4b`/`qwen2.5:3b-instruct`) for leaf specialist dispatches only, keep `gpt-oss:20b`
+     reserved for Planner + Writer roles. Cuts inference cost on the bulk of a run's tool calls
+     without touching the roles that actually need the stronger model. Not yet implemented — next
+     up if option 1 alone doesn't rescue enough candidates.
+  3. **Targeted fine-tuning (SFT + GRPO) of an existing small checkpoint** — NOT training a
+     foundation model from scratch, which would be disproportionate to a coordination/
+     instruction-following gap on top of an already-capable base. Already scoped in the "Stretch"
+     section's GRPO entry: target `qwen3:4b`, reward function built around its specific
+     documented failure (`thin_coverage` non-convergence), dataset sourced from this project's own
+     real run logs. GRPO already confirmed running natively on this exact GPU. Disk budget
+     (venv-must-be-on-root-ext4, ~13GB+ for a real fine-tune vs. the 0.5B toy test) needs
+     organizing before this is attempted — explicitly the user's next step once options 1/2 are
+     exhausted.
+  4. **Stay on `gpt-oss:20b` as-is** — the fallback baseline that's already true today regardless
+     of how far 1-3 get: nothing is actually blocking the project's local-only goal right now.
 - **6-phase plan approved 2026-07-14 — ALL 6 PHASES DONE, see "Done" above.** Phase 1 claim-level
   grounding upgrade → Phase 2 cross-source contradiction detection → Phase 3 xQuAD diversity
   reranking → Phase 4 topical-relevance cross-encoder reranker → Phase 5 coverage accounting/
