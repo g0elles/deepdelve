@@ -855,14 +855,54 @@ Status as of 2026-07-14.
      rather than training/prompting around them. First instance: the immediate narration-salvage
      fix above. Cheapest lever, most aligned with this project's existing track record ("fix it in
      the engine, not the prompt").
-  2. **Heterogeneous role tiering, reconsidered**: a UNIFORM small-model dispatcher was tried and
-     rejected 2026-07-11 (nemo scored 2/10 across every role). But the bake-off now shows small
-     models are fine at Searcher/Analyzer-tier work (single tool calls) and fail specifically as
-     Planner/Writer (the roles needing multi-step self-correction) — so run a light model
-     (`qwen3:4b`/`qwen2.5:3b-instruct`) for leaf specialist dispatches only, keep `gpt-oss:20b`
-     reserved for Planner + Writer roles. Cuts inference cost on the bulk of a run's tool calls
-     without touching the roles that actually need the stronger model. Not yet implemented — next
-     up if option 1 alone doesn't rescue enough candidates.
+  2. **Heterogeneous role tiering — IMPLEMENTED and live-tested 2026-07-18, real negative
+     result.** A UNIFORM small-model dispatcher was tried and rejected 2026-07-11 (nemo scored
+     2/10 across every role); this instead tiers by role, keeping `gpt-oss:20b` for
+     Planner/Builder/FindingsWriter/PeerReviewer (the roles needing multi-step self-correction)
+     and routing WebSearcher/AcademicSearcher/DocumentAnalyzer/DataAnalyzer to a new optional
+     `settings.specialist_model`.
+     - **Implementation**: `_build_client(model_override=None)` (`src/engine/orchestrator.py`)
+       now takes an optional model override; `create_local_agent` builds a second client only
+       when `specialist_model` is set and differs from `api.openai_model` (a no-op object-reuse
+       otherwise); `_run_single_task` picks the specialist client when `agent_id` is in the new
+       `_SPECIALIST_MODEL_ROLES` set (the deliberate complement of the existing
+       `_NON_RESEARCH_DISPATCH_ROLES`). TUI/CLI status lines updated in parity to show
+       `<model> (+specialist: <model>)` when configured. `config_template.yaml` documents the key.
+       No `SubAgentConfig`/Pydantic changes needed — the routing decision lives entirely at the
+       one dispatch point. `test_structural_checks.py` passes unchanged.
+     - **VRAM probe done BEFORE writing any code** (per this entry's own earlier scoping):
+       confirmed live via `ollama ps`/`rocm-smi` that this card does NOT keep two different
+       Ollama models resident simultaneously — `gpt-oss:20b` (12GB) and `qwen3:4b` (5.1GB
+       loaded, inflated by KV cache) together exceed the ~15.9GiB budget, so Ollama evicts the
+       previous model on every switch. Measured reload cost: ~5-23s per switch.
+     - **Real timed A/B run (2026-07-18)**, same sales-forecasting benchmark, `gpt-oss:20b` +
+       `specialist_model: deepdelve-qwen3-4b`, confirmed via `ollama ps` mid-run that both roles
+       really did route to their intended model. **Result: 4513.1s (75.2 min) vs. the pure
+       `gpt-oss:20b` baseline's 1079.1s — 4.2x SLOWER**, not faster, driven by the reload tax
+       compounding across an unusually retry-heavy run (`thin_coverage` → `missing_findings` →
+       `missing_artifact` before converging) plus qwen3:4b needing repeated redispatches
+       (`background_heuristics#2/#3/#4`) to produce anything usable for its assigned angle.
+       **Worse, the run converged CLEANLY (no fabrication, real grounding, `Report:` written) but
+       the content itself silently dropped the query's entire main topic**: `findings.md` and
+       `final_report.md` are 100% about Colombian holidays/payroll, with ZERO mention of
+       heuristic algorithms or deep learning, despite `_run_state.json` confirming the specialist
+       model DID eventually fetch two genuinely relevant real sources for that angle
+       (`sciencedirect.com/.../S1546221825008872`, `forecastio.ai/blog/time-series-forecasting`)
+       that even show up in `RunState.data["findings"]`. The content existed; the writer-tier
+       synthesis (on `gpt-oss:20b`, the coordinator model, not the specialist) dropped it anyway.
+       This is a NEW instance of the pattern already tracked elsewhere in this file (real fetched
+       content silently absent from final synthesis) — previously always tied to an observable
+       quota-exhaustion trigger, but no quota exhaustion is visible in this run's own attempt log,
+       suggesting the underlying issue may be a broader writer-tier prioritization/attention
+       problem, not solely the already-scoped quota-fairness bug. Not investigated further this
+       session — flagged as a new, distinct candidate worth its own root-cause pass.
+     - **Conclusion: tiering the code is correct and reusable, but THIS pairing
+       (`gpt-oss:20b`+`qwen3:4b`) on THIS hardware is a net loss** — slower AND lower quality than
+       just running `gpt-oss:20b` alone. `specialist_model` left unset in the live config
+       (defaulting to today's single-model behavior). Worth retrying only if: a specialist model
+       with a smaller combined VRAM footprint (fits alongside `gpt-oss:20b` without eviction) is
+       found, or the newly-surfaced writer-tier content-dropping bug gets root-caused and fixed
+       first — as scoped, tiering does not currently deliver the hoped-for benefit.
   3. **Targeted fine-tuning (SFT + GRPO) of an existing small checkpoint** — NOT training a
      foundation model from scratch, which would be disproportionate to a coordination/
      instruction-following gap on top of an already-capable base. Already scoped in the "Stretch"

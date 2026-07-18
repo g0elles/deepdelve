@@ -13,6 +13,19 @@ api:
 settings:
   enable_thinking: false
   temperature: 0.2
+  # Optional: use a different (typically lighter/faster) model for the leaf specialist roles
+  # (WebSearcher/AcademicSearcher/DocumentAnalyzer/DataAnalyzer) than api.openai_model, which stays
+  # reserved for the Planner + writer/review roles (Builder/FindingsWriter/PeerReviewer) that need
+  # multi-step self-correction — the bake-off's own repeated finding is that small local models are
+  # reliable at single tool calls and unreliable at that coordination work. Falls back to
+  # api.openai_model when unset (the default, single-model behavior, unchanged).
+  # Real cost, not free: confirmed live this project's own dev GPU (16GB) does NOT keep two
+  # different models loaded in VRAM simultaneously — a 12GB + 5GB model pair already exceeds the
+  # budget, so every switch between the two models triggers a real reload (~5-23s measured). This
+  # is paid once per delegate_tasks ROUND (the Planner boundary), not per individual specialist
+  # tool call, so the tax scales with how many rounds a run needs, not how many sources it fetches.
+  # Verify with a real timed A/B against your own hardware before assuming it's a net win.
+  # specialist_model: deepdelve-qwen3-4b
   concurrency:
     # Must not exceed your backend's REAL concurrent-request serving capacity, not just a number
     # that "sounds reasonable." Confirmed live 2026-07-14: a single-GPU Ollama instance serving a
