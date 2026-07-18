@@ -1506,9 +1506,80 @@ Status as of 2026-07-14.
        a 4B fine-tune (base weights + optimizer states + venv) and `rm -rf` the venv immediately
        after each run the way the toy smoke test already did — root disk currently has 63G free
        (`df -h /`, confirmed this session), comfortable margin.
-    5. **Not started**: this is a plan only. Next concrete action, when fine-tuning re-enters scope,
-       is building the reward function against 1-2 real extracted `thin_coverage` transcripts as a
-       correctness check before touching the full dataset.
+    5. **Prep work done 2026-07-18 (data + reward code, per the user's own scoping split — the
+       GPU training environment still waits on disk reorganization, everything else doesn't need
+       to)**: new `finetune/` directory, real working code, not a plan doc.
+       - **`finetune/reward.py`**: all three reward dimensions from item 2 above implemented as
+         pure, dependency-free functions (`schema_compliance_reward`,
+         `real_tool_name_reward`, `thin_coverage_response_reward`), each calibrated against the
+         EXACT real examples this session's bake-off produced (llama3.2:3b's JSON-string `tasks`,
+         qwen3:4b's literal canned-refusal text, qwen3:8b's narrated-report text) rather than
+         synthetic cases. Self-test suite (`python finetune/reward.py`) passes. One calibration
+         note: the re-delegation similarity threshold needed raising from an initial 0.6 to 0.8 —
+         a real qwen3:4b reword ("top 5 heuristic algorithms... deep learning sales forecasting"
+         → "top 5 metaheuristics for retail sales forecasting with real-world implementations")
+         scored 0.607 on `SequenceMatcher`, which is a GOOD genuine re-scope, not a near-duplicate.
+       - **`finetune/extract_dataset.py`**: pulls real (context, response) examples from this
+         project's own history — `research_output/*/_run_state.json` (WHEN a `thin_coverage`
+         problem fired) cross-referenced with `~/.deepdelve/sessions/session_*.json` (WHAT the
+         model actually did next). The two aren't joined by any stored ID, so this matches by
+         query-text prefix AND `_run_state.json`'s `started_at` proximity to the session's own
+         start time — the first version matched by text alone and silently paired a run with the
+         WRONG session (this project's own standing benchmark queries get re-run verbatim across
+         many sessions/models, confirmed live: an early cut wrongly matched a 2026-07-18 run to a
+         2026-07-14 session that happened to share the same first-prompt text). Fixed by requiring
+         the closest session start at or before the run's `started_at`.
+       - **Real run against the actual corpus**: 66 `research_output/` runs scanned against 84
+         persisted session logs, 4 runs successfully matched, **5 real `thin_coverage` examples
+         extracted**, reward-scored 2 positive / 3 negative on the current heuristics — small
+         (expected: this project is only a few weeks old, and only `thin_coverage`-in-Planner
+         cases are covered so far, not schema-compliance or writer-role-omission examples, which
+         would need their own extraction logic), but end-to-end-real, not synthetic.
+       - **Known rough edges, not fixed this pass** (prep, not the final training-set build): a
+         few extracted examples are an intermediate `think_tool`/`write_todos` call rather than
+         the model's eventual `delegate_tasks` decision or clean stop — the extractor currently
+         grabs the FIRST Agent event after the nudge timestamp, not the first DECISION-shaped one;
+         worth walking forward to the next `delegate_tasks`/text-only event instead. One extracted
+         example's `response_text` field appears to contain a system notification string rather
+         than genuine model output — needs a source-attribution check before trusting it as a
+         training example.
+       - **Next, still explicitly deferred**: scaling past 5 examples needs either (a) building
+         extraction logic for the OTHER two reward dimensions (schema-compliance and
+         hallucinated-tool-name have plenty of raw material in `tool_error_samples`/session logs
+         already, just not wired into `extract_dataset.py` yet), or (b) supplementing with public
+         data — see the next entry. The actual GPU training run (torch+ROCm+trl+peft venv, ~13GB+
+         on root) still waits on the user's own disk reorganization, per the session's agreed
+         split between "prepare" and "train."
+    6. **Public-dataset supplementation, researched 2026-07-18 — real, downloadable leads found,
+       two-stage recipe confirmed sound.** Several genuinely downloadable multi-turn tool-calling
+       corpora exist, largest/most current first: **`Agent-Ark/Toucan-1.5M`** (HF, 1.53M real
+       trajectories from 495 live MCP servers, 2000+ tools, multi-turn/parallel/sequential — the
+       best structural match to this project's own MCP-based tool ecosystem), **`Salesforce/
+       APIGen-MT-5k`** (HF, 5K human-verified multi-turn trajectories, ShareGPT format, closest
+       shape to `delegate_tasks`'s multi-turn conversation pattern), **`Salesforce/
+       xlam-function-calling-60k`** (HF, 60K single-turn, Apache 2.0), **`MadeAgents/
+       XLAM-7.5k-Irrelevance`** (HF, 7.5K examples of correctly NOT calling a tool — directly
+       useful for `thin_coverage_response_reward`'s "clean stop, no narration" branch), ToolBench/
+       ToolLLM (GitHub, 12K instructions/37K real RapidAPI calls, avg 4.1 steps/trace).
+       **Re-planning/self-correction specifically (the `thin_coverage` scenario itself) has NO
+       standalone public dataset** — Reflexion/WebArena/AgentBench publish trajectory
+       code/environments, not a packaged retry-labeled corpus; the closest proxy is Hammer's
+       irrelevance-detection subset above. This confirms this project's own 5 real extracted
+       examples are more valuable than anything public for THIS specific reward dimension, even
+       though they're far too few to carry general tool-calling reliability alone.
+       **RLVR-for-agentic-tool-use papers**: nothing paper-and-dataset-bundled matches this
+       project's exact reward shape; most public RLVR work is still math/code-verifier-centric.
+       One 2026 lead worth reading (not downloading): "Multi-Turn Reinforcement Learning for
+       Tool-Calling Agents with Iterative Reward Calibration" (arXiv:2604.02869, per-turn credit
+       assignment for tool calls, closer to this problem than math/code RLVR).
+       **Recommended recipe, confirmed as the same pattern APIGen-MT/xLAM/Hammer's own papers
+       used**: (1) SFT/LoRA warm-start on a subsample of Toucan-1.5M + xlam-60k + the Hammer
+       irrelevance set, for general schema-compliant, non-hallucinated tool-calling; (2) a small,
+       final GRPO pass using this project's own 5 real logs (augmented with synthetic near-
+       duplicates covering re-delegation/thin-coverage specifically) for the reward-shaping stage
+       that actually targets `qwen3:4b`'s documented failure. Not started — the next concrete
+       action, once the GPU training environment exists, is subsampling Toucan-1.5M/xlam-60k down
+       to a size that fits this project's disk/time budget rather than downloading either in full.
 ## Evaluated and rejected
 
 - Large/small model dispatcher: rejected 2026-07-11 — benchmark showed small models fail sub-agent reasoning (nemo 2/10); revisit only if a small model scores ≥5 on the Colombia rubric solo.
