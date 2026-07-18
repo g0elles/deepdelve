@@ -1,6 +1,6 @@
 # DeepDelve Roadmap
 
-Status as of 2026-07-14.
+Status as of 2026-07-18.
 
 ## Done
 
@@ -633,6 +633,33 @@ Status as of 2026-07-14.
     candidate; option 2 (keep it out of the writer role, use it only for Searcher/Analyzer-tier
     work where it has shown real capability — 3 sources fetched cleanly, 0 search failures, both
     runs) is the next thing worth trying if this model is revisited.
+- **Shared quota-pool starvation — FIXED 2026-07-18** (`src/tools/core.py::check_quota`). Ring-
+  fences a task's remaining quota once it's shown real fetch activity this dispatch
+  (`task_fetched_urls_ctx` non-empty, already per-task/race-free): the first time a tool call would
+  exceed the shared cumulative limit for a task that's already fetched something real, grants one
+  small one-time top-up (+2) instead of hard-blocking, bounded by a `_rescued` flag on the pool
+  entry so it can only fire once per tool per run — not an unbounded loophole. Directly targets the
+  documented failure below (a dispatch that fetched 2 real sources, then hit a bare "Quota reached"
+  wall before ever synthesizing them) — addresses option (b) from that finding's own candidate list
+  (ring-fencing a task's remaining quota once it's shown real progress). Does NOT fully cover every
+  angle that finding raised: a REDISPATCH's own `task_fetched_urls_ctx` starts empty again, so a
+  task that gets cut off before fetching anything on a later retry still isn't rescued — options
+  (a)/(c) from that finding remain open if that gap resurfaces. Verified with 3 direct unit
+  scenarios (rescue fires once, normal enforcement resumes after, no rescue without real fetch
+  activity) plus a live headless smoke test with no regressions. Doesn't touch
+  `COMPLETION_CHECKS`/`GROUNDING_CHECKS`/any `Verdict`, so the verdict-matrix test requirement
+  doesn't formally apply, though `test_structural_checks.py` was still run and passes.
+- **Brave Search MCP `country` parameter rejecting real countries (e.g. Colombia) — FIXED
+  2026-07-18** (`src/tools/mcp_loader.py::_wrap_brave_search_tool`/`_BRAVE_SEARCH_COUNTRY_ENUM`).
+  `@brave/brave-search-mcp-server`'s `country` param is a fixed 37-code zod enum that does not
+  include `CO` (confirmed by reading the installed package's own schema source) — broke every
+  Colombia-targeted search outright (`MCP error -32602`). Wraps `MCPTool.call_tool` (confirmed via
+  `agent_framework`'s own source that every model-invoked call to any function this MCP server
+  advertises funnels through this one method) to strip an out-of-enum `country` value before it
+  reaches the subprocess, falling back to an unscoped search instead of a hard rejection. Scoped
+  only to specs whose server name contains "brave", so it can't affect any other MCP server.
+  Unit-verified directly against a fake `call_tool` before the live smoke test confirmed no
+  regressions.
 
 ## Findings from live testing (not yet acted on / informational)
 
@@ -675,8 +702,10 @@ Status as of 2026-07-14.
   tasks (particularly "Top 5 common heuristic algorithms," which shows heavy repeated web activity
   in this run's findings) burned through the pool first, so by the time the Colombia task got
   redispatched on retries #3/#4, the shared quota was already exhausted, and it could never finish
-  analyzing the sources it originally fetched. **Not yet fixed or scoped** — candidate angles worth
-  considering: (a) a per-task reserved minimum quota allotment, (b) protecting/ring-fencing a
+  analyzing the sources it originally fetched. **Partially fixed 2026-07-18 — see "Done" above
+  (`check_quota`'s ring-fence)**, which addresses angle (b) below (a dispatch that already fetched
+  something real no longer gets hard-blocked mid-synthesis). Angles (a)/(c) remain open — candidate
+  angles: (a) a per-task reserved minimum quota allotment, (b) [addressed] protecting/ring-fencing a
   task's remaining quota once it's shown real fetch activity (distinguishing "genuinely
   progressing but interrupted" from "never started"), (c) some kind of fairness/round-robin
   ordering across redispatched tasks instead of first-come-first-served on a shared pool. Distinct
@@ -843,83 +872,34 @@ Status as of 2026-07-14.
 
 ## Planned (not started)
 
-- **Strategic options for the "no small local model is reliable enough" gap (discussed
-  2026-07-18, after the bake-off reached 10 tried candidates, 9 disqualified).** The project's own
-  stated local-only philosophy is already satisfied — `gpt-oss:20b` at 13GB, comfortably inside a
-  16-17GB VRAM budget, is the one candidate with a full benchmark pass. The real open question is
-  whether a LIGHTER default is achievable, given every smaller candidate has failed at agentic
-  coordination specifically (schema encoding, writer-role omission, or ignoring a corrective
-  nudge), not raw single-tool-call capability — a known, industry-wide small-model gap, not
-  something one more checkpoint is likely to dodge. Four options, in the order agreed to try them:
-  1. **Structural fix instead of a new model** (in progress): sidestep failures in the engine
-     rather than training/prompting around them. First instance: the immediate narration-salvage
-     fix above. Cheapest lever, most aligned with this project's existing track record ("fix it in
-     the engine, not the prompt").
-  2. **Heterogeneous role tiering — IMPLEMENTED and live-tested 2026-07-18, real negative
-     result.** A UNIFORM small-model dispatcher was tried and rejected 2026-07-11 (nemo scored
-     2/10 across every role); this instead tiers by role, keeping `gpt-oss:20b` for
-     Planner/Builder/FindingsWriter/PeerReviewer (the roles needing multi-step self-correction)
-     and routing WebSearcher/AcademicSearcher/DocumentAnalyzer/DataAnalyzer to a new optional
-     `settings.specialist_model`.
-     - **Implementation**: `_build_client(model_override=None)` (`src/engine/orchestrator.py`)
-       now takes an optional model override; `create_local_agent` builds a second client only
-       when `specialist_model` is set and differs from `api.openai_model` (a no-op object-reuse
-       otherwise); `_run_single_task` picks the specialist client when `agent_id` is in the new
-       `_SPECIALIST_MODEL_ROLES` set (the deliberate complement of the existing
-       `_NON_RESEARCH_DISPATCH_ROLES`). TUI/CLI status lines updated in parity to show
-       `<model> (+specialist: <model>)` when configured. `config_template.yaml` documents the key.
-       No `SubAgentConfig`/Pydantic changes needed — the routing decision lives entirely at the
-       one dispatch point. `test_structural_checks.py` passes unchanged.
-     - **VRAM probe done BEFORE writing any code** (per this entry's own earlier scoping):
-       confirmed live via `ollama ps`/`rocm-smi` that this card does NOT keep two different
-       Ollama models resident simultaneously — `gpt-oss:20b` (12GB) and `qwen3:4b` (5.1GB
-       loaded, inflated by KV cache) together exceed the ~15.9GiB budget, so Ollama evicts the
-       previous model on every switch. Measured reload cost: ~5-23s per switch.
-     - **Real timed A/B run (2026-07-18)**, same sales-forecasting benchmark, `gpt-oss:20b` +
-       `specialist_model: deepdelve-qwen3-4b`, confirmed via `ollama ps` mid-run that both roles
-       really did route to their intended model. **Result: 4513.1s (75.2 min) vs. the pure
-       `gpt-oss:20b` baseline's 1079.1s — 4.2x SLOWER**, not faster, driven by the reload tax
-       compounding across an unusually retry-heavy run (`thin_coverage` → `missing_findings` →
-       `missing_artifact` before converging) plus qwen3:4b needing repeated redispatches
-       (`background_heuristics#2/#3/#4`) to produce anything usable for its assigned angle.
-       **Worse, the run converged CLEANLY (no fabrication, real grounding, `Report:` written) but
-       the content itself silently dropped the query's entire main topic**: `findings.md` and
-       `final_report.md` are 100% about Colombian holidays/payroll, with ZERO mention of
-       heuristic algorithms or deep learning, despite `_run_state.json` confirming the specialist
-       model DID eventually fetch two genuinely relevant real sources for that angle
-       (`sciencedirect.com/.../S1546221825008872`, `forecastio.ai/blog/time-series-forecasting`)
-       that even show up in `RunState.data["findings"]`. The content existed; the writer-tier
-       synthesis (on `gpt-oss:20b`, the coordinator model, not the specialist) dropped it anyway.
-       This is a NEW instance of the pattern already tracked elsewhere in this file (real fetched
-       content silently absent from final synthesis) — previously always tied to an observable
-       quota-exhaustion trigger, but no quota exhaustion is visible in this run's own attempt log,
-       suggesting the underlying issue may be a broader writer-tier prioritization/attention
-       problem, not solely the already-scoped quota-fairness bug. Not investigated further this
-       session — flagged as a new, distinct candidate worth its own root-cause pass.
-     - **Conclusion: tiering the code is correct and reusable, but THIS pairing
-       (`gpt-oss:20b`+`qwen3:4b`) on THIS hardware is a net loss** — slower AND lower quality than
-       just running `gpt-oss:20b` alone. `specialist_model` left unset in the live config
-       (defaulting to today's single-model behavior). Worth retrying only if: a specialist model
-       with a smaller combined VRAM footprint (fits alongside `gpt-oss:20b` without eviction) is
-       found, or the newly-surfaced writer-tier content-dropping bug gets root-caused and fixed
-       first — as scoped, tiering does not currently deliver the hoped-for benefit.
-  3. **Targeted fine-tuning (SFT + GRPO) of an existing small checkpoint** — NOT training a
-     foundation model from scratch, which would be disproportionate to a coordination/
-     instruction-following gap on top of an already-capable base. Already scoped in the "Stretch"
-     section's GRPO entry: target `qwen3:4b`, reward function built around its specific
-     documented failure (`thin_coverage` non-convergence), dataset sourced from this project's own
-     real run logs. GRPO already confirmed running natively on this exact GPU. Disk budget
-     (venv-must-be-on-root-ext4, ~13GB+ for a real fine-tune vs. the 0.5B toy test) needs
-     organizing before this is attempted — explicitly the user's next step once options 1/2 are
-     exhausted.
+- **Strategic options for the "no small local model is reliable enough" gap** (decided 2026-07-18,
+  after the bake-off reached 10 tried candidates, 9 disqualified — full trial history in the
+  "Model bake-off & backend investigation log" section below). The project's own stated local-only
+  philosophy is already satisfied — `gpt-oss:20b` at 13GB, comfortably inside a 16-17GB VRAM
+  budget, is the one candidate with a full benchmark pass. The real open question is whether a
+  LIGHTER default is achievable, given every smaller candidate has failed at agentic coordination
+  specifically, not raw single-tool-call capability. Four options, in the order agreed to try them,
+  1-2 now DONE and tested, 3 still genuinely open:
+  1. **Structural fix instead of a new model — DONE.** The immediate narration-salvage fix (see
+     "Done" above) — correct and shipped, but on live re-test didn't rescue its motivating case
+     (`qwen2.5:3b-instruct` returns genuinely empty responses, nothing to salvage). Full result in
+     the investigation log below.
+  2. **Heterogeneous role tiering — DONE, real negative result.** Implemented
+     (`settings.specialist_model`, `src/engine/orchestrator.py`) and live A/B tested: 4.2x SLOWER
+     than plain `gpt-oss:20b` and the report silently dropped the query's main topic. Code kept
+     (reusable), not adopted as a default. Full implementation notes, VRAM probe, and A/B result in
+     the investigation log below.
+  3. **Targeted fine-tuning (SFT + GRPO) of an existing small checkpoint — PREP DONE, training not
+     started.** NOT training a foundation model from scratch, which would be disproportionate to a
+     coordination/instruction-following gap on top of an already-capable base. Scoped in the
+     "Stretch" section's GRPO entry: target `qwen3:4b`, reward function built around its specific
+     documented failure (`thin_coverage` non-convergence). **`finetune/reward.py` and
+     `finetune/extract_dataset.py` built and validated against real run logs 2026-07-18** (5 real
+     examples extracted so far; public-dataset supplementation researched — see the Stretch entry
+     for the full recipe). The actual GPU training environment (venv-must-be-on-root-ext4, ~13GB+)
+     still waits on the user's own disk reorganization — the next concrete action once that's done.
   4. **Stay on `gpt-oss:20b` as-is** — the fallback baseline that's already true today regardless
      of how far 1-3 get: nothing is actually blocking the project's local-only goal right now.
-- **6-phase plan approved 2026-07-14 — ALL 6 PHASES DONE, see "Done" above.** Phase 1 claim-level
-  grounding upgrade → Phase 2 cross-source contradiction detection → Phase 3 xQuAD diversity
-  reranking → Phase 4 topical-relevance cross-encoder reranker → Phase 5 coverage accounting/
-  ResearchMap → Phase 6 B4 TUI/CLI loop unification (deferred last, highest regression risk —
-  completed and live-verified `2e4758f`). Sequenced by ROADMAP's own stated priority + dependency
-  order + risk, not file order below. Nothing left open from this plan.
 - **TUI QoE improvements** (researched 2026-07-14, not yet scoped/implemented) — triggered by a
   real usability complaint mid-Phase-6 smoke test ("copying from the console, not only the
   prompt", right-click paste, "a lot of QoE changes"). Investigated the actual installed Textual
@@ -957,10 +937,18 @@ Status as of 2026-07-14.
     feed; `SelectionList` for multi-file/multi-seed-URL picking).
   - **Explicitly deferred, not scoped into a phase yet** — user chose to record as a backlog item
     rather than implement immediately, given Phase 6 (now shipped, see "Done") and the model
-    bake-off (below) were the priority at the time. Next session should scope a concrete subset (the
-    `AgentMessageWidget` copy button +
+    bake-off (see the "Model bake-off & backend investigation log" section) were the priority at
+    the time. Next session should scope a concrete subset (the `AgentMessageWidget` copy button +
     right-click paste are the two smallest, most directly user-requested items) before touching
     the framework-capability survey items, which need real prioritization first.
+## Model bake-off & backend investigation log (completed 2026-07-11 through 2026-07-18)
+
+Real, finished testing/investigation work — every entry below concluded (a model disqualified, a
+backend confirmed/rejected, a benchmark scored), not open backlog. Kept separate from "Done" since
+most entries are investigation conclusions rather than shipped code changes; kept separate from
+"Planned" since none of it is still-to-do. See README's "Model choice" table for the current-state
+summary; this section is the full evidence trail.
+
 - **Local-model bake-off: Gemma 4 12B, Bonsai-8B, and `qwen3:4b` vs. `gpt-oss:20b`** (found/verified 2026-07-13,
   smoke-tested and partially live-tested 2026-07-14) — two real local-model candidates surfaced by
   a 3-model research pass, independently verified (not taken on trust — one of the three research
@@ -1345,6 +1333,54 @@ Status as of 2026-07-14.
     real fetched source). Net: the defense layers correctly prevented fabrication on a topically
     disjoint literature set; the score ceiling here is entirely the quota-starvation bug, not a
     grounding failure.
+
+- **Heterogeneous role tiering (option 2 above) — implementation and A/B test detail.** A UNIFORM
+  small-model dispatcher was tried and rejected 2026-07-11 (nemo scored 2/10 across every role);
+  this instead tiers by role, keeping `gpt-oss:20b` for Planner/Builder/FindingsWriter/PeerReviewer
+  (the roles needing multi-step self-correction) and routing WebSearcher/AcademicSearcher/
+  DocumentAnalyzer/DataAnalyzer to a new optional `settings.specialist_model`.
+  - **Implementation**: `_build_client(model_override=None)` (`src/engine/orchestrator.py`) now
+    takes an optional model override; `create_local_agent` builds a second client only when
+    `specialist_model` is set and differs from `api.openai_model` (a no-op object-reuse
+    otherwise); `_run_single_task` picks the specialist client when `agent_id` is in the new
+    `_SPECIALIST_MODEL_ROLES` set (the deliberate complement of the existing
+    `_NON_RESEARCH_DISPATCH_ROLES`). TUI/CLI status lines updated in parity to show
+    `<model> (+specialist: <model>)` when configured. `config_template.yaml` documents the key.
+    No `SubAgentConfig`/Pydantic changes needed — the routing decision lives entirely at the one
+    dispatch point. `test_structural_checks.py` passes unchanged.
+  - **VRAM probe done BEFORE writing any code**: confirmed live via `ollama ps`/`rocm-smi` that
+    this card does NOT keep two different Ollama models resident simultaneously — `gpt-oss:20b`
+    (12GB) and `qwen3:4b` (5.1GB loaded, inflated by KV cache) together exceed the ~15.9GiB budget,
+    so Ollama evicts the previous model on every switch. Measured reload cost: ~5-23s per switch.
+  - **Real timed A/B run (2026-07-18)**, same sales-forecasting benchmark, `gpt-oss:20b` +
+    `specialist_model: deepdelve-qwen3-4b`, confirmed via `ollama ps` mid-run that both roles
+    really did route to their intended model. **Result: 4513.1s (75.2 min) vs. the pure
+    `gpt-oss:20b` baseline's 1079.1s — 4.2x SLOWER**, not faster, driven by the reload tax
+    compounding across an unusually retry-heavy run (`thin_coverage` → `missing_findings` →
+    `missing_artifact` before converging) plus qwen3:4b needing repeated redispatches
+    (`background_heuristics#2/#3/#4`) to produce anything usable for its assigned angle.
+    **Worse, the run converged CLEANLY (no fabrication, real grounding, `Report:` written) but the
+    content itself silently dropped the query's entire main topic**: `findings.md` and
+    `final_report.md` are 100% about Colombian holidays/payroll, with ZERO mention of heuristic
+    algorithms or deep learning, despite `_run_state.json` confirming the specialist model DID
+    eventually fetch two genuinely relevant real sources for that angle
+    (`sciencedirect.com/.../S1546221825008872`, `forecastio.ai/blog/time-series-forecasting`) that
+    even show up in `RunState.data["findings"]`. The content existed; the writer-tier synthesis
+    (on `gpt-oss:20b`, the coordinator model, not the specialist) dropped it anyway. This is a NEW
+    instance of the pattern already tracked elsewhere in this file (real fetched content silently
+    absent from final synthesis) — previously always tied to an observable quota-exhaustion
+    trigger, but no quota exhaustion is visible in this run's own attempt log, suggesting the
+    underlying issue may be a broader writer-tier prioritization/attention problem, not solely the
+    already-scoped quota-fairness bug. Not investigated further this session — flagged as a new,
+    distinct candidate worth its own root-cause pass.
+  - **Conclusion: tiering the code is correct and reusable, but THIS pairing
+    (`gpt-oss:20b`+`qwen3:4b`) on THIS hardware is a net loss** — slower AND lower quality than
+    just running `gpt-oss:20b` alone. `specialist_model` left unset in the live config (defaulting
+    to today's single-model behavior). Worth retrying only if: a specialist model with a smaller
+    combined VRAM footprint (fits alongside `gpt-oss:20b` without eviction) is found, or the
+    newly-surfaced writer-tier content-dropping bug gets root-caused and fixed first — as scoped,
+    tiering does not currently deliver the hoped-for benefit.
+
 ## Candidates from the 2026-07-12 reference-repo review (see README References)
 
 - **Engine-driven iterative deepening** (from `dzhng/deep-research`): a STRUCTURAL refine loop —
