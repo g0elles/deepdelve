@@ -1134,6 +1134,32 @@ Status as of 2026-07-14.
     one for any candidate that currently works. `llama.cpp` binary and both test GGUFs left on the
     NTFS mount (`/mnt/nuevovol/llm-models/`, ~4GB total) in case a similar quick cross-backend check
     is useful again later — trivial against the drive's 1.1TB free.
+  - **Third backend added to the A/B, same day: native (non-Docker) vLLM-on-ROCm, not just
+    theorized — actually run.** The "no direct evidence" caveat above was addressed head-on rather
+    than left as a gap. Built a real native vLLM install (`vllm==0.25.1+rocm723`, the official
+    AMD-published ROCm wheel from `wheels.vllm.ai`, matching this exact `gfx1200` card) in a
+    throwaway venv on the root disk (per the existing venv-must-be-on-ext4 rule; NTFS still can't
+    hold the Python venv's symlinks). Getting it running required manually resolving a long chain
+    of missing shared libraries one `ldd` sweep at a time (no root/sudo available in this
+    environment) — OpenMPI runtime libs, several ROCm math libs (`rocFFT`, `rocRAND`,
+    `rocSPARSE`, `hipFFT`/`hipRAND`/`hipSPARSE`/`hipSOLVER`/`hipSPARSELt`, `RCCL`, `rocm-core`,
+    `roctracer`/`libroctx`) not present anywhere on this system outside Ollama's own bundled,
+    incomplete copy — each fetched directly as a `.deb` from `repo.radeon.com`'s public ROCm 7.2
+    apt pool and extracted with `dpkg-deb -x` into a scratch dir (no `apt install`/root needed),
+    then wired in via `LD_LIBRARY_PATH`/`ROCM_HOME`. Confirmed working: `torch.cuda.is_available()`
+    True, `gcnArchName` correctly `gfx1200`. Served `unsloth/Llama-3.2-3B-Instruct` (an ungated
+    mirror; the official `meta-llama` repo is gated and wasn't authenticated in this environment)
+    via `vllm serve --enable-auto-tool-choice --tool-call-parser llama3_json` — vLLM's own
+    purpose-built parser for the Llama 3.x tool-call format, its most favorable possible
+    configuration for this exact model family. **Result: identical bug, 3/3** — `{"tasks":
+    "[{...}]"}`, a JSON-encoded string, not a real array, exactly matching Ollama and `llama.cpp`.
+    **Three independent backends, three structurally different tool-call extraction mechanisms
+    (Ollama's Go templating, `llama.cpp`'s GBNF grammar, vLLM's own structured-output constraint
+    engine with a model-family-specific parser) — same model, same failure, every time.** This is
+    now definitive, not theoretical: the bug is 100% attributable to `llama3.2:3b` itself, and no
+    realistic backend migration would recover it. Root-disk cleanup done immediately after (venv +
+    manually-fetched ROCm libs removed, ~16GB freed, root back to 61GB free) — same disk-hygiene
+    lesson as the GRPO smoke test session, a throwaway experiment venv doesn't linger.
 
 - **`qwen2.5:3b-instruct` — new lightweight candidate tried 2026-07-18, DISQUALIFIED, different
   failure class than `llama3.2:3b`.** Second candidate from the same "lighter than the disqualified
