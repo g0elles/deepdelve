@@ -2,6 +2,8 @@ import contextvars
 import functools
 import asyncio
 
+from utils.run_state import task_fetched_urls_ctx
+
 # --- TOOL QUOTA SYSTEM ---
 # Protects local LLM workflows from infinite retry loops (e.g., repeatedly failing to parse a URL)
 tool_quotas_ctx = contextvars.ContextVar('tool_quotas', default=None)
@@ -23,17 +25,36 @@ def check_quota(tool_name: str) -> str | None:
         state = f"pool_id={id(ctx)} used={ctx.get(tool_name, {}).get('used')}/{ctx.get(tool_name, {}).get('limit')}" if ctx else "ctx=None (UNLIMITED)"
         print(f"[quota_debug] {tool_name}: {state}", file=_sys.stderr)
     if ctx and tool_name in ctx:
-        if ctx[tool_name]["used"] >= ctx[tool_name]["limit"]:
-            ctx[tool_name]["used"] += 1
-            if ctx[tool_name]["used"] > ctx[tool_name]["limit"] + 3:
+        entry = ctx[tool_name]
+        if entry["used"] >= entry["limit"]:
+            # Ring-fence real progress against the shared-pool starvation bug (ROADMAP "Findings
+            # from live testing", confirmed live twice: 2026-07-14 and 2026-07-18). The pool is
+            # ONE dict shared cumulatively across every sub-agent dispatch this run (by design,
+            # see build_quota_pool's docstring) — a task that has already fetched real sources
+            # THIS dispatch (task_fetched_urls_ctx non-empty, per-task and race-free, see
+            # utils/run_state.py) can otherwise be cut off by a sibling task's share of the same
+            # pool before it ever gets to analyze/synthesize what it fetched (confirmed live: a
+            # dispatch fetched 2 real sources, then hit a bare "Quota reached" wall on its very
+            # next call). One small, one-time-per-tool-per-run top-up — not a per-task reserved
+            # pool, which would be a bigger structural change against the shared-pool design —
+            # gives real, in-progress work a chance to actually finish its turn. Bounded: only the
+            # first tool/run crossing is rescued (`_rescued` flag on the entry), so this can't
+            # become an unbounded loophole for a task with no real progress.
+            if not entry.get("_rescued") and (task_fetched_urls_ctx.get() or None):
+                entry["_rescued"] = True
+                entry["limit"] += 2
+                entry["used"] += 1
+                return None
+            entry["used"] += 1
+            if entry["used"] > entry["limit"] + 3:
                 raise QuotaAbortException(f"Agent trapped in loop. Quota exceeded multiple times for {tool_name}.")
             return (
                 f"Error: Quota reached. You have used the '{tool_name}' tool "
-                f"{ctx[tool_name]['limit']} times out of your limit. "
+                f"{entry['limit']} times out of your limit. "
                 f"You MUST summarize what you've done and state clearly that you "
                 f"had to stop due to quota limits."
             )
-        ctx[tool_name]["used"] += 1
+        entry["used"] += 1
     return None
 
 def refund_quota(tool_name: str) -> None:

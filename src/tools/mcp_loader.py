@@ -1,3 +1,5 @@
+import functools
+
 import config as app_config
 
 # -------------------------------------------------------------
@@ -17,6 +19,44 @@ import config as app_config
 # -------------------------------------------------------------
 
 
+# @brave/brave-search-mcp-server's `country` param is a fixed zod enum (confirmed live 2026-07-18,
+# read from the installed package's dist/tools/web/params.js) that does NOT include every ISO
+# alpha-2 code a model might reasonably emit for a country-scoped query — 'CO' (Colombia) is a
+# confirmed real gap, not a hypothetical one: it broke every Colombia-targeted search in two live
+# benchmark runs outright (MCP error -32602, "Invalid value for 'country' ... 'CO' is not in
+# [...]"). Full valid list per that source: ALL, AR, AU, AT, BE, BR, CA, CL, DK, FI, FR, DE, HK,
+# IN, ID, IT, JP, KR, MY, MX, NL, NZ, NO, CN, PL, PT, PH, RU, SA, ZA, ES, SE, CH, TW, TR, GB, US.
+# Rather than hand-maintain a full ISO->supported-enum remap (fragile against upstream schema
+# changes, and most codes we'd want ARE covered), just drop unsupported values so the search still
+# runs unscoped instead of failing outright — a global/unscoped Brave search is a strictly better
+# outcome than a hard tool-call rejection that burns the model's turn for nothing.
+_BRAVE_SEARCH_COUNTRY_ENUM = frozenset({
+    "ALL", "AR", "AU", "AT", "BE", "BR", "CA", "CL", "DK", "FI", "FR", "DE", "HK", "IN", "ID", "IT",
+    "JP", "KR", "MY", "MX", "NL", "NZ", "NO", "CN", "PL", "PT", "PH", "RU", "SA", "ZA", "ES", "SE",
+    "CH", "TW", "TR", "GB", "US",
+})
+
+
+def _wrap_brave_search_tool(tool):
+    """Sanitizes arguments before they reach the Brave MCP subprocess's own zod validation — see
+    _BRAVE_SEARCH_COUNTRY_ENUM above for why. Every model-invoked call to any function this MCP
+    server advertises funnels through `MCPTool.call_tool(tool_name, **kwargs)` (confirmed by
+    reading agent_framework's own `_mcp.py`: `FunctionTool`'s per-tool wrapper always calls
+    `self.call_tool(_remote_tool_name, **call_kwargs)`), so wrapping `call_tool` itself catches
+    every Brave function in one place, not just `brave_web_search`."""
+    original_call_tool = tool.call_tool
+
+    @functools.wraps(original_call_tool)
+    async def call_tool(tool_name, **kwargs):
+        country = kwargs.get("country")
+        if country and str(country).upper() not in _BRAVE_SEARCH_COUNTRY_ENUM:
+            kwargs = {k: v for k, v in kwargs.items() if k != "country"}
+        return await original_call_tool(tool_name, **kwargs)
+
+    tool.call_tool = call_tool
+    return tool
+
+
 def _build_mcp_tool(spec: dict):
     from agent_framework import MCPStdioTool, MCPStreamableHTTPTool
 
@@ -29,12 +69,16 @@ def _build_mcp_tool(spec: dict):
         url = spec.get("url")
         if not url:
             raise ValueError(f"mcp_servers entry '{name}' has transport=http but no 'url'")
-        return MCPStreamableHTTPTool(name=name, url=url)
+        tool = MCPStreamableHTTPTool(name=name, url=url)
+    else:
+        command = spec.get("command")
+        if not command:
+            raise ValueError(f"mcp_servers entry '{name}' has transport=stdio but no 'command'")
+        tool = MCPStdioTool(name=name, command=command, args=spec.get("args"), env=spec.get("env"))
 
-    command = spec.get("command")
-    if not command:
-        raise ValueError(f"mcp_servers entry '{name}' has transport=stdio but no 'command'")
-    return MCPStdioTool(name=name, command=command, args=spec.get("args"), env=spec.get("env"))
+    if "brave" in name.lower():
+        tool = _wrap_brave_search_tool(tool)
+    return tool
 
 
 def get_mcp_specs_for_agent(agent_name: str) -> list[dict]:
