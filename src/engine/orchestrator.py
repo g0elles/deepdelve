@@ -31,6 +31,15 @@ available_sub_agents_ctx = contextvars.ContextVar('available_sub_agents_ctx', de
 # "delegated research tasks" that produced no source.
 _NON_RESEARCH_DISPATCH_ROLES = frozenset({"Builder", "FindingsWriter", "PeerReviewer"})
 
+# Roles eligible for settings.specialist_model (2026-07-18, heterogeneous role tiering): the
+# leaf-tier dispatches that only ever make single, independent tool calls (search, fetch, extract)
+# rather than the multi-step self-correction the Planner/Builder/FindingsWriter/PeerReviewer roles
+# need — the bake-off's own repeated finding is that small local models are reliable at exactly
+# this kind of work and unreliable at the coordination roles. Deliberately the complement of
+# _NON_RESEARCH_DISPATCH_ROLES plus the Planner itself (which never goes through
+# _run_single_task at all, so isn't a member of either set).
+_SPECIALIST_MODEL_ROLES = frozenset({"WebSearcher", "AcademicSearcher", "DocumentAnalyzer", "DataAnalyzer"})
+
 def apply_tool_permissions(tools: list) -> list:
     """Dynamically applies approval boundaries mapped in config.yaml."""
     perms = config.cfg.get("settings", {}).get("permissions", {})
@@ -307,13 +316,19 @@ def tool_result_error_nudge(result_text: str) -> str | None:
     return None
 
 
-def _build_client():
+def _build_client(model_override: str | None = None):
+    """model_override: used by settings.specialist_model (heterogeneous role tiering) to build a
+    SECOND client pointed at a different model than api.openai_model, for the leaf specialist
+    roles only — see _SPECIALIST_MODEL_ROLES. Same endpoint/key/timeout for both; only the model
+    name differs, since this project's whole reliability layer (grounding checks, quotas, etc.) is
+    model-agnostic and doesn't need a second endpoint to make tiering meaningful."""
     # Injected AsyncOpenAI so the SDK's own exponential backoff (which honors Retry-After) covers
     # 429/5xx. Confirmed live 2026-07-11: NIM's free-tier rate limit 429-crashed an entire
     # multi-agent run when the default 2 retries ran out — hosted endpoints throttle far below
     # what concurrent sub-agents generate. api.max_retries in config.yaml overrides the default.
     from openai import AsyncOpenAI
     api_cfg = config.cfg["api"]
+    model_name = model_override or api_cfg["openai_model"]
     api_key = os.getenv("OPENAI_API_KEY", "dummy")
     # Explicit timeout, comfortably LONGER than both settings.max_run_minutes AND
     # settings.sub_agent_timeout_minutes, not the openai SDK's own default (600s / 10 minutes) —
@@ -334,7 +349,7 @@ def _build_client():
     return OpenAIChatCompletionClient(
         base_url=api_cfg["openai_base_url"],
         api_key=api_key,
-        model=api_cfg["openai_model"],
+        model=model_name,
         async_client=AsyncOpenAI(
             base_url=api_cfg["openai_base_url"],
             api_key=api_key,
@@ -428,6 +443,21 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
     # generic one — not just diagnostics for us. Applies to every agent built from this client
     # (Planner + every dispatched sub-agent share the one client instance created here).
     client.function_invocation_configuration["include_detailed_errors"] = True
+
+    # settings.specialist_model (heterogeneous role tiering, 2026-07-18): optional second client,
+    # pointed at a lighter/faster model, used ONLY for _SPECIALIST_MODEL_ROLES dispatches inside
+    # _run_single_task below. Reuses the SAME client object (no-op) when unset or identical to the
+    # main model, so the common case (one model for everything) allocates nothing extra. Real
+    # cost, not free: confirmed live this GPU does not keep two different models resident in VRAM
+    # simultaneously (a 12GB + 5GB pair already exceeds this card's ~16GB budget) — every switch
+    # between this client and the main one costs a real model reload (~5-23s measured), paid once
+    # per delegate_tasks round (Planner boundary), not per individual specialist tool call.
+    specialist_model = config.cfg.get("settings", {}).get("specialist_model")
+    if specialist_model and specialist_model != config.cfg["api"]["openai_model"]:
+        specialist_client = _build_client(model_override=specialist_model)
+        specialist_client.function_invocation_configuration["include_detailed_errors"] = True
+    else:
+        specialist_client = client
 
     # -------------------------------------------------------------
     # SDK Bounded Dispatcher
@@ -542,7 +572,13 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                     for mt in mcp_tools:
                         await mcp_stack.enter_async_context(mt)
 
-                    sub_agent = client.as_agent(
+                    # settings.specialist_model tiering: leaf specialist roles (see
+                    # _SPECIALIST_MODEL_ROLES) get the lighter/faster client when configured;
+                    # every other role (Builder/FindingsWriter/PeerReviewer, or an unrecognized
+                    # agent_id) stays on the main client — same object as `client` when tiering
+                    # isn't configured, so this is a no-op in the common case.
+                    dispatch_client = specialist_client if agent_id in _SPECIALIST_MODEL_ROLES else client
+                    sub_agent = dispatch_client.as_agent(
                         name=_sanitize_name(agent_name),
                         instructions=sub_instr,
                         tools=sub_tools + mcp_tools,

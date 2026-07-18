@@ -689,6 +689,9 @@ class BasicTuiAgent(App):
 
         endpoint = config.cfg["api"]["openai_base_url"]
         model = config.cfg["api"]["openai_model"]
+        specialist_model = config.cfg.get("settings", {}).get("specialist_model")
+        if specialist_model and specialist_model != model:
+            model = f"{model} [dim](+specialist: {specialist_model})[/dim]"
         thinking = "ON" if config.cfg["settings"]["enable_thinking"] else "OFF"
         thinking_color = "green" if config.cfg["settings"]["enable_thinking"] else "red"
         memory = "ON" if config.cfg["settings"].get("enable_conversational_memory", False) else "OFF"
@@ -2008,6 +2011,9 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
 
     endpoint = config.cfg.get("api", {}).get("openai_base_url", "Unknown")
     model = config.cfg.get("api", {}).get("openai_model", "Unknown")
+    specialist_model = config.cfg.get("settings", {}).get("specialist_model")
+    if specialist_model and specialist_model != model:
+        model = f"{model} (+specialist: {specialist_model})"
 
     thinking = "ON" if config.cfg.get("settings", {}).get("enable_thinking", False) else "OFF"
     thinking_color = "32" if thinking == "ON" else "31"
