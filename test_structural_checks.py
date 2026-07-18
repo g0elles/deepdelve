@@ -1649,6 +1649,96 @@ def main():
 
     contextvars.copy_context().run(_clean_check_read_verification_scenario)
 
+    # --- _dispatch_writer_review_fix immediate narration salvage (2026-07-18 bake-off finding:
+    # qwen2.5:3b-instruct as FindingsWriter narrated a complete findings.md draft as chat text on
+    # EVERY attempt, never once calling write_workspace_file, and burned the full 8-attempt retry
+    # budget on missing_findings before giving up — same root cause already documented for
+    # Bonsai-8B). A writer role "Finishing" its dispatch is not proof it wrote the file; if
+    # req_artifact is still missing afterward but the dispatch returned substantial narrated text,
+    # that text must be salvaged as the artifact immediately (attempt 1, not after the whole
+    # budget is spent). Uses real disk mode (not "memory") since the salvage helpers
+    # (_salvage_narrated_report/_restore_quarantined_draft) operate via plain open()/os.path.exists
+    # against _get_safe_path's resolved path, bypassing the in-memory FS dict entirely — the same
+    # reason _restore_quarantined_draft's own scenario elsewhere in this file uses disk mode. ---
+    from engine.completion import _dispatch_writer_review_fix
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        def _immediate_narration_salvage_scenario():
+            from unittest.mock import AsyncMock
+
+            _orig_ws11 = _config.cfg.get("settings", {}).get("workspace")
+            _config.cfg["settings"]["workspace"] = {"type": "disk", "dir": tmpdir}
+            try:
+                msgs = []
+                narrated_draft = "## Findings\n\n" + ("Real substantive research content. " * 20)
+
+                async def _side_effect_narrates_instead_of_writing(name, instructions, role):
+                    if role == "FindingsWriter":
+                        # Never calls write_workspace_file — narrates the draft as its response
+                        # text instead, exactly like the live failure.
+                        return narrated_draft
+                    return "REVIEW: CLEAN"
+
+                dispatch = AsyncMock(side_effect=_side_effect_narrates_instead_of_writing)
+                _asyncio.run(_dispatch_writer_review_fix(
+                    dispatch, "FindingsWriter", "findings.md", "write it now", 0, msgs.append))
+
+                path = os.path.join(tmpdir, "findings.md")
+                assert os.path.exists(path), (
+                    "narrated content must be salvaged into findings.md immediately, not left "
+                    "missing for the caller's retry loop to burn its whole budget on", msgs)
+                content = open(path, encoding="utf-8").read()
+                assert "Real substantive research content." in content, content
+                assert "AUTO-RECOVERED DRAFT" in content, (
+                    "salvaged content must be clearly flagged as unverified", content)
+                assert any("auto-recovered its own content" in m for m in msgs), (
+                    "must notify that a salvage happened", msgs)
+                # Write + Review only (PeerReviewer said CLEAN) — no wasted extra dispatch.
+                assert dispatch.call_count == 2, dispatch.call_count
+            finally:
+                if _orig_ws11 is None:
+                    _config.cfg["settings"].pop("workspace", None)
+                else:
+                    _config.cfg["settings"]["workspace"] = _orig_ws11
+
+        contextvars.copy_context().run(_immediate_narration_salvage_scenario)
+
+    # Negative case: a writer role that DOES call write_workspace_file (real content already on
+    # disk by the time _dispatch_writer_review_fix checks) must never have its real write
+    # clobbered by salvage logic.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        def _no_salvage_when_real_write_happened_scenario():
+            from unittest.mock import AsyncMock
+            from tools.fs import write_workspace_file
+
+            _orig_ws12 = _config.cfg.get("settings", {}).get("workspace")
+            _config.cfg["settings"]["workspace"] = {"type": "disk", "dir": tmpdir}
+            try:
+                msgs = []
+
+                async def _side_effect_writes_for_real(name, instructions, role):
+                    if role == "FindingsWriter":
+                        write_workspace_file("findings.md", "# Real Findings\nActually written.")
+                        return "Wrote 'findings.md' to disk."
+                    return "REVIEW: CLEAN"
+
+                dispatch = AsyncMock(side_effect=_side_effect_writes_for_real)
+                _asyncio.run(_dispatch_writer_review_fix(
+                    dispatch, "FindingsWriter", "findings.md", "write it now", 0, msgs.append))
+
+                content = open(os.path.join(tmpdir, "findings.md"), encoding="utf-8").read()
+                assert content == "# Real Findings\nActually written.", (
+                    "a real write must never be overwritten by salvage logic", content)
+                assert not any("auto-recovered" in m for m in msgs), (
+                    "must not claim a salvage happened when the writer actually wrote the file", msgs)
+            finally:
+                if _orig_ws12 is None:
+                    _config.cfg["settings"].pop("workspace", None)
+                else:
+                    _config.cfg["settings"]["workspace"] = _orig_ws12
+
+        contextvars.copy_context().run(_no_salvage_when_real_write_happened_scenario)
+
     # --- Builder write_workspace_file quota headroom (ROADMAP "Planned": a Build->Review->Fix
     # cycle can burn up to 2 write_workspace_file calls — Builder's initial rewrite plus one
     # corrective Fix pass — against the same shared pool the Planner's own findings.md writes draw
