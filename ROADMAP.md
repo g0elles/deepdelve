@@ -1106,6 +1106,34 @@ Status as of 2026-07-14.
     sizes already don't hit this bug on Ollama as currently installed, so there's no live blocker
     actually forcing a backend change; revisit only if a future candidate's sole blocker turns out
     to be this exact array-stringification bug with no working Ollama-served alternative.
+  - **HANDS-ON CROSS-BACKEND EXPERIMENT DONE (2026-07-18) — CONCLUSIVE: the bug is MODEL-side, not
+    Ollama-side.** The prior research pass above was necessarily theoretical (no direct test of
+    the actual failure). Ran a real, controlled A/B: downloaded `llama.cpp`'s official prebuilt
+    ROCm 7.2 release (`ggml-org/llama.cpp` tag `b10068`, `llama-b10068-bin-ubuntu-rocm-7.2-x64.tar.gz`
+    — matches this card's `gfx1200`/ROCm 7.2+ support directly, no build needed) and ran
+    `llama-server --jinja` (the model's own embedded chat template, confirmed genuine by reading
+    the GGUF's `tokenizer.chat_template` metadata directly — the real official Meta Llama
+    tool-calling template, not a generic fallback) against the SAME two models already tested on
+    Ollama, GGUF weights pulled fresh from Hugging Face onto the NTFS mount
+    (`/mnt/nuevovol/llm-models/`, confirms model-weight NTFS storage really is a non-issue for any
+    backend as predicted — plain `hf_hub_download` calls, no symlink involved). **Result: `llama3.2:3b`
+    reproduces the IDENTICAL array-stringification bug 3/3 times on `llama.cpp`'s own server**
+    (`{"tasks": "[{...}]"}`, a JSON-encoded string, not a real array) — same failure, completely
+    different serving software, different parser, different (grammar-constrained, not regex-based)
+    tool-call extraction mechanism. **`qwen2.5:3b-instruct` produces a clean, correctly-typed array
+    3/3 times on the exact same `llama.cpp` server** — matching its behavior on Ollama. This is a
+    clean, well-controlled result: same backend, same template-authenticity check, one model fails
+    consistently and the other passes consistently — the variable that predicts the bug is the
+    MODEL, not the serving software. Directly answers the concern that this project might be
+    missing out on real model options because of an Ollama-specific defect: it isn't one. A model
+    that fails this way on Ollama will very likely fail the same way on `llama.cpp` or (by
+    extension, though not directly tested) vLLM, since the failure tracks the model's own learned
+    generation behavior around nested-array arguments, not a serving-layer parsing quirk.
+    **Conclusion reinforced, now with direct evidence instead of just literature research: no
+    backend migration would have saved `llama3.2:3b`,** and there's still no live blocker forcing
+    one for any candidate that currently works. `llama.cpp` binary and both test GGUFs left on the
+    NTFS mount (`/mnt/nuevovol/llm-models/`, ~4GB total) in case a similar quick cross-backend check
+    is useful again later — trivial against the drive's 1.1TB free.
 
 - **`qwen2.5:3b-instruct` — new lightweight candidate tried 2026-07-18, DISQUALIFIED, different
   failure class than `llama3.2:3b`.** Second candidate from the same "lighter than the disqualified
