@@ -584,6 +584,20 @@ Status as of 2026-07-14.
   grinding on the false positive.
 ## Findings from live testing (not yet acted on / informational)
 
+- **Full grounding/completion-check compliance audit (2026-07-18), all 12 README-claimed guarantees
+  re-verified against the actual code, not just the docs.** Checked each of: URL grounding with
+  path-boundary matching, content-level zero-fact-overlap, non-URL citation detection, regulation-
+  identifier check, stub-fetch detection, `uncited_claims`, NLI entailment
+  (`nli-deberta-v3-small`), atomic-claim segmentation (`decompose_claim_segments`), FEVER-style
+  cross-source contradiction, topical relevance (`bge-reranker-v2-m3`), coverage accounting
+  (`RunState.coverage()`), and the `test_structural_checks.py` verdict-matrix pin. **All 12 found
+  genuinely implemented and reachable from the real completion-check flow** (`GROUNDING_CHECKS`/
+  `COMPLETION_CHECKS` in `src/engine/completion.py:563-582`) — no dead code, no orphaned function,
+  no early-return that silently skips a check, no always-false gating condition. Every check fails
+  open (returns `None`) on model-load failure rather than crashing a run, confirmed as deliberate
+  documented behavior rather than an oversight. `check_not_grounded`'s ordering as the last, generic
+  catch-all in `GROUNDING_CHECKS` is deliberate so the more specific verdicts fire first. Net: the
+  README's grounding-guarantees section does not overclaim relative to the code as of this date.
 - **Grounding check verifies provenance, not topical relevance.** A live GOA (Grasshopper Optimization Algorithm) research query got a citation from `globaldrivetozero.org` — actually fetched, and sharing surface terms like "GOA"/"Goa" — that's actually about the Indian state of Goa's EV policy, not the algorithm. The URL-presence + term-overlap check passed it because it only checks "was this fetched" and "do terms overlap," not "is this source about the same subject." Acronym collisions are the clearest way to trigger this; unclear how common the failure mode is outside them. **Fixed 2026-07-14 — see "Done" (Phase 4, `topical_relevance_problem`).**
 - **JS-gated pages return bot-challenge stubs, not content.** Several fetches (Cloudflare "Just a moment...", a "Human Verification" page, a Prezi slide deck) came back as 16-18 byte stubs since the fetcher doesn't execute JavaScript. *(Fixed for most cases — see "Done": headless/headed-browser fetch fallback, 2026-07-14. Recovers Springer (headless-sufficient) and MDPI (needed headed). NOT a universal fix: a genuine Cloudflare Turnstile challenge (ScienceDirect) resists both headless AND headed Chromium regardless of patience or `navigator.webdriver` spoofing — confirmed to be automation/CDP-fingerprint detection, not a solvable timing issue, and deliberately not pursued further; see the ScienceDirect sub-bullet above for the full investigation. Still correctly falls through to the stub flag rather than silently failing.)*
 - **A citation being present in a report's "Sources" list doesn't mean it was fetched.** Across several market-research runs, more than half of named sources were routinely never actually fetched (recalled from the model's training data) — and when independently fact-checked, specific statistics tied to unfetched sources were measurably wrong, usually understated.
@@ -960,6 +974,169 @@ Status as of 2026-07-14.
       with a longer cap this session; **re-running with more wall-clock budget is the next concrete
       step before drawing any verdict on `qwen3:4b`** vs. `gpt-oss:20b`. Flagged as a real data
       point for the eventual full bake-off comparison, not yet a disqualification.
+    - **Conclusive re-run (2026-07-18), no outer timeout this time: `Report: NOT WRITTEN` after
+      1214.2s (20.2 min), retry budget exhausted (8/8) on an unresolved `thin_coverage` verdict.
+      `qwen3:4b` is DISQUALIFIED as a `gpt-oss:20b` replacement.** Real research did happen (5
+      sub-agent dispatches, `brave_web_search` calls fired throughout), but only 1 real source ever
+      landed (`statista.com/.../music-events/colombia`) against 4 delegated tasks. The disqualifying
+      behavior isn't the thin research itself, it's the model's response to being told about it:
+      every one of the 8 `thin_coverage` retries got the same canned non-response verbatim ("No
+      further tool calls needed... research scope is complete... complete with explicit
+      acknowledgment of gaps") instead of either re-delegating differently or actually writing the
+      honest-partial report the completion-check nudge was asking for. This is the SAME
+      non-convergence pattern already flagged above (the 10x redundant `write_workspace_file` case)
+      showing up in a third shape: doesn't recognize a real gap needs a different action, just
+      repeats a canned "I'm done" response until the retry budget hard-stops it. Two contributing
+      factors, kept separate from the model verdict since they're infra, not model quality: (1) a
+      real MCP bug independent of the model — `brave_web_search`'s `country` parameter enum
+      (`@brave/brave-search-mcp-server`, `settings.mcp_servers`) does NOT include `CO` (confirmed
+      via the literal rejection error, `tool_error_samples`: `"Invalid value for 'country' ... 'CO'
+      is not in ['AL..."`), so Colombia-targeted searches using an ISO alpha-2 country filter fail
+      outright — a real gap worth a small fix (drop/remap the country param, or catch and retry
+      without it) independent of which model is running; (2) one `read_workspace_file`/
+      `grep_workspace_file` call hit a not-found error on a source filename, the same known fuzzy-
+      filename class already documented elsewhere in this file. Neither infra issue excuses the
+      model's response, though: `gpt-oss:20b`'s own re-runs on this exact query have hit partial
+      fetch failures too and still produced a labeled, honest, written report rather than looping on
+      a fixed refusal string. **Bake-off conclusion: `gpt-oss:20b` remains the only candidate of the
+      seven-plus tried so far (`qwen3.6`, `mistral-nemo`, Gemma 4 12B, Bonsai-8B,
+      `granite3.1-dense`, `phi4-mini`, `qwen3:4b`) with a full, real, benchmark-scale pass.**
+
+- **`qwen3:8b` — new candidate found and tried 2026-07-18, DISQUALIFIED, same failure class as
+  `qwen3:4b`.** Surfaced by a research pass for tool-calling-capable Ollama models not yet tried
+  (Qwen3's 8B dense sibling, NOT the same model as `qwen3.6` (35b-a3b, already rejected) or
+  `qwen3:4b` — distinct checkpoint, in the Ollama library directly, Apache 2.0, ~5.2GB Q4_K_M).
+  **Passed the `delegate_tasks` tool-call smoke test cleanly**: real structured 2-task call,
+  correctly shaped `task_name`/`instructions`/`agent_id`, well-specified instructions comparable in
+  detail to Gemma 4's. Derived tag `deepdelve-qwen3-8b` created (`num_ctx 16384`, same pattern).
+  **Full sales-forecasting benchmark: `Report: NOT WRITTEN` after 1037.4s, retry budget exhausted
+  (8/8) on `thin_coverage`**, 5 sources fetched (better than `qwen3:4b`'s 1, still not enough — only
+  2/6 delegated tasks produced a real source). Same disqualifying shape as `qwen3:4b`: doesn't act
+  on the completion-check's corrective nudge. Distinctive final-turn behavior worth noting: instead
+  of dispatching a writer role, the model's last response NARRATED full `findings.md` and
+  `final_report.md` content inline as chat prose (headers, sections, a "Stop here." sign-off) —
+  neither file exists on disk (confirmed, `ls` on the run folder). Not the same mechanism as
+  Bonsai-8B's writer-role tool-skip (Bonsai had real `FindingsWriter` dispatches that skipped the
+  tool call; this never got there, the Planner-level conversation narrated instead of accepting the
+  `thin_coverage` verdict and letting the engine dispatch a writer for an honest partial artifact).
+  One non-fatal MCP schema mismatch during the run (`brave_web_search`'s `result_filter` enum
+  rejected an out-of-list value), handled cleanly via the existing detailed-tool-error mechanism,
+  not a contributing cause. **`qwen3:8b` DISQUALIFIED as a `gpt-oss:20b` replacement** — updates the
+  bake-off conclusion above: 8 candidates tried, `gpt-oss:20b` still the only full pass. Ministral-
+  8B-Instruct-2410, watt-tool-8B, and Salesforce Llama-xLAM-2-8b-fc-r were also surfaced by the same
+  research pass but not pulled/tested this session (the latter two are narrow function-calling
+  finetunes, a real risk for the writer role per this project's own repeated lesson — not worth GPU
+  time until a general-purpose candidate looks more promising than the two Qwen3 sizes just tried).
+
+- **`llama3.2:3b` — new lightweight candidate tried 2026-07-18, DISQUALIFIED at the tool-call
+  schema stage, root-caused rather than assumed.** Surfaced by a research pass specifically for
+  models LIGHTER than the two disqualified Qwen3 sizes, targeting their exact failure mode
+  ("doesn't follow a corrective instruction precisely") rather than a raw-capability gap —
+  Llama 3.2 3B has the best documented IFEval/BFCL combination in its weight class and a native
+  Ollama tool-call template. Derived tag `deepdelve-llama32-3b` created (`num_ctx 16384`).
+  **Real, structured `tool_calls` responses (correct function name, valid top-level JSON) — but
+  the `tasks` array parameter's VALUE is itself a JSON-encoded STRING** (`{"tasks":
+  "[{\"task_name\": ...}]"}`) instead of a real array, reproduced 3/3 times against the exact
+  `delegate_tasks` schema. **Root-caused, not just observed**: recreated the identical Pydantic
+  model `agent_framework` builds from `delegate_tasks(tasks: list[dict])`'s own type hint and fed
+  it the same malformed value — confirmed real rejection (`Input should be a valid list
+  [type=list_type]`), the same message DeepDelve's own "detailed tool-call validation errors"
+  feature would show the model live. **Then simulated the full round-trip**: fed the model that
+  exact real error and asked it to retry. Result: it did not correct the array, it **abandoned
+  structured tool-calling entirely** — wrote a Python code snippet in chat prose, then a
+  hand-typed single-quoted (invalid JSON) pseudo-call as plain text. Same "narrate instead of
+  call" disqualifying class as `granite3.1-dense`/`phi4-mini`, just reached one message later
+  (after a correction) instead of immediately. **DISQUALIFIED without a full benchmark run** —
+  same evidentiary bar this project already applies to schema-stage rejects (devstral, hermes3,
+  etc. in the README table): a model that gets WORSE after seeing the exact right correction isn't
+  worth 20-40 GPU-minutes to find out how it does on the full pipeline.
+  - **Documentation check (2026-07-18)**: this is a known, unresolved upstream Ollama limitation,
+    not something specific to this project's integration or to `llama3.2` itself.
+    `ollama/ollama#6155` ("Support Nested Parameters for Tools," filed Aug 2024, still open, no
+    maintainer fix) documents the identical stringified-nested-array symptom across
+    `llama3.1:8b`/`70b`, `mistral-nemo`, and `llama3-groq-tool-use` — an Ollama-side
+    parser/serialization limitation with array/nested-object tool parameters generally, not a
+    single model's chat-template quirk. `ollama/ollama#7860` separately documents Llama 3.2
+    mangling SCALAR parameter types too (ints returned as strings), so this model has broader
+    type-fidelity problems beyond just nested arrays. **No documented workaround exists anywhere
+    in the issue tracker or community discussion** (checked `#6155`, `#7860`, `#10552`, `#11805`,
+    `#13519`) — the only mitigation found anywhere is a LangChain-side client library that
+    re-parses shallow string-encoded JSON arguments after the fact, not a model-side or
+    Ollama-side fix. Because this is a shared Ollama-level limitation (not model-specific), it
+    could in principle affect ANY future candidate with an array-typed `delegate_tasks` argument,
+    including intermittently against models that otherwise pass — worth remembering as context if
+    a future candidate shows an occasional, not-fully-reproducible schema hiccup.
+  - **Deferred, not implemented, structural candidate**: a defensive "if a list-typed tool
+    argument arrives as a JSON-encoded string, parse it before validation" tolerance would be a
+    generically useful robustness improvement given the above (helps any model that hits this
+    known Ollama-side quirk, not just `llama3.2`) — but it wouldn't have rescued `llama3.2:3b`
+    itself (the disqualifying event is the collapse-into-narration on retry, which happens after
+    the string would already have been coerced), and the only interception point found
+    (`agent_framework.FunctionTool.invoke`'s internal Pydantic validation, built from
+    `delegate_tasks`'s own type hint) would require either widening that hint in a way that also
+    changes the JSON schema shown to every OTHER model including the working default, or
+    monkeypatching vendored `agent_framework` internals — real blast radius against a function
+    every single model/role depends on. Not attempted this session; flagged for a dedicated
+    reviewed session if a future candidate's only blocker turns out to be this exact quirk.
+  - **Ollama-alternative backend research (2026-07-18), conclusion: don't switch, not yet
+    justified.** Since the array-stringification bug looked Ollama-level rather than model-level,
+    researched whether switching the local inference backend entirely would sidestep it.
+    **`ollama/ollama#6155` is actually CLOSED** (merged via PR #13508, Dec 2025) — but the merged
+    fix only adds nested-object SCHEMA DEFINITION support (`api/types.go`'s `Properties` field, so
+    Ollama can describe a nested schema to the model); it does NOT touch the separate
+    response-parsing path that turns the model's raw tool-call text back into `arguments`, which
+    is exactly where `llama3.2:3b`'s failure was reproduced live on this project's installed
+    version (0.31.2, months newer than the merge). Worth a fresh, narrower upstream issue with the
+    exact repro if this recurs. **`llama.cpp`'s own server is not a cleaner alternative** — its
+    issue tracker has its own open, unfixed array/nested-object tool-call serialization bugs
+    (`ggml-org/llama.cpp#21384` closed as not-planned, `#20198`/`#22072` open, `#20359` on
+    malformed JSON for large payloads) on essentially the same grammar/parsing machinery class,
+    not a structurally different guarantee. **Native (non-Docker) vLLM on ROCm is now realistic**
+    on this exact card (AMD ships installable ROCm wheels as of Jan 2026, gfx1200 on the officially
+    supported list for ROCm 7.2+) — a real change since the earlier vLLM investigation, which only
+    ever hit the NTFS+Docker-overlayfs blocker and never tried a native pip install. vLLM's
+    grammar-constrained structured-output tool-calling (token-level schema constraint, not
+    post-hoc regex/PEG re-serialization) is theoretically more robust for array-of-objects
+    arguments than either Ollama's or llama.cpp's approach, but no direct comparative evidence was
+    found confirming it actually avoids this exact failure mode — the recommendation is
+    theoretical, not proven. Model-weight storage on the NTFS mount is a non-issue for any backend
+    (the NTFS/symlink constraint was specific to Python venvs and llama.cpp's/HF's own auto-download
+    symlink cache; a directly-specified local GGUF/safetensors file path has no symlink
+    requirement). **Conclusion: not worth migrating now** — `qwen2.5:3b-instruct` and both `qwen3`
+    sizes already don't hit this bug on Ollama as currently installed, so there's no live blocker
+    actually forcing a backend change; revisit only if a future candidate's sole blocker turns out
+    to be this exact array-stringification bug with no working Ollama-served alternative.
+
+- **`qwen2.5:3b-instruct` — new lightweight candidate tried 2026-07-18, DISQUALIFIED, different
+  failure class than `llama3.2:3b`.** Second candidate from the same "lighter than the disqualified
+  Qwen3 sizes" research pass. **Passed the `delegate_tasks` schema test cleanly, 7/8 across two
+  batches** (one silent empty-response outlier, otherwise a real, correctly-typed array every
+  time) — does NOT reproduce the array-stringification bug that disqualified `llama3.2:3b`, so
+  worth the full benchmark run this time. Derived tag `deepdelve-qwen25-3b` (`num_ctx 16384`).
+  **Full sales-forecasting benchmark: `Report: NOT WRITTEN` after 254.6s, retry budget exhausted
+  (8/8) on `missing_findings`** — much faster to fail than either Qwen3 size (255s vs. 1000+s),
+  because the failure surface is different and narrower: real research DID happen (2 sources
+  fetched cleanly, `en.wikipedia.org/wiki/Heuristic_(computer_science)` and
+  `.../Public_holidays_in_Colombia`, 0 search failures), and the Planner correctly stopped
+  delegating and let the engine dispatch `FindingsWriter` — but `FindingsWriter` never
+  successfully produced `findings.md` across all 8 attempts. Confirmed via `_run_state.json`:
+  20 tool errors recorded, the overwhelming majority `"'findings.md' not found"` from
+  `ReviewFix_attempt{1..8}` trying to read a file that was never written. This is the **same root
+  cause already documented for Bonsai-8B** (writer-tier sub-agent "Finishes" its turn without ever
+  successfully calling `write_workspace_file`) — and it's a second live confirmation that the
+  2026-07-14 hardening (`_dispatch_writer_review_fix`'s read-quota-delta cross-check, commit
+  `bfd2cd5`) is working exactly as designed: every `ReviewFix` attempt got a genuine, correctly-
+  surfaced "file not found" error rather than a false "REVIEW: CLEAN" on a file that was never
+  read. **`qwen2.5:3b-instruct` DISQUALIFIED as a `gpt-oss:20b` replacement** — updates the bake-off
+  conclusion: 10 candidates tried total (counting `llama3.2:3b`), `gpt-oss:20b` still the only full
+  pass. Net signal from both new lightweight candidates this session: smaller models in the 2-5B
+  range are failing at TWO distinct, well-characterized points in the pipeline (schema-stage
+  double-encoding for `llama3.2:3b`; writer-role tool-call omission for `qwen2.5:3b-instruct` and
+  `Bonsai-8B`) rather than one common weakness — there's no single fix that would rescue this whole
+  size class, which is itself useful evidence for the fine-tuning plan above: `qwen3:4b` remains
+  the better fine-tuning target precisely because ITS failure (thin_coverage non-convergence) is
+  the single narrowest, most well-characterized gap of any candidate tried so far.
+
 - **`gpt-oss:20b` re-confirmed live (2026-07-14), same benchmark, same session**: `deepdelve-gpt-oss`
   produced a real, grounded `final_report.md` in 1079.1s, 15 sources fetched, 0 search failures,
   passing the NLI entailment check along the way (one `nli_unsupported` retry, corrected). First
@@ -973,6 +1150,24 @@ Status as of 2026-07-14.
   grounded, but likely a partial (not top) score against the full manual rubric if formally scored.
   Not manually scored this session (would need a careful pass against
   `eval/reference/sales_forecasting_deepseek.md`).
+  - **Formally scored 2026-07-18, per `eval/sales_forecasting_benchmark.md`'s rubric: 6/10 ("usable
+    with manual verification").** Tier 1 structural integrity 2/2 (`findings.md`+`final_report.md`
+    both exist, 18/18 fetched URLs clean, none flagged `stub` among the ones actually cited, run
+    converged clean by completion-check attempt 3). Tier 2 architecture coverage vs. reference
+    **0/2**: the report covers 3 optimization/feature-search heuristics (GA time-lag selection,
+    TS_Adam, Randomized Uphill Climbing) but none of the reference's 4 forecasting-architecture
+    families (TFT, N-HiTS, DQN, EventCast/multimodal) — a real, grounded, but structurally
+    different literature set, not a fabrication. Tier 3 heuristic-optimization coverage 2/2 (GA
+    applied to LSTM hyperparameter tuning, matching the query's actual framing). Tier 4 Colombia
+    cultural context **0/2**, and this is the more interesting result: `_run_state.json` shows
+    `timeanddate.com/holidays/colombia/2024` WAS fetched cleanly (not a stub) alongside one stubbed
+    ADP payroll-calendar fetch, yet neither `findings.md` nor `final_report.md` mentions Colombia
+    even once — a second, independent live confirmation of the shared-quota-pool starvation bug
+    logged above (a different run, different model context than the original find), not a new bug.
+    Tier 5 quantitative grounding 2/2 (every reported figure traces to an `*Evidence:*` line from a
+    real fetched source). Net: the defense layers correctly prevented fabrication on a topically
+    disjoint literature set; the score ceiling here is entirely the quota-starvation bug, not a
+    grounding failure.
 ## Candidates from the 2026-07-12 reference-repo review (see README References)
 
 - **Engine-driven iterative deepening** (from `dzhng/deep-research`): a STRUCTURAL refine loop —
@@ -1090,6 +1285,53 @@ Status as of 2026-07-14.
       venv ~/.venvs/rocm-grpo-test` — NOT on `/mnt/nuevovol`), `pip install torch --index-url
       https://download.pytorch.org/whl/rocm7.0 && pip install transformers trl peft accelerate
       numpy`, `export HIP_VISIBLE_DEVICES=0` before running.
+  - **Scoped fine-tuning plan (2026-07-18, written, not executed this session — vLLM/actual training
+    both explicitly out of scope this session for disk/time reasons).** Target-model choice
+    revisited: the "natural first pick" language above is now stale — `qwen3:4b` was conclusively
+    DISQUALIFIED this session (see bake-off entry above, 2026-07-18 conclusive re-run), and the
+    newly-tried `qwen3:8b` failed the exact same way. **Both failures are the same well-
+    characterized, narrow behavior gap**, not a competence problem: real research happens (1-5
+    sources fetched, real `delegate_tasks` dispatches, correct schema), but the model doesn't act on
+    the completion-check's `thin_coverage` corrective nudge — it just repeats a canned "research
+    scope is complete" response (or, for `qwen3:8b`, narrates the report as chat prose) until the
+    retry budget exhausts. This is actually a BETTER fine-tuning target than a generic "make tool
+    calls more reliable" goal: the failure is narrow, reproducible, and has a clear correct
+    behavior to reward (either re-delegate with materially different instructions, or accept the
+    gap and let the engine dispatch a writer for an honest partial artifact — never repeat the same
+    refusal text twice).
+    1. **Target model: `qwen3:4b`** (2.5GB base, smallest real VRAM footprint of any candidate that
+       ever passed the tool-call smoke test, comfortable headroom for GRPO training alongside
+       `gpt-oss:20b` staying loaded for inference/judging if needed — the smoke test already
+       confirmed Qwen3-1.7B-class GRPO fits in ~5GB on this card). `qwen3:8b`'s identical failure
+       shape means fixing `qwen3:4b` first is the cheaper experiment; escalate to the 8B base only
+       if the 4B's capacity turns out to be the real ceiling, not the convergence behavior.
+    2. **Reward function**, buildable entirely from infrastructure this project already has, no new
+       schema needed: (a) valid `delegate_tasks`/tool-call schema compliance (reuse
+       `tool_result_error_nudge`'s existing error-pattern catalogue as the negative-example
+       source), (b) a real, non-hallucinated tool name, (c) **the specific new signal this
+       session's failures motivate**: given a `thin_coverage`-shaped prompt in context, reward a
+       response that either issues a NEW `delegate_tasks` call with instructions materially
+       different from the just-failed task (not a repeat), or correctly stops delegating AND lets
+       the engine's own Write-Review-Fix loop take over (no narrated `findings.md`/`final_report.md`
+       content in the chat response itself — that's exactly what `qwen3:8b` got wrong). All three
+       are programmatically checkable from `RunState`/session-log structure already captured, no
+       LLM-judge needed.
+    3. **Dataset sourcing**: this project's own `research_output/`/`eval/runs/` folders already
+       contain real (prompt, tool-call, outcome) triples across dozens of runs and multiple models,
+       including today's two freshly-logged `thin_coverage` failure transcripts as concrete negative
+       examples and `gpt-oss:20b`'s successful re-delegation behavior on the same query as a
+       positive one. Research cited in this same ROADMAP entry suggests ~1,000 good examples is
+       enough — extracting and labeling from existing logs is very likely sufficient without hand-
+       authoring new scenarios.
+    4. **Disk budget**, learned directly from last session's smoke test: the training venv MUST live
+       on the root/ext4 disk (`/mnt/nuevovol`'s NTFS mount has zero symlink support, breaks
+       `python3 -m venv` even with `--copies`), costs ~13GB for a 0.5B toy run, so budget more for
+       a 4B fine-tune (base weights + optimizer states + venv) and `rm -rf` the venv immediately
+       after each run the way the toy smoke test already did — root disk currently has 63G free
+       (`df -h /`, confirmed this session), comfortable margin.
+    5. **Not started**: this is a plan only. Next concrete action, when fine-tuning re-enters scope,
+       is building the reward function against 1-2 real extracted `thin_coverage` transcripts as a
+       correctness check before touching the full dataset.
 ## Evaluated and rejected
 
 - Large/small model dispatcher: rejected 2026-07-11 — benchmark showed small models fail sub-agent reasoning (nemo 2/10); revisit only if a small model scores ≥5 on the Colombia rubric solo.

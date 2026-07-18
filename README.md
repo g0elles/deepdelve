@@ -155,18 +155,34 @@ Default model: `deepdelve-gpt-oss` (a `gpt-oss:20b` derived tag, see below). Two
 > ```
 > Also set `OLLAMA_NUM_PARALLEL=1` in `/etc/systemd/system/ollama.service.d/override.conf` and restart. Ollama otherwise divides `num_ctx` across parallel request slots (often 4), silently giving each real request a quarter of the context you configured.
 
-**Model choice** (13-run Colombia B2B benchmark, 2026-07-11, manual rubric vs a gold reference, protocol in `eval/colombia_b2b_benchmark.md`):
+**Model choice** — summary of every local candidate tried against two live benchmarks (13-run
+Colombia B2B rubric, `eval/colombia_b2b_benchmark.md`; sales-forecasting/heuristic-algorithms
+rubric, `eval/sales_forecasting_benchmark.md`), same reliability bar throughout: passing an
+isolated tool-call schema test is NOT sufficient evidence a model behaves reliably in the real
+multi-agent role, so every candidate here was run through the actual Planner/Searcher/Writer roles,
+not just a smoke test. Full evidence trail, live-run detail, and ongoing trials are in
+`ROADMAP.md`'s "Local-model bake-off" entry; this table is the current-state summary only.
 
-| Model | Best score | Verdict |
-|---|---|---|
-| `gpt-oss:20b` | **7/10** | **Default.** The only model in the "usable with verification" band. High run-to-run variance, but its bad runs are honest-empty, not fabricated. ~15-20 min/run. |
-| `qwen3.6` | 1/10 | Researches well, synthesizes disastrously at research scale (reconstructed 22/22 cited URLs from filenames). |
-| `mistral-nemo:12b` | 2/10 | Passes the isolated `delegate_tasks(tasks: [{task_name, instructions, agent_id: enum}])` schema test 3/3, but ceilings at 2/10 on the full rubric. Fabrication is caught and labeled by the gates rather than passing silently. |
-| hosted (NVIDIA NIM free tier) | n/a | Best discovery quality of anything tried, but a multi-agent run generates hundreds of completions and the free-tier quota wall kills every run at ~10 min. Needs a paid endpoint; this project is local-only for now. |
+| Model | Size/VRAM | Best score / result | Verdict |
+|---|---|---|---|
+| `gpt-oss:20b` | 13GB | **7/10** (Colombia B2B); real grounded report on every sales-forecasting re-run | **Default.** The only candidate with a full benchmark pass on both standing benchmarks. High run-to-run variance, but bad runs are honest-empty, not fabricated. ~15-20 min/run. |
+| `qwen3.6` (35b-a3b) | 23GB | 1/10 | Researches well, synthesizes disastrously at scale (reconstructed 22/22 cited URLs from filenames). |
+| `mistral-nemo:12b` | 7.1GB | 2/10 | Passes the isolated schema test 3/3, ceilings at 2/10 on the full rubric. |
+| Gemma 4 12B | 7.2GB | `Report: NOT WRITTEN` | Disqualified: reasoning-loop near the end, repeated `delegate_tasks` rejections. |
+| Bonsai-8B (PrismML, 1-bit) | 1.2GB | `Report: NOT WRITTEN` | Disqualified for a worse reason than Gemma 4: skipped `write_workspace_file` entirely in writer roles despite research working fine. |
+| `qwen3:4b` | 2.5GB | `Report: NOT WRITTEN` (8/8 retries exhausted on `thin_coverage`) | Disqualified: real research happens, but repeats a canned "research scope is complete" non-response instead of acting on the completion-check's corrective nudge — a non-convergence pattern also seen elsewhere (10x redundant identical `write_workspace_file` calls on a trivial query). |
+| `qwen3:8b` | 5.2GB | `Report: NOT WRITTEN` (8/8 retries exhausted on `thin_coverage`) | Disqualified, same failure class as `qwen3:4b` despite a clean tool-call smoke test pass: doesn't act on the corrective nudge, and its final turn narrates the report content as chat prose instead of ever getting a writer role to actually write the files. |
+| `llama3.2:3b` | 2.0GB | fail (schema stage) | Disqualified: emits real `tool_calls`, but double-encodes the `tasks` array as a JSON string; when shown the exact resulting validation error and asked to retry, abandons tool-calling entirely instead of fixing it. Root-caused as a known, unresolved upstream Ollama limitation (`ollama/ollama#6155`), not project-specific. |
+| `qwen2.5:3b-instruct` | 1.9GB | `Report: NOT WRITTEN` (8/8 retries exhausted on `missing_findings`) | Disqualified: passes the schema test cleanly and researches fine (2 real sources, 0 search failures), but the `FindingsWriter` role never successfully calls `write_workspace_file` across 8 attempts — same root cause already documented for Bonsai-8B. |
+| `granite3.1-dense:8b`, `phi4-mini:3.8b` | 5.0GB / 2.5GB | fail | Disqualified at the tool-call smoke test itself: both narrate the call as literal text despite each model card explicitly claiming function-calling support. |
+| `devstral:24b`, `hermes3:8b`, `qwen2.5-coder:14b-instruct`, `llama3-groq-tool-use:8b`, `mistral:7b-instruct` | — | fail | Rejected at the tool-call-schema stage. |
+| hosted (NVIDIA NIM free tier) | n/a | n/a | Best discovery quality of anything tried, but the free-tier quota wall kills a multi-agent run at ~10 min. Needs a paid endpoint; this project is local-only for now. |
 
-Earlier candidates (`devstral:24b`, `hermes3:8b`, `qwen2.5-coder:14b-instruct`, `llama3-groq-tool-use:8b`, `mistral:7b-instruct-v0.3-q5_K_M`) were rejected at the tool-call-schema stage, see `ROADMAP.md` for that trial history. **Passing an isolated tool-call test isn't sufficient evidence a model will behave reliably in the full multi-agent role** (nemo is the proof). Test the actual Planner role with multiple independent trials. The meta-result of the benchmark: across all runs and models, no fabricated report got past the gates unlabeled. The defense layer is the validated product; model quality determines how often it has to fire.
-
-**Ongoing bake-off (2026-07-13/14, not yet concluded), same reliability bar applied**: four more candidates chosen for a smaller VRAM/context footprint than `gpt-oss:20b`. **`granite3.1-dense:8b`** and **`phi4-mini:3.8b`** both failed outright at the tool-call smoke test despite their model cards claiming function-calling support (narrated the tool call as literal text instead of a real structured response) and were dropped. **Gemma 4 12B**, **Bonsai-8B** (PrismML, trained natively at 1-bit precision, 1.15GB), and **`qwen3:4b`** all passed the tool-call smoke test with real structured calls. Only Gemma 4 12B has a full end-to-end benchmark result so far: `Report: NOT WRITTEN` after 33 minutes on the standing sales-forecasting benchmark, a clean labeled failure rather than a stall or silent fabrication, caused by repeated `delegate_tasks` rejections and a visible reasoning-loop pattern near the end. Same failure shape as `mistral-nemo` above: passes an isolated schema test, ceilings on the real multi-step benchmark. Bonsai-8B and `qwen3:4b` haven't been run through the full benchmark yet. **`gpt-oss:20b` remains the default and the only one of the seven candidates tried so far with a full end-to-end benchmark pass.** See `ROADMAP.md`'s "Local-model bake-off" entry for the complete, continuously-updated trial history.
+The meta-result holds across every run and model: **no fabricated report has ever gotten past the
+grounding gates unlabeled.** The defense layer is the validated product; model quality only
+determines how often it has to fire. Ten candidates tried so far, `gpt-oss:20b` is still the only
+one with a full benchmark pass; see `ROADMAP.md`'s bake-off entry for the full trial history and
+untested candidates (Ministral-8B, two function-calling-specialist finetunes) noted for later.
 
 ### 3. Run
 
