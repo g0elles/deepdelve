@@ -31,6 +31,12 @@ available_sub_agents_ctx = contextvars.ContextVar('available_sub_agents_ctx', de
 # "delegated research tasks" that produced no source.
 _NON_RESEARCH_DISPATCH_ROLES = frozenset({"Builder", "FindingsWriter", "PeerReviewer"})
 
+# Max chars of a specialist's final_text kept as a RunState finding's summary (FindingsWriter's
+# only evidence for this task, see _build_findings_source_material). Any grounding-check warning
+# appended to final_text (see verification_warnings below) is reserved room OUTSIDE this budget
+# and concatenated back in full afterward — never truncated away with the rest of the body.
+_FINDING_SUMMARY_BUDGET = 1500
+
 # Roles eligible for settings.specialist_model (2026-07-18, heterogeneous role tiering): the
 # leaf-tier dispatches that only ever make single, independent tool calls (search, fetch, extract)
 # rather than the multi-step self-correction the Planner/Builder/FindingsWriter/PeerReviewer roles
@@ -726,13 +732,24 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                 # ever reaches the Planner's context, instead of only at final-report time — error
                 # propagation into findings.md was previously undetectable until the very end of
                 # the run, by which point the retry budget was already partly spent.
+                # Collected separately from final_text (rather than appended in place) so the
+                # add_finding call below can guarantee these warnings survive its 1500-char
+                # truncation. Confirmed live (2026-07-18 fine-tune benchmark): a Searcher's own
+                # final_text hallucinated citations to URLs never fetched, this exact
+                # verification warning correctly fired, but it was appended to the END of a
+                # final_text already >1500 chars — `final_text[:1500]` then silently sliced the
+                # warning off before it ever reached FindingsWriter, and the fabricated citations
+                # went in ungrounded. A warning that gets silently truncated away is worse than no
+                # check at all — it looks like defense-in-depth while doing nothing.
+                verification_warnings = ""
+
                 gc_cfg = config.cfg.get("settings", {}).get("grounding_check", {})
                 # enabled is the grounding_check section's master switch (2026-07-12 audit, G2)
                 if target_children and gc_cfg.get("enabled", True) and gc_cfg.get("verify_specialist_output", True):
                     from utils.grounding import real_grounding_problem
                     problem = await real_grounding_problem(final_text)
                     if problem and problem != "no_urls":
-                        final_text += (
+                        verification_warnings += (
                             f"\n\n[SYSTEM VERIFICATION WARNING: this summary attributes a claim to "
                             f"a source that does not match anything actually fetched this run, or to "
                             f"something that isn't a real URL at all ({problem}). Do not treat the "
@@ -760,13 +777,15 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                             )
                             if not matched:
                                 entities_str = "/".join(sorted(scope_entities))
-                                final_text += (
+                                verification_warnings += (
                                     f"\n\n[SYSTEM RELEVANCE WARNING: none of the sources fetched for "
                                     f"this task actually mention {entities_str}, despite the task "
                                     f"instructions requiring it. This may be an off-topic or "
                                     f"wrong-country source — verify before presenting these findings "
                                     f"as being about {entities_str}.]"
                                 )
+
+                final_text += verification_warnings
 
                 # Populate the structured findings store (previously dead code — RunState.add_finding
                 # was defined but never called) so a completion-check retry or later debugging has real
@@ -779,14 +798,23 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                 # fetched-URL finding apart from a task-name fallback one -- see that method's own
                 # docstring for why depth==1 only (a nested Analyzer's lack of a new URL is
                 # expected, not a coverage gap).
+                #
+                # `_FINDING_SUMMARY_BUDGET` chars total, but the verification warnings (if any) are
+                # NEVER part of the truncated slice — they're guaranteed room by reserving their
+                # length off the body's share first, then concatenated back in full. See the
+                # comment on `verification_warnings` above for why this ordering matters.
+                body_budget = _FINDING_SUMMARY_BUDGET - len(verification_warnings)
+                body_text = final_text[:len(final_text) - len(verification_warnings)] if verification_warnings else final_text
+                finding_summary = body_text[:body_budget] + verification_warnings
+
                 this_depth = delegation_depth_ctx.get()
                 run_state = run_state_ctx.get()
                 if run_state is not None and agent_id not in _NON_RESEARCH_DISPATCH_ROLES:
                     if new_urls:
                         for u in new_urls:
-                            run_state.add_finding(u["url"], final_text[:1500], task_name=task_name, depth=this_depth)
+                            run_state.add_finding(u["url"], finding_summary, task_name=task_name, depth=this_depth)
                     else:
-                        run_state.add_finding(task_name, final_text[:1500], task_name=task_name, depth=this_depth)
+                        run_state.add_finding(task_name, finding_summary, task_name=task_name, depth=this_depth)
 
                 return f"## Result for {task_name}\n{final_text}\n---"
             finally:
