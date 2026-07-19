@@ -134,6 +134,12 @@
 {"source_run": "./research_output/i_want_documentation_on_heuristic_algoritms_for_de_20260718_141225/_run_state.json", "tool_name": "think_tool", "role": "Planner", "is_hallucinated": false}
 {"source_run": "./research_output/i_want_documentation_on_heuristic_algoritms_for_de_20260718_141225/_run_state.json", "tool_name": "write_todos", "role": "Planner", "is_hallucinated": false}
 {"source_run": "./research_output/i_want_documentation_on_heuristic_algoritms_for_de_20260718_141225/_run_state.json", "tool_name": "delegate_tasks", "role": "Planner", "is_hallucinated": false}
+{"source_run": "./research_output/i_want_documentation_on_heuristic_algoritms_for_de_20260718_215859/_run_state.json", "tool_name": "think_tool", "role": "Planner", "is_hallucinated": false}
+{"source_run": "./research_output/i_want_documentation_on_heuristic_algoritms_for_de_20260718_215859/_run_state.json", "tool_name": "write_todos", "role": "Planner", "is_hallucinated": false}
+{"source_run": "./research_output/i_want_documentation_on_heuristic_algoritms_for_de_20260718_215859/_run_state.json", "tool_name": "delegate_tasks", "role": "Planner", "is_hallucinated": false}
+{"source_run": "./research_output/i_want_documentation_on_heuristic_algoritms_for_de_20260718_230432/_run_state.json", "tool_name": "think_tool", "role": "Planner", "is_hallucinated": false}
+{"source_run": "./research_output/i_want_documentation_on_heuristic_algoritms_for_de_20260718_230432/_run_state.json", "tool_name": "write_todos", "role": "Planner", "is_hallucinated": false}
+{"source_run": "./research_output/i_want_documentation_on_heuristic_algoritms_for_de_20260718_230432/_run_state.json", "tool_name": "delegate_tasks", "role": "Planner", "is_hallucinated": false}
 {"source_run": "./research_output/research_niche_b2b_technology_opportunities_in_col_20260712_091703/_run_state.json", "tool_name": "think_tool", "role": "Planner", "is_hallucinated": false}
 {"source_run": "./research_output/research_niche_b2b_technology_opportunities_in_col_20260712_091703/_run_state.json", "tool_name": "write_todos", "role": "Planner", "is_hallucinated": false}
 {"source_run": "./research_output/research_niche_b2b_technology_opportunities_in_col_20260712_091703/_run_state.json", "tool_name": "delegate_tasks", "role": "Planner", "is_hallucinated": false}
@@ -179,6 +185,9 @@
 {"source_run": "./research_output/what_is_the_current_population_of_iceland_20260718_112034/_run_state.json", "tool_name": "delegate_tasks", "role": "Planner", "is_hallucinated": false}
 {"source_run": "./research_output/what_is_the_current_population_of_iceland_20260718_112034/_run_state.json", "tool_name": "web_search", "role": null, "is_hallucinated": false}
 {"source_run": "./research_output/what_is_the_current_population_of_iceland_20260718_112034/_run_state.json", "tool_name": "fetch_url_to_workspace", "role": null, "is_hallucinated": false}
+{"source_run": "./research_output/what_is_the_current_population_of_iceland_20260718_224041/_run_state.json", "tool_name": "delegate_tasks", "role": "Planner", "is_hallucinated": false}
+{"source_run": "./research_output/what_is_the_current_population_of_iceland_20260718_224041/_run_state.json", "tool_name": "web_search", "role": null, "is_hallucinated": false}
+{"source_run": "./research_output/what_is_the_current_population_of_iceland_20260718_224041/_run_state.json", "tool_name": "fetch_url_to_workspace", "role": null, "is_hallucinated": false}
 {"source_run": "./research_output/what_is_the_current_stable_version_of_python_and_w_20260713_012754/_run_state.json", "tool_name": "stable?", "role": null, "is_hallucinated": true}
 {"source_run": "./research_output/what_is_the_current_stable_version_of_python_and_w_20260713_012754/_run_state.json", "tool_name": "delegate_tasks", "role": "Planner", "is_hallucinated": false}
 {"source_run": "./research_output/what_is_the_current_stable_version_of_python_and_w_20260713_012754/_run_state.json", "tool_name": "web_search", "role": null, "is_hallucinated": false}

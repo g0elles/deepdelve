@@ -26,6 +26,12 @@ call shape directly, synthetic cases already cover it in reward.py's own self-te
     events, same role attribution, so the SAME tool name can correctly be a positive example in
     one role's context and a negative in another's (e.g. `delegate_tasks`: real for Planner, not
     real for Builder — a live bug found while building this, not a hypothetical).
+  - extract_citation_grounding_examples: needs NO session-log correlation at all, unlike the three
+    above — ground truth lives entirely in the run's own artifacts (`_run_state.json`'s
+    `fetched_urls` list + the persisted `final_report.md`), so this reads straight off disk. One
+    example per run that has a `final_report.md`, response_text = the whole report (the real unit
+    a Builder/FindingsWriter dispatch produces), scored by reward.py's
+    citation_grounding_response_reward.
 
 Usage:
   python finetune/extract_dataset.py                          # scan everything, print a summary
@@ -280,6 +286,35 @@ def extract_thin_coverage_examples(run_state_path: str, sessions: list[tuple[str
     return examples
 
 
+def extract_citation_grounding_examples(run_state_path: str) -> list[dict]:
+    """Real (response_text, fetched_urls) examples for citation_grounding_response_reward, mined
+    straight from a run's own artifacts — no session-log matching needed (unlike the three
+    extractors above), since both halves of the ground truth (what was cited, what was really
+    fetched) already live in files this run itself wrote to disk. `final_report.md` is read as-is
+    because it's the actual thing a Builder/FindingsWriter dispatch produces; a run with no
+    `final_report.md` (never converged that far) has nothing to score here and is skipped."""
+    run_state = _load_json(run_state_path)
+    if not run_state:
+        return []
+    report_path = os.path.join(os.path.dirname(run_state_path), "final_report.md")
+    if not os.path.isfile(report_path):
+        return []
+    try:
+        with open(report_path, encoding="utf-8") as f:
+            response_text = f.read()
+    except OSError:
+        return []
+    if not response_text.strip():
+        return []
+    fetched_urls = [e["url"] for e in run_state.get("fetched_urls", []) or [] if e.get("url")]
+    return [{
+        "source_run": run_state_path,
+        "query": run_state.get("query") or "",
+        "response_text": response_text,
+        "fetched_urls": fetched_urls,
+    }]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out-dir", help="Write each dimension's examples as JSONL into this directory")
@@ -295,7 +330,7 @@ def main():
     sessions = list(_iter_session_files())
     print(f"Scanning {len(run_state_paths)} run(s) against {len(sessions)} persisted session log(s)...\n")
 
-    thin_coverage, writer_role, tool_name = [], [], []
+    thin_coverage, writer_role, tool_name, citation_grounding = [], [], [], []
     matched_thin_coverage, matched_writer_role = 0, 0
     for path in run_state_paths:
         tc = extract_thin_coverage_examples(path, sessions)
@@ -309,8 +344,11 @@ def main():
         writer_role.extend(wr)
 
         tool_name.extend(extract_tool_name_examples(path, sessions))
+        citation_grounding.extend(extract_citation_grounding_examples(path))
 
-    from reward import thin_coverage_response_reward, writer_role_response_reward
+    from reward import (
+        thin_coverage_response_reward, writer_role_response_reward, citation_grounding_response_reward,
+    )
 
     print(f"--- thin_coverage ({matched_thin_coverage}/{len(run_state_paths)} runs matched) ---")
     print(f"Extracted {len(thin_coverage)} example(s).")
@@ -334,13 +372,21 @@ def main():
         good = sum(1 for r in scored if r == 1.0)
         print(f"Reward distribution: {good} positive / {len(scored) - good} negative.\n")
 
-    total = len(thin_coverage) + len(writer_role) + len(tool_name)
+    print(f"--- citation_grounding (no session-log correlation needed, {len(run_state_paths)} runs scanned) ---")
+    print(f"Extracted {len(citation_grounding)} example(s) (one per run with a final_report.md).")
+    if citation_grounding:
+        scored = [citation_grounding_response_reward(ex["response_text"], ex["fetched_urls"])
+                  for ex in citation_grounding]
+        good = sum(1 for r in scored if r == 1.0)
+        print(f"Reward distribution: {good} fully-grounded / {len(scored) - good} has-a-hallucinated-citation.\n")
+
+    total = len(thin_coverage) + len(writer_role) + len(tool_name) + len(citation_grounding)
     print(f"=== Total real extracted examples across all dimensions: {total} ===")
 
     if args.out_dir:
         os.makedirs(args.out_dir, exist_ok=True)
         for name, examples in (("thin_coverage", thin_coverage), ("writer_role", writer_role),
-                                ("tool_name", tool_name)):
+                                ("tool_name", tool_name), ("citation_grounding", citation_grounding)):
             path = os.path.join(args.out_dir, f"{name}.jsonl")
             with open(path, "w", encoding="utf-8") as f:
                 for ex in examples:
