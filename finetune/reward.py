@@ -4,7 +4,7 @@ failure modes — see ROADMAP.md "Scoped fine-tuning plan (2026-07-18)" and the 
 it references. Pure functions, no model/tokenizer/training-framework dependency, so they can be
 unit-tested here and reused directly as a GRPO reward_fn once training actually starts.
 
-Three scored dimensions, each tied to a real, live-confirmed failure rather than a hypothetical:
+Four scored dimensions, each tied to a real, live-confirmed failure rather than a hypothetical:
   1. schema_compliance_reward   -- llama3.2:3b (JSON-encoded STRING instead of a real array,
                                     confirmed on 3 independent backends) and granite3.1-dense/
                                     phi4-mini (narrated a tool call as text, no real tool_calls).
@@ -14,6 +14,12 @@ Three scored dimensions, each tied to a real, live-confirmed failure rather than
                                     "research is complete" response verbatim, or narrating
                                     findings/report content directly instead of re-delegating with
                                     materially different instructions or cleanly stopping.
+  4. writer_role_response_reward -- Bonsai-8B/qwen2.5:3b-instruct's shared failure as
+                                    FindingsWriter/Builder: "Finishing" a dispatch WITHOUT ever
+                                    calling write_workspace_file, either silently (empty response)
+                                    or by narrating the artifact's content as chat text instead of
+                                    writing it for real. The single most common writer-role
+                                    failure mode found across this project's own bake-off.
 
 Deliberately excludes anything an LLM judge would be needed for (matches this project's own
 established philosophy in utils/run_state.py's coverage() docstring: prefer structural,
@@ -67,10 +73,46 @@ def schema_compliance_reward(tool_call: dict | None) -> float:
     return 1.0
 
 
-def real_tool_name_reward(tool_name: str | None, known_tools: frozenset[str]) -> float:
-    """1.0 if tool_name is a real, registered tool; 0.0 if hallucinated (gpt-oss's documented
-    invented function names) or missing entirely."""
-    return 1.0 if tool_name and tool_name in known_tools else 0.0
+# Per-role tool lists, copied directly from src/app.py's SubAgentConfig definitions (the roles
+# whose tool set is fixed and small enough to be worth hardcoding here; WebSearcher/AcademicSearcher/
+# DocumentAnalyzer/DataAnalyzer are deliberately NOT included — a generic session-log source label
+# for those roles reflects the PARENT's chosen task name, not the target agent_id, so there is no
+# reliable way to attribute a call to one of them specifically from the log alone; those fall back
+# to KNOWN_TOOLS). Real, live-found bug this fixes: `delegate_tasks` (a genuinely real tool,
+# Planner-only) repeatedly appears in `tool_error_samples` as "Requested function \"delegate_tasks\"
+# not found" from Builder/FindingsWriter dispatches — neither role has that tool at all (both are
+# fixed to read/write/grep/think, see app.py's own SubAgentConfig comments). Scoring purely against
+# a flat "is this tool real anywhere" set would wrongly reward that call, and would put
+# contradictory labels on the identical string depending only on which role said it.
+ROLE_TOOLS = {
+    "Builder": frozenset({"read_workspace_file", "grep_workspace_file", "write_workspace_file", "think_tool"}),
+    "FindingsWriter": frozenset({"read_workspace_file", "grep_workspace_file", "write_workspace_file", "think_tool"}),
+    "PeerReviewer": frozenset({"read_workspace_file", "grep_workspace_file", "think_tool"}),
+    "Planner": frozenset({"list_workspace_files", "write_todos", "read_todos", "think_tool", "delegate_tasks"}),
+}
+
+# Union of every real tool across every role — the fallback check when the calling role can't be
+# reliably identified (WebSearcher/AcademicSearcher/DocumentAnalyzer/DataAnalyzer dispatches).
+KNOWN_TOOLS = frozenset({
+    "delegate_tasks", "web_search", "fetch_url_to_workspace", "write_workspace_file",
+    "read_workspace_file", "grep_workspace_file", "list_workspace_files", "remove_workspace_file",
+    "write_todos", "read_todos", "think_tool", "extract_structured_data",
+})
+
+
+def real_tool_name_reward(tool_name: str | None, role: str | None = None,
+                           known_tools: frozenset[str] = KNOWN_TOOLS) -> float:
+    """1.0 if tool_name is a real tool available to the CALLING ROLE specifically; 0.0 if
+    hallucinated outright (gpt-oss's documented invented function names, e.g. "grep_search?") OR
+    real elsewhere in the system but not available to this role (Builder/FindingsWriter calling
+    `delegate_tasks` — a genuinely real tool, just not theirs). When `role` is None or not one of
+    ROLE_TOOLS' known roles, falls back to the flat `known_tools` union check — the best available
+    signal for a dispatch whose calling role can't be identified from context."""
+    if not tool_name:
+        return 0.0
+    if role and role in ROLE_TOOLS:
+        return 1.0 if tool_name in ROLE_TOOLS[role] else 0.0
+    return 1.0 if tool_name in known_tools else 0.0
 
 
 def _similarity(a: str, b: str) -> float:
@@ -122,6 +164,21 @@ def thin_coverage_response_reward(
     return 1.0 if response_text.strip() else 0.0
 
 
+def writer_role_response_reward(wrote_file: bool, response_text: str) -> float:
+    """Scores a FindingsWriter/Builder dispatch's response to being asked to write an artifact.
+    1.0 only if it actually called `write_workspace_file` (`wrote_file=True` — the caller checks
+    this from the real event stream, not from narration). 0.0 for both real failure shapes found
+    in this project's own bake-off: a genuinely empty response (Bonsai-8B, qwen2.5:3b-instruct —
+    the dispatch "Finished" with zero events) and a response that narrates the artifact's content
+    as chat text instead of calling the tool (the same broad pattern documented for gpt-oss's
+    endgame-collapse and the reference project this was forked from). Deliberately does not try to
+    distinguish the two failure shapes with a partial score — both are equally "didn't do the one
+    required thing," and this project's own structural fix (immediate narration salvage) already
+    exists to recover the SECOND shape's content when possible; the reward here is about training
+    the model to not need that recovery in the first place."""
+    return 1.0 if wrote_file else 0.0
+
+
 if __name__ == "__main__":
     # Smallest-thing-that-fails-if-broken self-test, same spirit as test_structural_checks.py —
     # no training framework needed to verify the reward logic itself is sound.
@@ -138,9 +195,15 @@ if __name__ == "__main__":
     }) == 0.0, "invented agent_id must score 0"
 
     known = frozenset({"web_search", "delegate_tasks", "think_tool"})
-    assert real_tool_name_reward("web_search", known) == 1.0
-    assert real_tool_name_reward("grep_search?", known) == 0.0, "hallucinated tool name must score 0"
-    assert real_tool_name_reward(None, known) == 0.0
+    assert real_tool_name_reward("web_search", known_tools=known) == 1.0
+    assert real_tool_name_reward("grep_search?", known_tools=known) == 0.0, "hallucinated tool name must score 0"
+    assert real_tool_name_reward(None, known_tools=known) == 0.0
+    # Role-scoped: delegate_tasks is a REAL tool, but not Builder's — the live bug this fixes.
+    assert real_tool_name_reward("delegate_tasks") == 1.0, "delegate_tasks with no role given falls back to KNOWN_TOOLS"
+    assert real_tool_name_reward("delegate_tasks", role="Planner") == 1.0, "delegate_tasks IS Planner's tool"
+    assert real_tool_name_reward("delegate_tasks", role="Builder") == 0.0, (
+        "delegate_tasks is real but NOT Builder's tool — same string, role-dependent verdict")
+    assert real_tool_name_reward("write_workspace_file", role="Builder") == 1.0
 
     prior = ["Identify top 5 heuristic algorithms (metaheuristics) for deep learning sales forecasting"]
     good_reworded_call = {
@@ -172,5 +235,10 @@ if __name__ == "__main__":
     assert thin_coverage_response_reward(
         prior, None, "**Findings.md**\n**Heuristic Algorithms**\n### 1. Heuristics\n- **[A Paper](https://x.com)**"
     ) == 0.0, "narrated report content (the exact live qwen3:8b pattern) must score 0"
+
+    assert writer_role_response_reward(True, "Wrote 'findings.md' to disk.") == 1.0
+    assert writer_role_response_reward(False, "") == 0.0, "genuinely empty response (Bonsai-8B) must score 0"
+    assert writer_role_response_reward(False, "## Findings\n\nReal-looking narrated content...") == 0.0, (
+        "narrating instead of writing must score 0 regardless of how good the narration looks")
 
     print("All reward-function self-tests passed.")
