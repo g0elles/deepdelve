@@ -327,7 +327,7 @@ def main():
         good = sum(1 for r in scored if r == 1.0)
         print(f"Reward distribution: {good} positive / {len(scored) - good} negative.\n")
 
-    print(f"--- tool_name (negatives from tool_error_samples, positives from matched session logs) ---")
+    print("--- tool_name (negatives from tool_error_samples, positives from matched session logs) ---")
     print(f"Extracted {len(tool_name)} example(s).")
     if tool_name:
         scored = [real_tool_name_reward(ex["tool_name"], role=ex["role"]) for ex in tool_name]
