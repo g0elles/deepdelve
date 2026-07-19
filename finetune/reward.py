@@ -53,6 +53,21 @@ _CANNED_REFUSAL_MARKERS = (
     "your research scope is complete",
 )
 
+# Narrates an INTENTION to re-delegate/act without ever emitting the real tool call — confirmed
+# live during this project's own GRPO pre-training sanity check (base Qwen3-4B, 2026-07-18,
+# thinking disabled): "I will delegate the tasks again for the uncovered angles..." and "I need to
+# re-delegate the tasks... Let me start by..." with no `<tool_call>` anywhere in the completion.
+# Functionally identical to the canned-refusal case (the real engine sees no delegate_tasks call
+# either way and the run doesn't progress) but distinct phrasing that the canned-refusal/narrated-
+# report markers don't catch — caught BEFORE any training run by generating real completions from
+# the actual target model and reading them, not by assuming the reward function was already
+# correct. A genuine clean stop doesn't describe a future action; it just stops.
+_INTENT_WITHOUT_ACTION_MARKERS = (
+    "i will delegate", "i'll delegate", "i need to delegate", "i need to re-delegate",
+    "i will re-delegate", "let me delegate", "let me re-delegate", "let me start by",
+    "i will rephrase", "i'll rephrase", "i will search", "i'll search again",
+)
+
 
 def schema_compliance_reward(tool_call: dict | None) -> float:
     """1.0 if `tool_call` is a well-formed delegate_tasks call: real dict with name=="delegate_tasks",
@@ -128,6 +143,11 @@ def _is_canned_refusal(text: str) -> bool:
     return any(marker in lowered for marker in _CANNED_REFUSAL_MARKERS)
 
 
+def _narrates_intent_without_action(text: str) -> bool:
+    lowered = text.lower()
+    return any(marker in lowered for marker in _INTENT_WITHOUT_ACTION_MARKERS)
+
+
 def thin_coverage_response_reward(
     prior_task_instructions: list[str],
     response_tool_call: dict | None,
@@ -136,17 +156,22 @@ def thin_coverage_response_reward(
 ) -> float:
     """Scores a model's response to a thin_coverage-shaped corrective nudge (see
     engine/completion.py::check_thin_coverage — fires when a majority of delegated tasks came
-    back with no real source). Two acceptable behaviors, one disqualifying pattern:
+    back with no real source). Two acceptable behaviors, three disqualifying patterns:
 
     - GOOD (1.0): a new `delegate_tasks` call whose task instructions are materially DIFFERENT
       from every prior failed task's instructions (below `similarity_threshold`) — a genuine
       attempt to re-scope, not a near-duplicate resend.
     - GOOD (1.0): no tool call, and the text is a short, clean stop with no narrated report/
-      findings content — correctly handing off to the engine's own Write-Review-Fix loop instead
-      of trying to write the artifact itself in prose.
-    - BAD (0.0): a repeated canned refusal (the exact qwen3:4b pattern) or narrated findings/report
-      content in the text response (the exact qwen3:8b pattern) — the model neither re-delegated
-      nor cleanly stopped.
+      findings content and no narrated intent to act — correctly handing off to the engine's own
+      Write-Review-Fix loop instead of trying to write the artifact itself in prose.
+    - BAD (0.0): a repeated canned refusal (the exact qwen3:4b pattern), narrated findings/report
+      content in the text response (the exact qwen3:8b pattern), or narrating an INTENTION to
+      re-delegate/search without ever actually emitting the tool call (confirmed live during this
+      project's own pre-training sanity check on the real target model, base Qwen3-4B: "I will
+      delegate the tasks again..." with no `<tool_call>` anywhere — functionally identical to the
+      canned-refusal case since the real engine sees no delegate_tasks call either way, just
+      different phrasing the other two markers don't catch). None of these three counts as
+      "re-delegated" or "cleanly stopped."
     """
     if response_tool_call and response_tool_call.get("name") == "delegate_tasks":
         if schema_compliance_reward(response_tool_call) == 0.0:
@@ -158,8 +183,10 @@ def thin_coverage_response_reward(
                 return 0.0  # near-duplicate of a task that already failed — not a real re-scope
         return 1.0
 
-    # No tool call: only acceptable if it's a clean stop, not a canned refusal or narrated draft.
-    if _is_canned_refusal(response_text) or _looks_like_narrated_content(response_text):
+    # No tool call: only acceptable if it's a clean stop — not a canned refusal, not a narrated
+    # draft, and not narrated intent to act that never actually produced the tool call.
+    if (_is_canned_refusal(response_text) or _looks_like_narrated_content(response_text)
+            or _narrates_intent_without_action(response_text)):
         return 0.0
     return 1.0 if response_text.strip() else 0.0
 
@@ -235,6 +262,18 @@ if __name__ == "__main__":
     assert thin_coverage_response_reward(
         prior, None, "**Findings.md**\n**Heuristic Algorithms**\n### 1. Heuristics\n- **[A Paper](https://x.com)**"
     ) == 0.0, "narrated report content (the exact live qwen3:8b pattern) must score 0"
+    # Real base Qwen3-4B completions from this project's own pre-training sanity check
+    # (2026-07-18, thinking disabled) — narrates intent, never actually calls the tool.
+    assert thin_coverage_response_reward(
+        prior, None,
+        "I will delegate the tasks again for the uncovered angles, phrased differently or with "
+        "a narrower query if the first attempt was too broad or too specific to find anything."
+    ) == 0.0, "narrating INTENT to re-delegate without a real tool call must score 0"
+    assert thin_coverage_response_reward(
+        prior, None,
+        "I need to re-delegate the tasks for the uncovered angles. Let me start by identifying "
+        "the specific areas that were not covered in the initial search."
+    ) == 0.0, "same intent-without-action pattern, different phrasing, must also score 0"
 
     assert writer_role_response_reward(True, "Wrote 'findings.md' to disk.") == 1.0
     assert writer_role_response_reward(False, "") == 0.0, "genuinely empty response (Bonsai-8B) must score 0"
