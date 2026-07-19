@@ -1579,13 +1579,76 @@ summary; this section is the full evidence trail.
          example's `response_text` field appears to contain a system notification string rather
          than genuine model output — needs a source-attribution check before trusting it as a
          training example.
-       - **Next, still explicitly deferred**: scaling past 5 examples needs either (a) building
-         extraction logic for the OTHER two reward dimensions (schema-compliance and
-         hallucinated-tool-name have plenty of raw material in `tool_error_samples`/session logs
-         already, just not wired into `extract_dataset.py` yet), or (b) supplementing with public
-         data — see the next entry. The actual GPU training run (torch+ROCm+trl+peft venv, ~13GB+
-         on root) still waits on the user's own disk reorganization, per the session's agreed
-         split between "prepare" and "train."
+    5a. **Dataset expansion, same day, before any training run — real bug found and fixed, then
+        real diversity added two ways.** User pushed back that 5 examples "is really not a lot,"
+        correctly.
+        - **`writer_role_response_reward` added to reward.py** (a 4th dimension) and
+          `extract_writer_role_examples` added to `extract_dataset.py`, matched by DISPATCH NAME
+          (`SubAgent_{writer_role}Fix_attempt{N}`, exact — not the timestamp heuristic
+          `thin_coverage` needs) rather than session-text correlation. Also added
+          `extract_tool_name_examples`, mining `tool_error_samples` directly (the hallucinated
+          name is already in the error text, no correlation needed for negatives).
+        - **Real, live-found bug in the tool-name extractor, caught before trusting the data**:
+          scoring `delegate_tasks` as a flat "real tool, so not hallucinated" name was WRONG —
+          `Builder`/`FindingsWriter` structurally have no `delegate_tasks` tool at all (confirmed
+          via `src/app.py`'s own `SubAgentConfig` definitions), yet `tool_error_samples` across
+          multiple runs shows exactly this call being correctly rejected by the real engine. A
+          flat check would have scored it as valid, and worse, would have put CONTRADICTORY
+          labels on the identical string depending only on which role said it. Fixed by moving
+          `ROLE_TOOLS`/`KNOWN_TOOLS` into `reward.py` itself (the same scoring logic that will run
+          live during training, not a separate copy) and giving `real_tool_name_reward` an
+          optional `role` parameter — role-known dispatches (writer-role fixes, the Planner's own
+          "Agent"-sourced turns) are checked against their OWN tool list; role-unknown dispatches
+          (generic Searcher/Analyzer labels, which reflect the delegating PARENT's task name, not
+          the target agent_id) fall back to the flat union check. Verified zero contradictions
+          across the full re-extracted corpus (spot-checked every (tool_name, role) pair).
+        - **Full corpus re-scan after the fix**: 70 runs (4 new pilot runs added, see below) → 6
+          `thin_coverage`, 54 `writer_role`, 210 `tool_name` real examples — up from 82
+          (pre-fix, contradiction-containing) / 5 (original `thin_coverage`-only count).
+        - **Live pilot batch (2 new topics — particle physics, pure math — × `qwen3:4b` +
+          `gpt-oss:20b`, 4 runs total)**, deliberately run OUTSIDE this project's own two standing
+          benchmark queries to test topic generality. Confirms the `thin_coverage` failure is
+          topic-general, not sales-forecasting-specific: `qwen3:4b` produced a near-identical
+          "No further tool calls needed... Stop here" premature-stop response on the brand-new
+          physics topic. Yield was real but low: only 1 of the 2 new topics actually tripped
+          `thin_coverage` (the math topic legitimately found real sources for both angles and
+          converged cleanly — a valid, not a failed, outcome) — confirms `thin_coverage` occurrence
+          is inherently unpredictable per-topic, not just query-design-dependent, making a
+          live-run-only scaling strategy expensive (~35-40 min/run) for uncertain yield.
+          **Also surfaced a real tradeoff**: `max_completion_check_attempts` was lowered from 8 to
+          3 for this batch (to stop burning time on `qwen3:4b` retries that were never going to
+          converge) — this caused a genuine false-negative on `gpt-oss:20b`'s math-topic run (17
+          real sources fetched, but ran out of retries before Builder finished writing). Restored
+          to 8 after the pilot; the tradeoff itself is now a documented, real data point, not a
+          guess.
+        - **Key realization, changes the whole scaling strategy**: GRPO doesn't need
+          (prompt, correct_response) pairs the way SFT does — the model generates its OWN
+          completions at training time, scored live by the reward function. The extracted
+          RESPONSE data above is only needed to calibrate/validate the reward function offline
+          (already done); what actually needs volume for training is PROMPT diversity, and a
+          `thin_coverage` prompt is 100% deterministic, produced by
+          `engine/completion.py::check_thin_coverage` from a `RunState`'s recorded findings —
+          real production code, not something to reimplement. New
+          **`finetune/generate_synthetic_prompts.py`** builds varied but realistic `RunState`
+          scenarios (39 topics spanning science/medicine/law/economics/history/technology, none
+          overlapping this project's own real run history) and calls the REAL
+          `check_thin_coverage` function directly, capturing its REAL `Verdict.inject` text —
+          zero GPU cost, zero fabricated nudge logic, only the SITUATION (which topics, which
+          angles lack sources) is synthetic. Caught and fixed a real modeling bug while building
+          it: a 2-task scenario with exactly 1 covered/1 uncovered task (50% ratio) does NOT trip
+          the check (`check_thin_coverage` requires a majority missing, `ratio >= threshold`
+          returns None, a deliberate design choice — a 50/50 split isn't "thin," it's a tie) — 10
+          of the first 20 scenarios were written with this exact shape and silently produced
+          nothing; fixed by giving every scenario a real 3rd uncovered task. **Output: 78 prompts
+          (39 topics × first-occurrence + escalated-nudge variant) — genuinely real nudge text,
+          kept in a clearly separate file
+          (`finetune/data/thin_coverage_synthetic_prompts.jsonl`) from the real-response-mined
+          dataset so the two are never conflated.**
+        - **Total dataset now**: 348 lines across `finetune/data/` (6 real response-validation
+          examples + 78 synthetic-scenario/real-code prompts for `thin_coverage`, 54 real
+          `writer_role`, 210 real `tool_name`) — up from the original 5. The actual GPU training
+          run (torch+ROCm+trl+peft venv, ~13GB+ on root) still waits on the user's own disk
+          reorganization, per the session's agreed split between "prepare" and "train."
     6. **Public-dataset supplementation, researched 2026-07-18 — real, downloadable leads found,
        two-stage recipe confirmed sound.** Several genuinely downloadable multi-turn tool-calling
        corpora exist, largest/most current first: **`Agent-Ark/Toucan-1.5M`** (HF, 1.53M real
