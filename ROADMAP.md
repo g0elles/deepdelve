@@ -1679,6 +1679,113 @@ summary; this section is the full evidence trail.
        that actually targets `qwen3:4b`'s documented failure. Not started — the next concrete
        action, once the GPU training environment exists, is subsampling Toucan-1.5M/xlam-60k down
        to a size that fits this project's disk/time budget rather than downloading either in full.
+     - **Training executed for real, 2026-07-18, and evaluated — genuine improvement confirmed.**
+       Skipped the public-dataset warm-start (deprioritized as extra scope; the 348-line real+
+       synthetic dataset already built this session was tried directly first). Ran
+       `finetune/train_thin_coverage_grpo.py` against `Qwen/Qwen3-4B`, LoRA r=16/alpha=32, reward =
+       `thin_coverage_response_reward`, 234 steps (~3 epochs over the 78 synthetic prompts), ~73.4
+       min, VRAM stable at 15.79GB/17.1GB (GB units, not GiB, per standing instruction). Two real
+       reward-function bugs caught and fixed BEFORE training by reading actual base-model
+       completions rather than trusting the reward curve: `enable_thinking=False` needed explicit
+       in the chat template (Qwen3 is a hybrid-reasoning model), and a "narrates intent to
+       re-delegate without ever calling the tool" pattern the reward function originally scored 1.0
+       (false positive) — fixed via `_narrates_intent_without_action` in `finetune/reward.py`.
+       **Evaluated base vs fine-tuned on 8 held-out prompts** (5 real extracted examples + 3 topics
+       never seen in training: octopus cognition, volcanic eruption prediction, Maya script
+       decipherment), reading actual completion text, not just reward scores. Base model: 6/8
+       (0.750 mean reward), failing exactly the narration-without-action pattern on 2 prompts.
+       Fine-tuned model: **8/8 (1.000 mean reward)**, including topic-appropriate, non-degenerate
+       tool calls with sensible `agent_id` assignment on all 3 unseen topics — real generalization,
+       not a reward-hacking shortcut (verified by reading the actual generated instructions per
+       task, not just the pass/fail score).
+     - **Merged LoRA → GGUF → Ollama, live end-to-end benchmark run**, 2026-07-18: `merge_and_unload()`
+       on CPU → 8GB merged safetensors → `convert_hf_to_gguf.py --outtype q8_0` (llama.cpp cloned
+       only for the python conversion script, no C++ build needed, avoided a cmake dependency this
+       machine doesn't have) → 4.28GB GGUF → `ollama create deepdelve-qwen3-4b-thin-coverage` using
+       the exact Modelfile template/params already proven for `deepdelve-qwen3-4b`. Tool-call smoke
+       test passed cleanly. Live full benchmark run launched against the exact sales-forecasting
+       query that disqualified `mistral-nemo`/both plain Qwen3 sizes earlier this session.
+     - **Full benchmark run concluded and scored — DISQUALIFIED (~1-2/10), but the targeted fix
+       genuinely worked.** 1763.4s, 9 completion-check attempts (8 retries + final), ended
+       `not_grounded`/retry-budget-exhausted; `final_report.md` was written but correctly flagged
+       unverified, not silently accepted. **Confirmed zero `thin_coverage` stalls anywhere in this
+       run** — the Planner delegated correctly from the first pass, the exact narration-without-
+       action failure that disqualified the base model never recurred, consistent with the 8/8
+       held-out eval result above. **But a second, untouched failure mode dominated the outcome**:
+       cross-referencing every citation in `final_report.md` against `_run_state.json`'s real
+       `fetched_urls` (only 7 URLs actually fetched, 4 with real content) found **0 of 8 cited URLs
+       were ever actually fetched** — 100% fabricated citations (`aicompetence.org`, `academia.edu`,
+       `ieeexplore.ieee.org`, 2x `researchgate.net`, `trade.gov`, one Springer chapter). Worse: the
+       4 real, correctly-grounded findings that WERE in `findings.md` (arXiv 2406.02598, two
+       Springer papers, the Revista de Gestão article — all directly on-topic, meta-heuristics
+       applied to deep learning) were silently dropped from the final report entirely, replaced by
+       the fabricated, topically-weaker PSO/GA/SA section. This is a new instance of the
+       already-tracked "real grounded content silently absent from synthesis" pattern (see the
+       heterogeneous-tiering A/B result above), not something this training round touched.
+     - **Conclusion**: the fine-tune is a genuine, narrow success (the one behavior it targeted is
+       fixed, confirmed both offline and live, zero regression), but does not make this model class
+       usable overall, because citation fabrication + content-dropping during report synthesis is
+       the actual dominant remaining blocker. **Scoped as the next fine-tuning candidate**: a
+       citation-grounding reward for the Builder/FindingsWriter role, same recipe as
+       `thin_coverage` — the negative signal already exists deterministically
+       (`unverified_urls`/`check_stub_source` in `src/engine/completion.py`), so the reward
+       function and prompt generation can reuse the same pattern (real check function output as
+       ground truth, reward calibrated against real captured hallucinated completions before
+       training, real extracted logs from this exact run as a first negative example — the
+       fabricated-citation `final_report.md`/`findings.md` pair here is now a real, ready-to-use
+       training example, same value as the original 5 `thin_coverage` logs were).
+     - **Root cause found and structurally FIXED before training, 2026-07-18** (checked first,
+       per this project's own established order: structural fix before fine-tuning). Traced the
+       exact origin of the fabricated citations by reading `_run_state.json`'s raw `findings`
+       records directly: two task branches ("Compare heuristic algorithms for sales prediction",
+       "Verify cultural factors in Colombian sales models") never called
+       `fetch_url_to_workspace` at all — pure `web_search`/`brave_web_search` snippet-only
+       tasks — yet their own final synthesis text confidently cited specific URLs from the
+       search-result list as if verified. The upstream defense for exactly this
+       (`engine/orchestrator.py`'s `real_grounding_problem` check on a Searcher-tier specialist's
+       own `final_text`, gated on `target_children`) DID fire correctly, but its
+       `[SYSTEM VERIFICATION WARNING: ...]` was appended to the END of `final_text`, and
+       `run_state.add_finding(..., final_text[:1500], ...)` then truncated to the first 1500
+       chars — both flagged findings measured exactly 1500 chars with zero trace of the warning,
+       confirming the warning was silently sliced off before ever reaching FindingsWriter. A real
+       defense layer that gets truncated away is worse than none — it looks like protection while
+       doing nothing. **Fix** (`src/engine/orchestrator.py`, around `_run_single_task`): the two
+       grounding warnings (verification + scope-relevance) are now collected into a separate
+       `verification_warnings` string instead of mutated into `final_text` in place; the finding
+       summary recorded for FindingsWriter reserves the warning's exact length OFF the
+       `_FINDING_SUMMARY_BUDGET` (1500) budget and concatenates it back in full afterward, so it
+       can never be truncated away regardless of how long the specialist's own body text is. Unit
+       -verified the slicing logic directly (a 2000-char body + a real warning string always
+       yields the full warning intact in the final summary). `test_structural_checks.py` still
+       passes (no completion-check function/`COMPLETION_CHECKS`/`Verdict` touched, only
+       `orchestrator.py`). Live-smoke-tested with the real default model (`gpt-oss:20b`,
+       `what is the current population of Iceland`): no exceptions/regressions, and no
+       hallucinated citation occurred in this run to re-exercise the fixed branch directly (this
+       model doesn't hit that failure), but the rest of the grounding pipeline (NLI check,
+       uncited-claims check, cross-source-contradiction check) all fired normally throughout,
+       confirming the refactor didn't disturb anything else in the same code path. This closes
+       the structural half of the finding; the citation-grounding fine-tune above is still worth
+       doing for models below `gpt-oss:20b`'s reliability tier, since a small model that already
+       fabricates a citation from a search snippet will still need to be taught not to, independent
+       of whether the warning about it survives to FindingsWriter.
+     - **Structural fix re-tested against the exact same benchmark, 2026-07-18: measurable
+       improvement, still disqualified overall.** Re-ran the identical sales-forecasting query
+       against `deepdelve-qwen3-4b-thin-coverage` with the fix live. Confirmed directly in
+       `_run_state.json` that the fix works exactly as designed: **9 of 16 findings now carry the
+       full `[SYSTEM VERIFICATION WARNING...]` text intact** (previously silently truncated away
+       every time). Grounding outcome improved concretely: **3 of 9 cited URLs in `final_report.md`
+       now trace to real fetches** (arXiv, Springer, insightsoftware.com — up from 0/8 last time),
+       but the other 6 are still fabricated, and all 6 trace to tasks with `source_url == task_name`
+       (i.e. zero real fetch occurred for that task at all) — the model saw the correctly-delivered
+       warning naming those exact URLs as unverified, and cited them anyway. Run still ended
+       `not_grounded`, retry budget exhausted (2152.6s). **Conclusion**: the structural fix closed
+       the "warning never reaches the model" bug for real (confirmed, not assumed), and genuinely
+       improves grounding rate, but doesn't fully solve the problem — a small model, when it has NO
+       real alternative source for a task, still sometimes cites a flagged URL rather than
+       acknowledging the gap. This is a more precise, now evidence-backed case for the
+       citation-grounding GRPO fine-tune above: the target behavior is specifically "when your
+       source material contains a verification warning naming your only candidate URL as
+       unfetched, do not cite it" — a clean binary reward signal, same shape as `thin_coverage`.
 ## Evaluated and rejected
 
 - Large/small model dispatcher: rejected 2026-07-11 — benchmark showed small models fail sub-agent reasoning (nemo 2/10); revisit only if a small model scores ≥5 on the Colombia rubric solo.
