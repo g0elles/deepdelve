@@ -239,6 +239,27 @@ SCENARIOS = [
     ]),
 ]
 
+# Held out from training entirely — used only by evaluate_combined.py to compare base vs
+# fine-tuned on genuinely unseen topics, disjoint from both SCENARIOS above and
+# generate_synthetic_citation_prompts.py's own topic list.
+HELD_OUT_SCENARIOS = [
+    ("deep-sea cable internet infrastructure resilience", [
+        ("Submarine cable landing station redundancy standards", True),
+        ("Cable-cut geopolitical incident response protocols", False),
+        ("Arctic route submarine cable feasibility studies", False),
+    ]),
+    ("historical trade route revival economic impact", [
+        ("Silk Road rail corridor freight volume trends", True),
+        ("Belt and Road port investment dispute outcomes", False),
+        ("Central Asian transit tariff harmonization status", False),
+    ]),
+    ("urban heat island mitigation technology effectiveness", [
+        ("Reflective pavement coating temperature reduction studies", True),
+        ("Urban tree canopy cooling effect quantification", False),
+        ("Green roof mandate policy adoption rates", False),
+    ]),
+]
+
 
 def build_scenario_ctx(tasks: list[tuple[str, bool]], attempt: int, max_attempts: int, tmpdir: str) -> tuple[Ctx, RunState]:
     rs = RunState(tmpdir)
@@ -259,14 +280,19 @@ def build_scenario_ctx(tasks: list[tuple[str, bool]], attempt: int, max_attempts
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", default="finetune/data/thin_coverage_synthetic_prompts.jsonl")
+    parser.add_argument("--held-out", action="store_true",
+                         help="Generate from HELD_OUT_SCENARIOS instead (topics never used in training)")
     args = parser.parse_args()
+    scenarios = HELD_OUT_SCENARIOS if args.held_out else SCENARIOS
+    if args.held_out and args.out == parser.get_default("out"):
+        args.out = "finetune/data/thin_coverage_heldout_prompts.jsonl"
 
     app_config.cfg.setdefault("settings", {})
     app_config.cfg["settings"].setdefault("coverage_check", {})
 
     examples = []
     with tempfile.TemporaryDirectory() as tmpdir:
-        for topic, tasks in SCENARIOS:
+        for topic, tasks in scenarios:
             uncovered = [t for t, covered in tasks if not covered]
             # First occurrence (prior_same == 0): the real re-delegate-or-acknowledge nudge.
             ctx, _ = build_scenario_ctx(tasks, attempt=0, max_attempts=8, tmpdir=tmpdir)
