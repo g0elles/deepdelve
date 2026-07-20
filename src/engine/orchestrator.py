@@ -785,6 +785,40 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                                     f"as being about {entities_str}.]"
                                 )
 
+                # Downstream half of the SAME real bug class as the delegate_tasks filename/URL
+                # checks above (2026-07-19 audit) — that fix stops a Searcher handing an Analyzer a
+                # GUESSED reference; this catches the mirror direction, an Analyzer reporting a
+                # GUESSED/reconstructed URL back UP in its own summary instead of the real one it
+                # was told to analyze. Both WEB_SEARCHER_INSTRUCTIONS and DATA_ANALYZER_INSTRUCTIONS
+                # already warn against this in prompt text ("NEVER guess or reconstruct a URL from a
+                # filename") but had no structural backstop — unlike the Searcher-tier check above
+                # (gated on target_children, since Analyzers are leaf nodes with none), which is why
+                # this needs its own branch with a different reference set: an Analyzer never fetches
+                # anything itself (no fetch_url_to_workspace tool), so `get_fetched_urls()` is the
+                # wrong ground truth here — the correct one is the URL(s) actually present in THIS
+                # task's own `instructions`, which the delegate_tasks fix above now guarantees are
+                # real. No live-observed occurrence of this direction yet (unlike the other, which
+                # was caught live) — added proactively since it's the same mechanism, same fix shape.
+                elif (not target_children and target_config and target_config.name in ("DocumentAnalyzer", "DataAnalyzer")
+                      and gc_cfg.get("enabled", True) and gc_cfg.get("verify_specialist_output", True)):
+                    from utils.grounding import extract_cited_urls, _urls_prefix_match
+                    reference_urls = {u.rstrip("/") for u in extract_cited_urls(instructions)}
+                    if reference_urls:
+                        reconstructed = [
+                            u for u in extract_cited_urls(final_text)
+                            if u.rstrip("/") not in reference_urls
+                            and not any(_urls_prefix_match(u.rstrip("/"), r) for r in reference_urls)
+                        ]
+                        if reconstructed:
+                            verification_warnings += (
+                                f"\n\n[SYSTEM VERIFICATION WARNING: this summary cites "
+                                f"{reconstructed[0]!r}, which does not match the source URL you were "
+                                f"actually given to analyze ({', '.join(sorted(reference_urls))}) — "
+                                f"this looks like a reconstructed or guessed URL, not the real one. "
+                                f"Do not treat the associated claim as sourced when writing "
+                                f"findings.md.]"
+                            )
+
                 final_text += verification_warnings
 
                 # Populate the structured findings store (previously dead code — RunState.add_finding
@@ -928,6 +962,75 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                     f"first the identification task alone, wait for its real result, THEN a second "
                     f"call with one task per REAL item it found."
                 )
+                continue
+            # Real, confirmed live failure (2026-07-19 corpus audit: 83/563 Analyzer-delegating
+            # instructions across 19/76 runs referenced a URL never actually fetched this task) —
+            # a Searcher sees a URL in a search-result SNIPPET and delegates an Analyzer task to
+            # "read" it as if it had already been fetched, when fetch_url_to_workspace was never
+            # called on it. The Analyzer then burns its whole quota guessing filename variants for
+            # a file that structurally cannot exist (confirmed live: 9+ grep_workspace_file calls,
+            # no Finished). Checked only for Analyzer-tier targets (DocumentAnalyzer/DataAnalyzer)
+            # — those are the roles whose entire job is reading an already-fetched file, so this is
+            # the one delegation shape where "the referenced URL must already be fetched" is a real
+            # invariant, not a false constraint (WebSearcher/AcademicSearcher tasks legitimately
+            # instruct new research on URLs nothing has fetched yet). Scoped to the CALLING task's
+            # own real fetches (task_fetched_urls_ctx, not the whole run's) — a Searcher can only
+            # honestly hand its Analyzer children what it itself actually fetched.
+            if t.get("agent_id") in ("DocumentAnalyzer", "DataAnalyzer"):
+                from utils.grounding import extract_cited_urls, _urls_prefix_match
+                own_fetched_entries = task_fetched_urls_ctx.get() or []
+                own_fetched = {e["url"].rstrip("/") for e in own_fetched_entries}
+                cited = extract_cited_urls(str(t.get("instructions", "")))
+                if cited:
+                    unfetched = [
+                        u for u in cited
+                        if u.rstrip("/") not in own_fetched
+                        and not any(_urls_prefix_match(u.rstrip("/"), f) for f in own_fetched)
+                    ]
+                    if unfetched:
+                        errors.append(
+                            f"Task {i} ({t.get('task_name')!r}): instructs {t.get('agent_id')} to "
+                            f"read {unfetched[0]!r}, but that URL was never actually fetched this "
+                            f"task — it looks like it came from a search-result snippet, not a real "
+                            f"fetch_url_to_workspace call. {t.get('agent_id')} can only read files "
+                            f"you actually fetched; if this source matters, call "
+                            f"fetch_url_to_workspace on it yourself first, THEN delegate the "
+                            f"analysis with the real saved filename."
+                        )
+                        continue
+                # Sibling bug to the unfetched-URL check above, confirmed live in the SAME
+                # benchmark run (2026-07-19): the URL WAS genuinely fetched, but the Searcher
+                # constructed a GUESSED filename for the Analyzer task (a plausible-looking
+                # pattern built from the URL's own path segments, e.g.
+                # 'sources/bcpublication_org_BM_3487.md') instead of the REAL saved filename
+                # fetch_url_to_workspace actually returned (e.g. 'sources/bcpublication_org_
+                # 58286b27.md', hash-suffixed). Same root family as WEB_SEARCHER_INSTRUCTIONS'
+                # existing "NEVER guess or reconstruct a URL from a filename" rule, just the
+                # inverse direction, previously unguarded. Confirmed live: the Searcher dispatched
+                # BOTH the guessed-filename task AND a correct-filename task for the identical URL
+                # back to back — real wasted duplicate delegation, not just a wrong-filename typo.
+                # Matched against the prompt's own fixed instruction template
+                # ("Read the file '<path>'. Source URL: ...", see prompts.py's real Analyzer
+                # dispatch examples) so this doesn't misfire on legitimately-phrased instructions.
+                filename_m = re.search(r"[Rr]ead the file '([^']+)'", str(t.get("instructions", "")))
+                if filename_m and cited:
+                    claimed_filename = filename_m.group(1)
+                    real_filename = next(
+                        (e["filename"] for e in own_fetched_entries
+                         if e["url"].rstrip("/") == cited[0].rstrip("/")
+                         or _urls_prefix_match(cited[0].rstrip("/"), e["url"].rstrip("/"))),
+                        None,
+                    )
+                    if real_filename and claimed_filename not in (real_filename, real_filename.split("/")[-1]):
+                        errors.append(
+                            f"Task {i} ({t.get('task_name')!r}): instructs {t.get('agent_id')} to "
+                            f"read {claimed_filename!r}, but that filename was GUESSED, not the "
+                            f"real one — the actual saved filename for that URL is "
+                            f"{real_filename!r} (from your own fetch_url_to_workspace result). "
+                            f"Never construct a filename from a URL's path; always use the exact "
+                            f"filename the fetch tool returned."
+                        )
+                        continue
         if errors:
             return (
                 "Error: delegate_tasks call rejected — none of these tasks were dispatched (no quota "
