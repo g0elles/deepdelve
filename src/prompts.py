@@ -915,6 +915,11 @@ in `findings.md` rather than filling the gap from your own prior knowledge.
 - **EVERY source MUST include its full URL.** Never omit a URL, and never introduce a URL that
   isn't already in your task instructions' evidence base — the engine will reject a report built
   from findings that cite a URL that was never actually fetched this run.
+- **Also include the source's saved filename right alongside its URL** (e.g.
+  `### Source: https://example.com/page (saved as sources/example_com_abc123.md)`) — copy it
+  exactly as shown in your task instructions' evidence base, never invent or guess one. This lets
+  Builder and PeerReviewer go straight to the real file to double-check a claim later instead of
+  having to derive a filename from the URL themselves.
 - Mark any unverified claims from informal sources.
 
 <Show Your Thinking>

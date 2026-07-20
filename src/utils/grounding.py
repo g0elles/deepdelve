@@ -907,6 +907,38 @@ def fully_ungrounded(content: str) -> str | None:
     return "all_cited_urls_unverified"
 
 
+_FINDINGS_ENTRY_HEADING_RE = re.compile(r'^###\s*\[[^\]]*\]\(([^)]+)\)', re.MULTILINE)
+
+
+def partially_ungrounded(content: str) -> str | None:
+    """Per-entry gate for findings.md (Pass 1), stricter than fully_ungrounded's wholesale check —
+    confirmed live 2026-07-19: a findings.md that was 40% fabricated (6/15 entries citing an
+    unfetched URL as their OWN primary source) passed fully_ungrounded cleanly ('at least one
+    citation is real' was satisfied by the other 9), then poisoned Builder's downstream rewrite so
+    badly it discarded almost all real content rather than risk keeping a fake one — the
+    'legitimately-mixed Pass-1 notes' fully_ungrounded was built to tolerate turned out, in
+    practice, to make the final report worse than a stricter earlier gate would have.
+
+    Deliberately checks ONLY each entry's own HEADING url (the '### [Title](URL)' line
+    FindingsWriter's real template produces one per finding — see _build_findings_source_material's
+    real output format) — NOT every URL mentioned anywhere in an entry's summary body, which may
+    legitimately reference other sources found IN the primary source's own text without having
+    fetched them itself. fully_ungrounded's own original reasoning (extra unfetched snippet URLs in
+    prose are normal, not fabrication) still holds at the body-text level; this only tightens the
+    ENTRY'S OWN claimed source, the one thing that should never be unverifiable."""
+    headings = _FINDINGS_ENTRY_HEADING_RE.findall(content)
+    if not headings:
+        return None  # no per-entry headings at all -- fully_ungrounded's own no_urls case covers this
+    fetched = {entry["url"].rstrip('/') for entry in get_fetched_urls()}
+    bad = [
+        u for u in headings
+        if u.rstrip('/') not in fetched and not any(_urls_prefix_match(u.rstrip('/'), f) for f in fetched)
+    ]
+    if not bad:
+        return None
+    return f"unverified_entry_sources:{', '.join(bad[:3])}"
+
+
 async def real_grounding_problem(content: str) -> str | None:
     """Cross-references every URL cited in `content` against URLs the engine actually saw
     fetch_url_to_workspace fetch this run. A URL not in that verified set is ALWAYS a grounding

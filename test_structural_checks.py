@@ -7,7 +7,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 
 from engine.orchestrator import _extract_excluded_topics, _lacks_concrete_subject
-from utils.grounding import find_non_url_citations, fully_ungrounded, find_uncited_claim_lines, extract_cited_urls
+from utils.grounding import find_non_url_citations, fully_ungrounded, partially_ungrounded, find_uncited_claim_lines, extract_cited_urls
 from utils.run_state import record_fetched_url, reset_fetched_urls
 
 
@@ -100,6 +100,32 @@ def main():
     # A real deep-URL fetch still prefix-grounds its variants (query string, stripped chars).
     record_fetched_url("https://example.com/report/2026", filename="r.md")
     assert fully_ungrounded("- claim (https://example.com/report/2026?utm_source=x)") is None
+    reset_fetched_urls()
+
+    # --- findings.md per-entry gate (partially_ungrounded, added 2026-07-19) ---
+    # Live case: findings.md 40% fabricated (6/15 entries) passed fully_ungrounded cleanly (9/15
+    # real satisfied its "at least one" bar), then poisoned Builder's rewrite so badly it kept
+    # almost no real content. This closes that gap without regressing fully_ungrounded's own
+    # documented tolerance for legitimate supplementary URLs mentioned in a summary's body text.
+    record_fetched_url("https://real.example.com/a", filename="a.md")
+    assert partially_ungrounded("no entry headings here at all, just prose") is None, (
+        "no per-entry headings -- fully_ungrounded's own no_urls case already covers this")
+    assert partially_ungrounded(
+        "### [Real Finding](https://real.example.com/a) [PRIMARY]\n- Key Findings: real stuff."
+    ) is None, "a single real-heading entry must not be flagged"
+    mixed = (
+        "### [Real Finding](https://real.example.com/a) [PRIMARY]\n- Key Findings: real stuff.\n\n"
+        "### [Fake Finding](https://fake.example.com/b) [SECONDARY]\n- Key Findings: invented."
+    )
+    problem = partially_ungrounded(mixed)
+    assert problem and problem.startswith("unverified_entry_sources:") and "fake.example.com" in problem, problem
+    # A supplementary URL mentioned only in an entry's BODY text (not its own heading) stays
+    # tolerated -- this is the exact distinction fully_ungrounded's own docstring already
+    # documents as legitimate, preserved here at the per-entry level.
+    assert partially_ungrounded(
+        "### [Real Finding](https://real.example.com/a) [PRIMARY]\n"
+        "- Key Findings: real stuff, also see (https://never-fetched.example.com/other)."
+    ) is None, "an unfetched URL mentioned only in the body, not the entry's own heading, must not be flagged"
     reset_fetched_urls()
 
     # --- quota refund on environmental failure ---
@@ -500,6 +526,15 @@ def main():
          "not_delegated", "No `delegate_tasks` call was ever made"),
         ("findings_ungrounded", True, {"findings.md": "- todo de memoria, sin fuente alguna"},
          "findings_ungrounded", "fails the grounding check"),
+        # Live case 2026-07-19: findings.md 40% fabricated (6/15 entries) passed the wholesale
+        # fully_ungrounded gate cleanly (some real entries existed), then poisoned Builder's
+        # rewrite. partially_ungrounded's per-entry-heading check catches the mix even though at
+        # least one entry (_SRC) is genuinely real.
+        ("findings_partially_ungrounded", True, {
+            "findings.md": (f"### [Real Finding]({_SRC}) [PRIMARY]\n- Key Findings: real.\n\n"
+                             "### [Fake Finding](https://never-fetched.example.com/fake) [SECONDARY]\n"
+                             "- Key Findings: invented.")},
+         "findings_ungrounded", "unverified_entry_sources"),
         ("missing_findings", True, {"final_report.md": f"- x [g]({_SRC})"},
          "missing_findings", "was never written — the two-pass discipline was skipped"),
         ("missing_artifact", True, {"findings.md": _FINDINGS_OK},
@@ -2777,6 +2812,30 @@ def main():
             assert "a genuinely different summary" in material
 
     contextvars.copy_context().run(_findings_dedup_scenario)
+
+    # --- _build_findings_source_material must show each finding's REAL saved filename alongside
+    # its URL (2026-07-19, user-proposed extension of the same-day delegate_tasks filename fix) —
+    # FINDINGS_WRITER_INSTRUCTIONS' own Workflow step 2 already claimed "path is given alongside
+    # its URL", which was FALSE before this fix (only the separate fetched_block cross-reference
+    # list at the bottom had it) — this makes that existing prompt claim true. A finding whose
+    # source_url isn't a real fetch (the coverage() task_name fallback for an uncovered task) must
+    # NOT get a fabricated filename annotation. ---
+    def _findings_filename_scenario():
+        from engine.completion import _build_findings_source_material
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rs = RunState(tmpdir)
+            rs.data["fetched_urls"] = [{"url": _SRC, "filename": "sources/page.md"}]
+            rs.add_finding(_SRC, "a real finding", task_name="t1", depth=1)
+            rs.add_finding("uncovered_task", "", task_name="t2", depth=1)  # no real fetch at all
+            material = _build_findings_source_material(rs)
+            assert f"### Source: {_SRC} (saved as sources/page.md)" in material, material
+            # Bounded to just this one finding entry (not the whole rest of the material, which
+            # legitimately has "(saved as ...)" in the unrelated fetched_block cross-reference
+            # section below it) -- the entry with no real fetch gets no filename at all.
+            assert "### Source: uncovered_task\n\n\n" in material, material
+
+    contextvars.copy_context().run(_findings_filename_scenario)
 
     print("All structural-check assertions passed.")
 
