@@ -17,7 +17,7 @@ from agent_framework import Message
 from tools import tool_quotas_ctx, get_workspace_files, get_workspace_file_content
 from utils.run_state import get_fetched_urls, get_search_health
 from utils.grounding import (
-    fully_ungrounded, real_grounding_problem, split_into_heading_sections,
+    fully_ungrounded, partially_ungrounded, real_grounding_problem, split_into_heading_sections,
     find_cross_source_contradictions,
 )
 from engine.orchestrator import topup_quota_pool, available_sub_agents_ctx, _extract_excluded_topics
@@ -144,14 +144,24 @@ def check_findings_ungrounded(ctx: Ctx) -> Optional[Verdict]:
     treats it as ground truth (SESSION_STATUS.md tracked item #2). Checked BEFORE the
     missing-artifact/final-report gates because fabricated findings poison everything
     downstream — a final report rewritten from fabricated findings can never become
-    grounded. Uses the wholesale-fabrication gate (fully_ungrounded), not the strict
-    per-URL one, so legitimately-mixed Pass-1 notes don't hard-fail a run."""
+    grounded.
+
+    Two gates, wholesale then per-entry. fully_ungrounded catches total fabrication ('no_urls'/
+    'all_cited_urls_unverified'). partially_ungrounded (added 2026-07-19) additionally catches a
+    findings.md that's only PARTLY fabricated — confirmed live: 6/15 entries citing an unfetched
+    URL as their own primary source passed fully_ungrounded cleanly (9/15 were real), then Builder
+    reacted to the untrustworthy mix by discarding almost all real content rather than risk keeping
+    a fake entry, producing a nearly-empty final report despite 15 genuinely fetched sources. Only
+    checks each entry's OWN heading URL, not every URL mentioned in a summary body — see that
+    function's own docstring for why the original 'legitimately-mixed notes' tolerance still holds
+    at the body-text level, just not for an entry's own claimed source."""
     gc_cfg = config.cfg.get("settings", {}).get("grounding_check", {})
     if not (gc_cfg.get("enabled", True) and gc_cfg.get("check_findings", True)):
         return None
     if "findings.md" not in ctx.files:
         return None
-    findings_problem = fully_ungrounded(get_workspace_file_content("findings.md") or "")
+    findings_content = get_workspace_file_content("findings.md") or ""
+    findings_problem = fully_ungrounded(findings_content) or partially_ungrounded(findings_content)
     if not findings_problem:
         return None
     # This text is the Planner-facing FALLBACK only (used when no FindingsWriter is registered —
@@ -162,7 +172,9 @@ def check_findings_ungrounded(ctx: Ctx) -> Optional[Verdict]:
         "findings_ungrounded",
         f"`findings.md` (Pass 1) fails the grounding check ({findings_problem}) — nothing in it traces to a source actually fetched this run. Pushing agent to rebuild it from real delegated results.",
         f"SYSTEM WARNING: 'findings.md' is not grounded in real research ({findings_problem}) — "
-        + ("it contains no source URLs at all" if findings_problem == "no_urls" else "not one URL it cites matches anything your Searcher(s) actually fetched this run")
+        + ("it contains no source URLs at all" if findings_problem == "no_urls"
+           else "at least one finding's own claimed source doesn't match anything your Searcher(s) actually fetched this run" if findings_problem.startswith("unverified_entry_sources:")
+           else "not one URL it cites matches anything your Searcher(s) actually fetched this run")
         + ". You cannot fix this yourself — you have no write_workspace_file tool. If you have not delegated enough real research yet, delegate it now with delegate_tasks. Otherwise stop calling tools entirely: a dedicated FindingsWriter role rebuilds findings.md automatically from your real delegated results once you stop.",
     )
 
@@ -843,8 +855,20 @@ def _build_findings_source_material(run_state: "RunState") -> str:  # noqa: F821
             continue
         seen.add(key)
         deduped.append(f)
+    # Real filename per entry, resolved from run_state's own fetched_urls record -- NOT left for
+    # FindingsWriter to guess or reconstruct. Same fix shape as the delegate_tasks filename check
+    # (2026-07-19): a model given only a bare URL has no reliable way to know the real saved
+    # filename, and this project has now confirmed twice today (Searcher->Analyzer delegation, and
+    # findings.md's own per-entry fabrication) that leaving a filename to be inferred is a real,
+    # not theoretical, failure mode. Explicitly showing it here means FindingsWriter's own
+    # findings.md entries can carry the real filename too, and any downstream re-verification
+    # (Builder, PeerReviewer, a human) never has to guess it either.
+    url_to_filename = {u.get("url", "").rstrip("/"): u.get("filename") for u in urls}
     findings_block = "\n\n".join(
-        f"### Source: {f.get('source_url')}\n{f.get('summary', '')}" for f in deduped
+        f"### Source: {f.get('source_url')}"
+        + (f" (saved as {fn})" if (fn := url_to_filename.get((f.get('source_url') or '').rstrip('/'))) else "")
+        + f"\n{f.get('summary', '')}"
+        for f in deduped
     ) or "(no findings recorded yet)"
     fetched_block = "\n".join(
         f"- {u.get('url')} (saved as {u.get('filename')})" for u in urls
