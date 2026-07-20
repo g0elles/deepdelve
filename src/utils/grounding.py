@@ -907,31 +907,37 @@ def fully_ungrounded(content: str) -> str | None:
     return "all_cited_urls_unverified"
 
 
-_FINDINGS_ENTRY_HEADING_RE = re.compile(r'^###\s*\[[^\]]*\]\(([^)]+)\)', re.MULTILINE)
-
-
 def partially_ungrounded(content: str) -> str | None:
-    """Per-entry gate for findings.md (Pass 1), stricter than fully_ungrounded's wholesale check —
-    confirmed live 2026-07-19: a findings.md that was 40% fabricated (6/15 entries citing an
-    unfetched URL as their OWN primary source) passed fully_ungrounded cleanly ('at least one
+    """Per-citation gate for findings.md (Pass 1), stricter than fully_ungrounded's wholesale
+    check — confirmed live 2026-07-19: a findings.md that was 40% fabricated (6/15 entries citing
+    an unfetched URL as their OWN primary source) passed fully_ungrounded cleanly ('at least one
     citation is real' was satisfied by the other 9), then poisoned Builder's downstream rewrite so
     badly it discarded almost all real content rather than risk keeping a fake one — the
     'legitimately-mixed Pass-1 notes' fully_ungrounded was built to tolerate turned out, in
     practice, to make the final report worse than a stricter earlier gate would have.
 
-    Deliberately checks ONLY each entry's own HEADING url (the '### [Title](URL)' line
-    FindingsWriter's real template produces one per finding — see _build_findings_source_material's
-    real output format) — NOT every URL mentioned anywhere in an entry's summary body, which may
-    legitimately reference other sources found IN the primary source's own text without having
-    fetched them itself. fully_ungrounded's own original reasoning (extra unfetched snippet URLs in
-    prose are normal, not fabrication) still holds at the body-text level; this only tightens the
-    ENTRY'S OWN claimed source, the one thing that should never be unverifiable."""
-    headings = _FINDINGS_ENTRY_HEADING_RE.findall(content)
-    if not headings:
-        return None  # no per-entry headings at all -- fully_ungrounded's own no_urls case covers this
+    v1 (2026-07-19, same day) only checked each entry's own HEADING url, assuming
+    FindingsWriter's real output always shapes each finding as '### [Title](URL)' with any OTHER
+    body-text URL being a legitimate incidental mention, not a load-bearing citation. That
+    assumption was wrong, proven wrong live within the same session: FindingsWriter is free-text
+    LLM output with no enforced structure, and it just as often writes '### Source: <task name>'
+    as the heading with the REAL, load-bearing citation as a '- **[Title](URL)**' bullet in the
+    body -- v1's heading-only regex silently missed 4 genuinely fabricated citations shaped that
+    way, and check_findings_ungrounded never fired. FINDINGS_WRITER_INSTRUCTIONS now mandates ONE
+    canonical entry format (see its own Findings Requirements section) specifically so this check
+    has something reliable to verify against going forward -- but a prompt is not a guarantee, so
+    v2 checks EVERY distinct citation in the content, matching real_grounding_problem/
+    check_not_grounded's own already-proven strict standard for final_report.md, rather than
+    trusting entry structure to reliably separate 'primary' from 'incidental' citations. This
+    reverses fully_ungrounded's original 'extra unfetched snippet URLs are normal' tolerance at
+    the body-text level for findings.md specifically -- correct given what's now been observed
+    live twice: findings.md citations are consistently load-bearing, not incidental."""
+    cited = extract_cited_urls(content)
+    if not cited:
+        return None  # fully_ungrounded's own no_urls case already covers a wholesale-empty file
     fetched = {entry["url"].rstrip('/') for entry in get_fetched_urls()}
     bad = [
-        u for u in headings
+        u for u in cited
         if u.rstrip('/') not in fetched and not any(_urls_prefix_match(u.rstrip('/'), f) for f in fetched)
     ]
     if not bad:

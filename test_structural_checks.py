@@ -102,30 +102,41 @@ def main():
     assert fully_ungrounded("- claim (https://example.com/report/2026?utm_source=x)") is None
     reset_fetched_urls()
 
-    # --- findings.md per-entry gate (partially_ungrounded, added 2026-07-19) ---
-    # Live case: findings.md 40% fabricated (6/15 entries) passed fully_ungrounded cleanly (9/15
+    # --- findings.md per-citation gate (partially_ungrounded, added 2026-07-19, widened same
+    # day) ---
+    # Live case 1: findings.md 40% fabricated (6/15 entries) passed fully_ungrounded cleanly (9/15
     # real satisfied its "at least one" bar), then poisoned Builder's rewrite so badly it kept
-    # almost no real content. This closes that gap without regressing fully_ungrounded's own
-    # documented tolerance for legitimate supplementary URLs mentioned in a summary's body text.
+    # almost no real content.
+    # Live case 2 (same day, v1 -> v2): v1 only checked each entry's own '### [Title](URL)'
+    # heading, assuming a body-text URL was always a legitimate incidental mention. Proven wrong
+    # live within the same session -- FindingsWriter just as often writes '### Source: <task
+    # name>' as the heading with the REAL citation as a body bullet, and v1 silently missed 4
+    # genuinely fabricated citations shaped that way. v2 checks every distinct citation, matching
+    # real_grounding_problem/check_not_grounded's own already-proven strict standard.
     record_fetched_url("https://real.example.com/a", filename="a.md")
-    assert partially_ungrounded("no entry headings here at all, just prose") is None, (
-        "no per-entry headings -- fully_ungrounded's own no_urls case already covers this")
+    assert partially_ungrounded("no citations here at all, just prose") is None, (
+        "no citations -- fully_ungrounded's own no_urls case already covers this")
     assert partially_ungrounded(
         "### [Real Finding](https://real.example.com/a) [PRIMARY]\n- Key Findings: real stuff."
-    ) is None, "a single real-heading entry must not be flagged"
+    ) is None, "a single real citation must not be flagged"
     mixed = (
         "### [Real Finding](https://real.example.com/a) [PRIMARY]\n- Key Findings: real stuff.\n\n"
         "### [Fake Finding](https://fake.example.com/b) [SECONDARY]\n- Key Findings: invented."
     )
     problem = partially_ungrounded(mixed)
     assert problem and problem.startswith("unverified_entry_sources:") and "fake.example.com" in problem, problem
-    # A supplementary URL mentioned only in an entry's BODY text (not its own heading) stays
-    # tolerated -- this is the exact distinction fully_ungrounded's own docstring already
-    # documents as legitimate, preserved here at the per-entry level.
-    assert partially_ungrounded(
-        "### [Real Finding](https://real.example.com/a) [PRIMARY]\n"
-        "- Key Findings: real stuff, also see (https://never-fetched.example.com/other)."
-    ) is None, "an unfetched URL mentioned only in the body, not the entry's own heading, must not be flagged"
+    # The exact real live shape that broke v1: heading is a plain task name (no markdown link at
+    # all), the actual load-bearing citation is a body bullet -- must still be caught.
+    task_name_heading = (
+        "### Source: Research some topic\n"
+        "- **[Real Finding](https://real.example.com/a)**: real stuff.\n\n"
+        "### Source: Research another topic\n"
+        "- **[Fake Finding](https://fake.example.com/b)**: invented."
+    )
+    problem2 = partially_ungrounded(task_name_heading)
+    assert problem2 and "fake.example.com" in problem2, (
+        "a citation in a body bullet under a plain-task-name heading (the real live-observed "
+        "FindingsWriter format v1 missed) must still be caught", problem2)
     reset_fetched_urls()
 
     # --- quota refund on environmental failure ---
