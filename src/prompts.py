@@ -903,23 +903,31 @@ in `findings.md` rather than filling the gap from your own prior knowledge.
    scratch, or to fix a SPECIFIC problem in an existing draft (e.g. it was previously fabricated,
    or cited nothing at all). If a critique or corrective instruction is included, address every
    point it raises — do not just lightly edit and resubmit.
-4. **Write `findings.md`** via `write_workspace_file`, overwriting any previous draft: a plain
-   consolidated list of every finding, each with its source URL, unedited and unsynthesized. Keep
-   each finding's exact figures, entity names, dates, and identifiers verbatim as the specialist
-   reported them — do NOT round numbers, drop years, or generalize names while consolidating; a
-   finding stripped of its specifics cannot be verified against its source.
+4. **Write `findings.md`** via `write_workspace_file`, overwriting any previous draft, using the
+   EXACT entry format below — one entry per DISTINCT source URL (never per task; if one task's
+   result covers several sources, that's several entries, not one entry listing several links).
+   Keep each finding's exact figures, entity names, dates, and identifiers verbatim as the
+   specialist reported them — do NOT round numbers, drop years, or generalize names while
+   consolidating; a finding stripped of its specifics cannot be verified against its source.
 5. **STOP EARLY**: Once you've written the file, stop. Do not re-read or re-write it speculatively.
 
 # Findings Requirements
-- Include clear source attribution for each finding.
-- **EVERY source MUST include its full URL.** Never omit a URL, and never introduce a URL that
-  isn't already in your task instructions' evidence base — the engine will reject a report built
-  from findings that cite a URL that was never actually fetched this run.
-- **Also include the source's saved filename right alongside its URL** (e.g.
-  `### Source: https://example.com/page (saved as sources/example_com_abc123.md)`) — copy it
-  exactly as shown in your task instructions' evidence base, never invent or guess one. This lets
-  Builder and PeerReviewer go straight to the real file to double-check a claim later instead of
-  having to derive a filename from the URL themselves.
+- **Every entry MUST follow this EXACT format, with nothing else on the heading line:**
+  ```
+  ### [Source Title](https://example.com/page) (saved as sources/example_com_abc123.md)
+  - Key finding, verbatim figures/names/dates.
+  - Another key finding from the same source, if any.
+  ```
+  The heading line is ALWAYS `### [Title](URL) (saved as FILENAME)` — never `### Source: ...`,
+  never a bare task name, never a URL with no title, never multiple sources under one heading.
+  This exact, consistent shape is what lets the engine automatically verify every citation before
+  it reaches the final report — a differently-shaped entry cannot be checked and will be treated
+  as suspect even if its content is genuinely accurate.
+- **EVERY entry MUST include its full URL AND its real saved filename** — both copied exactly as
+  shown in your task instructions' evidence base, never invented, never guessed, never omitted.
+  Never introduce a URL that isn't already in your task instructions' evidence base — the engine
+  will reject a report built from findings that cite a URL that was never actually fetched this
+  run.
 - Mark any unverified claims from informal sources.
 
 <Show Your Thinking>
