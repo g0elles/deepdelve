@@ -48,3 +48,22 @@
     `CURRENT.md` containing only what's still open — mirrors the README/ROADMAP-vs-session-status
     split: durable, load-bearing facts belong in README/ROADMAP; `CURRENT.md` is short-lived
     working memory for what's still in flight.
+- **Model bake-off verdicts must clear the "Model Evaluation Standard"** (`ROADMAP.md`, right
+  before the "Model bake-off & backend investigation log" section) before being treated as
+  settled, discard OR adopt: (1) confirm the operating mode (think/nothink, tool format, context
+  length) reaches the model via a raw API-level test BEFORE running a full benchmark through
+  it — don't infer from vendor docs alone; (2) isolate the candidate as the only variable — every
+  other pipeline role stays on the known-good baseline (`gpt-oss:20b`) unless it's the role under
+  test, and a VRAM-forced swap elsewhere makes the run informational only, not a clean verdict;
+  (3) state the serving backend + version alongside the verdict, since a "disqualified" model may
+  actually be a serving-layer bug (two independent Ollama bugs already found this way: Qwen3
+  think-mode passthrough, `mistral-nemo`/`llama3-groq-tool-use`/`llama3.2:3b` nested-array
+  stringification); (4) a discard claim needs more than one run, a clean pass can stand off one;
+  (5) keep a verdict changelog — mark superseded entries and link the corrected retest instead of
+  overwriting history. Written after two real fairness gaps were found on re-read, not invented in
+  the abstract: the heterogeneous-tiering result (`gpt-oss:20b`+`qwen3:4b`, 4.2x slower) was a
+  foreseeable VRAM-thrashing outcome that should have been caught before the A/B test, not just
+  measured by it; and MiniCPM5-1B's own FINAL VERDICT run swapped the Planner/Builder off
+  `gpt-oss:20b` to free VRAM, so it never actually isolated MiniCPM5-1B as the tested variable.
+  Before writing any new candidate verdict, check it against all 5 points; when re-reading a past
+  verdict for any reason, treat it as a standing critical-review pass, not a one-time audit.
