@@ -1369,6 +1369,55 @@ Status as of 2026-07-20.
     a real, low-friction option if it's ever worth revisiting — test server stopped after
     verification, nothing left running.
 
+- **MiniCPM3-4B scoped and attempted as a single-model candidate, 2026-07-21 — INCONCLUSIVE, a real
+  infrastructure hang, not a capability verdict.** After MiniCPM5-1B's disqualification, checked
+  other real MiniCPM-family candidates. `MiniCPM4-8B`/`MiniCPM4.1-8B` ruled out immediately — their
+  own model cards document no function-calling support at all (only `MiniCPM4-MCP`, already
+  discarded, was OpenBMB's dedicated tool-use variant of that generation). `MiniCPM3-4B` looked
+  genuinely promising: documented BFCL v2 71.6 (beats several 7-9B models), Apache-2.0, native vLLM
+  model support (`MiniCPM3ForCausalLM`). Initially concluded (wrongly, corrected by the user — see
+  `feedback_read_docs_before_building.md`) that no vLLM tool-call-parser existed for its custom
+  `<|tool_call_start|>`/Python-function-call format, having only checked the locally installed vLLM
+  package's bundled parsers. OpenBMB's own `github.com/OpenBMB/MiniCPM` repo
+  (`demo/minicpm3/function_call/`) ships a ready `minicpm_tool_parser.py` + matching jinja chat
+  template for exactly this — needed two small compatibility fixes for this vLLM version (0.25.1):
+  import paths moved (`vllm.entrypoints.openai.protocol` → `.chat_completion.protocol` +
+  `.engine.protocol`; `vllm.entrypoints.openai.tool_parsers` → `vllm.tool_parsers`), and the base
+  `ToolParser.__init__` now takes a second `tools` param the reference script's subclass didn't
+  accept. Confirmed working after patching: real structured `tool_calls` out of a direct `curl`
+  test, no narrated JSON.
+  - **Real hardware ceiling found, applied correctly THIS time before benchmarking**: MiniCPM3-4B's
+    62-layer, non-MLA-optimized-in-this-config KV cache cost forced a real serving ceiling of ~6144
+    tokens on this GPU (vLLM's own KV-cache-budget error gave this number directly), well under the
+    project's ~16K-token floor (`context_budget_chars: 50000`'s documented "safe margin under a
+    16K-token num_ctx"). **First response was to proportionally scale `context_budget_chars` down
+    to 8000 and run the benchmark anyway — the user corrected this as the wrong general policy
+    going forward** (new Model Evaluation Standard point 6, above): a candidate that can't clear
+    ~16K tokens should be discarded outright on hardware grounds, not accommodated by rescaling the
+    project's own safety margins. This specific run was allowed to finish since it was already
+    informative either way, but is not the template for future candidates.
+  - **Result: a real hang, not a clean pass or fail.** The DeepDelve run itself showed zero visible
+    progress for ~16+ minutes past the startup banner. Diagnosis: vLLM's own periodic engine-stats
+    logger (normally prints every ~10s) went completely silent after the first exchange, the
+    APIServer process (not EngineCore) was pinned at ~94% CPU while GPU utilization sat at only 7%,
+    and even the lightest possible request (`GET /v1/models`) timed out entirely. This pattern
+    points at OpenBMB's own reference `extract_tool_calls_streaming` — it re-scans the ENTIRE
+    accumulated generation text with a nested-parentheses regex
+    (`r"(\w+)\(((?:[^()]*|\([^()]*\))*)\)"`) on every single streamed token, a known catastrophic-
+    backtracking risk class, not something DeepDelve's own code touches. Killed the hung run and
+    server rather than let it burn GPU time indefinitely; confirmed no leftover `VLLM::EngineCore`
+    process afterward (this evaluation's third time hitting that exact leftover-process gotcha —
+    always `rocm-smi --showpids` after any `pkill`/kill of a `vllm serve` parent, the EngineCore
+    child does not reliably die with it).
+  - **Verdict**: NOT a capability disqualification like MiniCPM5-1B's — this never reached the
+    point of testing MiniCPM3-4B's actual research/delegation behavior at all, so per the Model
+    Evaluation Standard's point 1 (confirm the operating mode works before scoring), this doesn't
+    count as a settled discard. It's an open infrastructure question: OpenBMB's own reference
+    tool-parser has an apparent streaming-performance bug (or this vLLM version's streaming
+    invocation pattern doesn't suit it) that would need a real fix (e.g., incremental parsing
+    instead of re-scanning full text per token) before a fair benchmark could run. Not pursued
+    further this session — flagged as genuinely unresolved, not "MiniCPM3-4B discarded."
+
 - **MiniCPM4-MCP evaluated as a specialist-role candidate, 2026-07-20 — real infrastructure built
   and kept, model itself not yet viable.** User surfaced `github.com/openbmb/minicpm`; downloaded
   `MiniCPM4-MCP` (the tool-use SFT checkpoint, not the base chat model — see RESEARCH.md's §6.2
@@ -1689,6 +1738,22 @@ concluded verdict, which is the actual complaint. Going forward, a candidate is 
    reader can see which methodology produced which conclusion. This is why MiniCPM5-1B's entry
    already has separate "think-mode" and "FINAL VERDICT (nothink)" sub-entries rather than one
    overwritten verdict — keep doing that, and extend it to the confound flagged in point 2.
+6. **A candidate that can't fit the project's ~16K-token context floor is discarded outright on
+   hardware grounds, not proportionally rescaled to squeeze it in — user decision, 2026-07-21.**
+   `config_template.yaml`'s `context_budget_chars: 50000` is explicitly calibrated as "safe margin
+   under a 16K-token num_ctx" (see `README.md`'s Context management section and the
+   `get_context_budget()` docstring, `src/engine/orchestrator.py`) — this is the project's assumed
+   minimum operating context, not a soft target. When MiniCPM3-4B's real per-token KV cost on this
+   hardware capped its feasible serving context at 6144 tokens (well under that floor), the
+   response was to proportionally scale `context_budget_chars` down to fit — this is now the wrong
+   call going forward. Doing so tests the candidate under a context regime the project doesn't
+   actually run at, and produces one of two uninformative outcomes: a pass that doesn't generalize
+   to any real DeepDelve usage, or a failure that's actually a context-fit problem miscounted as a
+   capability problem. **Going forward**: check the candidate's actual max feasible serving context
+   on this hardware (via vLLM's own KV-cache-budget error message, same as this evaluation did)
+   BEFORE running any benchmark; if it can't clear ~16K tokens, discard immediately with the reason
+   recorded as "insufficient context on current hardware," and revisit only if better GPU/VRAM
+   becomes available — don't rescale the project's own safety margins to accommodate it.
 
 ## Model bake-off & backend investigation log (completed 2026-07-11 through 2026-07-18)
 
