@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from agent_framework.openai import OpenAIChatCompletionClient
 from agent_framework import tool, AgentSession, Message
 from tools import with_quota, think_tool, QuotaAbortException
-from utils.run_state import run_state_ctx, task_fetched_urls_ctx, scope_entities_ctx
+from utils.run_state import run_state_ctx, task_fetched_urls_ctx, scope_entities_ctx, task_id_ctx, _next_task_id
 from prompts import (
     SUBAGENT_INSTRUCTIONS, SUBAGENT_DELEGATION_INSTRUCTIONS,
     STANDARD_REPORT_STYLE_INSTRUCTIONS, ACADEMIC_REPORT_STYLE_INSTRUCTIONS, ANSWER_REPORT_STYLE_INSTRUCTIONS,
@@ -36,6 +36,80 @@ _NON_RESEARCH_DISPATCH_ROLES = frozenset({"Builder", "FindingsWriter", "PeerRevi
 # appended to final_text (see verification_warnings below) is reserved room OUTSIDE this budget
 # and concatenated back in full afterward — never truncated away with the rest of the body.
 _FINDING_SUMMARY_BUDGET = 1500
+
+# Matches the mandated trailing section of a Searcher's summary (WEB_SEARCHER_INSTRUCTIONS /
+# ACADEMIC_SEARCHER_INSTRUCTIONS' Findings Format, src/prompts.py): a "FOLLOW-UP DIRECTIONS:"
+# header followed by 1-3 "- ..." bullets, always the LAST section of the summary. Anchored to the
+# header through end-of-string (re.DOTALL) since nothing legitimate follows it per the prompt's
+# own format.
+_FOLLOW_UP_DIRECTIONS_RE = re.compile(r'FOLLOW-UP DIRECTIONS:\s*\n(.*)', re.IGNORECASE | re.DOTALL)
+_FOLLOW_UP_BULLET_RE = re.compile(r'^\s*-\s*(.+)$', re.MULTILINE)
+
+
+def _extract_follow_up_directions(text: str) -> list:
+    """Pull the real '- ...' bullets out of a Searcher's 'FOLLOW-UP DIRECTIONS:' section (2026-07-19,
+    engine-driven iterative deepening feature — see ROADMAP item 10). Returns [] if the section is
+    absent (a model that skipped it, or a non-Searcher dispatch) rather than guessing."""
+    m = _FOLLOW_UP_DIRECTIONS_RE.search(text or "")
+    if not m:
+        return []
+    return [b.strip() for b in _FOLLOW_UP_BULLET_RE.findall(m.group(1)) if b.strip()]
+
+
+def _agent_routing_rejection_reason(
+    declared_agent_id, caller_role_names: frozenset, prediction: tuple | None, min_confidence: float,
+) -> str | None:
+    """Pure decision logic for delegate_tasks's non-generative routing-classifier check (RESEARCH.md
+    §6, ROADMAP.md "Planned", 2026-07-20) — pulled out of delegate_tasks's own closure so it's
+    directly testable without needing the full async tool/contextvar machinery. Decided policy:
+    reject-and-nudge, not silent override. Returns a rejection reason string if delegate_tasks
+    should add this task to its error-accumulation list, or None if the task should proceed
+    unchanged (the common case: no prediction available, or the declared agent_id already agrees
+    with the classifier / the classifier abstained below min_confidence).
+
+    `prediction` is `(predicted_agent_id, confidence)` from utils.agent_routing.predict_agent_id,
+    already restricted to this caller's own real roster intersected with the classifier's known
+    classes — or None if unavailable (classifier disabled/unloaded, or this caller's roster doesn't
+    overlap the classifier's known classes at all, e.g. a Builder/FindingsWriter/PeerReviewer
+    dispatch's own delegate_tasks call, if that ever happens)."""
+    if prediction is None:
+        return None
+    predicted_agent_id, confidence = prediction
+    declared_is_unknown = declared_agent_id not in caller_role_names
+    strong_disagreement = confidence >= min_confidence and predicted_agent_id != declared_agent_id
+    if not (declared_is_unknown or strong_disagreement):
+        return None
+    return (
+        f"agent_id {declared_agent_id!r} "
+        f"{'is not a valid specialist for this caller' if declared_is_unknown else 'looks wrong'} "
+        f"— based on the instructions, this looks like a {predicted_agent_id!r} task "
+        f"(confidence {confidence:.2f}). Valid agent_id values for this caller: "
+        f"{sorted(caller_role_names)}."
+    )
+
+
+def _should_cache_finding(
+    verification_warnings: str, new_urls: list, rag_cache_enabled: bool, finding_summary: str = "",
+) -> bool:
+    """Pure decision logic for the RAG findings cache's write hook (ROADMAP.md "Strategic options"
+    item 5, 2026-07-20) — pulled out of _run_single_task so it's directly testable without needing
+    the full async tool/contextvar machinery, same pattern as _agent_routing_rejection_reason above.
+
+    Only ever True when the finding passed the EXACT SAME grounding+relevance gate every live
+    finding already goes through (verification_warnings empty), a real new URL was actually fetched
+    (new_urls non-empty — a task-name-only finding with no real source is never cache-worthy), the
+    feature is enabled, AND finding_summary contains a real markdown-link citation
+    (`[title](http...)`). That last check was added after a live run showed the grounding gate
+    alone isn't sufficient: a Searcher's own pre-delegation NARRATION text ("I'll search for
+    authoritative information about...") can carry a real new_urls entry and zero verification
+    warnings, yet contain no actual finding at all — every genuine consolidated summary follows
+    this project's own mandated Findings Format (a markdown-link bullet per source), so requiring
+    it filters out narration without needing a fragile keyword blocklist. A cache entry is never
+    less verified than a same-run finding."""
+    return bool(
+        rag_cache_enabled and new_urls and not verification_warnings and "](http" in finding_summary
+    )
+
 
 # Roles eligible for settings.specialist_model (2026-07-18, heterogeneous role tiering): the
 # leaf-tier dispatches that only ever make single, independent tool calls (search, fetch, extract)
@@ -322,12 +396,18 @@ def tool_result_error_nudge(result_text: str) -> str | None:
     return None
 
 
-def _build_client(model_override: str | None = None):
+def _build_client(model_override: str | None = None, base_url_override: str | None = None):
     """model_override: used by settings.specialist_model (heterogeneous role tiering) to build a
     SECOND client pointed at a different model than api.openai_model, for the leaf specialist
-    roles only — see _SPECIALIST_MODEL_ROLES. Same endpoint/key/timeout for both; only the model
-    name differs, since this project's whole reliability layer (grounding checks, quotas, etc.) is
-    model-agnostic and doesn't need a second endpoint to make tiering meaningful."""
+    roles only — see _SPECIALIST_MODEL_ROLES. Same endpoint/key/timeout for both by default; only
+    the model name differs, since this project's whole reliability layer (grounding checks,
+    quotas, etc.) is model-agnostic and doesn't need a second endpoint to make tiering meaningful.
+
+    base_url_override: settings.specialist_base_url (2026-07-20) — an escape hatch for a
+    specialist model that isn't OpenAI-tool-calling compatible on the SAME endpoint as the main
+    model (e.g. a local translation proxy in front of a model with its own native tool-call
+    format, like MiniCPM4-MCP's Python-code-block output). Only meaningful together with
+    model_override; the main client never uses this."""
     # Injected AsyncOpenAI so the SDK's own exponential backoff (which honors Retry-After) covers
     # 429/5xx. Confirmed live 2026-07-11: NIM's free-tier rate limit 429-crashed an entire
     # multi-agent run when the default 2 retries ran out — hosted endpoints throttle far below
@@ -335,6 +415,7 @@ def _build_client(model_override: str | None = None):
     from openai import AsyncOpenAI
     api_cfg = config.cfg["api"]
     model_name = model_override or api_cfg["openai_model"]
+    base_url = base_url_override or api_cfg["openai_base_url"]
     api_key = os.getenv("OPENAI_API_KEY", "dummy")
     # Explicit timeout, comfortably LONGER than both settings.max_run_minutes AND
     # settings.sub_agent_timeout_minutes, not the openai SDK's own default (600s / 10 minutes) —
@@ -353,11 +434,11 @@ def _build_client(model_override: str | None = None):
     sdk_timeout = max(_max_run_minutes * 60, _sub_timeout_minutes * 60, 0) + 300
     sdk_timeout = max(sdk_timeout, 3600)
     return OpenAIChatCompletionClient(
-        base_url=api_cfg["openai_base_url"],
+        base_url=base_url,
         api_key=api_key,
         model=model_name,
         async_client=AsyncOpenAI(
-            base_url=api_cfg["openai_base_url"],
+            base_url=base_url,
             api_key=api_key,
             max_retries=api_cfg.get("max_retries", 6),
             timeout=sdk_timeout,
@@ -459,8 +540,11 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
     # between this client and the main one costs a real model reload (~5-23s measured), paid once
     # per delegate_tasks round (Planner boundary), not per individual specialist tool call.
     specialist_model = config.cfg.get("settings", {}).get("specialist_model")
+    specialist_base_url = config.cfg.get("settings", {}).get("specialist_base_url")
     if specialist_model and specialist_model != config.cfg["api"]["openai_model"]:
-        specialist_client = _build_client(model_override=specialist_model)
+        specialist_client = _build_client(
+            model_override=specialist_model, base_url_override=specialist_base_url
+        )
         specialist_client.function_invocation_configuration["include_detailed_errors"] = True
     else:
         specialist_client = client
@@ -497,6 +581,9 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
             # header comment) — NOT a before/after length delta on the shared run-wide list, which
             # races under concurrent delegate_tasks dispatch.
             task_urls_token = task_fetched_urls_ctx.set([])
+            # Stable per-dispatch identity for the quota ring-fence's per-task rescue tracking
+            # (tools/core.py::check_quota) — see utils/run_state.py's task_id_ctx header comment.
+            task_id_token = task_id_ctx.set(_next_task_id())
             # Expose this task's scope entities to web_search for the query-level scope warning
             # (see utils/run_state.py's scope_entities_ctx header comment).
             scope_token = scope_entities_ctx.set(_extract_scope_entities(instructions))
@@ -837,6 +924,14 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                 # NEVER part of the truncated slice — they're guaranteed room by reserving their
                 # length off the body's share first, then concatenated back in full. See the
                 # comment on `verification_warnings` above for why this ordering matters.
+                #
+                # 2026-07-19 (engine-driven iterative deepening, ROADMAP item 10): FOLLOW-UP
+                # DIRECTIONS is specified to be the LAST section of a Searcher's summary, which
+                # means it was the FIRST thing this same truncation silently dropped for any real
+                # summary over ~1500 chars — the identical failure shape as the verification-warning
+                # bug this budget already carves an exception for. Extracted and stored separately
+                # (RunState.add_finding's own field, never subject to this budget), same treatment.
+                follow_up_directions = _extract_follow_up_directions(final_text)
                 body_budget = _FINDING_SUMMARY_BUDGET - len(verification_warnings)
                 body_text = final_text[:len(final_text) - len(verification_warnings)] if verification_warnings else final_text
                 finding_summary = body_text[:body_budget] + verification_warnings
@@ -846,9 +941,28 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                 if run_state is not None and agent_id not in _NON_RESEARCH_DISPATCH_ROLES:
                     if new_urls:
                         for u in new_urls:
-                            run_state.add_finding(u["url"], finding_summary, task_name=task_name, depth=this_depth)
+                            run_state.add_finding(u["url"], finding_summary, task_name=task_name, depth=this_depth,
+                                                   follow_up_directions=follow_up_directions, agent_id=agent_id)
                     else:
-                        run_state.add_finding(task_name, finding_summary, task_name=task_name, depth=this_depth)
+                        run_state.add_finding(task_name, finding_summary, task_name=task_name, depth=this_depth,
+                                               follow_up_directions=follow_up_directions, agent_id=agent_id)
+
+                # RAG findings cache (ROADMAP.md "Strategic options" item 5, 2026-07-20): only cache
+                # a finding that passed the EXACT SAME grounding+relevance gate above with zero
+                # warnings — a cache entry is exactly as verified as a same-run finding, never less.
+                # Deliberately caches the atomic (source_url, summary) pair, not a whole answer, so a
+                # future cache hit still requires the Searcher to incorporate/cite it itself, the
+                # same as a fresh web_search result — this is what makes it safe across different
+                # models, unlike the deleted knowledge_cache (929b987) it replaces.
+                rag_cfg = config.cfg.get("settings", {}).get("rag_cache", {})
+                if _should_cache_finding(
+                    verification_warnings, new_urls, rag_cfg.get("enabled", False), finding_summary
+                ):
+                    from utils import rag_cache
+
+                    model = config.cfg.get("api", {}).get("openai_model", "")
+                    for u in new_urls:
+                        rag_cache.save(task_name, u["url"], finding_summary, model)
 
                 return f"## Result for {task_name}\n{final_text}\n---"
             finally:
@@ -857,6 +971,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                 holds_token.reset(token_setter)
                 delegation_depth_ctx.reset(depth_token)
                 task_fetched_urls_ctx.reset(task_urls_token)
+                task_id_ctx.reset(task_id_token)
                 scope_entities_ctx.reset(scope_token)
 
     # -------------------------------------------------------------
@@ -1031,6 +1146,28 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                             f"filename the fetch tool returned."
                         )
                         continue
+            # Non-generative routing classifier (RESEARCH.md §6, ROADMAP.md "Planned", 2026-07-20)
+            # — catches a hallucinated agent_id ("searcher", "PeerReviewer", invented role names,
+            # ~4.9% of real historical delegate_tasks calls) BEFORE dispatch, rather than only after
+            # _run_single_task's own exact-string lookup fails per-task post-dispatch. Decision
+            # logic lives in _agent_routing_rejection_reason (pure function, directly testable) —
+            # this closure only gathers the caller's real roster and the classifier's prediction.
+            agent_routing_cfg = config.cfg.get("settings", {}).get("agent_routing_classifier", {})
+            if agent_routing_cfg.get("enabled", False):
+                from utils.agent_routing import predict_agent_id, KNOWN_AGENT_IDS
+                caller_role_names = frozenset(c.name for c in available_sub_agents_ctx.get())
+                candidate_classes = caller_role_names & KNOWN_AGENT_IDS
+                prediction = (
+                    predict_agent_id(str(t.get("instructions", "")), candidate_classes)
+                    if candidate_classes else None
+                )
+                reason = _agent_routing_rejection_reason(
+                    t.get("agent_id"), caller_role_names, prediction,
+                    agent_routing_cfg.get("min_confidence", 0.6),
+                )
+                if reason:
+                    errors.append(f"Task {i} ({t.get('task_name')!r}): {reason}")
+                    continue
         if errors:
             return (
                 "Error: delegate_tasks call rejected — none of these tasks were dispatched (no quota "

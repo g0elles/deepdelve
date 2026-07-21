@@ -145,12 +145,21 @@ def extract_sources_section(report: str) -> str:
 # capital — detected as a citation, but never resolvable against any References entry.
 _CAP_CHAR = "A-ZÀ-ÖØ-Þ"
 
-# A numbered or bracket-numbered References-list entry in academic style, e.g. "1. Punati, S. B.,
-# et al. (2025). Temporal Fusion Transformer..." or "[1] Smith, J. (2024)...". Captures the first
-# author's surname and the publication year — together the same (surname, year) key an in-text
-# `(Author, Year)` citation uses, so a citation can be resolved against this entry without needing
-# full bibliographic parsing.
-_REFERENCE_ENTRY_RE = re.compile(rf'^[\s>*_]*(?:\d+\.|\[\d+\])\s*([{_CAP_CHAR}][\w\-\']+)[^\n(]{{0,80}}\(((?:19|20)\d{{2}})\)')
+# A numbered, bracket-numbered, or bulleted References-list entry in academic style, e.g. "1.
+# Punati, S. B., et al. (2025). Temporal Fusion Transformer..." or "[1] Smith, J. (2024)..." or
+# "- Punati, S. B. (2025)...". Captures the first author's surname and the publication year —
+# together the same (surname, year) key an in-text `(Author, Year)` citation uses, so a citation
+# can be resolved against this entry without needing full bibliographic parsing.
+#
+# Bullet alternative added 2026-07-19 QA audit: ACADEMIC_CITATION_FORMAT_INSTRUCTIONS
+# (src/prompts.py) only tells the model the References list is "numbered" in prose — nothing
+# enforces it structurally — and a model defaulting to an unordered bullet list (a common LLM
+# habit) produced a genuinely grounded report that this check falsely flagged as carrying
+# unresolvable citations, same failure class as the findings.md format-ambiguity bug.
+_REFERENCE_ENTRY_RE = re.compile(
+    rf'^[\s>]*(?:[*_]*(?:\d+\.|\[\d+\])[*_]*|[-*•])\s*[*_]*'
+    rf'([{_CAP_CHAR}][\w\-\']+)[^\n(]{{0,80}}\(((?:19|20)\d{{2}})\)'
+)
 
 # A bare `(Author, Year)` / `(Author et al., Year)` / `(Author & Other, Year)` in-text citation.
 # Shares its shape with _PARENTHETICAL_CITATION_RE below (both require a capitalized name-like

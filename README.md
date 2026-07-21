@@ -231,6 +231,26 @@ python eval/results_viewer.py
 
 ## References
 
+**Why local models are hard for this task, briefly**: DeepDelve's own model bake-off (10 candidates,
+9 disqualified, `gpt-oss:20b` the only full pass) is not an idiosyncratic gap. A published capacity-
+floor study found `qwen2.5:14b` as the "minimum viable production" threshold for reliable tool
+invocation, with sub-8B models failing at 40-85%+ rates on a narrower, more controlled task than
+DeepDelve's own open-ended research (Huang, Malwe, Wang, arXiv:2601.16280). Independently, two
+studies found small/mid open-weight models specifically fail at structured tool-call serialization
+(schema-valid output, wrong content) in a way a 6,000-sample fine-tuning run could not fix, because
+it happens downstream of anything fine-tuning touches (Li, Zhang, Lv, arXiv:2606.25605; Ray,
+arXiv:2605.26128). MAST's 14-mode failure taxonomy (Cemri et al., arXiv:2503.13657, NeurIPS 2025)
+maps closely onto DeepDelve's own documented bug catalog (see ROADMAP.md's "narrate instead of
+write," over-research, and exclusion-enforcement entries) — evidence these are known, published
+agent-failure patterns, not DeepDelve-specific quirks. Full literature review, corrections, and
+still-open leads in `RESEARCH.md`.
+
+- Huang, Malwe, Wang. *When Agents Fail to Act: A Diagnostic Framework for Tool Invocation Reliability in Multi-Agent LLM Systems*. [arXiv:2601.16280](https://arxiv.org/abs/2601.16280). Capacity-floor evidence for the local-model-selection constraint above (14B as the tested "minimum viable production" threshold for tool invocation), motivating why `gpt-oss:20b` rather than a smaller default.
+- Li, Zhang, Lv. *Constraint Tax in Open-Weight LLMs: An Empirical Study of Tool Calling Suppression Under Structured Output Constraints*. [arXiv:2606.25605](https://arxiv.org/abs/2606.25605). Confirms DeepDelve's own code never combines a JSON-schema `response_format` with tool availability in the same call (the exact condition that causes 0% tool-invocation-rate on every open-weight model tested, including `GPT-OSS-20B`); its proven Two-Pass Execution mitigation independently matches DeepDelve's own Planner→Builder/FindingsWriter split.
+- Ray. *The Constraint Tax: Measuring Validity-Correctness Tradeoffs in Structured Outputs for Small Language Models*. [arXiv:2605.26128](https://arxiv.org/abs/2605.26128). Originating paper for the constraint-tax concept above; its "reason free, constrain late" finding independently confirms the same design choice as the Two-Pass Execution paper.
+- Cemri, Pan, Yang, et al. *Why Do Multi-Agent LLM Systems Fail?* (MAST). [arXiv:2503.13657](https://arxiv.org/abs/2503.13657), NeurIPS 2025 Track on Datasets and Benchmarks. 14-mode failure taxonomy mapping closely onto DeepDelve's own documented bug catalog (see ROADMAP.md).
+- Cemri, Cojocaru, Pan, et al. *Fantastic Adaptive Taxonomies and How to Use Them* (ATLAS/AdaMAST). ICML 2026 Workshop on Failure Modes in Agentic AI. [`multi-agent-systems-failure-taxonomy/ATLAS`](https://github.com/multi-agent-systems-failure-taxonomy/ATLAS). Induces a domain-specific failure taxonomy directly from a target system's own execution traces rather than MAST's fixed vocabulary; a ROADMAP candidate for DeepDelve's own `_run_state.json` history.
+- Liu, Lin, Hewitt, et al. *Lost in the Middle: How Language Models Use Long Contexts*. [arXiv:2307.03172](https://arxiv.org/abs/2307.03172), TACL 2024. A candidate mechanism (distinct from context-size truncation) for DeepDelve's own recurring "real content silently vanishes during final synthesis" pattern.
 - Jiang, Yang, Cui, et al. *Deep Research in Physical Sciences: A Multi-Agent Framework and Comprehensive Benchmark* (DelveAgent / PhySciBench). [arXiv:2606.18648](https://arxiv.org/abs/2606.18648). Primary architecture source (Adaptive Planning Loop, Dual-Granularity Memory, Hierarchical Reflection).
 - Huang, Chen, Zhang, et al. *Deep Research Agents: A Systematic Examination and Roadmap*. [arXiv:2506.18096](https://arxiv.org/abs/2506.18096)
 - Xu, Peng. *A Comprehensive Survey of Deep Research: Systems, Methodologies, and Applications*. [arXiv:2506.12594](https://arxiv.org/abs/2506.12594)

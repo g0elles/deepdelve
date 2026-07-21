@@ -26,6 +26,11 @@ settings:
   # tool call, so the tax scales with how many rounds a run needs, not how many sources it fetches.
   # Verify with a real timed A/B against your own hardware before assuming it's a net win.
   # specialist_model: deepdelve-qwen3-4b
+  # specialist_base_url: escape hatch for a specialist model that isn't OpenAI-tool-calling
+  # compatible on the SAME endpoint as api.openai_base_url (e.g. a local translation proxy in
+  # front of a model with its own native tool-call format). Only meaningful together with
+  # specialist_model above; falls back to api.openai_base_url when unset.
+  # specialist_base_url: http://localhost:8800/v1
   concurrency:
     # Must not exceed your backend's REAL concurrent-request serving capacity, not just a number
     # that "sounds reasonable." Confirmed live 2026-07-14: a single-GPU Ollama instance serving a
@@ -97,6 +102,7 @@ settings:
     delegate_tasks: 15
     web_search: 15
     fetch_url_to_workspace: 15
+    search_verified_findings: 10
     write_workspace_file: 10
     list_workspace_files: 10
     write_todos: 10
@@ -138,6 +144,15 @@ settings:
     enabled: true
     threshold: 0.5    # fire when covered/total top-level tasks falls below this
     min_tasks: 2       # never fire with fewer top-level tasks than this -- not enough signal
+  # Engine-driven iterative deepening (2026-07-19, ROADMAP item 10, dzhng/deep-research pattern):
+  # when a thin_coverage retry fires AND a Searcher's own real "FOLLOW-UP DIRECTIONS:" section
+  # named a real lead, the ENGINE dispatches those directions directly as new tasks (geometric
+  # narrowing, ceil(prior_breadth/2)) instead of nudging the Planner and hoping it acts on a lead
+  # buried in its own conversation -- local models demonstrably under-loop on this (ROADMAP: run
+  # 15 found 1 niche of 4-6 required). Bounded per run by this many rounds; 0 disables it entirely
+  # (falls back to the classic Planner nudge unchanged). --depth overrides this: quick=0, deep=2 --
+  # see engine/tui.py's _DEPTH_PRESETS.
+  max_deepening_rounds: 1
   # Wall-clock budget in minutes for headless runs (0 = no limit; TUI ignores this — a user at
   # the keyboard can /stop). Not a hard kill: on expiry the current turn is cut short and the
   # completion check jumps straight to its final verdict, so labeling and report salvage still
@@ -285,6 +300,63 @@ settings:
     # writes Pass 1 from memory — confirmed live). Laxer than the final-report check on purpose:
     # Pass-1 notes may legitimately mention extra search-snippet URLs that were never fetched.
     check_findings: true
+  # Non-generative routing classifier for delegate_tasks's agent_id (RESEARCH.md §6, ROADMAP.md
+  # "Planned", 2026-07-20) — a frozen sentence-embedding model + logistic regression trained
+  # offline (finetune/train_agent_routing_classifier.py) on real historical (instructions,
+  # agent_id) pairs from this project's own session logs. Motivation: ~4.9% of real historical
+  # delegate_tasks calls used a syntactically well-formed but hallucinated agent_id ("searcher",
+  # "PeerReviewer", invented role names) — a routing decision over a fixed, tiny label set that a
+  # generative model keeps getting wrong in a way more fine-tuning data can't structurally fix
+  # (two independent papers found this failure persists even after a 6,000-sample SFT run, since
+  # it happens downstream of anything fine-tuning touches — see RESEARCH.md §1). Default OFF: new,
+  # unvalidated against live traffic, and requires running the training scripts first to produce
+  # finetune/artifacts/agent_routing_classifier.joblib — an install that skips this entirely runs
+  # unaffected (see utils/agent_routing.py::predict_agent_id, fails open, same philosophy as
+  # grounding_check above).
+  agent_routing_classifier:
+    enabled: false
+    # Decided policy (not advisory-only, not silent override): only intervenes when the declared
+    # agent_id isn't a real known role, OR the classifier disagrees strongly (confidence above
+    # min_confidence on a DIFFERENT class than declared) — in either case the task is added to
+    # delegate_tasks's existing error-accumulation path, forcing a Planner retry with an explicit
+    # reason, rather than silently substituting a value the Planner never chose. This is the only
+    # mode implemented; the field exists for a future advisory/override mode, not as a live toggle.
+    mode: "reject"
+    # Below this confidence, the classifier abstains (same "none apply" pattern ATLAS/AdaMAST uses,
+    # RESEARCH.md §1) and the Planner's own agent_id is used untouched, even if it disagrees with
+    # the classifier's best (low-confidence) guess.
+    min_confidence: 0.6
+    # Override for testing a differently-trained artifact without touching the default path
+    # (finetune/artifacts/agent_routing_classifier.joblib).
+    artifact_path: null
+  # Persistent cross-run cache of VERIFIED findings (ROADMAP.md "Strategic options" item 5,
+  # RESEARCH.md §8, 2026-07-20) — real semantic retrieval via frozen sentence-embeddings
+  # (all-MiniLM-L6-v2, already a proven dependency), exposed to WebSearcher/AcademicSearcher as the
+  # search_verified_findings tool, so a topic already researched and verified in a past run doesn't
+  # need to be re-fetched/re-analyzed from scratch. Deliberately NOT the same design as the
+  # deleted knowledge_cache/experience_cache (commit 929b987, 2026-07-11), which stored whole final
+  # ANSWERS keyed by raw query text and was confirmed live to contaminate model bake-off
+  # comparisons (a later model's trial would hit an earlier model's cached answer and reproduce it
+  # near-verbatim). This cache stores one verified ATOMIC FINDING (source_url + summary) per topic
+  # — a cache hit still requires the Searcher to cite and incorporate it itself, exactly like a
+  # fresh web_search result, which is what makes it safe across different models. A cache entry is
+  # only ever written after a finding passes the SAME grounding+relevance check every live finding
+  # already goes through (see engine/orchestrator.py::_run_single_task's write hook) — never less
+  # verified than a same-run finding. Default OFF: new, unvalidated against live traffic.
+  rag_cache:
+    enabled: false
+    path: ~/.{APP_NAME}/rag_cache.json
+    # A cached finding older than this is excluded from search_verified_findings results — most
+    # research topics have a real staleness horizon (a "current version" fact goes stale fast).
+    # Same default as the deleted knowledge_cache used, kept for continuity, actually enforced this
+    # time (utils/rag_cache.py::lookup filters on this before returning anything).
+    max_age_days: 7
+    # Cosine-similarity threshold (0-1) a cached finding's task_context must clear against the new
+    # query to be considered a match. 0.75 is a conservative starting point (favors precision over
+    # recall) — a query with no match above this returns nothing rather than a loosely-related hit.
+    min_similarity: 0.75
+    # Maximum number of matches search_verified_findings returns per call.
+    top_k: 3
   # External MCP servers, scoped to specific sub-agents by name (omit 'agents' to expose to all).
   # Connected only for the lifetime of each delegated task (see
   # engine/orchestrator.py::_run_single_task). Empty by default — none of this runs unless you add

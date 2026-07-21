@@ -47,7 +47,15 @@ dependencies = [
     # 2026-07-14: also used for grounding.py::_get_topical_relevance_model (BAAI/bge-reranker-v2-m3,
     # settings.grounding_check.topical_relevance_check) — a second CrossEncoder checkpoint through
     # this SAME library, not an additional pip dependency. Same CPU-only/fails-open behavior.
-    "sentence-transformers>=5.6.0,<6.0.0"
+    "sentence-transformers>=5.6.0,<6.0.0",
+    # First scikit-learn dependency (2026-07-20) — utils/agent_routing.py's non-generative
+    # delegate_tasks routing classifier (settings.agent_routing_classifier). A frozen
+    # sentence-transformers embedding + LogisticRegression, chosen over SetFit/full encoder
+    # fine-tuning per RESEARCH.md §6's data-volume analysis. Small, pure-Python/CPU, no CUDA
+    # baggage the way sentence-transformers' own torch dependency has. Fails open at runtime if
+    # unavailable (see agent_routing.py::_load) — same philosophy as every other soft-dependency
+    # check in this codebase.
+    "scikit-learn>=1.7.0,<2.0.0"
 ]
 
 [project.optional-dependencies]

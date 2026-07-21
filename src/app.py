@@ -19,6 +19,7 @@ from tools import (
     read_todos,
     think_tool,
     extract_structured_data,
+    search_verified_findings,
 )
 from prompts import (
     PLANNER_INSTRUCTIONS,
@@ -63,14 +64,14 @@ data_analyzer = SubAgentConfig(
 web_searcher = SubAgentConfig(
     name="WebSearcher",
     instructions=WEB_SEARCHER_INSTRUCTIONS,
-    tools=[web_search, fetch_url_to_workspace, think_tool],
+    tools=[web_search, fetch_url_to_workspace, think_tool, search_verified_findings],
     sub_agents=[document_analyzer, data_analyzer]
 )
 
 academic_searcher = SubAgentConfig(
     name="AcademicSearcher",
     instructions=ACADEMIC_SEARCHER_INSTRUCTIONS,
-    tools=[web_search, fetch_url_to_workspace, think_tool],
+    tools=[web_search, fetch_url_to_workspace, think_tool, search_verified_findings],
     sub_agents=[document_analyzer, data_analyzer]
 )
 
