@@ -3134,12 +3134,33 @@ def main():
             rs.add_finding("uncovered_task", "", task_name="t2", depth=1)  # no real fetch at all
             material = _build_findings_source_material(rs)
             assert f"### Source: {_SRC} (saved as sources/page.md)" in material, material
-            # Bounded to just this one finding entry (not the whole rest of the material, which
-            # legitimately has "(saved as ...)" in the unrelated fetched_block cross-reference
-            # section below it) -- the entry with no real fetch gets no filename at all.
-            assert "### Source: uncovered_task\n\n\n" in material, material
+            # The no-real-fetch entry gets no filename annotation, and (2026-07-21 fabrication
+            # fix) no "### Source: ..." heading at all -- see _findings_uncited_fallback_scenario.
+            assert "### Source: uncovered_task" not in material, material
 
     contextvars.copy_context().run(_findings_filename_scenario)
+
+    # --- A finding whose source_url is the add_finding task_name fallback (no real fetched or
+    # reference URL at all) must NEVER be rendered as a "### Source: ..." entry -- that shape is
+    # what lets the engine treat an entry as citable, and a bare task_name string wearing it was
+    # silently cited as a fake URL by a real qwen3:8b run (5/19 findings fabricated,
+    # 2026-07-21). It must instead be named in a separate, explicitly non-citable list. ---
+    def _findings_uncited_fallback_scenario():
+        from engine.completion import _build_findings_source_material
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rs = RunState(tmpdir)
+            rs.add_finding(_SRC, "a real finding", task_name="t1", depth=1)
+            rs.add_finding("orphan_task", "some narration with no real source", task_name="orphan_task", depth=2)
+            material = _build_findings_source_material(rs)
+            assert "### Source: orphan_task" not in material, (
+                "a task_name fallback must never be rendered as a citable Source heading", material)
+            assert "orphan_task" in material, (
+                "the task must still be named so the model can acknowledge the gap", material)
+            assert "invent" in material.lower() or "fabricat" in material.lower(), (
+                "the model must be explicitly told not to fabricate a source for it", material)
+
+    contextvars.copy_context().run(_findings_uncited_fallback_scenario)
 
     # --- _build_findings_source_material must cap total size against context_budget_chars instead
     # of handing an unbounded string to a fresh dispatch for the model backend to silently truncate

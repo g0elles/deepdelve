@@ -868,15 +868,25 @@ def _build_findings_source_material(run_state: "RunState") -> str:  # noqa: F821
     # findings.md entries can carry the real filename too, and any downstream re-verification
     # (Builder, PeerReviewer, a human) never has to guess it either.
     url_to_filename = {u.get("url", "").rstrip("/"): u.get("filename") for u in urls}
-    entries = [
-        (
-            f.get("task_name") or f.get("source_url"),
-            f"### Source: {f.get('source_url')}"
-            + (f" (saved as {fn})" if (fn := url_to_filename.get((f.get('source_url') or '').rstrip('/'))) else "")
-            + f"\n{f.get('summary', '')}"
-        )
-        for f in deduped
-    ]
+    # Split on whether source_url is a real fetched URL vs. add_finding's own bookkeeping
+    # fallback (the bare task_name, used when a task produced no fetchable/reference URL at
+    # all -- see orchestrator.py's _run_single_task). Rendering both under the same
+    # "### Source: ..." heading (pre-2026-07-21) gave FindingsWriter no way to tell a real
+    # citation from a placeholder, and a live qwen3:8b run cited the placeholder as if it were
+    # a real URL (5/19 findings). Only real, http(s) source_urls become "### Source: ..."
+    # entries now; the rest are named separately below as explicitly non-citable.
+    entries = []
+    uncited_task_names = []
+    for f in deduped:
+        src = f.get("source_url") or ""
+        if src.startswith("http"):
+            fn = url_to_filename.get(src.rstrip("/"))
+            entries.append((
+                f.get("task_name") or src,
+                f"### Source: {src}" + (f" (saved as {fn})" if fn else "") + f"\n{f.get('summary', '')}"
+            ))
+        else:
+            uncited_task_names.append(f.get("task_name") or "(unnamed task)")
 
     # 2026-07-19 QA audit ("real grounded content silently vanishes during synthesis" — 3
     # independently-fixed prior incidents, this is the common structural gap none of them closed):
@@ -925,10 +935,21 @@ def _build_findings_source_material(run_state: "RunState") -> str:  # noqa: F821
             f"drop these — if they matter for the report, note that this research exists but its "
             f"detail wasn't available to you, rather than pretending it doesn't exist.)"
         )
+    uncited_note = ""
+    if uncited_task_names:
+        uncited_list = ", ".join(f"'{n}'" for n in uncited_task_names[:20])
+        uncited_note = (
+            f"\n\n({len(uncited_task_names)} dispatched task(s) produced no real fetched or "
+            f"reference URL, so they have nothing citable: {uncited_list}. These are NOT source "
+            f"entries above and must never be turned into one — do not invent a URL or title for "
+            f"them. If they matter, note that this research was attempted but produced no "
+            f"citable source, rather than fabricating one.)"
+        )
     return (
         "REAL RESEARCH RESULTS FROM THIS RUN, one entry per dispatched Searcher/Analyzer task "
+        "that returned a real citable source "
         "(this is your ENTIRE evidence base — you have no other memory of this run):\n\n"
-        f"{findings_block}{omitted_note}\n\n"
+        f"{findings_block}{omitted_note}{uncited_note}\n\n"
         "ALL URLS ACTUALLY FETCHED THIS RUN, for cross-reference — each file's full content is "
         "readable under its saved filename via read_workspace_file/grep_workspace_file if a "
         "summary above isn't detailed enough:\n"
