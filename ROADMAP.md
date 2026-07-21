@@ -1070,6 +1070,22 @@ Status as of 2026-07-20.
 
 ## Planned (not started)
 
+- **Re-run the full 11-candidate local-model bake-off via vLLM instead of Ollama — planned
+  2026-07-21, not started.** Two independent, confirmed Ollama-serving-layer bugs (the think-mode
+  passthrough failure documented in this file's Qwen3-family entry above, and the pre-existing
+  `ollama/ollama#6155` nested-array tool-parameter stringification bug affecting `mistral-nemo`,
+  `llama3-groq-tool-use`, and `llama3.2:3b`) mean several of README.md's 11 bake-off disqualifications
+  may reflect Ollama's own serving bugs rather than genuine model incapability. Full plan (per-candidate
+  VRAM/quantization feasibility, tool-parser mapping, execution order, and the real blockers found
+  during research — this vLLM install has **no GGUF support at all**, `bitsandbytes` isn't installed,
+  Bonsai-8B's quant type is unrecognized by vLLM, the GRPO fine-tune's merge checkpoint is gone from
+  disk, `qwen3.6`/`Gemma 4 12B`'s HF availability is unconfirmed) written to
+  `~/.claude/plans/moonlit-plotting-simon.md`. Scoped explicitly as a multi-session effort, not a
+  single sitting. **Next session should start with the two pre-flight checks the plan calls out**:
+  spike `bitsandbytes` on ROCm with one small model before committing 8 of the 11 candidates to that
+  quantization path, and confirm `Gemma 4 12B`/`qwen3.6`'s HF repo IDs actually exist before spending
+  GPU time on them.
+
 - **MiniCPM5-1B evaluated as a specialist-role candidate, 2026-07-20 (later same day) — most
   promising MiniCPM variant tested so far, not yet clean, worth more runs before a final call.**
   User asked to check other MiniCPM4-family options after the MiniCPM4-MCP evaluation below;
@@ -1158,6 +1174,139 @@ Status as of 2026-07-20.
     MiniCPM candidate tested by a real margin under think mode; live config left pointed at it
     (`specialist_model: minicpm5-1b`) rather than reverted, pending a proper nothink-mode re-test
     via vLLM before any final call.
+  - **FINAL VERDICT, 2026-07-20 — genuine nothink-mode retest via vLLM completed; DISCARD for this
+    role.** Fixed the pre-existing, broken `~/.venvs/vllm` install (missing `libopenmpi3t64`, then
+    ROCm userspace libs stale relative to the current kernel — fixed via
+    `sudo amdgpu-install --usecase=rocm,hip --no-dkms`, no kernel module/DKMS involved, fully
+    reversible; a system-level DKMS attempt tried first failed on a genuine kernel-symbol conflict
+    against `7.0.0-28-generic` and was cleaned up before this correct approach was found). Launched
+    `vllm serve openbmb/MiniCPM5-1B --tool-call-parser minicpm5 --enforce-eager
+    --gpu-memory-utilization 0.20 --max-model-len 16384` (memory-utilization and `--enforce-eager`
+    both driven down from the plan's defaults after gpt-oss's usual 14.6GB Planner footprint left no
+    VRAM headroom on the 17.1GB card — swapped Planner to `deepdelve-mistral-nemo:latest`, 7.1GB,
+    for this test only; **`api.openai_model` in `~/.deepdelve/config.yaml` is still set to this
+    temporary value and must be reverted to `deepdelve-gpt-oss:latest` once this entry is read**).
+    Confirmed via direct `curl` with `chat_template_kwargs: {"enable_thinking": false}` that
+    real nothink mode now works (no `<think>` leakage) — DeepDelve needed zero new code for this,
+    since `orchestrator.py::_get_default_options()` already threads `enable_thinking` through
+    `extra_body`/`chat_template_kwargs` at both dispatch sites (line ~678 specialist, ~1274 main).
+    Ran the same live query used throughout this whole evaluation. Result, traced through the raw
+    session log rather than assumed:
+    - **A genuine content hallucination reached the final report.** The model's own first-pass
+      reasoning (session log event 17, well before any remediation pass) already commits to
+      "Blog Rust 1.85.0 - URL: https://blog.rust-lang.org/2025/02/20/Rust-1.85.0/" — a real but
+      *stale* blog post surfaced by a web-search snippet — as "the latest stable version." It later
+      correctly fetches the actually-current `releases.rs` page (which plainly states
+      `Stable: 1.97.1`, confirmed by directly grepping the saved source file), but never revises
+      its earlier claim — instead the final findings/report cite `<https://releases.rs/>` as the
+      source for the wrong "1.85.0, released on February 20, 2025" value. This is not a
+      misread-ambiguous-source case like the earlier MiniCPM4-MCP filename-hash mistake; the
+      correct number was sitting in a source the model itself fetched and cited, and it reported
+      the wrong one anyway. Traced with certainty to MiniCPM5-1B's own Searcher/Analyzer
+      reasoning, not to the temporarily-swapped mistral-nemo Planner's remediation passes
+      (`FindingsWriterFix_attempt2`/`BuilderFix_attempt3` copied this text forward verbatim from
+      the same flawed `findings.md`, they did not introduce it).
+    - **`findings.md` itself never passed the grounding check on its own terms**: it shipped as an
+      "AUTO-RECOVERED DRAFT" (the model narrated the findings as chat text instead of calling
+      `write_workspace_file`, across the full retry budget) — the salvage path saved the run from
+      an outright `missing_findings` failure, but the underlying content was never actually
+      verified before being carried into `final_report.md`.
+    - **Six identical malformed tool calls**: `fetch_url_to_workspace` called with
+      `{"url": "sources/paper_143022.md"}` — a workspace-relative path to a file it had already
+      saved, not a real URL — repeated six times with no self-correction, on top of one
+      argument-parsing failure elsewhere. Confusing "fetch a URL" with "read a file I already
+      wrote" is a new, distinct failure shape from anything seen in the earlier think-mode run.
+    - Two literal `"[Authors' names]"` placeholder strings (HAL preprint, ACM paper) also reached
+      the final report uncorrected — a completeness/fabrication-adjacent defect the downstream
+      Builder (mistral-nemo, not gpt-oss, for this run) failed to catch, unlike an earlier same-day
+      run where gpt-oss's Builder did catch and fix an analogous mistake.
+    - Required 4 completion-check attempts (`not_delegated`, `missing_findings`, `missing_artifact`,
+      then clean) before the run closed at all.
+    **Conclusion**: genuine nothink mode is now confirmed reachable and correctly wired end-to-end
+    (infrastructure verdict: works, zero new code needed), but this properly-configured test is, on
+    content reliability, *worse* than the earlier (unintentional think-mode) run — not better. A
+    single model-generated hallucination that directly contradicts its own cited source, shipped
+    past an already-degraded (auto-recovered, unverified) grounding path, past a Builder that didn't
+    catch it, into the user-facing report, is disqualifying for an unsupervised specialist role
+    regardless of mode. Sub-1.5B parameter budget was flagged as a priors-based concern from the
+    very start of this evaluation (RESEARCH.md); this live result confirms rather than contradicts
+    that prior. **Discarding MiniCPM5-1B (both modes now tested) for the specialist role.** Cleanup
+    still open: revert `api.openai_model` to `deepdelve-gpt-oss:latest`, decide whether to keep or
+    stop the standing `~/.venvs/vllm` server, remove `specialist_model`/`specialist_base_url` from
+    live config (or point them at a different, larger candidate later).
+  - **Cleanup done, 2026-07-21**: `api.openai_model` reverted to `deepdelve-gpt-oss:latest`,
+    `settings.specialist_model`/`settings.specialist_base_url` removed from `~/.deepdelve/
+    config.yaml` (confirmed `_build_client`'s `.get(...)` fallback in `orchestrator.py` handles
+    their absence, single-model config resumes cleanly), test `vllm serve` process killed.
+    `~/.venvs/vllm` itself kept on disk — a verified-working general ROCm+vLLM install for this
+    exact GPU/kernel, reusable for a future, larger specialist candidate without redoing the ROCm
+    fix.
+
+- **Qwen3-family think-mode control confirmed broken on Ollama too, 2026-07-21 — every Qwen3
+  benchmark row in README.md's model table was very likely reasoning-polluted.** Surfaced while
+  answering the user's direct question ("could the models we benchmarked have a nothink mode too?")
+  after the MiniCPM5-1B finding above. Tested live against Ollama 0.31.2, both mechanisms DeepDelve
+  could plausibly rely on:
+  - `chat_template_kwargs.enable_thinking: false` via the OpenAI-compat endpoint (the mechanism
+    `orchestrator.py::_get_default_options()` actually sends): confirmed via direct `curl` against
+    `deepdelve-qwen3-4b` that this has **zero effect** — the model still burns its full token budget
+    on unrequested reasoning (a populated `reasoning` field, `content` left empty on a 200-token cap).
+  - Ollama's own native `/api/chat` `"think": false` field (the mechanism Ollama itself recommends
+    for hybrid-reasoning models, and which DeepDelve does NOT currently send at all): confirmed via
+    direct `curl` against the plain, unmodified `qwen3:4b` base tag that this is **actively worse
+    than doing nothing**. With `think: false`, the model still reasons at length but the raw,
+    unstructured chain-of-thought is dumped straight into `message.content` with no `<think>` tag
+    and no separate `thinking` field at all. With `think: true`, the exact same request correctly
+    separates reasoning into its own field and `content` holds only the clean final answer ("4").
+    The "off" setting is the one that pollutes the model's real working output; "on" is the one
+    that's clean.
+  - **Why this doesn't apply to `gpt-oss:20b` (the current default)**: tested the same two
+    mechanisms against `deepdelve-gpt-oss` — also ineffective at fully suppressing reasoning (gpt-oss's
+    harmony format always produces an analysis channel by design, this isn't a bug), but critically,
+    Ollama keeps that reasoning cleanly separated into its own `reasoning`/`thinking` field in BOTH
+    cases, never mixed into `content`. Confirmed via `agent_framework`'s own client source
+    (`choice.message.content` read directly at the point a `Content.from_text(...)` is built;
+    `reasoning_details` handled as a distinct `text_reasoning` content type, never merged into the
+    text DeepDelve's agents treat as the model's actual output) that DeepDelve only ever consumes
+    `.content` — so gpt-oss's inability to fully disable thinking is benign here, while Qwen3's
+    content-pollution bug is not.
+  - **Implication**: `qwen3.6` (35b-a3b), `qwen3:4b`, `qwen3:8b`, and the `qwen3:4b` GRPO fine-tune's
+    live Ollama benchmark run (its TRAINING pipeline correctly used `enable_thinking=False` via HF's
+    own `apply_chat_template`, unaffected — see the training entry below — this is specifically
+    about the live benchmark's inference path) were almost certainly running with large amounts of
+    uncontrolled reasoning text bleeding directly into every tool-call argument and piece of written
+    output across their entire benchmarked runs, this whole time. This is a real, previously-unknown
+    contributing factor to their disqualifying failure modes (thin_coverage stalls, narrated-instead-
+    of-written reports, canned non-responses on the corrective nudge) — plausibly consistent with
+    "a small model getting confused/derailed by its own unmanaged internal monologue," layered on
+    top of (not a replacement for) the capacity-floor literature evidence already cited in README.md.
+  - **Not yet re-tested and not re-scored**: no Qwen3 candidate has been re-run with genuine nothink
+    mode (would need the same vLLM/SGLang fix class used for MiniCPM5-1B — `~/.venvs/vllm` is
+    already available for this). Existing scores are left standing as the best evidence so far, not
+    silently trusted as clean; README.md's model table now flags every affected row with a `†` and
+    an explanation rather than treating the old numbers as unaffected. Whether re-testing is worth
+    the time (these are all still sub-14B, below the literature's own capacity floor regardless) is
+    an open call, not yet made.
+  - **Confirmed via vLLM, 2026-07-21: the bug is Ollama-specific, not a Qwen3 model limitation.**
+    Unloaded `gpt-oss` from Ollama first (`ollama stop`, freed ~14.3GB, matching the earlier lesson
+    about not squeezing vLLM into leftover VRAM), launched `vllm serve Qwen/Qwen3-4B --tool-call-
+    parser hermes --enforce-eager --gpu-memory-utilization 0.85 --max-model-len 16384` (first attempt
+    at `0.55` under-budgeted the KV cache and failed cleanly with a clear `ValueError`, not a crash —
+    raised to `0.85`, succeeded). Direct `curl` against the real vLLM server (genuine jinja
+    chat-template evaluation, same class of fix as MiniCPM5-1B):
+    - `chat_template_kwargs.enable_thinking: false` → clean `"4."`, `reasoning: null`, 3 completion
+      tokens, zero `<think>` content anywhere.
+    - Same request with `enable_thinking: true` → full `<think>...reasoning...</think>` block
+      inline in `content` (Qwen3's own convention keeps it in `content`, unlike gpt-oss's separate
+      channel — confirmed as the model's real, correct behavior, not a bug).
+    - A real `tools=` request with `enable_thinking: false` → clean OpenAI-shaped `tool_calls`
+      (`web_search({"query": "population of Tokyo"})`), no reasoning leakage, no stray text.
+    **Conclusion**: Qwen3-4B's nothink mode is real and works correctly end-to-end once served by
+    something that actually evaluates its chat template — Ollama's failure to do so (confirmed
+    earlier in this same entry) is entirely Ollama's own gap, not evidence against the model. This
+    makes a genuine, clean re-benchmark of the Qwen3 family (via vLLM, same infra now proven twice)
+    a real, low-friction option if it's ever worth revisiting — test server stopped after
+    verification, nothing left running.
 
 - **MiniCPM4-MCP evaluated as a specialist-role candidate, 2026-07-20 — real infrastructure built
   and kept, model itself not yet viable.** User surfaced `github.com/openbmb/minicpm`; downloaded
