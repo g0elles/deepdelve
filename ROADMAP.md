@@ -1070,6 +1070,18 @@ Status as of 2026-07-20.
 
 ## Planned (not started)
 
+- **`run_cli`/`BasicTuiAgent` run-lifecycle duplication in `src/engine/tui.py` — still open,
+  reconfirmed by the whole-repo Ponytail audit 2026-07-21, tracked under a new name to avoid
+  confusion with the OLDER "Phase 6 / B4" item below (a narrower scope, already DONE).** The Phase
+  6/B4 entry unified only `iter_agent_stream`/`classify_malformed_retry` (2026-07-14). The larger
+  duplication CLAUDE.md's TUI/CLI-parity rule actually warns about — `BasicTuiAgent` (line ~640)
+  and `run_cli` (line ~1935), ~1300 lines apart in this 2513-line file, both re-implementing the
+  same completion-check loop / quota handling / artifact-writing steps — was never covered by that
+  fix and remains the single largest architectural duplication in the tracked codebase per the
+  audit. **Deferred intentionally**: user wants all codebase-improvement work held until the
+  current vLLM model bake-off is fully complete (session_status/CURRENT.md, 2026-07-21). Replacement
+  when picked up: extract the shared run-lifecycle steps into one function both entry points call.
+
 - **Re-run the full 11-candidate local-model bake-off via vLLM instead of Ollama — planned
   2026-07-21, not started.** Two independent, confirmed Ollama-serving-layer bugs (the think-mode
   passthrough failure documented in this file's Qwen3-family entry above, and the pre-existing

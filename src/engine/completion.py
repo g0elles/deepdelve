@@ -731,6 +731,29 @@ def _ensure_writer_quota_headroom(pool: dict) -> None:
         entry["limit"] += (needed - headroom)
 
 
+def _ensure_reader_quota_headroom(pool: dict) -> None:
+    """Mirror of _ensure_writer_quota_headroom, for `read_workspace_file` -- found live 2026-07-20,
+    fixed 2026-07-21. A Write->Review->Fix cycle needs PeerReviewer to actually open the artifact
+    (its 'REVIEW: CLEAN' is only trusted if the quota shows a real read happened -- see
+    _dispatch_writer_review_fix's reads_before/reads_after gate above) plus the Fix pass often
+    re-reading source content, against the SAME shared cumulative pool every role's
+    read_workspace_file calls draw from. Unlike write_workspace_file, read_workspace_file has no
+    entry in settings.retry_quota_topup by default, so nothing replenished it between remediation
+    cycles at all. Confirmed live: 3 remediation cycles in one run (routing-classifier re-test,
+    2026-07-20) exhausted a 30-call pool, and the final BuilderFix pass self-reported being unable
+    to re-read its source ('Due to workspace tool quota limits...') and silently dropped an entire
+    correctly-researched section rather than erroring loudly. Tops up ONLY the headroom this cycle
+    actually needs, called fresh before EVERY cycle -- protects each one independently regardless
+    of how many prior cycles already ran, same shape as the write-side helper."""
+    entry = pool.get("read_workspace_file")
+    if entry is None:
+        return
+    needed = 2  # PeerReviewer's mandatory read + one possible Fix-pass re-read
+    headroom = entry["limit"] - entry["used"]
+    if headroom < needed:
+        entry["limit"] += (needed - headroom)
+
+
 async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artifact: str,
                                        write_instructions: str, attempt: int, notify) -> None:
     """Write -> Review -> Fix, all fresh-context sub-agent dispatches, none of which touch the
@@ -1173,6 +1196,7 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                         notify(f"**System ({attempt + 1}/{max_attempts}):** {verdict.warning} (dispatching Builder to rewrite, not the Planner)")
                         if pool is not None:
                             _ensure_writer_quota_headroom(pool)
+                            _ensure_reader_quota_headroom(pool)
                         try:
                             builder_instructions = (
                                 f"Rewrite '{req_artifact}' from findings.md, fixing this specific problem:\n"
@@ -1192,6 +1216,7 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                         notify(f"**System ({attempt + 1}/{max_attempts}):** {verdict.warning} (dispatching FindingsWriter to rewrite, not the Planner)")
                         if pool is not None:
                             _ensure_writer_quota_headroom(pool)
+                            _ensure_reader_quota_headroom(pool)
                         try:
                             # Deliberately NOT verdict.inject — that text is worded for the PLANNER
                             # fallback path (mentions delegate_tasks, "you have no write_workspace_file
