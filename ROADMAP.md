@@ -1081,10 +1081,40 @@ Status as of 2026-07-20.
   Bonsai-8B's quant type is unrecognized by vLLM, the GRPO fine-tune's merge checkpoint is gone from
   disk, `qwen3.6`/`Gemma 4 12B`'s HF availability is unconfirmed) written to
   `~/.claude/plans/moonlit-plotting-simon.md`. Scoped explicitly as a multi-session effort, not a
-  single sitting. **Next session should start with the two pre-flight checks the plan calls out**:
-  spike `bitsandbytes` on ROCm with one small model before committing 8 of the 11 candidates to that
-  quantization path, and confirm `Gemma 4 12B`/`qwen3.6`'s HF repo IDs actually exist before spending
-  GPU time on them.
+  single sitting.
+  - **Both pre-flight checks DONE, 2026-07-21 — cleared, execution can proceed.**
+    - **HF repo IDs confirmed to exist**: `google/gemma-4-12B-it` (official Google org, not the
+      community `SetneufPT` GGUF reupload originally used) and `Qwen/Qwen3.6-35B-A3B` — plus a
+      bonus find, a pre-quantized `Qwen/Qwen3.6-35B-A3B-FP8` checkpoint exists too, which helps the
+      MoE-fits-at-all question the plan flagged as unconfirmed.
+    - **`bitsandbytes` spiked on ROCm, real functional pass, not just import success.** Installed
+      cleanly (`pip install bitsandbytes` — wasn't present before). Checked bitsandbytes' own
+      support matrix first (not assumed): this GPU's `gfx1200` target (confirmed via `rocminfo`,
+      RX 9060 XT) IS on their officially-supported RDNA list. Ran a real discriminating test on
+      `mistralai/Mistral-7B-Instruct-v0.3` (`--quantization bitsandbytes --load-format
+      bitsandbytes`): failed to fit in a deliberately tight 0.3 `gpu_memory_utilization` budget
+      (~5.1GB) with "no available memory for cache blocks," then succeeded cleanly at 0.45 (~7.7GB
+      total, weights+KV). Since the real bf16 checkpoint is 13.5GB, fitting inside 7.7GB total is
+      only possible if the weights are genuinely quantized to roughly 4-5GB, not silently loaded at
+      full precision — confirmed real, working 4-bit quantization on this hardware, not a silent
+      no-op. Correct generation output ("Paris") and a real structured `tool_calls` response (via
+      `mistral_tool_parser.py`) both verified. **The 8-candidate quantization bucket in the plan
+      above is now trustworthy to execute.**
+    - **New operational lesson, found mid-spike, applies to EVERY vLLM launch/kill in this
+      project from now on**: killing an already-running (not self-crashed) `vllm serve` process
+      with `pkill -9`/`kill -9` reliably orphans its `VLLM::EngineCore` child (confirmed via
+      `ps -ef --forest`: EngineCore is a real child of the APIServer process, spawned via Python
+      `multiprocessing` with no death-signal hookup to its parent) — SIGKILL can't be trapped, so
+      vLLM's own shutdown code never runs to tear down the child, and it keeps holding VRAM
+      indefinitely. This explains every "stale EngineCore still holding Xgb" gotcha hit repeatedly
+      this session (MiniCPM5-1B twice, MiniCPM3-4B, this spike's first kill attempt). **Fix: use
+      plain SIGTERM first** (`pkill -f "vllm serve ..."`, no `-9`) and give it a few seconds — this
+      lets vLLM's own cleanup path run, confirmed via a clean SIGTERM kill on this exact spike's
+      running server leaving zero orphan afterward. Only escalate to `-9` on whatever's left if
+      `rocm-smi --showpids` still shows something after a graceful SIGTERM attempt.
+  - **Next session/execution starting point**: proceed straight to the plan's per-candidate
+    procedure, in its documented priority order (`mistral-nemo:12b` and `llama3-groq-tool-use:8b`
+    first — highest information value, directly implicated in the confirmed `#6155` Ollama bug).
 
 - **MiniCPM5-1B evaluated as both a paired specialist AND a full single-model replacement,
   2026-07-20/21 — DISQUALIFIED in both forms, fully closed, see the single-model entry near the
@@ -1281,15 +1311,29 @@ Status as of 2026-07-20.
       operating mode confirmed via raw API call before scoring (point 1); MiniCPM5-1B was the only
       variable in the entire pipeline, nothing paired or swapped (point 2, the exact gap the two
       earlier verdicts had); backend/version stated (vLLM 0.25.1, ROCm, ~/.venvs/vllm) (point 3).
-      A second corroborating run was not executed given how early and total the failure was (dead
-      by turn ~20 of a 30-call quota, zero real work of any kind produced) — the failure is a
-      complete inability to reach the Planner's first required tool call, not a borderline or
-      retry-sensitive result, so a second run is unlikely to change the disqualification (point 4
-      flagged as single-run, per the standard, rather than silently treated as fully corroborated).
-      **Final verdict**: MiniCPM5-1B is disqualified as a DeepDelve model candidate in BOTH forms
-      now tested — paired specialist (confounded, not re-litigated per the user's own decision) and
-      full single-model replacement (clean, decisive, this entry). No further MiniCPM5-1B testing
-      is planned; nothing about this model's evaluation remains open.
+      A second corroborating run was not initially executed given how early and total the failure
+      was (dead by turn ~20 of a 30-call quota, zero real work of any kind produced).
+      **Point 4 corroborated with a real second run, same day**: after this session separately
+      found and fixed a real process-hygiene bug (killing an already-running `vllm serve` with
+      `-9` orphans its `VLLM::EngineCore` child, since SIGKILL can't be trapped — see the
+      "Heterogeneous role tiering"/vLLM re-test entry above), the user asked whether that finding
+      could have contaminated THIS verdict's VRAM/context state. Traced the actual timeline: the
+      one stale-process contamination hit during this evaluation happened BEFORE the scored run
+      (an 8.1GB orphan from a failed 16384-ctx attempt, found and killed before the successful
+      131072-ctx relaunch that the benchmark actually ran against) — the scored run itself used a
+      clean, correctly-provisioned, freshly-confirmed server throughout, so the original verdict was
+      never actually contaminated. Re-ran anyway as a precaution, from a freshly-clean GPU state
+      (`rocm-smi --showpids` confirmed zero KFD processes before relaunch), same full 131072
+      context, same nothink-mode curl confirmation. **Result: reproduced the identical core
+      failure** — 63 events this time (`list_workspace_files` x11, `think_tool` x10, spread across
+      3 completion-check attempts instead of 1), but again ZERO `delegate_tasks` calls across the
+      entire run, `Report: NOT WRITTEN`. Point 4 (discard needs >1 run) is now genuinely satisfied,
+      not just argued around.
+      **Final verdict, now doubly corroborated**: MiniCPM5-1B is disqualified as a DeepDelve model
+      candidate in BOTH forms tested — paired specialist (confounded, not re-litigated per the
+      user's own decision) and full single-model replacement (clean, decisive, reproduced on an
+      independent run). No further MiniCPM5-1B testing is planned; nothing about this model's
+      evaluation remains open.
   - **Cleanup done, 2026-07-21**: `api.openai_model` reverted to `deepdelve-gpt-oss:latest`,
     `settings.specialist_model`/`settings.specialist_base_url` removed from `~/.deepdelve/
     config.yaml` (confirmed `_build_client`'s `.get(...)` fallback in `orchestrator.py` handles
