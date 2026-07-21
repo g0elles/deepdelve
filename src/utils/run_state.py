@@ -6,6 +6,8 @@ import threading
 import time
 from typing import Optional
 
+import config
+
 # -------------------------------------------------------------
 # Structural run-state tracking (engine-level, not agent-facing).
 #
@@ -33,6 +35,24 @@ fetched_urls_ctx = contextvars.ContextVar('fetched_urls', default=None)
 # start of _run_single_task gives each task (each a separate asyncio Task, so each gets its own
 # copied context) a genuinely independent list to append to — no shared-list race.
 task_fetched_urls_ctx = contextvars.ContextVar('task_fetched_urls_ctx', default=None)
+
+# Stable per-dispatch identity for the quota ring-fence (tools/core.py::check_quota, 2026-07-19 QA
+# audit fix). ROADMAP's tracked open angle (a): the ring-fence originally rescued only the FIRST
+# task per tool/run to hit the wall while showing real progress (a single `_rescued` bool on the
+# shared quota entry) — a second/third task that also genuinely fetched something real before
+# being redispatched got no rescue at all, the same shared-pool starvation bug angle (a)/(c) never
+# closed. A per-task rescue needs a way to identify "this task" that survives across the awaits
+# inside one _run_single_task call without colliding with a DIFFERENT task — id() of a
+# contextvar's value was considered and rejected (this project's own RunState.attempt docstring
+# already flags id() reuse after garbage collection as a real risk elsewhere); an incrementing
+# counter set once per dispatch is unambiguous and cheap.
+task_id_ctx = contextvars.ContextVar('task_id_ctx', default=None)
+_next_task_id_counter = [0]
+
+
+def _next_task_id() -> int:
+    _next_task_id_counter[0] += 1
+    return _next_task_id_counter[0]
 
 # Exposes the current run's RunState to orchestrator.py's _run_single_task, which lives in a
 # different module and previously had no way to record specialist findings into the structured
@@ -124,6 +144,11 @@ class RunState:
         self.data = {
             "query": None,
             "plan": None,
+            # Which model actually produced this run's data (2026-07-20, RAG findings cache) —
+            # previously unrecorded anywhere; needed for transparency/debugging of cache entries
+            # and read by eval/evaluate.py's per-run cache-disable safety net. Not load-bearing for
+            # the cache's own correctness (see src/utils/rag_cache.py's module docstring for why).
+            "model": config.cfg.get("api", {}).get("openai_model", ""),
             "findings": [],
             "fetched_urls": [],
             "completion_check_attempts": [],
@@ -135,6 +160,13 @@ class RunState:
             "tool_error_count": 0,
             "tool_error_samples": [],
             "subagent_invocations": {},
+            # Engine-driven iterative deepening (2026-07-19, ROADMAP item 10): how many deepening
+            # rounds this run has already dispatched (bounded by settings.max_deepening_rounds),
+            # and which real follow_up_directions strings have already been turned into a
+            # dispatched task -- prevents completion.py::_dispatch_deepening_round from
+            # redispatching the same direction on every subsequent retry attempt.
+            "deepening_round": 0,
+            "consumed_directions": [],
         }
 
     def set_query(self, query: str) -> None:
@@ -144,15 +176,25 @@ class RunState:
         self.data["plan"] = plan
 
     def add_finding(self, source_url: str, summary: str, task_name: Optional[str] = None,
-                     depth: Optional[int] = None) -> None:
+                     depth: Optional[int] = None, follow_up_directions: Optional[list] = None,
+                     agent_id: Optional[str] = None) -> None:
         # task_name/depth (ROADMAP Phase 5, "Coverage accounting") are the anchor coverage() below
         # groups by -- depth==1 means a top-level task the Planner itself dispatched via
         # delegate_tasks, depth>1 a nested Analyzer-tier call one of THOSE tasks made in turn.
         # Optional (default None) so any other/future caller of add_finding that doesn't have this
         # context handy still works unchanged.
+        #
+        # follow_up_directions/agent_id (2026-07-19, engine-driven iterative deepening, ROADMAP
+        # item 10): the real "FOLLOW-UP DIRECTIONS:" bullets a Searcher's own summary suggested
+        # (see orchestrator.py's _extract_follow_up_directions), and which specialist produced this
+        # finding -- both consumed by completion.py's _dispatch_deepening_round to route a derived
+        # follow-up task to the same specialist type. Additive/optional: every existing consumer of
+        # RunState.data["findings"] reads via .get(), so an older-shaped entry (or one from a
+        # non-Searcher dispatch that never set these) stays fully compatible.
         self.data["findings"].append({
             "source_url": source_url, "summary": summary, "timestamp": time.time(),
             "task_name": task_name, "depth": depth,
+            "follow_up_directions": follow_up_directions or [], "agent_id": agent_id,
         })
 
     def coverage(self) -> dict:

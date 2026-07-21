@@ -12,6 +12,7 @@ from tools.web import fetch_url_to_workspace, web_search, verify_url_live
 from tools.todos import write_todos, read_todos
 from tools.meta import think_tool
 from tools.data import extract_structured_data
+from tools.rag import search_verified_findings
 
 # -------------------------------------------------------------
 # [!CAUTION] RULES FOR LLM CODING ASSISTANTS EDITING THIS:
@@ -51,6 +52,7 @@ __all__ = [
     "think_tool",
     "verify_url_live",
     "extract_structured_data",
+    "search_verified_findings",
     # TUI helpers (not agent tools)
     "get_workspace_files",
     "get_workspace_file_content",

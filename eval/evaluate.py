@@ -137,6 +137,15 @@ def write_eval_config(base_config_path: str | None, project_root: str, tmp_dir: 
     # (thinking mode adds tokens and slows eval without improving scores)
     cfg["settings"].setdefault("enable_thinking", False)
 
+    # Belt-and-suspenders (2026-07-20, RAG findings cache): force the cache OFF for every eval
+    # subprocess regardless of the base config. The cache's own design (atomic findings, not whole
+    # answers) should already make cross-model contamination impossible by construction — see
+    # src/utils/rag_cache.py's docstring — but the deleted knowledge_cache (929b987) taught this
+    # project the hard way that a shared cache during comparative model benchmarking is not a risk
+    # worth re-testing live; disable it here unconditionally instead.
+    cfg["settings"].setdefault("rag_cache", {})
+    cfg["settings"]["rag_cache"]["enabled"] = False
+
     # Permissions: auto-approve everything so the harness never blocks
     cfg["settings"].setdefault("permissions", {})
     for perm_key in list(cfg["settings"]["permissions"].keys()):

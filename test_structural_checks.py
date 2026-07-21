@@ -6,7 +6,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 
-from engine.orchestrator import _extract_excluded_topics, _lacks_concrete_subject
+from engine.orchestrator import _extract_excluded_topics, _lacks_concrete_subject, _extract_follow_up_directions
 from utils.grounding import find_non_url_citations, fully_ungrounded, partially_ungrounded, find_uncited_claim_lines, extract_cited_urls
 from utils.run_state import record_fetched_url, reset_fetched_urls
 
@@ -29,6 +29,25 @@ def main():
     assert not _lacks_concrete_subject("Find studies about coffee and how it affects sleep in Colombia.")
     # Long instructions are never flagged, whatever pronouns they use.
     assert not _lacks_concrete_subject("evaluate it against " + "criteria " * 30)
+
+    # --- FOLLOW-UP DIRECTIONS extraction (2026-07-19, engine-driven iterative deepening,
+    # ROADMAP item 10) — matches WEB_SEARCHER_INSTRUCTIONS/ACADEMIC_SEARCHER_INSTRUCTIONS'
+    # mandated trailing section format. ---
+    summary_with_directions = (
+        "- **[Rust 1.97](https://example.com/rust)**: current stable release.\n\n"
+        "FOLLOW-UP DIRECTIONS:\n"
+        "- Chase the async runtime RFC mentioned but not fetched.\n"
+        "- Corroborate the release date against the official blog.\n"
+    )
+    directions = _extract_follow_up_directions(summary_with_directions)
+    assert directions == [
+        "Chase the async runtime RFC mentioned but not fetched.",
+        "Corroborate the release date against the official blog.",
+    ], directions
+    assert _extract_follow_up_directions("no such section here") == []
+    assert _extract_follow_up_directions("") == []
+    # Case-insensitive header, per re.IGNORECASE — a model that varies casing must still be caught.
+    assert _extract_follow_up_directions("stuff\nfollow-up directions:\n- one lead") == ["one lead"]
 
     # --- findings.md wholesale-fabrication gate ---
     reset_fetched_urls()
@@ -152,6 +171,57 @@ def main():
         assert q_ctx.get()["web_search"]["used"] == 0
 
     contextvars.copy_context().run(_refund_scenario)
+
+    # --- quota ring-fence, per-task rescue (2026-07-19 QA audit, ROADMAP's tracked open angle
+    # (a): a shared cumulative pool can starve a task that already showed real progress. The
+    # original fix only rescued the FIRST task per tool/run to hit the wall (a single `_rescued`
+    # bool on the shared entry) -- a second/third task with its own real progress got no rescue at
+    # all. Now tracked per-task via task_id_ctx, so every distinct task showing real progress gets
+    # exactly one rescue, and the SAME task hitting the wall twice does not get rescued twice. ---
+    def _quota_ring_fence_scenario():
+        from tools.core import tool_quotas_ctx as q_ctx, check_quota
+        from utils.run_state import task_fetched_urls_ctx, task_id_ctx
+
+        q_ctx.set({"web_search": {"used": 2, "limit": 2}})
+
+        # Task A: real progress (a non-empty task_fetched_urls_ctx) -> rescued once, limit grows
+        # by 2 (used 2 -> 3, limit 2 -> 4), giving one genuine extra call of headroom.
+        task_fetched_urls_ctx.set([{"url": "https://a.example.com"}])
+        task_id_ctx.set(101)
+        assert check_quota("web_search") is None, "task A's first over-quota call must be rescued"
+        assert q_ctx.get()["web_search"]["limit"] == 4
+        assert q_ctx.get()["web_search"]["used"] == 3
+
+        # Consume the one extra unit the rescue actually granted (used 3 -> 4, at the new limit).
+        assert check_quota("web_search") is None, "the rescued headroom unit must still work normally"
+        assert q_ctx.get()["web_search"]["used"] == 4
+
+        # Task A again, now genuinely back over the (already-rescued) limit: same task_id, already
+        # rescued once -> must NOT be rescued a second time.
+        err = check_quota("web_search")
+        assert err and "Quota reached" in err, (
+            "the SAME task must not be rescued twice", err)
+
+        # Task B: a DIFFERENT task, also showing real progress -> must get its OWN rescue, the
+        # exact fairness gap the single-bool version had (only the first task/run ever rescued).
+        q_ctx.set({"web_search": {"used": 4, "limit": 4}})
+        task_fetched_urls_ctx.set([{"url": "https://b.example.com"}])
+        task_id_ctx.set(102)
+        assert check_quota("web_search") is None, (
+            "a SECOND task with its own real progress must also get rescued -- this is the "
+            "exact per-task fairness fix, not a repeat of task A's single rescue")
+        assert q_ctx.get()["web_search"]["limit"] == 6
+
+        # Task C: over quota with NO real progress (empty task_fetched_urls_ctx) -> never rescued,
+        # ring-fence must stay bounded to genuine in-progress work only.
+        q_ctx.set({"web_search": {"used": 2, "limit": 2}})
+        task_fetched_urls_ctx.set([])
+        task_id_ctx.set(103)
+        err = check_quota("web_search")
+        assert err and "Quota reached" in err, (
+            "a task with no real progress must never be rescued", err)
+
+    contextvars.copy_context().run(_quota_ring_fence_scenario)
 
     # --- malformed-tool-call recovery predicate (live case: gpt-oss bad escape -> Ollama 500) ---
     from engine.orchestrator import malformed_tool_call_nudge
@@ -1207,6 +1277,221 @@ def main():
                 _config.cfg["settings"]["workspace"] = _orig_ws5
 
     contextvars.copy_context().run(_missing_artifact_escalation_scenario)
+
+    # --- Generalized escalation guard (2026-07-19 QA audit): the early-cutoff threshold used to
+    # be hardcoded to problem == "missing_artifact" only. Live-confirmed gap: thin_coverage has no
+    # guard at all and burned a full 8-attempt budget on an identical repeated failure. The guard
+    # now applies to every problem except the deliberately-excluded missing_findings (see its own
+    # scenario above). Reuses scenario (a)'s 1/3-covered fixture from _thin_coverage_wiring_scenario
+    # to drive 3 consecutive thin_coverage occurrences. ---
+    def _thin_coverage_escalation_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        from tools.core import tool_quotas_ctx as q_ctx
+        _orig_ws11 = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            _IN_MEMORY_FS.clear()
+            reset_fetched_urls()
+            q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5}})
+
+            def _thin_run_state(tmpdir):
+                rs = RunState(tmpdir)
+                rs.add_finding("https://a.example.co/x", "summary", task_name="Background", depth=1)
+                rs.add_finding("Comparison A", "found nothing usable", task_name="Comparison A", depth=1)
+                rs.add_finding("Comparison B", "found nothing usable", task_name="Comparison B", depth=1)
+                return rs
+
+            # 2nd consecutive occurrence: still under threshold (3), must still retry.
+            with tempfile.TemporaryDirectory() as tmpdir9:
+                rs = _thin_run_state(tmpdir9)
+                rs.data["completion_check_attempts"] = [
+                    {"attempt": 0, "problem": "thin_coverage"},
+                ]
+                run_state_ctx.set(rs)
+                msgs = []
+                should_retry, _ = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append))
+                assert should_retry, "2nd consecutive thin_coverage must still retry"
+
+            # 3rd consecutive occurrence: the generalized guard must now force the final-verdict
+            # path, same as missing_artifact's 3rd occurrence above.
+            with tempfile.TemporaryDirectory() as tmpdir10:
+                rs = _thin_run_state(tmpdir10)
+                rs.data["completion_check_attempts"] = [
+                    {"attempt": 0, "problem": "thin_coverage"},
+                    {"attempt": 1, "problem": "thin_coverage"},
+                ]
+                run_state_ctx.set(rs)
+                msgs = []
+                should_retry, _ = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append))
+                assert not should_retry, (
+                    "3rd consecutive thin_coverage must now escalate straight to the final "
+                    "verdict -- the generalized guard, not just missing_artifact-specific", msgs)
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            if _orig_ws11 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws11
+
+    contextvars.copy_context().run(_thin_coverage_escalation_scenario)
+
+    # --- check_thin_coverage against REAL captured data, not just hand-written fixtures (2026-07-19
+    # QA audit finding: all 16 completion checks were tested with synthetic fixtures only, even
+    # though matching real data already exists unused in finetune/data/thin_coverage.jsonl and the
+    # research_output/ run directories it was extracted from). Loads the actual persisted
+    # _run_state.json from a real run that genuinely tripped thin_coverage at attempt 0, replays
+    # only the findings that existed BEFORE that attempt's own timestamp (the file's final state
+    # has more findings added afterward), and confirms check_thin_coverage reproduces the exact
+    # 1/3 coverage ratio that was actually recorded live at the time. ---
+    def _real_thin_coverage_data_scenario():
+        import json as _json
+        from utils.run_state import RunState
+        from engine.completion import Ctx, check_thin_coverage
+        run_dir = os.path.join(
+            os.path.dirname(__file__), "research_output",
+            "compare_the_current_experimental_status_of_two_sea_20260718_171236")
+        state_path = os.path.join(run_dir, "_run_state.json")
+        if not os.path.exists(state_path):
+            # Real run directory not present in this checkout -- skip rather than silently
+            # falling back to a synthetic fixture.
+            return
+        with open(state_path, encoding="utf-8") as f:
+            real_data = _json.load(f)
+        attempt0 = next(a for a in real_data["completion_check_attempts"] if a["attempt"] == 0)
+        assert attempt0["problem"] == "thin_coverage", attempt0
+        cutoff = attempt0["timestamp"]
+        rs = RunState(run_dir)
+        rs.data["findings"] = [f for f in real_data["findings"] if f.get("timestamp", 0) < cutoff]
+        rs.data["query"] = real_data["query"]
+        ctx = Ctx(req_artifact="final_report.md", attempt=0, max_attempts=8, delegated=True,
+                  files=[], content=None, quotas=None, run_state=rs)
+        verdict = check_thin_coverage(ctx)
+        assert verdict is not None and verdict.problem == "thin_coverage", (
+            "replaying the real pre-attempt-0 findings must reproduce the same thin_coverage "
+            "verdict actually recorded live", verdict)
+        cov = rs.coverage()
+        assert "1/3" in attempt0["detail"], attempt0["detail"]
+        assert cov["total"] == 3 and cov["covered"] == 1, (
+            "replaying the real findings must reproduce the exact 1/3 coverage ratio actually "
+            "recorded live in this run's own _run_state.json", cov)
+
+    contextvars.copy_context().run(_real_thin_coverage_data_scenario)
+
+    # --- Engine-driven iterative deepening (2026-07-19, ROADMAP item 10): when thin_coverage fires
+    # AND a covered task's real 'FOLLOW-UP DIRECTIONS:' section named a real lead, run_completion_check
+    # must dispatch it directly via dispatch_task (bypassing the Planner, same mechanism as Builder/
+    # FindingsWriter) instead of injecting the classic Planner nudge -- and fall back to that classic
+    # nudge unchanged when there's nothing real to act on, or the round budget is spent. ---
+    def _deepening_round_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        from tools.core import tool_quotas_ctx as q_ctx
+        from unittest.mock import AsyncMock
+        from engine.completion import _select_deepening_tasks
+
+        _orig_ws13 = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
+        saved_fs = dict(_IN_MEMORY_FS)
+
+        def _thin_run_state_with_direction(tmpdir):
+            rs = RunState(tmpdir)
+            rs.add_finding("https://real.example.com/x", "real covered summary", task_name="Task A",
+                            depth=1, follow_up_directions=["Chase the real lead X"], agent_id="AcademicSearcher")
+            rs.add_finding("Task B", "no source", task_name="Task B", depth=1)
+            rs.add_finding("Task C", "no source", task_name="Task C", depth=1)
+            return rs
+
+        try:
+            _IN_MEMORY_FS.clear()
+            reset_fetched_urls()
+            q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5}})
+
+            # (a) direct unit check of the selection logic: only the covered task's direction is a
+            # candidate, routed to its OWN recorded agent_id (not a hardcoded default).
+            with tempfile.TemporaryDirectory() as tmpdir_sel:
+                rs = _thin_run_state_with_direction(tmpdir_sel)
+                selected = _select_deepening_tasks(rs)
+                assert len(selected) == 1, selected
+                assert selected[0]["instructions"] == "Chase the real lead X", selected
+                assert selected[0]["agent_id"] == "AcademicSearcher", selected
+
+            # (b) real directions exist -> run_completion_check dispatches the deepening round
+            # directly (never touches the Planner's current_input) instead of injecting the classic
+            # nudge, and increments deepening_round on RunState.
+            with tempfile.TemporaryDirectory() as tmpdir_a:
+                rs = _thin_run_state_with_direction(tmpdir_a)
+                run_state_ctx.set(rs)
+                msgs = []
+                dispatch = AsyncMock(return_value="## Result for Follow-up\nfound more\n---")
+                orig_input = "q"
+                should_retry, new_input = _asyncio.run(run_completion_check(
+                    query="q", current_input=orig_input, run_state=rs, notify=msgs.append,
+                    dispatch_task=dispatch))
+                assert should_retry, "a dispatched deepening round must still retry (more research just happened)"
+                # Unlike Builder/FindingsWriter's dispatch (which resolves the SPECIFIC verdict it
+                # was fixing, guaranteeing current_input stays unchanged), a deepening round
+                # dispatches MORE research -- whether current_input changes afterward depends on
+                # whether that new research closes the coverage gap on the next internal check, not
+                # a fixed invariant. What matters here is that the FIRST attempt bypassed the
+                # Planner entirely (dispatch_task called directly, not an injected message).
+                assert dispatch.call_count == 1, dispatch.call_args_list
+                assert dispatch.call_args_list[0].args == ("Follow-up: Chase the real lead X", "Chase the real lead X", "AcademicSearcher")
+                assert rs.data["deepening_round"] == 1, rs.data
+                assert "Chase the real lead X" in rs.data["consumed_directions"], rs.data
+                assert "deepening" in msgs[0].lower(), (
+                    "the round must be announced as the FIRST message, before any classic nudge "
+                    "text a later internal iteration might add", msgs)
+
+            # (c) no real directions on record -> falls through to the classic thin_coverage nudge,
+            # unchanged (should_retry True, current_input GROWN via the classic injected-message path).
+            with tempfile.TemporaryDirectory() as tmpdir_b:
+                rs = RunState(tmpdir_b)
+                rs.add_finding("https://real.example.com/x", "real covered summary, no directions",
+                                task_name="Task A", depth=1)
+                rs.add_finding("Task B", "no source", task_name="Task B", depth=1)
+                rs.add_finding("Task C", "no source", task_name="Task C", depth=1)
+                run_state_ctx.set(rs)
+                msgs = []
+                dispatch = AsyncMock()
+                should_retry, new_input = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append,
+                    dispatch_task=dispatch))
+                assert should_retry
+                assert dispatch.call_count == 0, (
+                    "no real directions exist -- dispatch_task must never be called", dispatch.call_args_list)
+                assert isinstance(new_input, list), (
+                    "must fall back to the classic injected-message path", new_input)
+                assert rs.data.get("deepening_round", 0) == 0, rs.data
+
+            # (d) round budget already exhausted -> falls through to the classic nudge even though
+            # real directions exist, same as (c).
+            with tempfile.TemporaryDirectory() as tmpdir_c:
+                rs = _thin_run_state_with_direction(tmpdir_c)
+                rs.data["deepening_round"] = 1  # == default max_deepening_rounds
+                run_state_ctx.set(rs)
+                msgs = []
+                dispatch = AsyncMock()
+                should_retry, new_input = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append,
+                    dispatch_task=dispatch))
+                assert should_retry
+                assert dispatch.call_count == 0, (
+                    "round budget already spent -- must not dispatch another round", dispatch.call_args_list)
+                assert isinstance(new_input, list)
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            if _orig_ws13 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws13
+
+    contextvars.copy_context().run(_deepening_round_scenario)
 
     # --- Builder Build->Review->Fix dispatch loop (see engine/completion.py's
     # _dispatch_writer_review_fix / _BUILDER_FIXABLE_PROBLEMS): for artifact-authoring problems,
@@ -2425,34 +2710,42 @@ def main():
     # appearing verbatim in the source -- even though the actual claims (verbatim figures) WERE
     # genuinely present in the fetched source. Root-caused directly against the real failing run's
     # saved report + fetched source (research_output/what_year_was_the_eiffel_tower_completed_
-    # 20260714_215912/), reproduced here as a minimal regression case. ---
+    # 20260714_215912/), reproduced here as a minimal regression case.
+    #
+    # 2026-07-19 QA audit: this scenario used to hand-retype an approximation of the real report/
+    # source pair instead of loading it from disk, even though the real run directory still exists
+    # in-repo -- the exact "fixture encodes the same assumption as the fix, not the real data"
+    # pattern that shipped the 2026-07-19 findings.md bug. Now loads the ACTUAL final_report.md and
+    # ACTUAL fetched source verbatim from that run directory. ---
     def _citation_only_subbullet_scenario():
         from tools.fs import _IN_MEMORY_FS
         _orig_ws12 = _config.cfg.get("settings", {}).get("workspace")
         _config.cfg["settings"]["workspace"] = {"type": "memory"}
         saved_fs = dict(_IN_MEMORY_FS)
+        run_dir = os.path.join(
+            os.path.dirname(__file__),
+            "research_output", "what_year_was_the_eiffel_tower_completed_20260714_215912")
+        report_path = os.path.join(run_dir, "final_report.md")
+        source_path = os.path.join(run_dir, "sources", "toureiffel_paris_history.md")
+        if not (os.path.exists(report_path) and os.path.exists(source_path)):
+            # Real run directory not present in this checkout (e.g. a fresh clone without
+            # research_output/ committed) -- skip rather than silently fall back to a synthetic
+            # fixture, which is exactly the gap this rewrite exists to close.
+            return
         try:
             _IN_MEMORY_FS.clear()
             reset_fetched_urls()
+            with open(report_path, encoding="utf-8") as f:
+                report = f.read()
+            with open(source_path, encoding="utf-8") as f:
+                source_body = f.read()
             record_fetched_url("https://www.toureiffel.paris/en/the-monument/history", filename="sources/tour.md")
             _IN_MEMORY_FS["sources/tour.md"] = (
-                "Source-URL: https://www.toureiffel.paris/en/the-monument/history\n\n"
-                "The first digging work started on the 26th January 1887. On the 31st March 1889, "
-                "the Tower had been finished in record time - 2 years, 2 months and 5 days.\n\n"
-                "The assembly of the supports began on July 1, 1887 and was completed twenty-two "
-                "months later.")
-            report = (
-                "3. **Construction duration** - The total build time was 2 years, 2 months and 5 "
-                "days, spanning from 26 January 1887 to 31 March 1889.\n"
-                "   - Source: [Official Eiffel Tower website](https://www.toureiffel.paris/en/the-monument/history).\n\n"
-                "4. **Assembly of supports claim** - The official website states that the assembly "
-                "of supports began on 1 July 1887 and was completed twenty-two months later.\n"
-                "   - Source: [Official Eiffel Tower website](https://www.toureiffel.paris/en/the-monument/history)."
-            )
+                "Source-URL: https://www.toureiffel.paris/en/the-monument/history\n\n" + source_body)
             assert claim_grounding_problem(report) is None, (
-                "a genuinely-grounded report using a separate '- Source: [Title](url).' sub-bullet "
-                "must not be flagged just because the citation's own descriptive anchor text "
-                "('Official Eiffel Tower') doesn't literally appear in the source")
+                "the REAL final_report.md that live-triggered this bug (2026-07-14) must not be "
+                "flagged against its REAL fetched source, now that the citation-only sub-bullet "
+                "fix is in place")
             # Same fix, same shape, ported to _grounded_claim_pairs -- must not surface the
             # citation-only sub-bullet as a (window, claim, display) pair either.
             from utils.grounding import _grounded_claim_pairs
@@ -2847,6 +3140,178 @@ def main():
             assert "### Source: uncovered_task\n\n\n" in material, material
 
     contextvars.copy_context().run(_findings_filename_scenario)
+
+    # --- _build_findings_source_material must cap total size against context_budget_chars instead
+    # of handing an unbounded string to a fresh dispatch for the model backend to silently truncate
+    # (2026-07-19 QA audit, "real grounded content silently vanishes during synthesis" investigation
+    # -- this was a genuinely unguarded injection point, unlike the Planner's stream and a sub-
+    # agent's own generation, which both already had a context_budget_chars-style guard). Whole
+    # entries only (never truncate one mid-way), earliest-first, and the omitted task names must be
+    # named explicitly so the model can acknowledge the gap instead of silently dropping it. ---
+    def _findings_budget_scenario():
+        from engine.completion import _build_findings_source_material
+        _orig_budget = _config.cfg.get("settings", {}).get("context_budget_chars")
+        try:
+            _config.cfg.setdefault("settings", {})["context_budget_chars"] = 300
+            with tempfile.TemporaryDirectory() as tmpdir:
+                rs = RunState(tmpdir)
+                rs.add_finding("https://a.example.com", "x" * 150, task_name="first_task", depth=1)
+                rs.add_finding("https://b.example.com", "y" * 150, task_name="second_task", depth=1)
+                rs.add_finding("https://c.example.com", "z" * 150, task_name="third_task", depth=1)
+                material = _build_findings_source_material(rs)
+                assert "first_task" not in material or "x" * 150 in material, (
+                    "an entry must never be truncated mid-way -- it's either whole or fully omitted", material)
+                assert "z" * 150 not in material, (
+                    "later entries beyond the budget must be omitted, not silently included anyway", material)
+                assert "omitted" in material.lower(), (
+                    "an omission must be explicitly named to the model, not silent", material)
+                assert "third_task" in material, (
+                    "the omitted task's name must be named so the model can acknowledge the gap", material)
+
+            # context_budget_chars == 0 (off) must disable the cap entirely, same "0 = off"
+            # convention as get_context_budget elsewhere.
+            _config.cfg["settings"]["context_budget_chars"] = 0
+            with tempfile.TemporaryDirectory() as tmpdir2:
+                rs2 = RunState(tmpdir2)
+                rs2.add_finding("https://a.example.com", "x" * 150, task_name="first_task", depth=1)
+                rs2.add_finding("https://b.example.com", "y" * 150, task_name="second_task", depth=1)
+                rs2.add_finding("https://c.example.com", "z" * 150, task_name="third_task", depth=1)
+                material2 = _build_findings_source_material(rs2)
+                assert "z" * 150 in material2, "context_budget_chars=0 must disable the cap entirely"
+        finally:
+            if _orig_budget is None:
+                _config.cfg["settings"].pop("context_budget_chars", None)
+            else:
+                _config.cfg["settings"]["context_budget_chars"] = _orig_budget
+
+    contextvars.copy_context().run(_findings_budget_scenario)
+
+    # --- Non-generative routing classifier for delegate_tasks (RESEARCH.md §6, ROADMAP.md
+    # "Planned", 2026-07-20) — pins _agent_routing_rejection_reason's pure decision logic (the
+    # decided "reject-and-nudge" policy) with a fake prediction, no real classifier artifact or
+    # contextvar/async machinery needed. ---
+    def _agent_routing_rejection_scenario():
+        from engine.orchestrator import _agent_routing_rejection_reason
+
+        caller_roles = frozenset({"WebSearcher", "AcademicSearcher"})
+
+        # 1. No prediction available (classifier disabled, or roster doesn't overlap its known
+        # classes) -> must never reject, regardless of what the declared agent_id looks like.
+        assert _agent_routing_rejection_reason("WebSearcher", caller_roles, None, 0.6) is None
+        assert _agent_routing_rejection_reason("searcher", caller_roles, None, 0.6) is None, (
+            "with no prediction, even an obviously-wrong agent_id must not be rejected here -- "
+            "that's the pre-existing exact-string check in _run_single_task's own job")
+
+        # 2. Declared agent_id isn't one of the CALLER's real roles at all (the exact real
+        # hallucination pattern: "searcher" lowercase, invented role names) -> always rejected,
+        # regardless of confidence, since it can never resolve to a real sub-agent anyway.
+        reason = _agent_routing_rejection_reason("searcher", caller_roles, ("WebSearcher", 0.66), 0.6)
+        assert reason is not None and "not a valid specialist" in reason, reason
+        assert "WebSearcher" in reason and "0.66" in reason, reason
+
+        # 3. Declared agent_id IS a real role for this caller, but the classifier strongly
+        # disagrees (confidence >= min_confidence, different class) -> rejected as "looks wrong",
+        # a different message than the unknown-role case.
+        reason = _agent_routing_rejection_reason(
+            "AcademicSearcher", caller_roles, ("WebSearcher", 0.8), 0.6)
+        assert reason is not None and "looks wrong" in reason, reason
+
+        # 4. Declared agent_id IS a real role and the classifier AGREES -> never rejected (the
+        # common case must be a true no-op).
+        assert _agent_routing_rejection_reason(
+            "WebSearcher", caller_roles, ("WebSearcher", 0.9), 0.6) is None
+
+        # 5. Declared agent_id IS a real role, classifier disagrees but BELOW min_confidence ->
+        # must abstain (same "none apply" pattern ATLAS/AdaMAST uses, RESEARCH.md §1) rather than
+        # force a low-confidence guess into a rejection.
+        assert _agent_routing_rejection_reason(
+            "AcademicSearcher", caller_roles, ("WebSearcher", 0.5), 0.6) is None, (
+            "a low-confidence disagreement must abstain, not reject")
+
+    _agent_routing_rejection_scenario()
+
+    # --- RAG findings cache (ROADMAP.md "Strategic options" item 5, RESEARCH.md §8, 2026-07-20) —
+    # replaces the deleted knowledge_cache/experience_cache (929b987). Two scenarios: the pure
+    # write-gate decision logic (no embeddings/network needed), and the real embedding-based
+    # lookup/save round-trip (real tiny all-MiniLM-L6-v2 embeddings, same approach
+    # agent_routing.py's own self-test uses -- no mock needed, the model is small and local). ---
+    def _rag_cache_write_gate_scenario():
+        from engine.orchestrator import _should_cache_finding
+
+        real_finding = "- **[Rust Releases](https://releases.rs/)**: Rust 1.97.1 is current stable."
+        narration_only = "I'll search for authoritative information about the latest stable version."
+
+        # 1. Disabled -> never cache, regardless of how clean the finding is.
+        assert _should_cache_finding("", [{"url": "https://example.com"}], False, real_finding) is False
+
+        # 2. Enabled, clean (no warnings), real new URL, real markdown-link finding -> cache.
+        assert _should_cache_finding("", [{"url": "https://example.com"}], True, real_finding) is True
+
+        # 3. Enabled, but a verification/relevance warning is present -> never cache, even with a
+        # real new URL. A cache entry must never be less verified than a same-run finding.
+        assert _should_cache_finding(
+            "\n\n[SYSTEM VERIFICATION WARNING: ...]", [{"url": "https://example.com"}], True, real_finding
+        ) is False
+
+        # 4. Enabled, clean, but no real new URL (task-name-only fallback finding) -> never cache,
+        # there's no real source to cite.
+        assert _should_cache_finding("", [], True, real_finding) is False
+
+        # 5. Enabled, clean, real new URL, but the text is pre-delegation NARRATION rather than a
+        # real consolidated finding (no markdown-link citation) -> never cache. Found live 2026-07-20:
+        # a Searcher's own "I'll search for..." narration can carry a real new_urls entry and zero
+        # verification warnings, yet contain no actual finding at all.
+        assert _should_cache_finding("", [{"url": "https://example.com"}], True, narration_only) is False
+
+    _rag_cache_write_gate_scenario()
+
+    def _rag_cache_lookup_scenario():
+        import time as _time
+        import tempfile as _tempfile
+        import config as _config
+        from utils import rag_cache as _rag_cache
+
+        with _tempfile.TemporaryDirectory() as tmp_dir:
+            cache_path = os.path.join(tmp_dir, "rag_cache_test.json")
+            _config.cfg["settings"]["rag_cache"] = {
+                "enabled": True, "path": cache_path, "max_age_days": 7,
+                "min_similarity": 0.75, "top_k": 3,
+            }
+            # Force a clean in-memory state -- this module-level singleton persists across scenario
+            # functions in the same test process, same caution as agent_routing's own self-test.
+            _rag_cache._entries = None
+            _rag_cache._matrix = None
+
+            _rag_cache.save(
+                "current stable version of Rust programming language",
+                "https://releases.rs/", "Rust 1.97.1 is the current stable release.", "test-model",
+            )
+
+            # A near-duplicate query must hit the cached entry above the configured threshold.
+            hits = _rag_cache.lookup("what is the latest stable Rust release", min_similarity=0.5)
+            assert hits, "a semantically similar query must return the cached entry"
+            assert hits[0]["source_url"] == "https://releases.rs/"
+            assert "1.97.1" in hits[0]["summary"]
+
+            # A genuinely unrelated query must NOT match at the configured threshold.
+            no_hits = _rag_cache.lookup(
+                "history of the Roman aqueduct system", min_similarity=0.75
+            )
+            assert no_hits == [], "an unrelated query must not return the Rust finding"
+
+            # A stale entry (older than max_age_days) must be excluded even with a perfect query.
+            _rag_cache._entries[0]["timestamp"] = _time.time() - (8 * 86400)
+            _rag_cache._matrix = None  # force rebuild so the mutated timestamp is picked up
+            stale_hits = _rag_cache.lookup(
+                "current stable version of Rust programming language",
+                min_similarity=0.5, max_age_days=7,
+            )
+            assert stale_hits == [], "an entry older than max_age_days must be excluded"
+
+            _rag_cache._entries = None
+            _rag_cache._matrix = None
+
+    _rag_cache_lookup_scenario()
 
     print("All structural-check assertions passed.")
 

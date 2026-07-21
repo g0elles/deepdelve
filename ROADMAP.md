@@ -1,9 +1,159 @@
 # DeepDelve Roadmap
 
-Status as of 2026-07-18.
+Status as of 2026-07-20.
 
 ## Done
 
+- **Non-generative routing classifier for `delegate_tasks`'s `agent_id` — IMPLEMENTED and
+  live-verified 2026-07-20.** Merged from the SOTA literature review (`RESEARCH.md` §6): small/mid
+  models fail disproportionately at STRUCTURED SERIALIZATION (schema-valid output, wrong content),
+  not semantic understanding, in a way a 6,000-sample SFT run can't fix (constraint-tax papers,
+  arXiv:2606.25605 + arXiv:2605.26128) — confirmed live in this project's own data (~4.9% of real
+  `delegate_tasks` calls used a hallucinated but well-formed `agent_id`). Pulled routing out of free
+  generation into a frozen `all-MiniLM-L6-v2` embedding + `LogisticRegression(class_weight=
+  "balanced")`, decided policy **reject-and-nudge** (not silent override, not advisory-only).
+  - **New: `finetune/extract_agent_routing_dataset.py`.** Real bug caught and fixed while building
+    it: an initial version filtered session-log events to `source == "Agent"` (the Planner's own
+    turn) only, silently missing 100% of `DocumentAnalyzer`/`DataAnalyzer` examples — those only
+    ever appear as targets of a NESTED `delegate_tasks` call made by `WebSearcher`/
+    `AcademicSearcher`'s own dispatch (`source == "SubAgent_<task_name>"`, per `src/app.py`'s
+    `sub_agents=[document_analyzer, data_analyzer]` on both searcher roles), not the Planner
+    directly. Fixed by dropping the source filter entirely. Real extraction, run against
+    101 session logs: **1,096 valid pairs + 57 hallucinated (4.9%)** — matches the literature
+    review's earlier ad hoc count (1,153 total, ~4.9%) almost exactly, now from a reproducible
+    script instead of a one-off pass. After near-duplicate removal: 814 valid pairs, class
+    distribution `DocumentAnalyzer=331, WebSearcher=330, DataAnalyzer=99, AcademicSearcher=54`,
+    stratified 651 train / 163 held-out.
+  - **New: `finetune/train_agent_routing_classifier.py`.** Real held-out per-class results:
+    `DocumentAnalyzer` 0.89 precision / 0.88 recall, `WebSearcher` 0.89/0.85, `DataAnalyzer`
+    0.68/0.65, `AcademicSearcher` 0.44/0.64 (weakest — smallest class, 54 real examples, matches
+    the literature review's own "imbalanced but workable" caveat). Overall accuracy 0.82. **Real
+    regression-check finding**: every `"searcher"` (lowercase) hallucination correctly routes to
+    `WebSearcher` with real confidence (0.44–0.83); `IndustrySearcher`/`BookSearcher`/
+    `BusinessNewsSearcher` correctly route to `AcademicSearcher` (0.62–0.73); all `PeerReviewer`
+    hallucinations get LOW confidence (0.30–0.46, all below the chosen 0.6 threshold) — the
+    classifier correctly abstains on a genuinely out-of-scope role rather than forcing a guess,
+    validating the `min_confidence` design.
+  - **New: `src/utils/agent_routing.py`** — lazy singleton, fails open (mirrors
+    `grounding.py::_get_nli_model`). Real design gap found and fixed before shipping: the
+    classifier's 4 known classes (`KNOWN_AGENT_IDS`) span TWO different delegation levels —
+    Planner→`{WebSearcher,AcademicSearcher,PeerReviewer,Builder,FindingsWriter}` (only 2 of 5 are
+    classifier classes) and Searcher→`{DocumentAnalyzer,DataAnalyzer}` (a disjoint pair) — so
+    `predict_agent_id` takes a `candidate_classes` param, restricting the prediction to the
+    INTERSECTION of the caller's own real roster and the classifier's known classes, never a
+    blind global argmax that could suggest a role the caller doesn't even have available.
+  - **`src/engine/orchestrator.py`**: new pure function `_agent_routing_rejection_reason`
+    (decision logic only, directly testable without the async tool closure) + a new check inside
+    `delegate_tasks`'s per-task validation loop, before the existing `if errors:` gate. Rejects
+    (adds to the same error-accumulation path every other `delegate_tasks` validation already
+    uses) when the declared `agent_id` isn't real for this caller, or the classifier disagrees
+    above `min_confidence` — silently no-ops on the common case (declared role agrees, or
+    classifier abstains).
+  - **Config**: new `settings.agent_routing_classifier` block in `config_template.yaml` AND the
+    live `~/.deepdelve/config.yaml` (per this project's own standing rule), default `enabled:
+    false` — new, not yet exercised against live mixed Planner/Searcher traffic end-to-end, a
+    conservative rollout matching this project's own standing caution about untested features.
+  - **New dependency**: `scikit-learn>=1.7.0,<2.0.0` in `pyproject.toml` (already installed
+    transitively via the dev venv, no fresh install needed).
+  - **Tests**: new `_agent_routing_rejection_scenario` in `test_structural_checks.py` (5 cases:
+    no-prediction no-op, unknown-role rejection, strong-disagreement rejection, agreement no-op,
+    low-confidence-abstention no-op) + `src/utils/agent_routing.py`'s own `__main__` self-test
+    (fail-open behavior, empty/out-of-scope candidate-class handling). Full suite + `ruff check`
+    clean across all changed/new files.
+  - **Live sanity check**: 5 real instruction strings run through the loaded artifact directly.
+    4/5 correct (Rust version → WebSearcher 0.74; peer-reviewed GOA papers → AcademicSearcher
+    0.83; numeric population table → DataAnalyzer 0.78; a PeerReviewer critique task correctly
+    got low-confidence 0.12, would abstain/reject on the unknown-role path). **One real, honestly-
+    reported misclassification**: a DocumentAnalyzer-shaped "read a file and extract findings"
+    instruction predicted `DataAnalyzer` (0.68 confidence) — consistent with the measured 0.68
+    precision for that class, not a bug, a genuine limitation of a 0.82-accuracy classifier on
+    ambiguous wording between two semantically close roles.
+  - **LIVE END-TO-END TEST RUN, 2026-07-20 (same day) — FOUND A REAL REGRESSION, REVERTED TO
+    `enabled: false`.** Flipped the live config on, ran a real headless query exercising both
+    delegation levels ("What is the current stable version of the Rust programming language, and
+    what does peer-reviewed academic research say about the soundness of Rust's borrow checker?").
+    The nested WebSearcher→DocumentAnalyzer level worked correctly, no false rejections. **The
+    Planner-level AcademicSearcher dispatch was wrongly rejected 8 CONSECUTIVE times** — every
+    single retry of "find peer-reviewed papers on borrow-checker soundness" was rejected with
+    "looks like a WebSearcher task" at 0.67-0.75 confidence (above the 0.6 threshold), across
+    ~2 real minutes / 8 wasted Planner turns, until the Planner gave up on the angle entirely.
+    **Concrete, measured harm**: the final report contains ZERO content on the academic angle —
+    half the user's actual question was never researched, a real content-coverage failure directly
+    caused by this feature, not a pre-existing bug. **Root cause**: `AcademicSearcher` is the
+    classifier's weakest, smallest class (54 real examples, 0.44 held-out precision, by far the
+    worst of the 4) — a flat `min_confidence=0.6` threshold treats a confidence number as equally
+    trustworthy regardless of which class produced it, but this run showed the model can be
+    CONFIDENTLY wrong specifically for the class it's worst at. **Structural policy flaw, not just
+    a data problem**: "reject-and-nudge" conflated two different risk profiles under one policy —
+    rejecting a declared role that isn't real for this caller at all (safe, unambiguous, no valid
+    alternative exists) vs. rejecting a declared role that IS valid because the classifier
+    disagrees (risky, since the classifier can be confidently wrong, as just demonstrated). The
+    live test showed the second case caused active harm this session. **Config reverted**:
+    `~/.deepdelve/config.yaml`'s `agent_routing_classifier.enabled` set back to `false` immediately
+    after this finding.
+  - **DATA-QUALITY FIX, 2026-07-20 (same day, direction (a) above) — a real, root-cause bug found in
+    the training data itself, not just a volume problem.** Auditing the 54 `AcademicSearcher`
+    examples by eye surfaced 6 that were obviously market-sizing/business-research tasks
+    ("Evaluate the X market in Colombia... market size, current state, gaps, competition"), not
+    literature searches — none used any academic-search language at all. Tracing further: all 13
+    came from ONE session, a near-identical task TEMPLATE repeated with a different sector noun
+    each time, sitting alongside a differently-phrased sibling task in the SAME session correctly
+    labeled `WebSearcher`. This is one real historical Planner routing mistake (or drift across a
+    repeated batch) baked into the training data as if it were correct ground truth — a genuine
+    root cause, not just "not enough data."
+    - **Two general-purpose automated detectors tried and rejected, worth keeping the reasoning
+      for**: (1) SequenceMatcher literal-text similarity never caught this at all (different sector
+      nouns keep character overlap below the dedup threshold despite an identical template). (2)
+      Embedding (all-MiniLM-L6-v2) cosine similarity, even restricted to same-routing-level pairs,
+      couldn't cleanly separate "same underlying ask, inconsistently routed" from "different ask,
+      same topic domain, correctly routed differently" — this project's own real historical
+      benchmark queries cluster so heavily on one topic (heuristic algorithms / sales forecasting /
+      Colombia) that a threshold loose enough to catch the real conflict also flagged hundreds of
+      genuinely correct, differently-labeled pairs. **Landed on a direct, documented exclusion of
+      the one manually-verified session** instead of forcing an unreliable general heuristic —
+      honest engineering given the alternative was trading a small, well-evidenced problem for a
+      much larger, noisier one.
+    - **Real result after retraining on the cleaned data**: `AcademicSearcher` class shrank 54→50
+      (the wrong examples excluded, not replaced), but held-out RECALL rose 0.64→0.80 at the same
+      0.44 precision — fewer false negatives, directly the failure direction that caused the live
+      regression (the classifier was calling real academic tasks `WebSearcher`). **Directly
+      re-tested against the exact 3 real instruction variants that failed live** — all 3 now
+      correctly predict `AcademicSearcher` (0.63-0.66 confidence, was `WebSearcher` before).
+      **Regression-checked the other direction too**: 4 genuine `WebSearcher`-shaped market/factual
+      tasks (including ones structurally identical to the now-excluded bad examples) still
+      correctly predict `WebSearcher`, several at HIGHER confidence than before (0.72-0.89) — the
+      fix sharpened the boundary in both directions, not just patched the one failing case.
+      `AcademicSearcher` precision (0.44) is still the weakest of the 4 classes — volume/diversity
+      (candidate direction (a), still the smallest class by far) remains the deeper fix, not yet
+      done; this closes the specific, confirmed data-contamination bug, not the whole gap.
+    - **New `finetune/extract_agent_routing_dataset.py` output**: `agent_routing_conflicting.jsonl`
+      (13 excluded examples, kept for inspection, not silently discarded).
+    - **SECOND LIVE RE-TEST, 2026-07-20, same day, same exact query that failed before**
+      ("What is the current stable version of the Rust programming language, and what does
+      peer-reviewed academic research say about the soundness of Rust's borrow checker?") —
+      `~/.deepdelve/config.yaml`'s `agent_routing_classifier.enabled` re-flipped to `true`, run
+      end-to-end via `python src/app.py --auto-approve`. **Confirmed fixed**: zero classifier
+      rejections anywhere in the run (checked both the raw log and the session's `ui_events`).
+      The `AcademicSearcher` task (`borrow_checker_soundness`) was accepted on the first try, found
+      the real paper (arXiv:2404.02680, "Sound Borrow-Checking for Rust via Symbolic Semantics"),
+      and `findings.md` correctly contains both the Rust-version findings AND the academic section
+      — directly reproduces the first test's setup and confirms the data-quality fix holds in the
+      real pipeline, not just isolated classifier calls.
+      - **A second, unrelated bug surfaced in the same run, worth recording separately**:
+        `final_report.md` dropped the entire academic section despite `findings.md` having it
+        correctly. Root cause is NOT the routing classifier — this run hit 3 completion-check
+        remediation cycles (missing two-pass discipline on `findings.md`, missing
+        `final_report.md`, an unsupported-claim flag on the Rust-docs source), each dispatching a
+        corrective sub-agent (`FindingsWriterFix`, `BuilderFix` x3, `ReviewFix` x3) that itself
+        calls `read_workspace_file`/`write_workspace_file`. By the third `BuilderFix` pass, the
+        `read_workspace_file` quota (limit 30, `config_template.yaml`) was exhausted, and the final
+        report says so outright: "Due to workspace tool quota limits, I was unable to re-read the
+        source file during this session... only claims that can be directly traced to specific
+        lines in findings.md are included" — then cites only 2 of ~7 real sources. **Not yet
+        fixed; new finding, not scoped into this session's work.** Candidate fixes: raise
+        `read_workspace_file`'s quota specifically for `BuilderFix`/`ReviewFix` remediation
+        sub-agents, or give the completion-check remediation loop its own separate quota pool so
+        legitimate first-pass work doesn't starve retries (and vice versa).
 - **Sub-agent dispatches had NO wall-clock deadline at all — a real, live-confirmed gap, fixed and
   live-verified.** `engine/tui.py`'s `run_cli` already races each stream update against
   `settings.max_run_minutes` via `asyncio.wait_for(stream_iter.__anext__(), timeout=remaining)`
@@ -663,6 +813,54 @@ Status as of 2026-07-18.
 
 ## Findings from live testing (not yet acted on / informational)
 
+- **SOTA literature review, durable conclusions merged 2026-07-20** (full detail, primary-source
+  citations, and still-open leads in `RESEARCH.md`, which stays the standalone working document).
+  - **MAST's 14-mode failure taxonomy (arXiv:2503.13657, NeurIPS 2025) maps closely onto this
+    project's own bug catalog**, confirming DeepDelve's failures are named, published patterns
+    rather than idiosyncratic bugs: FM 2.6 "Reasoning-Action Mismatch" = the "narrate instead of
+    write" bug; FM 1.5 "Unaware of Termination Conditions" = the over-research/STOP-EARLY problem;
+    FM 3.2/3.3 "No/Incorrect Verification" = the entire reason the grounding-check layer exists;
+    FM 1.1 "Disobey Task Specification" = the exclusion-enforcement bug class. A follow-on
+    production-telemetry replication (639K steps/23.6K runs, one closed-alpha platform) found
+    verification gaps dominate real deployment failures while coordination failures nearly vanish
+    (1.14% of runs) — closer to DeepDelve's own lived experience than MAST's benchmark-derived
+    aggregate, though caveated as one platform, not peer-reviewed. A large-scale coding-agent study
+    (arXiv:2605.29442, 16,118 validated episodes) independently found the same two DeepDelve
+    patterns (inaccurate self-reporting ≈ "narrate instead of write"; constraint violation ≈
+    exclusion-enforcement) in a totally different agent domain — real, cross-domain corroboration,
+    not a DeepDelve-specific quirk.
+  - **Three independent sources now converge on "verification/architecture amplifies a capable
+    model, it doesn't rescue an incapable one"**: the capacity-floor paper (arXiv:2601.16280, 14B
+    "minimum viable" for tool invocation), PIVOT (arXiv:2605.11225, "repair quality remains bounded
+    by the underlying model reasoning capacity"), and ATLAS/AdaMAST (its own 8pp residual gap on
+    OlympiadBench, attributed to an "architectural-vs-parametric distinction"). Relevant to every
+    future decision about fixing a small-model gap with more structure vs. a bigger/better model.
+  - **A third, distinct candidate mechanism for the recurring "real fetched content silently
+    vanishes during final synthesis" pattern** (already independently observed 3 times in this
+    project — quota-starvation drop, heterogeneous-tiering drop, citation-truncation drop, each
+    fixed individually; see the scattered incidents at lines ~481, ~689, ~966, ~1440, ~1858 above).
+    "Lost in the Middle" (arXiv:2307.03172, TACL 2024, foundational/highly-credible) shows models
+    use context well at the start/end and poorly in the middle — a candidate SECOND cause distinct
+    from truncation, not yet checked against DeepDelve's own findings-ordering. PIVOT
+    (arXiv:2605.11225) adds a candidate THIRD: 100% of its tested models' thinking tokens fire on
+    the FIRST turn (task decomposition), 99.2% of final-synthesis steps get ZERO thinking tokens,
+    REGARDLESS of how large the thinking budget is raised — models don't naturally allocate
+    reasoning to synthesis/verification, only to planning. None of these three are confirmed as
+    DeepDelve's own root cause; each is a real, externally-sourced, testable hypothesis for the
+    still-open "common structural cause" investigation already flagged in this file.
+  - **Comparative survey against 5 other real deep-research-agent projects** (Tongyi DeepResearch,
+    dzhng/deep-research, CYC2002tommy/Deep-Research-Agent, SkyworkAI/DeepResearchAgent, nashsu/
+    llm_wiki — all already credited in README's References) answered a deliberate test question from
+    the user honestly: DeepDelve's 10-layer grounding pipeline is more elaborate than any of the 5
+    for the SPECIFIC problem of post-hoc citation verification on a small/local model — but this is
+    explicitly NOT "most sophisticated deep research agent, period." Tongyi DeepResearch solves
+    reliability via a much larger purpose-trained model, a different and likely more effective lever
+    DeepDelve's own local-only constraint doesn't have access to; and "sophisticated mechanism" is
+    not the same claim as "proven real-world catch rate" — most of DeepDelve's own grounding checks
+    still lack real-captured-fabrication test coverage (see "Test coverage debt" note in session
+    history). See `RESEARCH.md` §7 for the full, appropriately-bounded writeup.
+  - **A non-generative routing-classifier design for `delegate_tasks`** is now a scoped "Planned"
+    item (see above) rather than a research note, prerequisite data already confirmed sufficient.
 - **Full grounding/completion-check compliance audit (2026-07-18), all 12 README-claimed guarantees
   re-verified against the actual code, not just the docs.** Checked each of: URL grounding with
   path-boundary matching, content-level zero-fact-overlap, non-URL citation detection, regulation-
@@ -872,13 +1070,258 @@ Status as of 2026-07-18.
 
 ## Planned (not started)
 
+- **MiniCPM5-1B evaluated as a specialist-role candidate, 2026-07-20 (later same day) — most
+  promising MiniCPM variant tested so far, not yet clean, worth more runs before a final call.**
+  User asked to check other MiniCPM4-family options after the MiniCPM4-MCP evaluation below;
+  research (RESEARCH.md's earlier MiniCPM5-1B leaderboard entry) already flagged this as a
+  sub-1.5B model, far below this project's own established capacity floor — but user's explicit
+  framing was "one thing is documentation, another is test, let's try," so tested live rather
+  than ruled out on priors alone.
+  - **Genuinely simpler integration than MiniCPM4-MCP, confirmed by reading docs first this time**
+    (see the correction above about not doing that for MiniCPM4-MCP): MiniCPM5-1B emits XML-style
+    `<function name="...">...<param name="...">value</param></function>` tool calls (its own
+    `chat_template.jinja`, read directly), a format close enough to the Hermes/Qwen convention
+    that **Ollama's built-in tool-call parser handles it natively** — confirmed live, direct
+    `/api/chat` calls with a `tools=` param returned correct OpenAI-shaped `tool_calls` with zero
+    custom proxy code. Plain `LlamaForCausalLM` architecture (config.json), no custom kernels.
+    OpenBMB has an official Ollama deployment cookbook (`docs/deployment/ollama.md`) confirming
+    the same integration path and recommended sampling (`temperature=0.7, top_p=0.95` no-think
+    mode; `0.9/0.95` think mode) — used exactly as documented, not reverse-engineered.
+  - **Pulled via `ollama pull hf.co/openbmb/MiniCPM5-1B-GGUF:Q8_0`** (1.1GB), local tag
+    `minicpm5-1b` with `num_ctx` set to 131072 (the model's actual native max per its own
+    `config.json`'s `max_position_embeddings`, not the cookbook's conservative 8192 example
+    value — same standard applied to MiniCPM4-MCP's 32768 setting earlier).
+  - **Isolated 5-case smoke test: 5/5 passed**, correct function selection, correct abstention on
+    a non-tool question (honestly declined an arithmetic question rather than fabricating an
+    answer — a real, observed instance of a friend's claim that small models given permission to
+    say "I don't know" avoid confident hallucination). One real gap already visible in this
+    isolated test, though: one `delegate_tasks` call dropped the actual task instructions,
+    keeping only `task_name` — an argument-completeness weakness, not a format failure.
+  - **Specialist-role system prompts audited before testing further** (per the same
+    read-first correction): `WebSearcherInstructions`/`AcademicSearcherInstructions`
+    (`src/prompts.py`) already explicitly ban finishing a task from "search snippets or your own
+    prior knowledge" — exactly the strategy a friend of the user's independently recommended for
+    small models. No prompt changes were needed; this was already the existing design.
+  - **Live end-to-end test, same query used throughout this evaluation**: the single most
+    favorable MiniCPM result of the day. Correctly found not just the arXiv preprint
+    (2404.02680) but also the actual peer-reviewed PUBLISHED version (ACM DOI 10.1145/3674640)
+    of the same paper, and correctly flagged that a third source (ETH Zürich) self-labels
+    "peer-reviewed" without evidence of external review — a more careful preprint-vs-published-
+    vs-self-claimed distinction than any earlier gpt-oss or MiniCPM4-MCP run made. Rust version
+    (1.97.1, plus beta/nightly) correct. Lowest tool-error count of any MiniCPM variant tested
+    (11, vs. 27-53 for MiniCPM4-MCP's runs), closest yet to the clean gpt-oss baseline (0-8).
+  - **Real problem, still present**: the `related_work` sub-agent was forcibly aborted TWICE
+    ("Agent trapped in loop. Quota exceeded multiple times for fetch_url_to_workspace") before
+    finally succeeding on retry attempt #4. Same underlying category as MiniCPM4-MCP's issues
+    (not reliably knowing when to stop), different specific shape. The system's own retry/
+    recovery machinery absorbed this and still produced a good outcome, but first-attempt
+    reliability isn't clean.
+  - **CORRECTION, 2026-07-21 — every result above was very likely produced in unintended THINK
+    mode, not the nothink mode intended for this role.** User asked for an in-depth read of the
+    full official `openbmb/minicpm` docs/skills tree before treating anything as a settled
+    "discard" — all 23 currently-relevant English docs read directly (main README, all 8
+    deployment cookbooks, all 5 fine-tuning cookbooks, both `minicpm5-deploy`/`minicpm5-deploy-
+    ollama` Agent Skills). Confirmed empirically first: every live `/api/chat` response from the
+    `minicpm5-1b` Ollama tag includes a populated `"thinking"` field with real verbose
+    chain-of-thought, even with a custom Modelfile injecting an empty `<think>\n\n</think>\n\n`
+    prefix meant to force nothink mode per the model's own `chat_template.jinja` logic — the
+    injection did not suppress it. **This is not a mistake unique to this setup — it's a
+    documented, vendor-acknowledged gap in Ollama's OWN official cookbook and shared by other
+    edge/consumer backends**: `docs/deployment/ollama.md`'s own example Modelfile only sets
+    `temperature`/`top_p` and comments them "tuned for no-think mode," but never actually injects
+    a `<think>` prefix into the `TEMPLATE` block — because "Ollama does not auto-evaluate the
+    GGUF-embedded Jinja chat template; it falls back to the Modelfile's Go `TEMPLATE` block."
+    Independently confirmed by two OTHER backends' own docs: `docs/deployment/mlx.md` states
+    plainly "the released chat template auto-injects `<think>\n` when no system message disables
+    it, so you get think-mode behaviour by default"; `docs/deployment/lmstudio.md` states LM
+    Studio's `chat_template_kwargs.enable_thinking` flag is not consistently honored either. Only
+    **vLLM and SGLang** correctly implement real `enable_thinking` (both evaluate the actual HF
+    template). Practical tool-calling path found for each: SGLang's MiniCPM5 XML parser only
+    exists on an unreleased `main` branch (merged 2026-05-22, no pip release yet); vLLM is more
+    practical right now — the repo itself ships the parser file
+    (`tool_parsers/minicpm5xml_tool_parser.py`, same as the pending upstream PR) loadable into a
+    normal `pip install vllm>=0.21` via `--tool-parser-plugin`, no from-source build needed.
+    **Implication**: every positive result recorded above (best report quality of any MiniCPM
+    candidate, correct preprint-vs-published distinction) was very likely produced in the heavier,
+    more deliberate think mode, not the fast/latency-bound mode this role actually calls for — so
+    neither the positive results nor the one real weakness (the forced-abort looping) can be
+    trusted as representative of the model's intended operating mode. No discard-or-keep verdict
+    is actually settled; this reopens the question rather than closing it either way. Next step:
+    stand up vLLM with the bridged tool-parser plugin and re-run the same live query in genuine
+    nothink mode before drawing any conclusion. Real hardware caveat checked (not assumed): the
+    user's GPU (RX 9060 XT) is AMD RDNA4, not NVIDIA — vLLM defaults to CUDA-only, but ROCm 7.2
+    (March 2026) added official RDNA4 vLLM support with "out-of-the-box parity" alongside Ollama/
+    llama.cpp, so this should work, just via the ROCm-specific install path (Docker image or ROCm
+    wheel) and less battle-tested than the CUDA default every vLLM doc assumes.
+  - **Status: not yet a final call either way**, now for a second, more fundamental reason than
+    "needs more runs" — the model hasn't even been tested in its correct operating mode yet. Best
+    MiniCPM candidate tested by a real margin under think mode; live config left pointed at it
+    (`specialist_model: minicpm5-1b`) rather than reverted, pending a proper nothink-mode re-test
+    via vLLM before any final call.
+
+- **MiniCPM4-MCP evaluated as a specialist-role candidate, 2026-07-20 — real infrastructure built
+  and kept, model itself not yet viable.** User surfaced `github.com/openbmb/minicpm`; downloaded
+  `MiniCPM4-MCP` (the tool-use SFT checkpoint, not the base chat model — see RESEARCH.md's §6.2
+  entry on why the base checkpoint doesn't inherit the MCP fine-tune's tool-calling numbers),
+  Q5_K_M GGUF via `ollama pull hf.co/mradermacher/MiniCPM4-MCP-GGUF:Q5_K_M` (5.8GB, comfortable
+  on 16GB VRAM), local tag `minicpm4-mcp` with `num_ctx` set to the model's real native max
+  (32768, confirmed via the GGUF's own `minicpm.context_length` metadata and the upstream
+  `config.json`'s `max_position_embeddings` — going further to the maker's documented
+  128K-validated LongRoPE factors would require re-converting the GGUF from patched source
+  weights, not just an Ollama parameter, deferred for later).
+  - **Format mismatch found and solved**: MiniCPM4-MCP's own embedded chat template doesn't emit
+    OpenAI-style JSON `tool_calls` — it emits a `<|thought_start|>...<|tool_call_start|>
+    func(arg=val)<|tool_call_end|>` Python-code-block format. Ollama's generic `/v1/chat/
+    completions` tool-calling support assumes OpenAI JSON and fails outright against this model
+    ("peg-native format" 500 error, confirmed live). **Built `finetune/minicpm_tool_proxy.py`**: a
+    FastAPI translation proxy (checked GitHub for prior art first — `philipluo/MY-LITE-LLM` does
+    the same class of thing generically for `minicpm-v`; this one is tailored to MiniCPM4-MCP's
+    actual documented format instead of generic JSON-prompting) that builds the model's own
+    "# Functions" prompt block from OpenAI `tools=` schema, renders full multi-turn history
+    (including prior tool_calls/tool-result messages) into the model's native turn format, and
+    parses its Python-code-block output back into OpenAI-shaped `tool_calls` JSON. Verified in
+    isolation: single-turn tool call, multi-turn tool-result round-trip (model correctly answered
+    directly instead of re-calling once given a result), both correct.
+  - **New config plumbing added to make this pluggable**: `settings.specialist_base_url`
+    (`src/tools/config_template.yaml`, `src/engine/orchestrator.py`'s `_build_client`) — an escape
+    hatch alongside the existing `settings.specialist_model` for a specialist model that needs a
+    DIFFERENT endpoint (the translation proxy), not just a different model name on the same
+    endpoint. Real bug caught and fixed while wiring this in: `_build_client`'s injected
+    `AsyncOpenAI(base_url=...)` — the object that actually issues HTTP requests, not the wrapper
+    `OpenAIChatCompletionClient` — was still hardcoded to `api_cfg["openai_base_url"]` even after
+    adding the override parameter, so the first live-test attempt silently bypassed the proxy
+    entirely and hit Ollama directly (same "peg-native format" error as before this whole effort).
+    Fixed; `test_structural_checks.py` and `ruff check` both clean after.
+  - **Live end-to-end result, real query, real pipeline** (same Rust-version + borrow-checker
+    query used throughout the routing-classifier verification above): the fix held — proxy
+    received real traffic, tool calls flowed correctly in both directions, run completed with a
+    real report (not a crash, not a silent drop). **One genuine positive**: this run's
+    `AcademicSearcher`/`DocumentAnalyzer` chain (via MiniCPM) surfaced a real academic source
+    (`ETH Zürich "Implementing a Sound Borrow-Checker"`) that the earlier gpt-oss run never
+    found, alongside the same arXiv LLBC paper both runs found.
+  - **A real, distinctive new failure mode also surfaced, not predicted by the isolated tool-call
+    test**: a nested `DocumentAnalyzer` sub-agent (routed through MiniCPM, since Analyzer roles
+    share the specialist tier) called `read_workspace_file`/`grep_workspace_file`/
+    `extract_structured_data` with `filename: "Analyze paper metadata"` — ITS OWN TASK LABEL, not
+    a real file — repeatedly, never correcting after identical "not found" errors each time,
+    until the sub-agent was re-dispatched as a fresh instance 10 separate times. Task-name/
+    filename confusion with no self-correction, a new category distinct from anything the earlier
+    routing-classifier or grounding-check work targeted.
+  - **Reliability was meaningfully worse than the current tier under real load**: 53 tool errors
+    this run vs. 0-8 in clean `deepdelve-gpt-oss` baseline runs, ~900s runtime vs. ~680-810s, 4
+    `BuilderFix` + 4 `ReviewFix` remediation cycles to clear an `uncited_claims` check (Builder
+    itself still runs on the main model, so this is downstream noise from messier findings
+    content feeding it, not MiniCPM's tool-calling directly — but a real cost of using it anyway).
+  - **Verdict**: the translation-proxy infrastructure is sound and kept as a real, reusable
+    project artifact — genuinely solves the format-mismatch problem for any future MiniCPM-family
+    (or similarly non-OpenAI-native) candidate. MiniCPM4-MCP itself is **not yet a viable
+    specialist-role candidate** — directly the same standing lesson this project has hit
+    repeatedly: an isolated tool-call test passing does not predict live multi-agent-role
+    reliability. Live config's `specialist_model`/`specialist_base_url` reverted to unset
+    (back to the known-good single-model baseline) after this evaluation.
+  - **Not done, deferred**: re-converting a GGUF with the maker's 128K-validated LongRoPE factors
+    (32K is architecturally native/what's baked into the current GGUF, not an Ollama-imposed
+    ceiling — see the maker's own README) — user wants to revisit 128K-context options generally
+    later, not specific to MiniCPM.
+  - **CORRECTION, same day**: the verdict above was reached before reading OpenBMB's own reference
+    implementation (`demo/minicpm4/MCP/generate_example.py` + model-card usage docs) — user
+    caught this explicitly ("I told you to search implementations and you did the development
+    believing you're a bad ass, don't do the mistake again, if it's new we need to read
+    documentation"). Reading it afterward surfaced two real, concrete gaps in the proxy, not
+    assumptions: (1) OpenBMB's own reference system prompt has explicit anti-repeat-tool-call
+    guidance ("If a tool fails... DO NOT call it again with the same inputs... avoid redundant or
+    circular behavior") that this proxy's system prompt never included; (2) their reference parser
+    (`parse_tool_for_minicpm3`) handles Python-keyword-colliding argument names and hyphenated
+    tool/argument names (real MCP tool-naming conventions) via a temp-rename round-trip that this
+    proxy's simpler regex+`ast.literal_eval` parser silently dropped. Confirmed their own
+    raw-prompt-plus-custom-parser integration pattern (`client.completions.create` with a
+    `tokenizer.apply_chat_template`-rendered prompt, not the chat/tools API) validates this
+    proxy's core architecture, though — not a wrong approach, an incomplete one.
+    - **Both gaps fixed** in `finetune/minicpm_tool_proxy.py`: added the anti-repeat guidance
+      verbatim to `build_functions_preamble`; replaced the parser with an AST-module-body walk
+      (`parse_tool_call_block`) ported from their `parse_tool_for_minicpm3`/
+      `resolve_ast_call`/`resolve_ast_by_type`, handling keyword-collision and hyphen
+      round-tripping the same way. Verified in isolation: `search_papers(from="2020", to="2024")`
+      and `get-weather(city="London")` — both previously silent parse failures — now parse
+      correctly.
+    - **THIRD live test, same query, with both fixes**: the SPECIFIC bug this was meant to fix
+      (task-name-as-filename looping) did NOT recur — confirmed gone. But the run surfaced
+      DIFFERENT reliability problems in its place: `web_search`/`fetch_url_to_workspace` quota
+      exhausted (17 calls against a 15 limit, excessive re-querying rather than converging); the
+      existing `topical_mismatch` completion check caught the draft report citing a Yahoo Sports
+      article and an unrelated tech listicle as "Rust" sources (noisy search, safety net worked,
+      but reveals messy upstream search behavior); and the final report itself regressed in
+      accuracy versus the earlier successful run — cited a blog aggregator
+      (`emergentmind.com`) instead of the real peer-reviewed arXiv paper the second run found
+      correctly, and reported Rust 1.97.0 as current when 1.97.1 (confirmed correct in earlier
+      runs) is the actual latest patch.
+    - **Revised, still-honest verdict**: the doc-informed fixes solved the exact bug they
+      targeted, but MiniCPM4-MCP's reliability in this real multi-step research role remains
+      inconsistent run-to-run — one problem fixed, two different problems surfaced in its place.
+      Still not a stable specialist-role candidate as of this evaluation. Live config's
+      `specialist_model`/`specialist_base_url` reverted to unset again; proxy process stopped.
+
+- **Completion-check remediation loop can exhaust `read_workspace_file`'s quota before the final
+  Builder pass gets to actually read what it needs — found live, 2026-07-20, during the routing
+  classifier's second re-test run.** A run that hits multiple completion-check remediation cycles
+  (missing two-pass discipline, missing artifact, unsupported-claim flag) dispatches a corrective
+  sub-agent per cycle (`FindingsWriterFix`, `BuilderFix`, `ReviewFix`), each burning its own
+  `read_workspace_file` calls against the SAME shared quota (limit 30) as normal first-pass work.
+  Confirmed live: 3 remediation cycles in one run exhausted the quota, and the final `BuilderFix`
+  pass self-reported it in the report text ("Due to workspace tool quota limits, I was unable to
+  re-read the source file") and silently dropped an entire correctly-researched section
+  (`findings.md` had it; `final_report.md` didn't) rather than erroring loudly. Candidate fixes:
+  separate quota pool for remediation sub-agents vs. first-pass work, or a harder failure mode
+  (explicit error surfaced to the user) instead of a silent content drop when quota is hit
+  mid-remediation.
+
+- **Forced `tool_choice` on vLLM as a structural fix for "narrate instead of write" — new candidate,
+  2026-07-19, not yet prototyped.** Found while investigating whether vLLM is a realistic Ollama
+  swap (see "Model bake-off" log below for the full investigation, including a real empirical test:
+  Ollama silently ignores `strict`/`enum` schema constraints on tool-call arguments — confirmed
+  live, `enum: ["Moscow","London"]` did not stop a `deepdelve-gpt-oss` call from returning
+  `"Rome"`. vLLM's `tool_choice: "required"` DOES enforce it, 5/5 runs at temperature 1.0 — a real
+  grammar-level constraint, not post-hoc parsing. `tool_choice: "auto"` on vLLM is exactly as
+  unconstrained as Ollama, so this only helps roles that should NEVER produce a text-only turn.
+  That description matches this project's single most-repeated small-model failure exactly:
+  Builder/FindingsWriter's "narrate instead of write" bug (Bonsai-8B, `qwen2.5:3b-instruct`,
+  `qwen3:8b`, all disqualified partly or wholly for this reason — see their bake-off entries
+  below). `tool_choice: required` would structurally prevent that failure class outright for those
+  two roles specifically, rather than detecting and salvaging it after the fact
+  (`_salvage_narrated_report`). The Planner itself is NOT a candidate for this — it must be free to
+  choose between delegating and stopping with plain text, which `required` forbids entirely.
+  **Real cost, not glossed over**: needs a working vLLM instance serving Builder/FindingsWriter
+  specifically while the Planner stays on Ollama — a mixed-backend architecture, not a config flag.
+  Standing up vLLM on this card was genuinely fragile this session (4 crash-fix cycles: missing
+  OpenMPI/hwloc/libevent, then a version-mismatched hipBLASLt segfault only resolved once the `.so`
+  and its Tensile kernel data came from the same `.deb` — see the vLLM investigation entry below
+  for the full resolution chain). A persistent venv (`~/.venvs/vllm`, ~10GB on root) and the
+  working env-var recipe (`HIP_VISIBLE_DEVICES=0`, `LD_LIBRARY_PATH`, `HIPBLASLT_TENSILE_LIBPATH`)
+  are kept from this session for a future prototype. **User decision 2026-07-19: fine-tuning stays
+  the priority (already scoped, proven once); this is a candidate to prototype later, not blocking
+  current work** — the cheapest first test would be standing up vLLM for ONE already-disqualified
+  small model in the Builder/FindingsWriter role only, with `tool_choice: required`, against the
+  exact benchmark query that disqualified it, before investing in a full mixed-backend build.
+
 - **Strategic options for the "no small local model is reliable enough" gap** (decided 2026-07-18,
   after the bake-off reached 10 tried candidates, 9 disqualified — full trial history in the
   "Model bake-off & backend investigation log" section below). The project's own stated local-only
   philosophy is already satisfied — `gpt-oss:20b` at 13GB, comfortably inside a 16-17GB VRAM
   budget, is the one candidate with a full benchmark pass. The real open question is whether a
   LIGHTER default is achievable, given every smaller candidate has failed at agentic coordination
-  specifically, not raw single-tool-call capability. Four options, in the order agreed to try them,
+  specifically, not raw single-tool-call capability. **External validation, merged from the SOTA
+  literature review (`RESEARCH.md` §1, 2026-07-20)**: this project's own bake-off pattern (every
+  2-8B candidate disqualified, `gpt-oss:20b` the only pass) is not an idiosyncratic gap — a
+  published capacity-floor study (arXiv:2601.16280, invoice-reconciliation tool-use, admittedly a
+  narrower/more controlled domain than DeepDelve's own) found `qwen2.5:14b` as the "minimum viable
+  production" threshold for reliable tool invocation, with `qwen2.5:3b`/`7b` failing at 86.1%/42.7%
+  rates. Two constraint-tax papers (arXiv:2606.25605 + arXiv:2605.26128) independently found the
+  failure is specifically at STRUCTURED SERIALIZATION (schema-valid output, wrong content) — and
+  that a 6,000-sample SFT run could not fix it, because it happens downstream of anything
+  fine-tuning touches. Together: don't expect a lighter default to fully close this gap via more/
+  better fine-tuning data alone — see the new "Non-generative routing classifier" Planned item
+  above, which targets the routing sub-problem specifically because it's the piece that generative
+  fine-tuning structurally can't guarantee. Four options, in the order agreed to try them,
   1-2 now DONE and tested, 3 still genuinely open:
   1. **Structural fix instead of a new model — DONE.** The immediate narration-salvage fix (see
      "Done" above) — correct and shipped, but on live re-test didn't rescue its motivating case
@@ -900,6 +1343,41 @@ Status as of 2026-07-18.
      still waits on the user's own disk reorganization — the next concrete action once that's done.
   4. **Stay on `gpt-oss:20b` as-is** — the fallback baseline that's already true today regardless
      of how far 1-3 get: nothing is actually blocking the project's local-only goal right now.
+  5. **RAG-augmented small model — raised by the user 2026-07-20, not yet scoped.** Initially
+     framed as "identify what made the user's prior RAG attempt fail" without knowing the specifics
+     — **found the actual prior attempt already documented in this same "Evaluated and rejected"
+     section below, and it's IN THIS PROJECT, not a different one**: `src/utils/knowledge_cache.py`
+     (deleted commit `929b987`, 2026-07-11). Confirmed via git history
+     (`session_status/2026-07-13.md`): **it wasn't real RAG at all** — no embeddings, no chunking,
+     no vector retrieval, just an exact-string-match `{normalized_question: answer}` JSON cache
+     plus a coarse keyword-heuristic "experience" cache of past successful plans (DelveAgent's
+     Dual-Granularity Memory pattern, arXiv:2606.18648). **The actual failure was narrower and more
+     specific than a general RAG problem**: during model bake-off benchmarking, a LATER model's
+     trial would hit the SAME cached "verified" answer from an EARLIER model's trial on the same
+     query and reproduce it near-verbatim — invalidating independent A/B comparison between
+     candidate models entirely (you'd think the later model performed well, when it just copied the
+     earlier one's cached answer). This is a benchmark-isolation bug, not a retrieval-quality,
+     hallucination, or embedding problem — the classic RAG failure taxonomy (see RESEARCH.md §8)
+     mostly doesn't apply to what actually broke here.
+     - **RESEARCH.md §8, 2026-07-20**: separately researched real RAG literature (3 primary
+       sources: a peer-reviewed 33-mode RAG failure taxonomy, an agentic-RAG architecture survey, a
+       small-language-model agentic-systems survey) before this git-history discovery landed.
+       Headline findings: (1) DeepDelve, already multi-agent, would land in "Agentic RAG" — the
+       taxonomy's own finding is this is the LEAST empirically validated RAG category (all 8
+       agentic failure modes have zero peer-reviewed evidence); (2) two of those unstudied agentic
+       failure modes (Recursive Hallucination Cascades, Unbounded Cost/Latency Spirals) are
+       near-exact matches for bugs DeepDelve already found and fixed independently (the
+       narrated-report/phantom-document bug, today's MiniCPM quota-exhaustion loops); (3) the SLM
+       survey's own ablation data shows grammar/schema-constrained decoding, not RAG or model size,
+       is the most load-bearing lever for small-model tool-use reliability — directly reinforcing
+       the still-open "Forced `tool_choice` on vLLM" candidate above as a more targeted fix for
+       today's actual observed failures than RAG would be.
+     - **Combined implication**: real RAG (embeddings/chunking/vector retrieval, unlike the deleted
+       cache) is architecturally a DIFFERENT thing than what failed before, so the old rejection
+       doesn't automatically block it — but ANY persistent cross-run cache, real-RAG or not, must
+       be explicitly disabled or isolated per-model during comparative benchmarking, or the EXACT
+       same contamination bug recurs regardless of what retrieval technique sits underneath it.
+       That's the one concrete, non-negotiable design constraint from this project's own history.
 - **TUI QoE improvements** (researched 2026-07-14, not yet scoped/implemented) — triggered by a
   real usability complaint mid-Phase-6 smoke test ("copying from the console, not only the
   prompt", right-click paste, "a lot of QoE changes"). Investigated the actual installed Textual
@@ -1390,7 +1868,19 @@ summary; this section is the full evidence trail.
   demonstrably under-loop (run 15: 1 niche of 4-6). Could integrate with `--depth`.
 - **Tongyi-DeepResearch-30B-A3B as a benchmark candidate** (from `Alibaba-NLP/DeepResearch`):
   30B MoE / 3.3B active — same size class as deepdelve-qwen3.6, but trained specifically for
-  long-horizon research. **Chat-template/tool-call compatibility check done, 2026-07-12 — the
+  long-horizon research. **Architecture, read directly from the primary paper (arXiv:2510.24701)
+  during the comparative survey, `RESEARCH.md` §7, 2026-07-20**: this is a SINGLE fine-tuned model
+  operating via ReAct or an "IterResearch"-based Heavy test-time-scaling mode — not a multi-agent
+  system in DeepDelve's sense at all (no Planner delegating to typed specialists with independent
+  context). No published runtime grounding/citation-verification layer comparable to DeepDelve's
+  own — reliability, to the extent it's addressed, comes from the training pipeline (continual
+  agentic pre-training + on-policy GRPO) rather than a deployment-time safeguard. Backed by an
+  18-paper research program (WebWalker, WebDancer, WebSailor, WebShaper, WebResearcher, and more) —
+  a frontier-lab-scale effort DeepDelve isn't attempting to match; if adopted, it would be solving
+  DeepDelve's reliability gap by swapping in a much larger purpose-trained model rather than by
+  DeepDelve's own verification-layer approach, and would still need DeepDelve's own grounding checks
+  layered on top if citation-level provenance matters for the use case (Tongyi's benchmarks measure
+  answer-correctness, not per-citation provenance the way DeepDelve's own checks do). **Chat-template/tool-call compatibility check done, 2026-07-12 — the
   flagged risk is resolved**: `deepdelve-tongyi` (built pre-outage from
   `hf.co/mradermacher/Tongyi-DeepResearch-30B-A3B-GGUF:Q4_K_M`, 18.6GB, `num_ctx 16384`) reports
   Ollama capabilities `['completion', 'tools', 'thinking']` — the community GGUF's chat template
@@ -1423,6 +1913,54 @@ summary; this section is the full evidence trail.
     further local benchmarking without a materially different quant or a context/prompt-length
     investigation into why the full system prompt specifically breaks it.
 ## Stretch
+
+- **STANDING METHODOLOGY RULE (2026-07-19, engraved after real cost this month): every new
+  fine-tuning objective folds into ONE combined multi-objective GRPO retrain off the same raw base
+  checkpoint (`Qwen/Qwen3-4B`) — never a separate, isolated single-purpose LoRA.** Separately-
+  trained LoRA adapters cannot be merged/stacked cleanly: `thin_coverage` was trained as its own
+  LoRA first, then `citation_grounding` as its own separate LoRA, and both had to be superseded by
+  a single combined LoRA (`finetune/train_combined_grpo.py`) once it became clear a model can only
+  actually deploy with ONE LoRA active — a `thin_coverage`-only model knows nothing about
+  citation-grounding and vice versa. The combined approach is CONFIRMED to work, not just assumed:
+  both objectives improved together on held-out eval when trained jointly (0.681→0.903 at 130
+  steps, 0.375→0.806 at the final 470-step run — see the 2026-07-19 session log for the full
+  chronology). Before starting any new round (e.g. `writer_role_response_reward`, already has 54+
+  real examples in `finetune/data/writer_role.jsonl`, never yet trained): extend `finetune/reward.py`'s
+  existing combined reward function with the new dimension, retrain from the SAME raw base with
+  ALL objectives' prompts combined (not just the new one), re-evaluate every dimension together on
+  held-out data to confirm no regression, and redeploy as a single new combined artifact replacing
+  the prior one — never ship multiple single-purpose model tags alongside the combined one.
+
+- **GRPO training-methodology levers, merged from the SOTA literature review (`RESEARCH.md` §1,
+  2026-07-20) — apply before the NEXT combined retrain, not a new isolated round.** Three concrete,
+  actionable findings from "Demystifying Reinforcement Learning in Agentic Reasoning"
+  (arXiv:2510.11701, read and verified — its own 4B/7B target class is exactly DeepDelve's own):
+  1. **Data**: real end-to-end tool-use trajectories give a far stronger SFT initialization than
+     stitched synthetic ones — directly validates this project's own existing preference for real
+     extracted session data (`thin_coverage.jsonl`, `writer_role.jsonl`) over synthetic prompts, and
+     flags the synthetic-prompt-generation fallback used for `thin_coverage` (low real-example count)
+     as a real, named limitation worth reconsidering once more real examples accumulate.
+  2. **Algorithm**: conservative clipping and strong KL-divergence penalties over-constrain
+     exploration during GRPO, especially for smaller models — sustaining higher policy entropy
+     improves training efficiency. A concrete, testable hyperparameter change for
+     `finetune/train_combined_grpo.py`'s next run, not yet tried.
+  3. **Reasoning mode**: a deliberative strategy (more internal reasoning, fewer tool calls)
+     outperforms frequent tool calls or verbose self-reasoning — plausibly explains why
+     `gpt-oss:20b` (visible `<think>` traces) passed the bake-off while smaller candidates with
+     little internal reasoning failed more. **Untested, concrete next step, no new reading
+     required**: check whether DeepDelve's own bake-off logs show disqualified small models
+     producing shorter/absent `<think>` traces before failed tool calls, using data already on hand
+     in `research_output/`/session logs.
+
+  **Separately, a scoping caveat for `writer_role_response_reward` specifically** (already has 54+
+  real examples, never yet trained): AXPO (arXiv:2605.28774) looked like a direct match for this
+  exact reward shape (tool-call token is the sparse, high-value action under GRPO, same shape as
+  `write_workspace_file`) but its "recovery indicator" mechanics were built for a binary
+  ground-truth-correctness reward signal, not DeepDelve's structural "was the tool actually called"
+  signal — **check this mismatch against `finetune/reward.py`'s actual implementation before
+  adapting AXPO's specific resampling mechanism**; the underlying insight (concentrate exploration
+  budget at the sparse action boundary) likely still applies even if the exact mechanics don't
+  transfer as-is.
 
 - **RL fine-tuning for tool-call reliability** (GRPO/PPO on the actual Planner/Searcher schema) —
   targets the fetch-skipping/tool-call-reliability root cause directly instead of catching it

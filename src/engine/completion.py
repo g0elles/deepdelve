@@ -7,6 +7,8 @@
 # Now each problem type is one function returning a Verdict (or None), walked in an ordered list:
 # first verdict wins, and there are no elif headers left to swallow. Adding a check = one function
 # + one list entry. test_structural_checks.py's verdict matrix pins every problem's routing.
+import asyncio
+import math
 import os
 import re
 from dataclasses import dataclass
@@ -20,7 +22,9 @@ from utils.grounding import (
     fully_ungrounded, partially_ungrounded, real_grounding_problem, split_into_heading_sections,
     find_cross_source_contradictions,
 )
-from engine.orchestrator import topup_quota_pool, available_sub_agents_ctx, _extract_excluded_topics
+from engine.orchestrator import (
+    topup_quota_pool, available_sub_agents_ctx, _extract_excluded_topics, get_context_budget,
+)
 
 DEFAULT_MAX_COMPLETION_CHECK_ATTEMPTS = 3
 
@@ -864,24 +868,145 @@ def _build_findings_source_material(run_state: "RunState") -> str:  # noqa: F821
     # findings.md entries can carry the real filename too, and any downstream re-verification
     # (Builder, PeerReviewer, a human) never has to guess it either.
     url_to_filename = {u.get("url", "").rstrip("/"): u.get("filename") for u in urls}
-    findings_block = "\n\n".join(
-        f"### Source: {f.get('source_url')}"
-        + (f" (saved as {fn})" if (fn := url_to_filename.get((f.get('source_url') or '').rstrip('/'))) else "")
-        + f"\n{f.get('summary', '')}"
+    entries = [
+        (
+            f.get("task_name") or f.get("source_url"),
+            f"### Source: {f.get('source_url')}"
+            + (f" (saved as {fn})" if (fn := url_to_filename.get((f.get('source_url') or '').rstrip('/'))) else "")
+            + f"\n{f.get('summary', '')}"
+        )
         for f in deduped
-    ) or "(no findings recorded yet)"
+    ]
+
+    # 2026-07-19 QA audit ("real grounded content silently vanishes during synthesis" — 3
+    # independently-fixed prior incidents, this is the common structural gap none of them closed):
+    # unlike the Planner's own stream (context_budget_chars) and a sub-agent's own generation
+    # (get_context_budget's guard in orchestrator.py's dispatch loop), FindingsWriter's INITIAL
+    # instructions had NO size cap at all — this whole block was concatenated raw. A long,
+    # many-retry run can accumulate enough real findings (each up to _FINDING_SUMMARY_BUDGET=1500
+    # chars, MORE with an attached verification warning, deliberately never truncated — see
+    # orchestrator.py's _run_single_task) to exceed the model's actual num_ctx before FindingsWriter
+    # ever gets a turn, which Ollama then silently truncates from the TOP of its context window —
+    # the exact "looks like model collapse" failure this project's context_budget_chars guard exists
+    # to prevent everywhere else it can happen. Findings are appended in chronological dispatch
+    # order (oldest first), so an uncontrolled top-truncation would silently drop the EARLIEST real
+    # research first while whatever survived at the end (often a later, less-central re-delegation)
+    # is all the model ever sees — plausibly the same shape as "real findings dropped, replaced by
+    # weaker fabricated content" observed in the citation-truncation incident. Fixed the same way
+    # the rest of the codebase handles this: an explicit, application-level budget instead of
+    # relying on the backend's silent behavior — keep whole entries (never truncate one mid-way)
+    # until the budget is spent, and tell the model exactly which task names were omitted so it can
+    # acknowledge the gap rather than silently drop it (same "acknowledge, don't omit" pattern
+    # check_thin_coverage's own escalation wording already uses).
+    budget = get_context_budget()
+    omitted_task_names = []
+    if budget:
+        kept = []
+        used = 0
+        for task_name, block in entries:
+            if used + len(block) > budget:
+                omitted_task_names.append(task_name)
+                continue
+            kept.append(block)
+            used += len(block) + 2  # +2 for the "\n\n" join separator
+        findings_block = "\n\n".join(kept) or "(no findings recorded yet)"
+    else:
+        findings_block = "\n\n".join(block for _, block in entries) or "(no findings recorded yet)"
+
     fetched_block = "\n".join(
         f"- {u.get('url')} (saved as {u.get('filename')})" for u in urls
     ) or "(no URLs fetched yet)"
+    omitted_note = ""
+    if omitted_task_names:
+        omitted_list = ", ".join(f"'{n}'" for n in omitted_task_names[:20])
+        omitted_note = (
+            f"\n\n({len(omitted_task_names)} more finding(s) exist for this run but were omitted "
+            f"here to stay within the model's context budget: {omitted_list}. Do NOT silently "
+            f"drop these — if they matter for the report, note that this research exists but its "
+            f"detail wasn't available to you, rather than pretending it doesn't exist.)"
+        )
     return (
         "REAL RESEARCH RESULTS FROM THIS RUN, one entry per dispatched Searcher/Analyzer task "
         "(this is your ENTIRE evidence base — you have no other memory of this run):\n\n"
-        f"{findings_block}\n\n"
+        f"{findings_block}{omitted_note}\n\n"
         "ALL URLS ACTUALLY FETCHED THIS RUN, for cross-reference — each file's full content is "
         "readable under its saved filename via read_workspace_file/grep_workspace_file if a "
         "summary above isn't detailed enough:\n"
         f"{fetched_block}"
     )
+
+
+def _select_deepening_tasks(run_state: "RunState") -> list:  # noqa: F821 — utils.run_state.RunState, annotation only
+    """Pick the real follow-up directions a deepening round should chase (ROADMAP item 10,
+    engine-driven iterative deepening). Only from COVERED top-level (depth==1) findings — a real
+    lead surfaced by a source that actually returned something, not invented for an uncovered
+    task, which has no summary to draw a direction from at all (that gap is check_thin_coverage's
+    own job, unchanged). Deduplicated against run_state.data["consumed_directions"] so a retry
+    attempt never redispatches the same direction twice. Geometric narrowing: at most
+    ceil(coverage total / 2) tasks (dzhng/deep-research's newBreadth = ceil(breadth/2)), capped by
+    however many real, unconsumed directions actually exist — never invented to hit a target
+    count. Returns delegate_tasks-shaped dicts, ready for dispatch_task."""
+    coverage = run_state.coverage()
+    if coverage["total"] == 0:
+        return []
+    consumed = set(run_state.data.get("consumed_directions", []))
+    candidates = []  # (direction_text, agent_id) in finding order
+    seen_directions = set()
+    for f in run_state.data.get("findings", []):
+        if f.get("depth") != 1:
+            continue
+        if not (f.get("source_url") or "").startswith("http"):
+            continue  # uncovered -- no real source, nothing to deepen from
+        for direction in f.get("follow_up_directions") or []:
+            if direction in consumed or direction in seen_directions:
+                continue
+            seen_directions.add(direction)
+            candidates.append((direction, f.get("agent_id") or "WebSearcher"))
+
+    max_breadth = math.ceil(coverage["total"] / 2)
+    selected = candidates[:max_breadth]
+    return [
+        {
+            "task_name": f"Follow-up: {direction[:80]}",
+            "instructions": direction,
+            "agent_id": agent_id,
+        }
+        for direction, agent_id in selected
+    ]
+
+
+async def _dispatch_deepening_round(dispatch_task, run_state: "RunState", notify) -> bool:  # noqa: F821
+    """Engine-driven iterative deepening (ROADMAP item 10): dispatch real follow-up directions
+    directly via dispatch_task (== engine/orchestrator.py's _run_single_task), the SAME
+    bypass-the-Planner mechanism _dispatch_writer_review_fix already uses for Builder/FindingsWriter
+    retries — no new dispatch primitive needed. Returns False (dispatches nothing) when there are
+    no real directions to act on, so the caller can fall back to the classic thin_coverage Planner
+    nudge unchanged; this is additive, never a replacement for that check."""
+    tasks = _select_deepening_tasks(run_state)
+    if not tasks:
+        return False
+
+    directions = [t["instructions"] for t in tasks]
+    names = ", ".join(f"'{t['task_name']}'" for t in tasks)
+    notify(
+        f"**System:** Engine dispatching a deepening round ({len(tasks)} follow-up task(s) from "
+        f"real leads found in prior research): {names}"
+    )
+
+    results = await asyncio.gather(
+        *(dispatch_task(t["task_name"], t["instructions"], t["agent_id"]) for t in tasks),
+        return_exceptions=True,
+    )
+    for direction, result in zip(directions, results):
+        if isinstance(result, Exception):
+            # A single dispatch failing (timeout, malformed response) doesn't invalidate the
+            # round -- mark it consumed anyway so it isn't retried into the same failure forever;
+            # any OTHER real directions still on record remain available for a later round.
+            notify(f"**System:** Deepening task for {direction[:80]!r} failed: {result}")
+        run_state.data.setdefault("consumed_directions", []).append(direction)
+
+    run_state.data["deepening_round"] = run_state.data.get("deepening_round", 0) + 1
+    return True
 
 
 async def run_completion_check(query: str, current_input, run_state: "RunState", notify, last_assistant_text: str = "", dispatch_task=None):  # noqa: F821 — utils.run_state.RunState, annotation only
@@ -973,14 +1098,25 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
             # problem has now fired this many times in a row, fall straight through to the
             # final-verdict path (quarantine-restore or salvage) instead of granting more identical
             # retries — it preserves whatever real content already exists rather than grinding an
-            # already-exhausted approach further. check_missing_artifact's own escalating wording
-            # (see its docstring) still gets one shot at each of these attempts first; this only
-            # trims how many total attempts a provably-stuck pattern gets to burn.
+            # already-exhausted approach further. Each check's own escalating wording (see its
+            # docstring) still gets one shot at each of these attempts first; this only trims how
+            # many total attempts a provably-stuck pattern gets to burn.
+            #
+            # Generalized 2026-07-19 QA audit: originally hardcoded to problem == "missing_artifact"
+            # only. Live-confirmed exposure: thin_coverage burned a full 8-attempt budget on a
+            # verbatim-repeated narration with no guard at all; findings_ungrounded independently
+            # confirmed 4 consecutive identical retries in a benchmark run (see the comment further
+            # below, "a benchmark run already hit..."). Every OTHER problem type shares the same
+            # risk in principle (a Builder/Planner repeating an identical failed fix), so the guard
+            # now covers every problem except the one deliberately-excluded case:
+            # missing_findings — confirmed live (check_missing_findings's own docstring) to
+            # genuinely self-correct after 6 identical-looking failures, on the 7th attempt; an
+            # early cutoff here would have killed that exact run's real recovery.
             CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD = 3
-            if problem == "missing_artifact":
+            if problem and problem != "missing_findings":
                 consecutive = 0
                 for a in reversed(run_state.data.get("completion_check_attempts", [])):
-                    if a.get("problem") == "missing_artifact":
+                    if a.get("problem") == problem:
                         consecutive += 1
                     else:
                         break
@@ -1061,6 +1197,31 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                             continue
                         except Exception:
                             notify(f"**System ({attempt + 1}/{max_attempts}):** FindingsWriter dispatch failed — falling back to asking the Planner directly.")
+
+                elif dispatch_task is not None and problem == "thin_coverage":
+                    # Engine-driven iterative deepening (ROADMAP item 10, dzhng/deep-research
+                    # pattern): thin_coverage is the one existing signal that means "the plan's own
+                    # breadth came back thin" — the exact shape iterative deepening targets.
+                    # Deliberately NOT applied to every retrying problem (missing_findings/
+                    # missing_artifact fire on nearly every run's first attempt by design; a
+                    # deepening round there would contradict the Planner's own "STOP EARLY"
+                    # instruction and this project's anti-over-research stance). A clean/sufficient
+                    # run never reaches a completion-check retry at all, so this never fires on one.
+                    max_deepening_rounds = config.cfg.get("settings", {}).get("max_deepening_rounds", 1)
+                    if run_state.data.get("deepening_round", 0) < max_deepening_rounds:
+                        try:
+                            dispatched = await _dispatch_deepening_round(dispatch_task, run_state, notify)
+                            if dispatched:
+                                run_state.save()
+                                # Chained, not returned — same pattern as Builder/FindingsWriter
+                                # above. Loops straight into the next completion-check iteration so
+                                # coverage() is re-evaluated against the new findings before the
+                                # next verdict is decided.
+                                continue
+                        except Exception:
+                            notify(f"**System ({attempt + 1}/{max_attempts}):** Deepening round dispatch failed — falling back to the classic nudge.")
+                    # No real directions to act on, or round budget exhausted: fall through to the
+                    # unchanged classic thin_coverage Planner nudge below — zero behavior change.
 
                 notify(f"**System ({attempt + 1}/{max_attempts}):** {verdict.warning}")
                 new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)

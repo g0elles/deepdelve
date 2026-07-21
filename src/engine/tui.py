@@ -552,13 +552,22 @@ def _looks_like_tool_error(text: str) -> bool:
     read_workspace_file call that failed with 'Error: Requested function "read_workspace..."
     not found.' still showed a green checkmark, misleading the user into treating a failed
     sub-agent step as a successful one while reading the transcript. Covers every error-string
-    convention actually used across the codebase (checked via grep) rather than guessing one."""
+    convention actually used across the codebase (checked via grep) rather than guessing one.
+
+    2026-07-19 QA audit: grep_workspace_file ("Grep Error: ..."), fetch_url_to_workspace
+    ("Failed: ..."), and web_search ("Search failed: ...") each use their own crash-path prefix
+    instead of "Error:" — none of the three were recognized here, so a crashed grep/fetch/search
+    got a green checkmark and left no trace in RunState.tool_error_count/tool_error_samples,
+    which both the completion-check nudges and the finetune reward/extraction pipeline read."""
     if not text:
         return False
     stripped = text.lstrip("#").strip()
     return (
         stripped.startswith("Error:")
         or stripped.startswith("CRITICAL TOOL EXECUTION ERROR")
+        or stripped.startswith("Grep Error:")
+        or stripped.startswith("Failed:")
+        or stripped.startswith("Search failed:")
         or "forcefully aborted" in text
     )
 
@@ -651,7 +660,7 @@ class BasicTuiAgent(App):
     #command-list { height: auto; max-height: 15; padding: 0 1; }
     """
 
-    SLASH_COMMANDS = [("/stop", "Stop execution"), ("/new", "New conversation"), ("/exit", "Quit app"), ("/toggle_thinking", "Toggle reasoning trace capability"), ("/toggle_persistence", "Toggle session history saving"), ("/toggle_headless_fetch", "Toggle headless-browser retry for bot-blocked fetches"), ("/config", "Show current configuration"), ("/files", "Browse memory workspace files"), ("/sessions", "List saved sessions"), ("/resume", "Resume a saved session"), ("/resume-run", "Reattach an interrupted research run")]
+    SLASH_COMMANDS = [("/stop", "Stop execution"), ("/new", "New conversation"), ("/exit", "Quit app"), ("/toggle_thinking", "Toggle reasoning trace capability"), ("/toggle_persistence", "Toggle session history saving"), ("/toggle_headless_fetch", "Toggle headless-browser retry for bot-blocked fetches"), ("/depth", "Set research depth: quick|standard|deep"), ("/style", "Set report style: standard|academic|answer"), ("/seed-url", "Queue a URL to pre-fetch before the next run (repeatable)"), ("/config", "Show current configuration"), ("/files", "Browse memory workspace files"), ("/sessions", "List saved sessions"), ("/resume", "Resume a saved session"), ("/resume-run", "Reattach an interrupted research run")]
     def __init__(self, builder, session_to_resume: str = None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.builder = builder
@@ -676,6 +685,10 @@ class BasicTuiAgent(App):
         # exist as an UNVERIFIED quarantined draft, which must still go through the full
         # completion-check loop, not be treated as "already has a good report."
         self._resuming_run = False
+        # /seed-url (2026-07-19 QA audit, TUI/CLI parity): CLI's repeatable --seed-url had no TUI
+        # equivalent. URLs queued here are fetched once at the start of the next NON-follow-up
+        # run_agent call (mirrors run_cli's seed_urls handling) and cleared after use.
+        self._pending_seed_urls = []
 
     def compose(self) -> ComposeResult:
         yield VerticalScroll(id="chat-container")
@@ -835,6 +848,35 @@ class BasicTuiAgent(App):
             state = "ON" if fetch_settings["headless_fallback"] else "OFF"
             chat = self.query_one("#chat-container", VerticalScroll)
             chat.mount(Static(Markdown(f"**System:**\nHeadless-browser fetch fallback is now **{state}**"), classes="agent-bubble"))
+            chat.scroll_end(animate=False)
+        elif query.startswith("/depth"):
+            # Session-only, same as report_style/search_mode above — not in
+            # _PERSISTABLE_SETTINGS_KEYS, mirrors why --depth never persists on the CLI either.
+            arg = query[len("/depth"):].strip().lower()
+            chat = self.query_one("#chat-container", VerticalScroll)
+            if arg not in _DEPTH_PRESETS:
+                chat.mount(Static(Markdown(f"**System:**\nUsage: `/depth quick|standard|deep` (got `{arg or '(none)'}`)"), classes="agent-bubble"))
+            else:
+                apply_depth_preset(config.cfg, arg)
+                chat.mount(Static(Markdown(f"**System:**\nResearch depth set to **{arg}** for the next run."), classes="agent-bubble"))
+            chat.scroll_end(animate=False)
+        elif query.startswith("/style"):
+            arg = query[len("/style"):].strip().lower()
+            chat = self.query_one("#chat-container", VerticalScroll)
+            if arg not in ("standard", "academic", "answer"):
+                chat.mount(Static(Markdown(f"**System:**\nUsage: `/style standard|academic|answer` (got `{arg or '(none)'}`)"), classes="agent-bubble"))
+            else:
+                config.cfg.setdefault("settings", {})["report_style"] = arg
+                chat.mount(Static(Markdown(f"**System:**\nReport style set to **{arg}** for the next run."), classes="agent-bubble"))
+            chat.scroll_end(animate=False)
+        elif query.startswith("/seed-url"):
+            arg = query[len("/seed-url"):].strip()
+            chat = self.query_one("#chat-container", VerticalScroll)
+            if not arg:
+                chat.mount(Static(Markdown("**System:**\nUsage: `/seed-url <url>` (repeatable — queues for the next research run)"), classes="agent-bubble"))
+            else:
+                self._pending_seed_urls.append(arg)
+                chat.mount(Static(Markdown(f"**System:**\nQueued seed URL ({len(self._pending_seed_urls)} pending): {arg}"), classes="agent-bubble"))
             chat.scroll_end(animate=False)
         elif query == "/toggle_persistence":
             config.cfg["settings"]["enable_session_persistence"] = not config.cfg["settings"].get("enable_session_persistence", False)
@@ -1309,6 +1351,28 @@ class BasicTuiAgent(App):
             # Create agent (re-reads config) and get session (None if conversational memory disabled)
             agent, session, dispatch_task = create_local_agent(builder=self.builder, subagent_callback=ui_callback)
             current_input = query
+            # /seed-url TUI equivalent of run_cli's --seed-url handling above: fetch queued URLs
+            # once, only at the start of a fresh (non-follow-up) run, then clear the queue. A
+            # follow-up turn already has the conversation's real fetched-URL record to build on.
+            if self._pending_seed_urls and not is_followup:
+                from tools.web import fetch_url_to_workspace, _slugify_for_filename
+                from tools.core import refund_quota
+                seeded = []
+                for u in self._pending_seed_urls:
+                    result = await fetch_url_to_workspace.func(url=u, filename=_slugify_for_filename(u, "seed"))
+                    refund_quota("fetch_url_to_workspace")
+                    ok = not str(result).lstrip().startswith("Failed")
+                    chat.mount(Static(Markdown(f"**System:**\nSeed {'fetched' if ok else 'FAILED'}: {u}"), classes="agent-bubble"))
+                    if ok:
+                        seeded.append(u)
+                if seeded:
+                    current_input += (
+                        "\n\nSEED SOURCES (provided by the user, already fetched into the workspace "
+                        "under sources/ — have your Analyzers read these before searching the open "
+                        "web, and cite them like any fetched source):\n"
+                        + "\n".join(f"- {u}" for u in seeded)
+                    )
+                self._pending_seed_urls = []
             has_requests = True
             malformed_retries = 0
             state = {"calls": {}, "current_call_id": None, "current_msg": None}
@@ -1796,12 +1860,18 @@ def build_resume_input(query: str, prior_state: dict) -> str:
 # --depth presets: one flag instead of hand-editing quotas/search_mode per run. "standard" is a
 # deliberate no-op (whatever config.yaml says); quick/deep only touch the three quotas that govern
 # research volume plus search depth and the retry budget.
+#
+# max_deepening_rounds (2026-07-19, engine-driven iterative deepening, ROADMAP item 10): quick
+# gets 0 (no deepening — matches quick's already-reduced budgets, and a quick lookup shouldn't
+# spend extra rounds chasing follow-up leads); standard is the deliberate no-op (whatever
+# config.yaml's own settings.max_deepening_rounds says, default 1 per config_template.yaml); deep
+# gets 2, same "double standard's depth" relationship deep's other overrides already have.
 _DEPTH_PRESETS = {
     "quick": {"quotas": {"delegate_tasks": 8, "web_search": 8, "fetch_url_to_workspace": 8},
-              "search_mode": "light", "max_completion_check_attempts": 2},
+              "search_mode": "light", "max_completion_check_attempts": 2, "max_deepening_rounds": 0},
     "standard": {},
     "deep": {"quotas": {"delegate_tasks": 25, "web_search": 30, "fetch_url_to_workspace": 30},
-             "search_mode": "heavy", "max_completion_check_attempts": 4},
+             "search_mode": "heavy", "max_completion_check_attempts": 4, "max_deepening_rounds": 2},
 }
 
 
@@ -1813,7 +1883,7 @@ def apply_depth_preset(cfg: dict, depth: str) -> None:
             quotas[k]["limit"] = v
         else:
             quotas[k] = v
-    for k in ("search_mode", "max_completion_check_attempts"):
+    for k in ("search_mode", "max_completion_check_attempts", "max_deepening_rounds"):
         if k in preset:
             cfg["settings"][k] = preset[k]
 

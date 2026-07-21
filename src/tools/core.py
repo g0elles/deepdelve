@@ -2,7 +2,7 @@ import contextvars
 import functools
 import asyncio
 
-from utils.run_state import task_fetched_urls_ctx
+from utils.run_state import task_fetched_urls_ctx, task_id_ctx
 
 # --- TOOL QUOTA SYSTEM ---
 # Protects local LLM workflows from infinite retry loops (e.g., repeatedly failing to parse a URL)
@@ -37,11 +37,22 @@ def check_quota(tool_name: str) -> str | None:
             # dispatch fetched 2 real sources, then hit a bare "Quota reached" wall on its very
             # next call). One small, one-time-per-tool-per-run top-up — not a per-task reserved
             # pool, which would be a bigger structural change against the shared-pool design —
-            # gives real, in-progress work a chance to actually finish its turn. Bounded: only the
-            # first tool/run crossing is rescued (`_rescued` flag on the entry), so this can't
-            # become an unbounded loophole for a task with no real progress.
-            if not entry.get("_rescued") and (task_fetched_urls_ctx.get() or None):
-                entry["_rescued"] = True
+            # gives real, in-progress work a chance to actually finish its turn.
+            #
+            # Generalized 2026-07-19 QA audit (ROADMAP's tracked open angle (a), per-task
+            # fairness): originally a single `_rescued` bool meant only the FIRST task per
+            # tool/run to hit the wall got rescued — a second or third task that also showed real
+            # progress (e.g. a redispatched retry that re-fetched something before being cut off
+            # again) got no rescue at all, the exact shared-pool-starvation shape this exists to
+            # fix. Now tracked per-task via task_id_ctx (a stable per-dispatch id, see
+            # utils/run_state.py) in a set, so EVERY distinct task showing real progress gets
+            # exactly one rescue — still bounded (each task id can only ever be rescued once,
+            # same "one small one-time top-up" ceiling as before, just applied per task instead of
+            # once globally).
+            task_id = task_id_ctx.get()
+            rescued_ids = entry.setdefault("_rescued_task_ids", set())
+            if task_id is not None and task_id not in rescued_ids and (task_fetched_urls_ctx.get() or None):
+                rescued_ids.add(task_id)
                 entry["limit"] += 2
                 entry["used"] += 1
                 return None
