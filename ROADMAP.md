@@ -1116,6 +1116,93 @@ Status as of 2026-07-20.
     procedure, in its documented priority order (`mistral-nemo:12b` and `llama3-groq-tool-use:8b`
     first — highest information value, directly implicated in the confirmed `#6155` Ollama bug).
 
+  - **`mistral-nemo:12b` re-test, 2026-07-21 — BLOCKED, a real infrastructure incompatibility, not
+    a capability verdict.** `mistralai/Mistral-Nemo-Instruct-2407` (not gated, native
+    `MistralForCausalLM` support, confirmed real bf16 checkpoint) loaded cleanly via
+    `~/.venvs/vllm` with `bitsandbytes` 4-bit quantization (same proven path as the pre-flight
+    spike) and the `mistral` tool-call parser. **Isolated tool-call smoke test with DeepDelve's
+    real nested `delegate_tasks` schema PASSED cleanly**: a genuine structured array
+    (`tasks: [{...}]`), not the stringified-JSON shape from Ollama's `#6155` bug — direct
+    confirmation the bug is absent on this backend, exactly as expected.
+    **But the full DeepDelve run failed immediately on its very first request, 100% reproducibly,
+    with `400: "chat_template is not supported for Mistral tokenizers."`** Root cause traced to
+    vLLM's own source (`vllm/tokenizers/mistral.py::validate_request_params`): vLLM's
+    Mistral-native tokenizer class unconditionally REJECTS any request containing
+    `chat_template_kwargs` — and DeepDelve's `_get_default_options()` (`src/engine/
+    orchestrator.py`) unconditionally SENDS `chat_template_kwargs: {"enable_thinking": ...}` on
+    every single dispatch, regardless of model family. This is a hard, structural mismatch between
+    DeepDelve's client and any genuine Mistral-family repo served via vLLM's native tokenizer mode
+    — not something a benchmark run can work around.
+    - **Both alternate tokenizer modes tried and both failed for a different reason each**:
+      `--tokenizer-mode auto` still auto-detects Mistral's native tokenizer class from the repo's
+      shipped `tekken.json`/`params.json` (same rejection, unchanged). `--tokenizer-mode hf` fails
+      at engine startup entirely with `AttributeError: CachedMistralCommonBackend has no attribute
+      is_fast` — this repo's shipped tokenizer files aren't compatible enough with vLLM's
+      HF-tokenizer-mode wrapper either. No third option exists in this vLLM version.
+    - **Verdict: BLOCKED, not disqualified and not re-testable as-is.** MiniCPM3-4B's "genuinely
+      open infrastructure question" framing applies here too — this never reached testing
+      `mistral-nemo`'s actual research/delegation behavior at all, so the original Ollama-served
+      2/10 score stands unconfirmed/unrefuted by this attempt. **Real fix, if this is worth pursuing
+      later, is a DeepDelve-side change**: make `_get_default_options()`'s `chat_template_kwargs`
+      injection conditional (e.g., skip it for models that don't need/support the `enable_thinking`
+      toggle at all, or catch/strip on this specific 400 and retry once) — out of scope to hack
+      into production code mid-benchmark without the user's sign-off, since it touches every model's
+      request path, not just this one candidate's. **Confirmed to affect every other genuine
+      Mistral-family repo in this project's candidate list, not just a possibility**: checked
+      `mistralai/Devstral-Small-2507` directly — same `MistralForCausalLM` architecture, same
+      shipped `tekken.json` (Mistral's native tokenizer format), so `devstral:24b`'s re-test would
+      hit the identical 400 block. `mistral:7b-instruct-v0.3` (already spiked earlier this session
+      for the bitsandbytes pre-flight check, same `mistralai` org/format) would too. **All three
+      Mistral-family candidates in the vLLM re-test plan are blocked by this same issue** — none
+      re-testable until DeepDelve's client-side fix above lands. Cleanup: config reverted to
+      `deepdelve-gpt-oss:latest`/`rag_cache: enabled: true`, vLLM server shut down cleanly (SIGTERM,
+      confirmed zero orphan both times it was killed during this attempt).
+
+  - **`llama3-groq-tool-use:8b` re-test, 2026-07-21 — DISQUALIFIED on real, docs-grounded evidence,
+    NOT a serving-stack artifact.** `Groq/Llama-3-Groq-8B-Tool-Use` (not gated, native
+    `LlamaForCausalLM`, real bf16 checkpoint). Its own native `max_position_embeddings` is only
+    8192 — below the project's ~16K floor, but this is a permanent model-level training fact, not a
+    hardware-forced squeeze, so the "discard outright below 16K" standard point 6 does NOT apply
+    here (clarified in that point above) — tested at its real native 8192 ceiling instead.
+    - **First smoke test (plain OpenAI-style `tools=` + `tool_choice: "auto"`) failed outright**:
+      the model narrated a plain-text answer, never attempting a tool call at all. Root cause
+      checked directly, not assumed: this repo's own `tokenizer_config.json` chat template has ZERO
+      tool-rendering logic (`'tools' in chat_template` is False) — a bare vanilla Llama-3 template.
+      vLLM's `tools=` parameter never got rendered into the prompt in any form this model could act
+      on, so this first result wasn't a real capability test yet.
+    - **Read the model's own HF README** (credits NousResearch for this exact tag convention) and
+      manually built its documented raw system-prompt format (`<tools>...</tools>` +
+      `<tool_call>...</tool_call>` instructions embedded directly in the system message, bypassing
+      the broken auto-render path). Result: 3/3 samples (including the model card's own recommended
+      `temperature=0.5, top_p=0.65`) produced genuinely well-formed, correctly-structured JSON with
+      a real nested `tasks` array (`#6155`-class bug confirmed absent) — but the model consistently
+      omitted the required `<tool_call>`/`</tool_call>` XML wrapper tags every single time.
+    - **Caught mid-investigation, per the user's explicit correction**: tried priming the assistant
+      turn with a literal `<tool_call>` opening tag as a fix — an UNSOURCED generic technique, not
+      verified against this model's own documentation first. User stopped this and asked directly
+      whether the model's docs had actually been consulted; they hadn't. Went back to primary
+      sources instead: checked Groq's own cookbook (documents their HOSTED API, a different serving
+      stack, not applicable to local vLLM hosting), then found and read NousResearch's own
+      `Hermes-Function-Calling` reference repo (the exact upstream implementation this model's tag
+      convention is credited to) and its real parsing code —
+      `utils.py::validate_and_extract_tool_calls` requires the literal `<tool_call>` XML element via
+      `root.findall(".//tool_call")` and returns zero tool calls without it. **Confirmed vLLM's own
+      bundled `hermes_tool_parser.py` requires the identical `<tool_call>` token** (same
+      `tool_call_start_token` check before extraction) — so this isn't a vLLM-specific integration
+      gap either; both the credited reference implementation and vLLM's own parser agree the tags
+      are mandatory.
+    - **Verdict, now grounded in real evidence rather than assumption**: the model's underlying
+      JSON-generation quality is genuinely good (correct structure, real BFCL-consistent
+      capability, no `#6155`-class bug) — but it does not reliably emit the `<tool_call>` wrapper
+      tags any correctly-built Hermes-style parser requires to extract a real structured tool call,
+      confirmed against 2 independent authoritative sources (the credited upstream reference parser
+      and vLLM's own bundled parser), not just this session's own serving setup. This is a genuine,
+      dual-confirmed disqualification, not the Ollama `#6155` artifact this candidate was
+      originally suspected of — the original schema-stage rejection stands, now on firmer evidence
+      than before. Cleanup: server shut down cleanly (SIGTERM, zero orphan), no config change
+      needed (never got far enough to wire DeepDelve's config at all — disqualified at the isolated
+      smoke-test stage, per the plan's own step 3 evidentiary bar, no full benchmark run spent).
+
 - **MiniCPM5-1B evaluated as both a paired specialist AND a full single-model replacement,
   2026-07-20/21 — DISQUALIFIED in both forms, fully closed, see the single-model entry near the
   end of this bullet for the final, clean, decisive result.**
@@ -1798,6 +1885,14 @@ concluded verdict, which is the actual complaint. Going forward, a candidate is 
    BEFORE running any benchmark; if it can't clear ~16K tokens, discard immediately with the reason
    recorded as "insufficient context on current hardware," and revisit only if better GPU/VRAM
    becomes available — don't rescale the project's own safety margins to accommodate it.
+   **Clarified 2026-07-21, `llama3-groq-tool-use:8b`**: this point targets a HARDWARE-forced squeeze
+   (a candidate whose architecture could serve more context but this GPU's VRAM/KV-cache budget
+   won't allow it) — it does NOT apply to a model whose own native `max_position_embeddings` is
+   simply small by training (`llama3-groq-tool-use:8b`'s is 8192, a real fixed fact about the
+   model, not something any amount of better GPU/VRAM would ever change). The user's own distinction:
+   a permanent model-level limit is worth actually testing at its real native ceiling — only the
+   hardware-driven, potentially-temporary kind gets the outright-discard treatment. Test the
+   candidate at its true native context in this case, don't discard on point 6 grounds.
 
 ## Model bake-off & backend investigation log (completed 2026-07-11 through 2026-07-18)
 
