@@ -813,6 +813,13 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
 
                 new_urls = task_fetched_urls_ctx.get() or []
 
+                # Computed unconditionally (NOT gated behind grounding_check.enabled below) --
+                # the add_finding fallback further down needs this as the real source when an
+                # Analyzer fetched nothing itself, regardless of whether the reconstructed-URL
+                # warning check that also reads it is turned on.
+                from utils.grounding import extract_cited_urls
+                reference_urls = {u.rstrip("/") for u in extract_cited_urls(instructions)}
+
                 # Upstream verification (Tier-2 Searcher output only, detected generically via
                 # target_children rather than hardcoded agent names — Analyzers are leaf nodes with
                 # no children). Catches a hallucinated citation in a specialist's summary before it
@@ -888,8 +895,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                 # was caught live) — added proactively since it's the same mechanism, same fix shape.
                 elif (not target_children and target_config and target_config.name in ("DocumentAnalyzer", "DataAnalyzer")
                       and gc_cfg.get("enabled", True) and gc_cfg.get("verify_specialist_output", True)):
-                    from utils.grounding import extract_cited_urls, _urls_prefix_match
-                    reference_urls = {u.rstrip("/") for u in extract_cited_urls(instructions)}
+                    from utils.grounding import _urls_prefix_match
                     if reference_urls:
                         reconstructed = [
                             u for u in extract_cited_urls(final_text)
@@ -942,6 +948,20 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                     if new_urls:
                         for u in new_urls:
                             run_state.add_finding(u["url"], finding_summary, task_name=task_name, depth=this_depth,
+                                                   follow_up_directions=follow_up_directions, agent_id=agent_id)
+                    elif reference_urls:
+                        # An Analyzer fetches nothing itself, but the Searcher that delegated to it
+                        # is instructed to pass the real source URL IN its instructions (see
+                        # prompts.py: "The Analyzer NEEDS the URL to include it in its summary") --
+                        # reference_urls (above) already extracts exactly that. Recovering the real
+                        # URL here instead of falling to task_name is the difference between a
+                        # traceable finding and the 2026-07-21 fabrication bug: task_name silently
+                        # standing in for source_url reached FindingsWriter with no marker that it
+                        # wasn't a real URL, and got cited as one (5/19 findings in a live qwen3:8b
+                        # run). See _build_findings_source_material's own non-http handling for the
+                        # remaining defense-in-depth case (no reference URL either).
+                        for u in reference_urls:
+                            run_state.add_finding(u, finding_summary, task_name=task_name, depth=this_depth,
                                                    follow_up_directions=follow_up_directions, agent_id=agent_id)
                     else:
                         run_state.add_finding(task_name, finding_summary, task_name=task_name, depth=this_depth,

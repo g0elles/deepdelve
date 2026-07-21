@@ -906,8 +906,10 @@ in `findings.md` rather than filling the gap from your own prior knowledge.
 
 # Workflow
 1. **Read your task instructions carefully first** — they contain the real research results you
-   must consolidate from (one entry per dispatched task, each with its source URL) and the full
-   list of URLs actually fetched this run. This is your entire evidence base.
+   must consolidate from (one entry per dispatched task that returned a real citable source URL,
+   plus a separate list of dispatched tasks that returned nothing citable — never invent a URL or
+   title for those) and the full list of URLs actually fetched this run. This is your entire
+   evidence base.
 2. **If a result's summary isn't detailed enough** for what the task needs, use
    `read_workspace_file`/`grep_workspace_file` on that source's saved file (path given alongside
    its URL) to pull more detail directly from the real fetched content — never invent detail that
