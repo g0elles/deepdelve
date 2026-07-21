@@ -10,7 +10,9 @@
 - **TUI/CLI feature parity is mandatory, not optional.** `src/engine/tui.py` hosts two entry
   points — `run_cli` (headless) and `run_agent`/`BasicTuiAgent` (interactive TUI) — that
   duplicate a lot of the same run-lifecycle logic instead of sharing one implementation (see
-  ROADMAP.md "B4 unify duplicated run loop", still open). Until that unification happens, any
+  ROADMAP.md's "`run_cli`/`BasicTuiAgent` run-lifecycle duplication" entry, Planned section, still
+  open — NOT the older "Phase 6 / B4" entry, which closed a narrower scope in 2026-07-14). Until
+  that unification happens, any
   new CLI flag or headless-only capability (e.g. `--resume-run`, `--depth`, `--style`,
   `--seed-url`) MUST be checked against the TUI for an equivalent — either wire it in as a slash
   command / config toggle, or explicitly note in the same commit why it's headless-only and

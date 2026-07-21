@@ -2089,6 +2089,27 @@ def main():
     # Tool not in this pool at all (e.g. quotas section omits it) -> no-op, no KeyError.
     _ensure_writer_quota_headroom({"delegate_tasks": {"used": 0, "limit": 5}})
 
+    # --- read_workspace_file quota headroom for remediation cycles (found live 2026-07-20, fixed
+    # 2026-07-21) — mirror of the write-side helper above. PeerReviewer's own 'REVIEW: CLEAN' is
+    # only trusted if it actually called read_workspace_file (see _dispatch_writer_review_fix's
+    # reads_before/reads_after gate), and unlike write_workspace_file, read_workspace_file has no
+    # entry in settings.retry_quota_topup by default, so nothing replenished it between cycles —
+    # a run with several remediation cycles could exhaust it and leave a later Fix pass unable to
+    # re-read its own source, silently dropping content instead of erroring. ---
+    from engine.completion import _ensure_reader_quota_headroom
+
+    pool_c = {"read_workspace_file": {"used": 30, "limit": 30}}
+    _ensure_reader_quota_headroom(pool_c)
+    assert pool_c["read_workspace_file"]["limit"] - pool_c["read_workspace_file"]["used"] == 2, (
+        "an exhausted read_workspace_file pool must be topped up to guarantee 2 more calls", pool_c)
+
+    pool_d = {"read_workspace_file": {"used": 1, "limit": 10}}
+    _ensure_reader_quota_headroom(pool_d)
+    assert pool_d["read_workspace_file"]["limit"] == 10, (
+        "plenty of existing headroom must be left untouched, no silent inflation", pool_d)
+
+    _ensure_reader_quota_headroom({"write_workspace_file": {"used": 0, "limit": 5}})  # no-op, no KeyError
+
     # --- missing_findings escalation (live case 2026-07-13): a real run produced literally ZERO
     # content (no tool call, no text) in response to this exact nudge for 6 consecutive attempts,
     # then genuinely self-corrected with real findings.md content on the 7th. Unlike
