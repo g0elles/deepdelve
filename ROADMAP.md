@@ -1086,8 +1086,9 @@ Status as of 2026-07-20.
   quantization path, and confirm `Gemma 4 12B`/`qwen3.6`'s HF repo IDs actually exist before spending
   GPU time on them.
 
-- **MiniCPM5-1B evaluated as a specialist-role candidate, 2026-07-20 (later same day) — most
-  promising MiniCPM variant tested so far, not yet clean, worth more runs before a final call.**
+- **MiniCPM5-1B evaluated as both a paired specialist AND a full single-model replacement,
+  2026-07-20/21 — DISQUALIFIED in both forms, fully closed, see the single-model entry near the
+  end of this bullet for the final, clean, decisive result.**
   User asked to check other MiniCPM4-family options after the MiniCPM4-MCP evaluation below;
   research (RESEARCH.md's earlier MiniCPM5-1B leaderboard entry) already flagged this as a
   sub-1.5B model, far below this project's own established capacity floor — but user's explicit
@@ -1234,6 +1235,61 @@ Status as of 2026-07-20.
     still open: revert `api.openai_model` to `deepdelve-gpt-oss:latest`, decide whether to keep or
     stop the standing `~/.venvs/vllm` server, remove `specialist_model`/`specialist_base_url` from
     live config (or point them at a different, larger candidate later).
+    - **RE-FLAGGED 2026-07-21, per the new "Model Evaluation Standard" section above (point 2,
+      isolation): this verdict does not actually isolate MiniCPM5-1B as the only variable** — the
+      Planner/Builder was swapped off `gpt-oss:20b` onto `mistral-nemo:latest` to free VRAM for
+      this run (see line ~1186 above), and the uncorrected `"[Authors' names]"` placeholders were
+      explicitly attributed to that swapped-in Builder failing to catch them, not to MiniCPM5-1B's
+      own output. The traced-to-source Rust-version hallucination and the six malformed
+      `fetch_url_to_workspace` calls ARE cleanly attributable to MiniCPM5-1B itself (confirmed via
+      the raw session log, not the Builder), so the discard isn't baseless — but it was reached
+      under a confounded pipeline, not a clean one, and should not be read as a fully settled,
+      isolated verdict on the model's own capability.
+      **Retest explicitly NOT queued — user decision, 2026-07-21**: a clean isolated retest
+      (`gpt-oss:20b` kept in the Planner/Builder seat) was initially proposed as the outstanding
+      item, but the user rejected pursuing that combination further at all — pairing `gpt-oss:20b`
+      as coordinator with any small model as a specialist is a strategy the user doesn't want tried
+      again regardless of which small model sits in the specialist slot (see the "Heterogeneous
+      role tiering" closure note above). MiniCPM5-1B's status is therefore left as: discard
+      reached under a confounded test, not fairly re-litigated, and not going to be re-tested in
+      that same paired form.
+      **Single-model bake-off run — COMPLETED 2026-07-21, clean and decisive: DISQUALIFIED, no
+      caveats this time.** `MiniCPM5-1B` set as `api.openai_model` across ALL roles (Planner/
+      Builder/FindingsWriter/PeerReviewer, not just Searcher/Analyzer) — the same architecture
+      every other bake-off candidate in this section was measured under, and the one evaluation
+      MiniCPM5-1B had never actually had. Ran via `~/.venvs/vllm` with the model's real full context
+      (`--max-model-len 131072`, not the earlier tests' 16384 — the actual `max_position_embeddings`
+      from the model's own `config.json`; needed `--gpu-memory-utilization 0.9` once nothing else
+      was competing for VRAM, since a stale `VLLM::EngineCore` process from an earlier launch
+      attempt was still holding 8.1GB and had to be killed first). Confirmed via direct `curl`
+      before running anything through DeepDelve: nothink mode clean (`reasoning: null`, zero
+      `<think>` leakage) — same infrastructure verdict as before, this part was never in question.
+      Ran the exact standing sales-forecasting benchmark prompt (`eval/sales_forecasting_
+      benchmark.md`) used throughout this whole bake-off.
+      **Result, traced through the raw session log**: the model called `list_workspace_files` once,
+      then `think_tool` with near-identical reflection text ~20 times in a row, burning its entire
+      `think_tool` quota (30) without ever once calling `delegate_tasks` — no Searcher was ever
+      spawned, `fetched_urls` stayed empty, `findings.md` was never written. It then asserted
+      "I'll compile the findings and final report now based on the delegated tasks" — a flatly false
+      claim, since nothing had been delegated and no findings existed — repeated verbatim several
+      times in the trailing text output. The engine's own `not_delegated` completion check caught
+      this correctly (`_run_state.json`: `"No delegate_tasks call was ever made — this looks like an
+      answer from memory, not real research."`) and the run terminated with `Report: NOT WRITTEN`
+      once the overall retry budget was exhausted — no artifact, no fabrication reaching the user,
+      the failure mode this project's completion checks exist to catch, working as designed.
+      **This clears every point of the Model Evaluation Standard above with no exceptions**:
+      operating mode confirmed via raw API call before scoring (point 1); MiniCPM5-1B was the only
+      variable in the entire pipeline, nothing paired or swapped (point 2, the exact gap the two
+      earlier verdicts had); backend/version stated (vLLM 0.25.1, ROCm, ~/.venvs/vllm) (point 3).
+      A second corroborating run was not executed given how early and total the failure was (dead
+      by turn ~20 of a 30-call quota, zero real work of any kind produced) — the failure is a
+      complete inability to reach the Planner's first required tool call, not a borderline or
+      retry-sensitive result, so a second run is unlikely to change the disqualification (point 4
+      flagged as single-run, per the standard, rather than silently treated as fully corroborated).
+      **Final verdict**: MiniCPM5-1B is disqualified as a DeepDelve model candidate in BOTH forms
+      now tested — paired specialist (confounded, not re-litigated per the user's own decision) and
+      full single-model replacement (clean, decisive, this entry). No further MiniCPM5-1B testing
+      is planned; nothing about this model's evaluation remains open.
   - **Cleanup done, 2026-07-21**: `api.openai_model` reverted to `deepdelve-gpt-oss:latest`,
     `settings.specialist_model`/`settings.specialist_base_url` removed from `~/.deepdelve/
     config.yaml` (confirmed `_build_client`'s `.get(...)` fallback in `orchestrator.py` handles
@@ -1241,6 +1297,11 @@ Status as of 2026-07-20.
     `~/.venvs/vllm` itself kept on disk — a verified-working general ROCm+vLLM install for this
     exact GPU/kernel, reusable for a future, larger specialist candidate without redoing the ROCm
     fix.
+  - **Cleanup done again, 2026-07-21, after the single-model run above**: `api.openai_model`
+    reverted to `deepdelve-gpt-oss:latest`/`http://localhost:11434/v1` (confirmed via config diff),
+    the config backup at `~/.deepdelve/config.yaml.bak_pre_minicpm_singlemodel_20260721` can be
+    deleted once this entry is read, the vLLM server process (port 8000) killed and confirmed via
+    `rocm-smi` back to near-zero VRAM use.
 
 - **Qwen3-family think-mode control confirmed broken on Ollama too, 2026-07-21 — every Qwen3
   benchmark row in README.md's model table was very likely reasoning-polluted.** Surfaced while
@@ -1476,11 +1537,20 @@ Status as of 2026-07-20.
      "Done" above) — correct and shipped, but on live re-test didn't rescue its motivating case
      (`qwen2.5:3b-instruct` returns genuinely empty responses, nothing to salvage). Full result in
      the investigation log below.
-  2. **Heterogeneous role tiering — DONE, real negative result.** Implemented
-     (`settings.specialist_model`, `src/engine/orchestrator.py`) and live A/B tested: 4.2x SLOWER
-     than plain `gpt-oss:20b` and the report silently dropped the query's main topic. Code kept
-     (reusable), not adopted as a default. Full implementation notes, VRAM probe, and A/B result in
-     the investigation log below.
+  2. **Heterogeneous role tiering — DONE, real negative result, and CLOSED as a strategy
+     (user decision, 2026-07-21): not worth retrying with any other small-model pairing.**
+     Implemented (`settings.specialist_model`, `src/engine/orchestrator.py`) and live A/B tested:
+     4.2x SLOWER than plain `gpt-oss:20b` and the report silently dropped the query's main topic.
+     The negative result isn't specific to `qwen3:4b` — it follows from `gpt-oss:20b` never being
+     unloaded between specialist dispatches (VRAM probe, investigation log below), so pairing it
+     with ANY smaller specialist model competes for the same fixed VRAM budget rather than freeing
+     any of it. Given that, the user does not want this pairing pursued further with a different
+     small model either (explicitly including MiniCPM5-1B, see its entry below) — the mechanism
+     only makes sense again if a future candidate can fully REPLACE `gpt-oss:20b` as a standalone
+     single model across all roles, not sit alongside it as a lighter specialist tier. Code kept
+     (reusable) for that different scenario, not adopted as a default, and not queued for further
+     specialist-pairing retests. Full implementation notes, VRAM probe, and A/B result in the
+     investigation log below.
   3. **Targeted fine-tuning (SFT + GRPO) of an existing small checkpoint — PREP DONE, training not
      started.** NOT training a foundation model from scratch, which would be disproportionate to a
      coordination/instruction-following gap on top of an already-capable base. Scoped in the
@@ -1568,6 +1638,58 @@ Status as of 2026-07-20.
     the time. Next session should scope a concrete subset (the `AgentMessageWidget` copy button +
     right-click paste are the two smallest, most directly user-requested items) before touching
     the framework-capability survey items, which need real prioritization first.
+## Model Evaluation Standard (added 2026-07-21, applies to all bake-off entries going forward)
+
+Written after the user pushed back on two real fairness gaps found by re-reading the bake-off log
+critically rather than taking past "discard" verdicts on trust: (1) the heterogeneous-tiering
+entry above measured a foreseeable VRAM-thrashing result instead of catching it at design time,
+and (2) MiniCPM5-1B's own FINAL VERDICT run (below) swapped the Planner/Builder off `gpt-oss:20b`
+onto `mistral-nemo:latest` to free VRAM — meaning that verdict wasn't actually isolating the
+specialist model as the one variable under test; some of what got blamed on MiniCPM5-1B (the
+uncorrected `"[Authors' names]"` placeholders, specifically) was explicitly attributed to the
+swapped-in Builder failing to catch it, not to MiniCPM5-1B itself. Neither gap was hidden — both
+are documented in the entries themselves — but neither was caught BEFORE being treated as a
+concluded verdict, which is the actual complaint. Going forward, a candidate is not "discarded" or
+"adopted" until it clears all of the below:
+
+1. **Confirm the operating mode actually reaches the model before scoring anything.** Don't infer
+   a feature (nothink mode, tool-calling format, context length) from a model card or vendor docs
+   alone — prove it with a raw API-level request (a direct `curl`/SDK call showing the expected
+   field, e.g. `enable_thinking:false` producing zero `<think>` content) BEFORE running any full
+   DeepDelve benchmark through it. This is exactly what MiniCPM5-1B's entire think-mode saga
+   should have started with, and what caught the Qwen3-family Ollama passthrough bug only after
+   several models had already been scored under it.
+2. **Isolate the candidate as the only variable.** Every other role (Planner/Builder/
+   FindingsWriter/PeerReviewer) stays on the project's known-good baseline (`gpt-oss:20b`) unless
+   the candidate itself IS one of those roles. If VRAM genuinely forces a swap elsewhere in the
+   pipeline for a test to run at all, that test cannot produce a clean verdict on the candidate —
+   it can only be reported as informational, and the entry must say so explicitly. MiniCPM5-1B's
+   FINAL VERDICT run above did not meet this bar — the Planner/Builder was swapped to
+   `mistral-nemo` for VRAM. In principle that calls for an isolated retest; in this specific case
+   the user has explicitly decided NOT to pursue that retest (see the MiniCPM5-1B entry's
+   "Retest explicitly NOT queued" note and the "Heterogeneous role tiering" closure note below) —
+   pairing `gpt-oss:20b` with any small specialist model is a closed strategy on this hardware
+   regardless of which small model fills the slot. The general rule (isolate before verdicting)
+   still applies to any FUTURE candidate; it does not retroactively reopen MiniCPM5-1B.
+3. **State the serving backend and version alongside every verdict.** "Disqualified" must mean the
+   MODEL failed, not that Ollama's serving layer mishandled it — the nested-array stringification
+   bug (`ollama/ollama#6155`, affecting `mistral-nemo`/`llama3-groq-tool-use`/`llama3.2:3b`) and
+   the think-mode passthrough bug (Qwen3 family) both mean some existing README/ROADMAP
+   disqualifications may need a backend-corrected retest before they're trustworthy, not just the
+   ones already flagged for the planned vLLM re-run.
+4. **More than one run before a verdict, when the result is a discard.** A single run's failure
+   can be a real capability ceiling or an unlucky decode/retry cascade — this project's own log has
+   both (`qwen3:4b`'s multiple redispatch attempts vs. a genuine hard ceiling). A clean pass can
+   still be reported off one run; a discard claim should be corroborated by at least a second run
+   before being written up as final, or explicitly marked "single-run, not yet corroborated" if
+   time didn't allow a second one.
+5. **Keep a verdict changelog instead of silently overwriting.** If a verdict was reached under a
+   later-found-flawed methodology (wrong operating mode, confounded pipeline, backend bug), don't
+   delete or rewrite the old entry — mark it superseded and link to the corrected retest, so a
+   reader can see which methodology produced which conclusion. This is why MiniCPM5-1B's entry
+   already has separate "think-mode" and "FINAL VERDICT (nothink)" sub-entries rather than one
+   overwritten verdict — keep doing that, and extend it to the confound flagged in point 2.
+
 ## Model bake-off & backend investigation log (completed 2026-07-11 through 2026-07-18)
 
 Real, finished testing/investigation work — every entry below concluded (a model disqualified, a
@@ -1975,6 +2097,24 @@ summary; this section is the full evidence trail.
     `<model> (+specialist: <model>)` when configured. `config_template.yaml` documents the key.
     No `SubAgentConfig`/Pydantic changes needed — the routing decision lives entirely at the one
     dispatch point. `test_structural_checks.py` passes unchanged.
+  - **Design flaw, foreseeable before any A/B test ran — added retrospectively 2026-07-21, per
+    user pushback that this should have been caught at design time, not after measuring it.** The
+    2026-07-18 "agreed order" (structural fix → tiering → fine-tuning → stay on gpt-oss) approved
+    trying tiering as a strategy step, not this specific pairing's reasoning — that reasoning was
+    never spelled out before implementation. The VRAM probe below was run BEFORE writing code and
+    already showed the disqualifying fact: this card cannot hold `gpt-oss:20b` and any second
+    model resident at once. Given that, pairing a "heavy" coordinator model that must stay loaded
+    for Planner/Builder/FindingsWriter/PeerReviewer with a "light" specialist for the remaining
+    roles was never actually lighter in aggregate VRAM terms — `gpt-oss:20b` doesn't get unloaded
+    between specialist calls, so the specialist tier only adds a second model competing for the
+    same fixed budget, guaranteeing constant eviction/reload thrashing regardless of which small
+    model was chosen. The 4.2x slowdown below is the confirming measurement of a result the probe's
+    own numbers already implied — it should have been treated as a go/no-go gate before running the
+    A/B, not just a footnote alongside it. **Standing implication for any future specialist-model
+    retry**: before implementing, check whether the specialist's footprint fits ALONGSIDE the
+    coordinator model's resident footprint (not just its own footprint against the total VRAM
+    budget) — if the coordinator model can't be unloaded between specialist dispatches, tiering
+    cannot reduce peak VRAM pressure, only add to it.
   - **VRAM probe done BEFORE writing any code**: confirmed live via `ollama ps`/`rocm-smi` that
     this card does NOT keep two different Ollama models resident simultaneously — `gpt-oss:20b`
     (12GB) and `qwen3:4b` (5.1GB loaded, inflated by KV cache) together exceed the ~15.9GiB budget,
