@@ -1203,6 +1203,43 @@ Status as of 2026-07-20.
       needed (never got far enough to wire DeepDelve's config at all — disqualified at the isolated
       smoke-test stage, per the plan's own step 3 evidentiary bar, no full benchmark run spent).
 
+- **`qwen3:8b` vLLM re-test, 2026-07-21 — KILLED mid-run, real DeepDelve-side fabrication bug
+  found and fixed, no verdict on the model yet.** Loaded via `~/.venvs/vllm`, nothink mode
+  confirmed clean via direct curl before running (README's qwen3-family think-mode bug is Ollama's
+  own serving-layer defect, not the model's — already confirmed absent on vLLM the same session).
+  Run was genuinely progressing (3rd delegation round, 18 fetched URLs, 19 findings, clearly
+  better-behaved than any MiniCPM candidate) when a user-requested cross-check against the real
+  `sources/` folder caught a real integrity problem: only 15 files on disk vs. 18 claimed
+  `fetched_urls` and 19 findings, and **5 of 19 findings had a fabricated `source_url`** — a leaked
+  task/instruction name string instead of a real URL. Run killed before reaching FindingsWriter;
+  no verdict reached on `qwen3:8b` itself.
+  - **Root-caused, 2026-07-21, confirmed model-agnostic**: `_run_single_task`'s `add_finding`
+    fallback (`src/engine/orchestrator.py`) used the bare `task_name` as `source_url` whenever a
+    dispatched task (any Analyzer-tier call, by design) fetched no URL of its own, with no marker
+    distinguishing it from a real citation. `_build_findings_source_material`
+    (`src/engine/completion.py`) then rendered every finding identically as `### Source:
+    {source_url}` regardless of whether that value was a real URL or the placeholder — FindingsWriter
+    (any model, on any backend) had no structural signal to tell them apart. This is the same
+    mechanism regardless of which model is serving FindingsWriter, so it was not `qwen3:8b`-specific
+    and would have equally exposed every other vLLM re-test candidate still to come.
+  - **Fixed, commit `0852cc4`**: (1) `orchestrator.py` now recovers the real reference URL a
+    Searcher handed its Analyzer (already extracted for the reconstructed-URL check, now computed
+    unconditionally rather than gated behind `grounding_check.enabled`) before ever falling back to
+    `task_name`; (2) `_build_findings_source_material` never renders a non-`http(s)` `source_url` as
+    a `### Source: ...` entry anymore — such findings are named in a separate, explicitly
+    non-citable list instead, with instructions not to invent a source for them. Matters more given
+    this project tiers some writer roles onto smaller specialist models
+    (`settings.specialist_model`), which are less likely to infer the ambiguity on their own.
+    `test_structural_checks.py` extended (`_findings_uncited_fallback_scenario`) and existing
+    filename-scenario assertion corrected to match the new behavior; both pass.
+  - **No past verdict in this file was corrupted by this bug**: MiniCPM5-1B's disqualification was
+    zero `delegate_tasks` calls (never reached findings.md), `llama3-groq-tool-use:8b`'s was a
+    missing `<tool_call>` wrapper (never reached research), `mistral-nemo:12b`'s was a first-request
+    400 (never reached research) — none of the currently-closed vLLM re-test verdicts relied on
+    findings.md content, so none need re-opening.
+  - **Next step**: retest `qwen3:8b` fresh now that the bug is fixed — this candidate is the most
+    informative next run precisely because it's the one that surfaced the bug.
+
 - **MiniCPM5-1B evaluated as both a paired specialist AND a full single-model replacement,
   2026-07-20/21 — DISQUALIFIED in both forms, fully closed, see the single-model entry near the
   end of this bullet for the final, clean, decisive result.**
