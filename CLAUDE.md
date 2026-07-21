@@ -67,3 +67,10 @@
   `gpt-oss:20b` to free VRAM, so it never actually isolated MiniCPM5-1B as the tested variable.
   Before writing any new candidate verdict, check it against all 5 points; when re-reading a past
   verdict for any reason, treat it as a standing critical-review pass, not a one-time audit.
+  **6th point, added 2026-07-21**: a candidate that can't fit the project's ~16K-token context
+  floor (`config_template.yaml`'s `context_budget_chars: 50000` is calibrated as safe margin under
+  a 16K-token `num_ctx` — see `README.md`'s Context management section) is discarded outright on
+  hardware grounds, not proportionally rescaled to fit its actual smaller context. Check the
+  candidate's real max feasible serving context on this hardware BEFORE benchmarking; if it can't
+  clear ~16K tokens, discard immediately as "insufficient context on current hardware" and revisit
+  only when better GPU/VRAM is available.
