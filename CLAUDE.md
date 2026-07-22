@@ -10,7 +10,7 @@
 - **TUI/CLI feature parity is mandatory, not optional.** `src/engine/tui.py` hosts two entry
   points — `run_cli` (headless) and `run_agent`/`BasicTuiAgent` (interactive TUI) — that
   duplicate a lot of the same run-lifecycle logic instead of sharing one implementation (see
-  ROADMAP.md's "`run_cli`/`BasicTuiAgent` run-lifecycle duplication" entry, Planned section, still
+  ROADMAP.md's "`run_cli`/`BasicTuiAgent` run-lifecycle duplication" entry, Pending section, still
   open — NOT the older "Phase 6 / B4" entry, which closed a narrower scope in 2026-07-14). Until
   that unification happens, any
   new CLI flag or headless-only capability (e.g. `--resume-run`, `--depth`, `--style`,
@@ -50,8 +50,8 @@
     `CURRENT.md` containing only what's still open — mirrors the README/ROADMAP-vs-session-status
     split: durable, load-bearing facts belong in README/ROADMAP; `CURRENT.md` is short-lived
     working memory for what's still in flight.
-- **Model bake-off verdicts must clear the "Model Evaluation Standard"** (`ROADMAP.md`, right
-  before the "Model bake-off & backend investigation log" section) before being treated as
+- **Model bake-off verdicts must clear the "Model Evaluation Standard"** (`ROADMAP.md`'s own
+  top-level section, right before History) before being treated as
   settled, discard OR adopt: (1) confirm the operating mode (think/nothink, tool format, context
   length) reaches the model via a raw API-level test BEFORE running a full benchmark through
   it — don't infer from vendor docs alone; (2) isolate the candidate as the only variable — every

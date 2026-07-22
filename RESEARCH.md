@@ -838,7 +838,7 @@ Still open, in priority order:
 ## 5. What's merged into ROADMAP.md/README.md (done 2026-07-20)
 
 **Merged**: capacity-floor number, both constraint-tax findings (+ the routing-classifier proposal
-they motivate, now a scoped ROADMAP "Planned" item), the MAST taxonomy mapping onto DeepDelve's own
+they motivate, now a scoped ROADMAP "Pending" item), the MAST taxonomy mapping onto DeepDelve's own
 failure catalog, ATLAS/AdaMAST, the three-way "architecture amplifies, doesn't rescue, capability"
 convergence (capacity-floor + PIVOT + ATLAS), the three-candidate-cause hypothesis for the recurring
 "content vanishes during synthesis" pattern (dispatch-size fix already shipped + Lost in the Middle
@@ -853,7 +853,7 @@ actually happens. The open leads sections (§2, currently empty; §4) stay here 
 ## 6. Synthesis: architectural proposal — a non-generative routing layer for `delegate_tasks`
 
 **Status: IMPLEMENTED and live-verified, 2026-07-20 (same day).** Full implementation detail in
-ROADMAP.md's "Done" section. Everything below is the original research/planning writeup, kept for
+ROADMAP.md's "Completed" section. Everything below is the original research/planning writeup, kept for
 the reasoning trail — the "Not yet done" section at the end is now stale (superseded by ROADMAP.md).
 Real held-out results (0.82 accuracy, per-class precision 0.44-0.89) and a real extraction-script
 bug found and fixed (an initial version silently missed 100% of DocumentAnalyzer/DataAnalyzer
@@ -1234,7 +1234,7 @@ Garani, Independent Researcher, published at *Proceedings of the 6th Workshop on
     guardrails on execution depth, allowing cascading costs through recursive tool calls." This is
     the EXACT shape of what happened live, today, in both MiniCPM4-MCP and MiniCPM5-1B's tests
     (loops burning through `web_search`/`fetch_url_to_workspace` quota, forced aborts — see
-    ROADMAP.md's "Planned" entries for both). DeepDelve's quota system (`tools/core.py`) is already
+    ROADMAP.md's "Pending" entries for both). DeepDelve's quota system (`tools/core.py`) is already
     a structural guardrail against exactly this named-but-unstudied failure mode — a real, working
     mitigation for a problem the RAG literature itself hasn't empirically validated a fix for yet.
   - **F26/F27, Planning Failures / Tool Selection and Execution Errors** (both Limited evidence):

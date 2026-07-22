@@ -1,6 +1,6 @@
 """
 Extracts real (instructions, agent_id) pairs from this project's own `delegate_tasks` history for
-the non-generative routing-classifier proposal (RESEARCH.md §6, merged into ROADMAP.md "Planned"
+the non-generative routing-classifier proposal (RESEARCH.md §6, merged into ROADMAP.md "Pending"
 2026-07-20). Unlike extract_dataset.py's other extractors, this needs NO research_output/
 correlation — every real delegate_tasks call the Planner ever made is already sitting directly in
 the session logs (`source == "Agent"`, `type == "function_call"`, `data.name == "delegate_tasks"`),

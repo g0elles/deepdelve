@@ -2107,7 +2107,7 @@ def main():
 
         contextvars.copy_context().run(_no_salvage_when_real_write_happened_scenario)
 
-    # --- Builder write_workspace_file quota headroom (ROADMAP "Planned": a Build->Review->Fix
+    # --- Builder write_workspace_file quota headroom (ROADMAP "Pending": a Build->Review->Fix
     # cycle can burn up to 2 write_workspace_file calls — Builder's initial rewrite plus one
     # corrective Fix pass — against the same shared pool the Planner's own findings.md writes draw
     # from; a low-quota config could starve Builder specifically mid-cycle). ---

@@ -1,5 +1,5 @@
 """
-Runtime inference for the non-generative routing classifier (RESEARCH.md §6, ROADMAP.md "Planned",
+Runtime inference for the non-generative routing classifier (RESEARCH.md §6, ROADMAP.md "Pending",
 2026-07-20) — a frozen sentence-embedding model + logistic regression trained offline by
 finetune/train_agent_routing_classifier.py on real historical (instructions, agent_id) pairs.
 
