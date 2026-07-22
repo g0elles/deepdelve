@@ -848,6 +848,57 @@ Status as of 2026-07-20.
     reasoning to synthesis/verification, only to planning. None of these three are confirmed as
     DeepDelve's own root cause; each is a real, externally-sourced, testable hypothesis for the
     still-open "common structural cause" investigation already flagged in this file.
+  - **CONFIRMED, 2026-07-21 — a 4th, DeepDelve-internal mechanism, ground-truthed against real
+    `_run_state.json` files on disk, not a literature hypothesis.** Directly answers the
+    heterogeneous-tiering incident's own open question above ("no quota exhaustion is visible in
+    this run's own attempt log") — the missing variable was never a quota at all.
+    - **Mechanism**: `sub_agent_timeout_minutes` (`src/engine/orchestrator.py:701-703,721-738`) is
+      a hard wall-clock cutoff on a sub-agent dispatch's ENTIRE stream, independent of the quota
+      pools and invisible to `completion_check_attempts`' logging. It can fire AFTER a
+      Searcher/WebSearcher has already fetched a real URL (via `fetch_url_to_workspace`,
+      tracked in `task_fetched_urls_ctx`) but BEFORE the model emits its synthesized summary text —
+      leaving a `run_state.findings` entry with a REAL `source_url` whose entire `summary` is
+      verbatim `"[SYSTEM: task '<name>' cut short -- sub_agent_timeout_minutes (N) exceeded...]"`,
+      zero actual content. When `check_thin_coverage` (or a completion-check retry) redispatches
+      the SAME `task_name` — a fresh-context dispatch with no memory of the earlier partial
+      progress — the retry sometimes narrates genuinely good synthesized content but without
+      re-fetching a URL this round (relying on reasoning/recall, or citing something not captured
+      as a real fetch), landing in `add_finding`'s task_name-fallback bucket (see the source_url
+      fabrication fix earlier this file). **The real content and its real URL end up split across
+      two separate, un-mergeable `findings` entries for the same task** — one has the citable URL
+      with nothing worth citing, the other has real content FindingsWriter cannot legitimately cite
+      (per its own "never a bare task name" rule, correctly enforced). Net effect: the whole topic
+      silently vanishes from `findings.md`, with nothing in the attempt log pointing at why.
+    - **Confirmed NOT a one-off, ground-truthed against every real run on disk** (107
+      `_run_state.json` files under `research_output/`): 44 findings entries across 9 distinct runs
+      show the exact real-URL + timeout-cutoff-only-summary pattern. In 3 of those 9 runs, the full
+      split-brain pattern is present — a same-`task_name` entry with substantial real-looking
+      content (300+ chars) under the task-name-fallback `source_url` — confirmed reproduced across
+      THREE different dates and backends: `20260714_201217` (`top_heuristics`), `20260718_141225`
+      (the exact heterogeneous-tiering A/B run analyzed above — `background_heuristics`'s two
+      cutoff entries carry the real `sciencedirect.com`/`forecastio.ai` URLs with nothing but the
+      cutoff message, while a THIRD `background_heuristics` entry has a genuinely detailed N-BEATS/
+      TFT/arXiv writeup under the bare task-name fallback), and `20260721_174718` (this same
+      session's killed `qwen3:8b` vLLM re-test run).
+    - **Candidate fixes, not yet implemented, pending user sign-off (touches the shared dispatch
+      loop, every sub-agent's blast radius)**:
+      1. **Ring-fence the timeout, mirroring the existing quota-fairness fix.** `check_quota`
+         already ring-fences remaining QUOTA for a task that's shown real fetch activity (see the
+         quota-starvation incident above); the same philosophy applied to
+         `sub_agent_timeout_minutes` (extend the deadline once, by a bounded amount, for a task
+         that has a real `task_fetched_urls_ctx` entry but hasn't finished synthesizing) would
+         prevent the cutoff from ever severing a real fetch from its own summary in the first
+         place — closest to a true root-cause fix, most consistent with prior art in this codebase.
+      2. **Give a retry context of its own prior partial progress.** A redispatch of a `task_name`
+         that already has an on-disk fetched file from an earlier cut-short attempt currently starts
+         from a totally blank slate. Telling it explicitly ("you already fetched `<url>`, saved as
+         `<filename>` — delegate it to an Analyzer now instead of searching again") would let the
+         retry finish the SAME real work instead of restarting and orphaning it.
+      3. **Contain, don't recover**: at minimum, a `findings` entry whose entire summary is the
+         cutoff system message should be excluded from `_build_findings_source_material`'s citable
+         entries (same treatment as today's non-http fallback fix) and named in the uncited-tasks
+         note instead — turns a silent loss into an explicit, acknowledged gap even without
+         recovering the content. Smallest fix, but doesn't rescue anything.
   - **Comparative survey against 5 other real deep-research-agent projects** (Tongyi DeepResearch,
     dzhng/deep-research, CYC2002tommy/Deep-Research-Agent, SkyworkAI/DeepResearchAgent, nashsu/
     llm_wiki — all already credited in README's References) answered a deliberate test question from
