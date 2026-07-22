@@ -3,6 +3,7 @@ import asyncio
 import re
 import time
 from dataclasses import dataclass
+from typing import Optional
 from agent_framework.openai import OpenAIChatCompletionClient
 from agent_framework import tool, AgentSession, Message
 from tools import with_quota, think_tool, QuotaAbortException
@@ -167,6 +168,21 @@ _EXCLUSION_CUE_RE = re.compile(
     r"(?:include|research|cover)|leave\s+out|other\s+than)\s*:?\s+([^.;\n]{2,200})",
     re.IGNORECASE,
 )
+
+def _ring_fenced_deadline(task_start: float, task_deadline: float, sub_agent_timeout_minutes: float,
+                           sdk_timeout_ceiling_seconds: float) -> Optional[float]:
+    """Pure arithmetic core of the task_deadline ring-fence (2026-07-21, "4th synthesis-vanishing
+    mechanism" fix 1) -- split out from the async dispatch loop specifically so the SDK-timeout
+    cap (the one real bug risk an ad-hoc extension could reintroduce, see
+    _sdk_timeout_ceiling_seconds' own comment) is covered by a plain assertion instead of only
+    being exercised live. Returns the new deadline, or None if extending wouldn't move it forward
+    (caller should not extend in that case)."""
+    extended = min(
+        task_start + sub_agent_timeout_minutes * 2 * 60,
+        task_start + sdk_timeout_ceiling_seconds - 60,
+    )
+    return extended if extended > task_deadline else None
+
 
 def _extract_excluded_topics(query: str) -> set:
     """Topics the user's own query explicitly ruled out (e.g. '... excluding Agritech, HealthTech
@@ -505,6 +521,19 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
     # SDK's own blunt timeout, which would otherwise still win the race in realistic configs).
     _sub_agent_timeout_minutes = config.cfg.get("settings", {}).get("sub_agent_timeout_minutes", 0) or 0
 
+    # Absolute ceiling for the one-time deadline ring-fence below (see task_deadline/
+    # deadline_extended in _run_single_task) -- mirrors _build_client's own sdk_timeout formula
+    # exactly (same inputs, same +300s/floor-3600s shape) so an extended task_deadline can never
+    # be pushed past the openai SDK client's own blunt connection timeout. Without this cap, a
+    # ring-fenced extension would silently reintroduce the exact SDK-wins-the-race bug
+    # _build_client's sdk_timeout comment already documents fixing once (SDK timeout fires first,
+    # discards the whole response, throws a raw exception instead of our graceful cutoff).
+    _max_run_minutes_for_sdk_cap = config.cfg.get("settings", {}).get("max_run_minutes", 0) or 0
+    _sdk_timeout_ceiling_seconds = max(
+        _max_run_minutes_for_sdk_cap * 60, _sub_agent_timeout_minutes * 60, 0
+    ) + 300
+    _sdk_timeout_ceiling_seconds = max(_sdk_timeout_ceiling_seconds, 3600)
+
     # Computed here (not inline where used) so both the Planner's own instructions AND the
     # Builder sub-agent's instructions (formatted inside _run_single_task below) can reference
     # {report_style_instructions}/{citation_format_instructions} — Builder is now the only role
@@ -698,9 +727,37 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                     # shared with any other concurrent/sequential dispatch) -- covers this whole
                     # sub-agent call's total wall-clock budget, same "one deadline for the whole
                     # thing" semantics max_run_minutes already applies to the Planner's own run.
+                    task_start = time.monotonic()
                     task_deadline = (
-                        time.monotonic() + _sub_agent_timeout_minutes * 60
+                        task_start + _sub_agent_timeout_minutes * 60
                     ) if _sub_agent_timeout_minutes else None
+                    # Ring-fence, mirroring tools/core.py::check_quota's existing one-time-per-task
+                    # rescue (2026-07-21, "4th synthesis-vanishing mechanism"): a dispatch that has
+                    # already fetched something real (task_fetched_urls_ctx non-empty) but hasn't
+                    # finished synthesizing it gets ONE deadline extension instead of being cut off
+                    # mid-turn -- otherwise the real fetch and its summary permanently split across
+                    # two un-mergeable findings entries (see ROADMAP.md's writeup). Bounded twice
+                    # over: only fires once per dispatch (deadline_extended), and never past
+                    # _sdk_timeout_ceiling_seconds minus a safety margin (see that variable's own
+                    # comment for why).
+                    deadline_extended = False
+
+                    def _try_extend_deadline_once() -> bool:
+                        nonlocal task_deadline, deadline_extended
+                        if deadline_extended or not task_deadline:
+                            return False
+                        if not (task_fetched_urls_ctx.get() or None):
+                            return False
+                        extended = _ring_fenced_deadline(
+                            task_start, task_deadline, _sub_agent_timeout_minutes,
+                            _sdk_timeout_ceiling_seconds,
+                        )
+                        if extended is None:
+                            return False
+                        task_deadline = extended
+                        deadline_extended = True
+                        return True
+
                     while has_requests:
                         has_requests = False
                         user_input_requests = []
@@ -722,6 +779,8 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                                 if task_deadline:
                                     remaining = task_deadline - time.monotonic()
                                     if remaining <= 0:
+                                        if _try_extend_deadline_once():
+                                            continue
                                         final_text += (
                                             f"\n\n[SYSTEM: task '{task_name}' cut short -- "
                                             f"sub_agent_timeout_minutes ({_sub_agent_timeout_minutes}) exceeded.]")
@@ -731,6 +790,8 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                                 try:
                                     update = await asyncio.wait_for(stream_iter.__anext__(), timeout=remaining)
                                 except asyncio.TimeoutError:
+                                    if _try_extend_deadline_once():
+                                        continue
                                     final_text += (
                                         f"\n\n[SYSTEM: task '{task_name}' cut short -- "
                                         f"sub_agent_timeout_minutes ({_sub_agent_timeout_minutes}) exceeded "

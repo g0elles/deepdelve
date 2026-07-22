@@ -899,6 +899,39 @@ Status as of 2026-07-20.
          entries (same treatment as today's non-http fallback fix) and named in the uncited-tasks
          note instead — turns a silent loss into an explicit, acknowledged gap even without
          recovering the content. Smallest fix, but doesn't rescue anything.
+    - **1+3 IMPLEMENTED, 2026-07-21**, after a dedicated pre-implementation audit against the real
+      code and external prior art (not just re-reading the plan). Audit found the recommendation
+      itself sound but surfaced one real, non-obvious implementation risk before it shipped: an
+      unbounded deadline extension could push a dispatch's `task_deadline` past `_build_client`'s
+      own `sdk_timeout` (floored at 3600s), reintroducing the exact "SDK's blunt timeout wins the
+      race" bug that timeout's own comment already documents fixing once. Reference check: Temporal's
+      documented pattern for this exact failure class (long LLM activity, timeout severs partial
+      progress) is heartbeat-and-resume — record partial progress as a heartbeat, extend the
+      deadline instead of killing the activity — structurally identical to fix 1, confirming it's
+      the standard answer, not a bespoke hack. Separately checked whether "just add real
+      checkpointing" (candidate fix 4, previously deprioritized) has become easier anywhere since —
+      no: LangGraph, the most checkpoint-mature agent framework, still has no native mid-node
+      partial-state persistence in 2026 (its own forum confirms the workaround needs a raw async
+      generator with every field manually wired to reducers, "fragile and easy to misconfigure"),
+      confirming fix 4 was correctly scoped as new capability, not underestimated.
+      - **Fix 1** (`src/engine/orchestrator.py`): `_ring_fenced_deadline` (new pure function, ~line
+        171, next to `_extract_excluded_topics`) computes the capped extension —
+        `min(task_start + sub_agent_timeout_minutes*2*60, task_start + sdk_timeout_ceiling-60)` —
+        so the fix can never reintroduce the SDK-race bug. `_sdk_timeout_ceiling_seconds` (new, in
+        `create_local_agent`, mirrors `_build_client`'s own `sdk_timeout` formula exactly) is the
+        cap. `_try_extend_deadline_once` (new closure in `_run_single_task`, next to `task_deadline`)
+        checks `task_fetched_urls_ctx` and extends once per dispatch; wired into both cutoff sites
+        (the `remaining <= 0` branch and the `asyncio.TimeoutError` except, ~line 900-920) via
+        `continue` instead of an immediate cutoff.
+      - **Fix 3** (`src/engine/completion.py`): `_CUTOFF_ONLY_SUMMARY_RE` (new, right before
+        `_build_findings_source_material`) matches the cutoff marker text when it's the ENTIRE
+        summary (not when real content precedes it — a partial synthesis still gets shown). A
+        matching entry now falls into the existing `uncited_task_names` branch instead of being
+        rendered as a citable `### Source:` entry.
+      - Both covered by `test_structural_checks.py` (new assertions: `_ring_fenced_deadline`'s cap
+        math including the case where the SDK ceiling leaves no room to extend at all;
+        `_CUTOFF_ONLY_SUMMARY_RE` against both marker variants and against real-content-plus-marker
+        summaries) — full suite still passes.
   - **Comparative survey against 5 other real deep-research-agent projects** (Tongyi DeepResearch,
     dzhng/deep-research, CYC2002tommy/Deep-Research-Agent, SkyworkAI/DeepResearchAgent, nashsu/
     llm_wiki — all already credited in README's References) answered a deliberate test question from

@@ -6,7 +6,11 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 
-from engine.orchestrator import _extract_excluded_topics, _lacks_concrete_subject, _extract_follow_up_directions
+from engine.orchestrator import (
+    _extract_excluded_topics, _lacks_concrete_subject, _extract_follow_up_directions,
+    _ring_fenced_deadline,
+)
+from engine.completion import _CUTOFF_ONLY_SUMMARY_RE
 from utils.grounding import find_non_url_citations, fully_ungrounded, partially_ungrounded, find_uncited_claim_lines, extract_cited_urls
 from utils.run_state import record_fetched_url, reset_fetched_urls
 
@@ -48,6 +52,39 @@ def main():
     assert _extract_follow_up_directions("") == []
     # Case-insensitive header, per re.IGNORECASE — a model that varies casing must still be caught.
     assert _extract_follow_up_directions("stuff\nfollow-up directions:\n- one lead") == ["one lead"]
+
+    # --- task_deadline ring-fence math (2026-07-21, "4th synthesis-vanishing mechanism" fix 1) ---
+    # Normal case: extends by a full second sub_agent_timeout_minutes when the SDK ceiling has room.
+    assert _ring_fenced_deadline(
+        task_start=0, task_deadline=600, sub_agent_timeout_minutes=10, sdk_timeout_ceiling_seconds=3600,
+    ) == 1200
+    # The one real bug risk this whole fix carries: the extension must never be pushed past the
+    # SDK client's own blunt timeout, or the previously-fixed "SDK wins the race" bug (see
+    # _build_client's sdk_timeout comment) comes back. Confirm the cap actually bites.
+    assert _ring_fenced_deadline(
+        task_start=0, task_deadline=600, sub_agent_timeout_minutes=10, sdk_timeout_ceiling_seconds=700,
+    ) == 640  # capped at sdk_timeout_ceiling_seconds - 60, not the full 1200
+    # No room left at all under the SDK ceiling -> don't extend (caller falls through to cutoff).
+    assert _ring_fenced_deadline(
+        task_start=0, task_deadline=600, sub_agent_timeout_minutes=10, sdk_timeout_ceiling_seconds=650,
+    ) is None
+
+    # --- cutoff-only summary detection (2026-07-21, "4th synthesis-vanishing mechanism" fix 3) ---
+    # Must match orchestrator.py's task_deadline marker text EXACTLY, both variants, and ONLY
+    # when it's the entire summary -- real content followed by the marker must NOT match (a
+    # partial synthesis is still worth showing to FindingsWriter).
+    assert _CUTOFF_ONLY_SUMMARY_RE.match(
+        "\n\n[SYSTEM: task 'top_heuristics' cut short -- sub_agent_timeout_minutes (10) exceeded.]"
+    )
+    assert _CUTOFF_ONLY_SUMMARY_RE.match(
+        "\n\n[SYSTEM: task 'top_heuristics' cut short -- sub_agent_timeout_minutes (10) exceeded "
+        "(stream produced no update before the deadline).]"
+    )
+    assert not _CUTOFF_ONLY_SUMMARY_RE.match(
+        "N-BEATS and TFT are the two leading architectures.\n\n"
+        "[SYSTEM: task 'top_heuristics' cut short -- sub_agent_timeout_minutes (10) exceeded.]"
+    )
+    assert not _CUTOFF_ONLY_SUMMARY_RE.match("Rust's current stable release is 1.97.1.")
 
     # --- findings.md wholesale-fabrication gate ---
     reset_fetched_urls()

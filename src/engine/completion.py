@@ -855,6 +855,16 @@ async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artif
     await dispatch_task(f"{writer_role}Fix_attempt{attempt + 1}_reviewed", fix_instructions, writer_role)
 
 
+# Matches orchestrator.py's task_deadline cutoff marker text exactly (both variants: mid-turn
+# and no-update-before-deadline) when it is the ENTIRE summary -- i.e. the dispatch never
+# synthesized anything real before being cut off. Deliberately does NOT match a summary that has
+# real content followed by the marker (a partial synthesis is still worth showing).
+_CUTOFF_ONLY_SUMMARY_RE = re.compile(
+    r"^\s*\[SYSTEM: task '.*?' cut short -- sub_agent_timeout_minutes \(\d+\) exceeded"
+    r"(?: \(stream produced no update before the deadline\))?\.\]\s*$"
+)
+
+
 def _build_findings_source_material(run_state: "RunState") -> str:  # noqa: F821 — utils.run_state.RunState, annotation only
     """Everything FindingsWriter needs to write findings.md, assembled from RunState's structured
     per-task records rather than the Planner's own conversation — FindingsWriter is dispatched in
@@ -898,11 +908,19 @@ def _build_findings_source_material(run_state: "RunState") -> str:  # noqa: F821
     # citation from a placeholder, and a live qwen3:8b run cited the placeholder as if it were
     # a real URL (5/19 findings). Only real, http(s) source_urls become "### Source: ..."
     # entries now; the rest are named separately below as explicitly non-citable.
+    #
+    # A THIRD case, same treatment as the non-http fallback (2026-07-21, "4th synthesis-vanishing
+    # mechanism"): source_url is real (fetched) but the entire summary is
+    # sub_agent_timeout_minutes' own cutoff marker (orchestrator.py's task_deadline handling) --
+    # the dispatch fetched something but was cut off before synthesizing it. There is nothing
+    # real to cite here even though the URL is genuine, so it goes in uncited_task_names instead
+    # of being rendered as if it were real content.
     entries = []
     uncited_task_names = []
     for f in deduped:
         src = f.get("source_url") or ""
-        if src.startswith("http"):
+        summary = f.get("summary") or ""
+        if src.startswith("http") and not _CUTOFF_ONLY_SUMMARY_RE.match(summary):
             fn = url_to_filename.get(src.rstrip("/"))
             entries.append((
                 f.get("task_name") or src,
