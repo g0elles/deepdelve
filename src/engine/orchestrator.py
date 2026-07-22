@@ -61,7 +61,7 @@ def _agent_routing_rejection_reason(
     declared_agent_id, caller_role_names: frozenset, prediction: tuple | None, min_confidence: float,
 ) -> str | None:
     """Pure decision logic for delegate_tasks's non-generative routing-classifier check (RESEARCH.md
-    §6, ROADMAP.md "Planned", 2026-07-20) — pulled out of delegate_tasks's own closure so it's
+    §6, ROADMAP.md "Pending", 2026-07-20) — pulled out of delegate_tasks's own closure so it's
     directly testable without needing the full async tool/contextvar machinery. Decided policy:
     reject-and-nudge, not silent override. Returns a rejection reason string if delegate_tasks
     should add this task to its error-accumulation list, or None if the task should proceed
@@ -1227,7 +1227,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                             f"filename the fetch tool returned."
                         )
                         continue
-            # Non-generative routing classifier (RESEARCH.md §6, ROADMAP.md "Planned", 2026-07-20)
+            # Non-generative routing classifier (RESEARCH.md §6, ROADMAP.md "Pending", 2026-07-20)
             # — catches a hallucinated agent_id ("searcher", "PeerReviewer", invented role names,
             # ~4.9% of real historical delegate_tasks calls) BEFORE dispatch, rather than only after
             # _run_single_task's own exact-string lookup fails per-task post-dispatch. Decision

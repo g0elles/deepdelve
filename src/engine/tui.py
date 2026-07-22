@@ -2368,7 +2368,7 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
                 )
                 if should_continue:
                     has_requests = True
-                    # context_budget_chars blind spot (ROADMAP "Planned"): a Write->Review->Fix
+                    # context_budget_chars blind spot (ROADMAP "Pending"): a Write->Review->Fix
                     # dispatch success returns current_input UNCHANGED (nothing to count), but the
                     # classic inject-into-Planner path (not_delegated when both writer pairs are
                     # registered; any of missing_findings/findings_ungrounded/missing_artifact too

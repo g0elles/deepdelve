@@ -1,6 +1,6 @@
 """
 Trains the non-generative routing classifier for `delegate_tasks`'s `agent_id` (RESEARCH.md §6,
-ROADMAP.md "Planned", 2026-07-20) — a frozen sentence-embedding model + logistic regression, NOT
+ROADMAP.md "Pending", 2026-07-20) — a frozen sentence-embedding model + logistic regression, NOT
 SetFit (its 8-16-example-per-class regime is well below this project's real data volume) and NOT a
 fully fine-tuned encoder (unnecessary machinery at ~1,100 examples / 4 classes, per the literature
 checked during the review).

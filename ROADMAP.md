@@ -2,7 +2,897 @@
 
 Status as of 2026-07-20.
 
-## Done
+
+This file is organized into: a standing methodology section (applies to all future model
+verdicts), then History (investigation narrative — informational, not a task list), Completed
+(shipped fixes/features), Pending (not started), Rejected (evaluated and discarded), and
+Stretch (deferred/optional work, currently all fine-tuning).
+
+## Model Evaluation Standard
+
+
+Written after the user pushed back on two real fairness gaps found by re-reading the bake-off log
+critically rather than taking past "discard" verdicts on trust: (1) the heterogeneous-tiering
+entry above measured a foreseeable VRAM-thrashing result instead of catching it at design time,
+and (2) MiniCPM5-1B's own FINAL VERDICT run (below) swapped the Planner/Builder off `gpt-oss:20b`
+onto `mistral-nemo:latest` to free VRAM — meaning that verdict wasn't actually isolating the
+specialist model as the one variable under test; some of what got blamed on MiniCPM5-1B (the
+uncorrected `"[Authors' names]"` placeholders, specifically) was explicitly attributed to the
+swapped-in Builder failing to catch it, not to MiniCPM5-1B itself. Neither gap was hidden — both
+are documented in the entries themselves — but neither was caught BEFORE being treated as a
+concluded verdict, which is the actual complaint. Going forward, a candidate is not "discarded" or
+"adopted" until it clears all of the below:
+
+1. **Confirm the operating mode actually reaches the model before scoring anything.** Don't infer
+   a feature (nothink mode, tool-calling format, context length) from a model card or vendor docs
+   alone — prove it with a raw API-level request (a direct `curl`/SDK call showing the expected
+   field, e.g. `enable_thinking:false` producing zero `<think>` content) BEFORE running any full
+   DeepDelve benchmark through it. This is exactly what MiniCPM5-1B's entire think-mode saga
+   should have started with, and what caught the Qwen3-family Ollama passthrough bug only after
+   several models had already been scored under it.
+2. **Isolate the candidate as the only variable.** Every other role (Planner/Builder/
+   FindingsWriter/PeerReviewer) stays on the project's known-good baseline (`gpt-oss:20b`) unless
+   the candidate itself IS one of those roles. If VRAM genuinely forces a swap elsewhere in the
+   pipeline for a test to run at all, that test cannot produce a clean verdict on the candidate —
+   it can only be reported as informational, and the entry must say so explicitly. MiniCPM5-1B's
+   FINAL VERDICT run above did not meet this bar — the Planner/Builder was swapped to
+   `mistral-nemo` for VRAM. In principle that calls for an isolated retest; in this specific case
+   the user has explicitly decided NOT to pursue that retest (see the MiniCPM5-1B entry's
+   "Retest explicitly NOT queued" note and the "Heterogeneous role tiering" closure note below) —
+   pairing `gpt-oss:20b` with any small specialist model is a closed strategy on this hardware
+   regardless of which small model fills the slot. The general rule (isolate before verdicting)
+   still applies to any FUTURE candidate; it does not retroactively reopen MiniCPM5-1B.
+3. **State the serving backend and version alongside every verdict.** "Disqualified" must mean the
+   MODEL failed, not that Ollama's serving layer mishandled it — the nested-array stringification
+   bug (`ollama/ollama#6155`, affecting `mistral-nemo`/`llama3-groq-tool-use`/`llama3.2:3b`) and
+   the think-mode passthrough bug (Qwen3 family) both mean some existing README/ROADMAP
+   disqualifications may need a backend-corrected retest before they're trustworthy, not just the
+   ones already flagged for the planned vLLM re-run.
+4. **More than one run before a verdict, when the result is a discard.** A single run's failure
+   can be a real capability ceiling or an unlucky decode/retry cascade — this project's own log has
+   both (`qwen3:4b`'s multiple redispatch attempts vs. a genuine hard ceiling). A clean pass can
+   still be reported off one run; a discard claim should be corroborated by at least a second run
+   before being written up as final, or explicitly marked "single-run, not yet corroborated" if
+   time didn't allow a second one.
+5. **Keep a verdict changelog instead of silently overwriting.** If a verdict was reached under a
+   later-found-flawed methodology (wrong operating mode, confounded pipeline, backend bug), don't
+   delete or rewrite the old entry — mark it superseded and link to the corrected retest, so a
+   reader can see which methodology produced which conclusion. This is why MiniCPM5-1B's entry
+   already has separate "think-mode" and "FINAL VERDICT (nothink)" sub-entries rather than one
+   overwritten verdict — keep doing that, and extend it to the confound flagged in point 2.
+6. **A candidate that can't fit the project's ~16K-token context floor is discarded outright on
+   hardware grounds, not proportionally rescaled to squeeze it in — user decision, 2026-07-21.**
+   `config_template.yaml`'s `context_budget_chars: 50000` is explicitly calibrated as "safe margin
+   under a 16K-token num_ctx" (see `README.md`'s Context management section and the
+   `get_context_budget()` docstring, `src/engine/orchestrator.py`) — this is the project's assumed
+   minimum operating context, not a soft target. When MiniCPM3-4B's real per-token KV cost on this
+   hardware capped its feasible serving context at 6144 tokens (well under that floor), the
+   response was to proportionally scale `context_budget_chars` down to fit — this is now the wrong
+   call going forward. Doing so tests the candidate under a context regime the project doesn't
+   actually run at, and produces one of two uninformative outcomes: a pass that doesn't generalize
+   to any real DeepDelve usage, or a failure that's actually a context-fit problem miscounted as a
+   capability problem. **Going forward**: check the candidate's actual max feasible serving context
+   on this hardware (via vLLM's own KV-cache-budget error message, same as this evaluation did)
+   BEFORE running any benchmark; if it can't clear ~16K tokens, discard immediately with the reason
+   recorded as "insufficient context on current hardware," and revisit only if better GPU/VRAM
+   becomes available — don't rescale the project's own safety margins to accommodate it.
+   **Clarified 2026-07-21, `llama3-groq-tool-use:8b`**: this point targets a HARDWARE-forced squeeze
+   (a candidate whose architecture could serve more context but this GPU's VRAM/KV-cache budget
+   won't allow it) — it does NOT apply to a model whose own native `max_position_embeddings` is
+   simply small by training (`llama3-groq-tool-use:8b`'s is 8192, a real fixed fact about the
+   model, not something any amount of better GPU/VRAM would ever change). The user's own distinction:
+   a permanent model-level limit is worth actually testing at its real native ceiling — only the
+   hardware-driven, potentially-temporary kind gets the outright-discard treatment. Test the
+   candidate at its true native context in this case, don't discard on point 6 grounds.
+
+
+## History
+
+### Findings from live testing (informational, not yet acted on)
+
+
+- **SOTA literature review, durable conclusions merged 2026-07-20** (full detail, primary-source
+  citations, and still-open leads in `RESEARCH.md`, which stays the standalone working document).
+  - **MAST's 14-mode failure taxonomy (arXiv:2503.13657, NeurIPS 2025) maps closely onto this
+    project's own bug catalog**, confirming DeepDelve's failures are named, published patterns
+    rather than idiosyncratic bugs: FM 2.6 "Reasoning-Action Mismatch" = the "narrate instead of
+    write" bug; FM 1.5 "Unaware of Termination Conditions" = the over-research/STOP-EARLY problem;
+    FM 3.2/3.3 "No/Incorrect Verification" = the entire reason the grounding-check layer exists;
+    FM 1.1 "Disobey Task Specification" = the exclusion-enforcement bug class. A follow-on
+    production-telemetry replication (639K steps/23.6K runs, one closed-alpha platform) found
+    verification gaps dominate real deployment failures while coordination failures nearly vanish
+    (1.14% of runs) — closer to DeepDelve's own lived experience than MAST's benchmark-derived
+    aggregate, though caveated as one platform, not peer-reviewed. A large-scale coding-agent study
+    (arXiv:2605.29442, 16,118 validated episodes) independently found the same two DeepDelve
+    patterns (inaccurate self-reporting ≈ "narrate instead of write"; constraint violation ≈
+    exclusion-enforcement) in a totally different agent domain — real, cross-domain corroboration,
+    not a DeepDelve-specific quirk.
+  - **Three independent sources now converge on "verification/architecture amplifies a capable
+    model, it doesn't rescue an incapable one"**: the capacity-floor paper (arXiv:2601.16280, 14B
+    "minimum viable" for tool invocation), PIVOT (arXiv:2605.11225, "repair quality remains bounded
+    by the underlying model reasoning capacity"), and ATLAS/AdaMAST (its own 8pp residual gap on
+    OlympiadBench, attributed to an "architectural-vs-parametric distinction"). Relevant to every
+    future decision about fixing a small-model gap with more structure vs. a bigger/better model.
+  - **A third, distinct candidate mechanism for the recurring "real fetched content silently
+    vanishes during final synthesis" pattern** (already independently observed 3 times in this
+    project — quota-starvation drop, heterogeneous-tiering drop, citation-truncation drop, each
+    fixed individually; see the scattered incidents at lines ~481, ~689, ~966, ~1440, ~1858 above).
+    "Lost in the Middle" (arXiv:2307.03172, TACL 2024, foundational/highly-credible) shows models
+    use context well at the start/end and poorly in the middle — a candidate SECOND cause distinct
+    from truncation, not yet checked against DeepDelve's own findings-ordering. PIVOT
+    (arXiv:2605.11225) adds a candidate THIRD: 100% of its tested models' thinking tokens fire on
+    the FIRST turn (task decomposition), 99.2% of final-synthesis steps get ZERO thinking tokens,
+    REGARDLESS of how large the thinking budget is raised — models don't naturally allocate
+    reasoning to synthesis/verification, only to planning. None of these three are confirmed as
+    DeepDelve's own root cause; each is a real, externally-sourced, testable hypothesis for the
+    still-open "common structural cause" investigation already flagged in this file.
+  - **CONFIRMED, 2026-07-21 — a 4th, DeepDelve-internal mechanism, ground-truthed against real
+    `_run_state.json` files on disk, not a literature hypothesis.** Directly answers the
+    heterogeneous-tiering incident's own open question above ("no quota exhaustion is visible in
+    this run's own attempt log") — the missing variable was never a quota at all.
+    - **Mechanism**: `sub_agent_timeout_minutes` (`src/engine/orchestrator.py:701-703,721-738`) is
+      a hard wall-clock cutoff on a sub-agent dispatch's ENTIRE stream, independent of the quota
+      pools and invisible to `completion_check_attempts`' logging. It can fire AFTER a
+      Searcher/WebSearcher has already fetched a real URL (via `fetch_url_to_workspace`,
+      tracked in `task_fetched_urls_ctx`) but BEFORE the model emits its synthesized summary text —
+      leaving a `run_state.findings` entry with a REAL `source_url` whose entire `summary` is
+      verbatim `"[SYSTEM: task '<name>' cut short -- sub_agent_timeout_minutes (N) exceeded...]"`,
+      zero actual content. When `check_thin_coverage` (or a completion-check retry) redispatches
+      the SAME `task_name` — a fresh-context dispatch with no memory of the earlier partial
+      progress — the retry sometimes narrates genuinely good synthesized content but without
+      re-fetching a URL this round (relying on reasoning/recall, or citing something not captured
+      as a real fetch), landing in `add_finding`'s task_name-fallback bucket (see the source_url
+      fabrication fix earlier this file). **The real content and its real URL end up split across
+      two separate, un-mergeable `findings` entries for the same task** — one has the citable URL
+      with nothing worth citing, the other has real content FindingsWriter cannot legitimately cite
+      (per its own "never a bare task name" rule, correctly enforced). Net effect: the whole topic
+      silently vanishes from `findings.md`, with nothing in the attempt log pointing at why.
+    - **Confirmed NOT a one-off, ground-truthed against every real run on disk** (107
+      `_run_state.json` files under `research_output/`): 44 findings entries across 9 distinct runs
+      show the exact real-URL + timeout-cutoff-only-summary pattern. In 3 of those 9 runs, the full
+      split-brain pattern is present — a same-`task_name` entry with substantial real-looking
+      content (300+ chars) under the task-name-fallback `source_url` — confirmed reproduced across
+      THREE different dates and backends: `20260714_201217` (`top_heuristics`), `20260718_141225`
+      (the exact heterogeneous-tiering A/B run analyzed above — `background_heuristics`'s two
+      cutoff entries carry the real `sciencedirect.com`/`forecastio.ai` URLs with nothing but the
+      cutoff message, while a THIRD `background_heuristics` entry has a genuinely detailed N-BEATS/
+      TFT/arXiv writeup under the bare task-name fallback), and `20260721_174718` (this same
+      session's killed `qwen3:8b` vLLM re-test run).
+    - **Candidate fixes, not yet implemented, pending user sign-off (touches the shared dispatch
+      loop, every sub-agent's blast radius)**:
+      1. **Ring-fence the timeout, mirroring the existing quota-fairness fix.** `check_quota`
+         already ring-fences remaining QUOTA for a task that's shown real fetch activity (see the
+         quota-starvation incident above); the same philosophy applied to
+         `sub_agent_timeout_minutes` (extend the deadline once, by a bounded amount, for a task
+         that has a real `task_fetched_urls_ctx` entry but hasn't finished synthesizing) would
+         prevent the cutoff from ever severing a real fetch from its own summary in the first
+         place — closest to a true root-cause fix, most consistent with prior art in this codebase.
+      2. **Give a retry context of its own prior partial progress.** A redispatch of a `task_name`
+         that already has an on-disk fetched file from an earlier cut-short attempt currently starts
+         from a totally blank slate. Telling it explicitly ("you already fetched `<url>`, saved as
+         `<filename>` — delegate it to an Analyzer now instead of searching again") would let the
+         retry finish the SAME real work instead of restarting and orphaning it.
+      3. **Contain, don't recover**: at minimum, a `findings` entry whose entire summary is the
+         cutoff system message should be excluded from `_build_findings_source_material`'s citable
+         entries (same treatment as today's non-http fallback fix) and named in the uncited-tasks
+         note instead — turns a silent loss into an explicit, acknowledged gap even without
+         recovering the content. Smallest fix, but doesn't rescue anything.
+    - **1+3 IMPLEMENTED, 2026-07-21**, after a dedicated pre-implementation audit against the real
+      code and external prior art (not just re-reading the plan). Audit found the recommendation
+      itself sound but surfaced one real, non-obvious implementation risk before it shipped: an
+      unbounded deadline extension could push a dispatch's `task_deadline` past `_build_client`'s
+      own `sdk_timeout` (floored at 3600s), reintroducing the exact "SDK's blunt timeout wins the
+      race" bug that timeout's own comment already documents fixing once. Reference check: Temporal's
+      documented pattern for this exact failure class (long LLM activity, timeout severs partial
+      progress) is heartbeat-and-resume — record partial progress as a heartbeat, extend the
+      deadline instead of killing the activity — structurally identical to fix 1, confirming it's
+      the standard answer, not a bespoke hack. Separately checked whether "just add real
+      checkpointing" (candidate fix 4, previously deprioritized) has become easier anywhere since —
+      no: LangGraph, the most checkpoint-mature agent framework, still has no native mid-node
+      partial-state persistence in 2026 (its own forum confirms the workaround needs a raw async
+      generator with every field manually wired to reducers, "fragile and easy to misconfigure"),
+      confirming fix 4 was correctly scoped as new capability, not underestimated.
+      - **Fix 1** (`src/engine/orchestrator.py`): `_ring_fenced_deadline` (new pure function, ~line
+        171, next to `_extract_excluded_topics`) computes the capped extension —
+        `min(task_start + sub_agent_timeout_minutes*2*60, task_start + sdk_timeout_ceiling-60)` —
+        so the fix can never reintroduce the SDK-race bug. `_sdk_timeout_ceiling_seconds` (new, in
+        `create_local_agent`, mirrors `_build_client`'s own `sdk_timeout` formula exactly) is the
+        cap. `_try_extend_deadline_once` (new closure in `_run_single_task`, next to `task_deadline`)
+        checks `task_fetched_urls_ctx` and extends once per dispatch; wired into both cutoff sites
+        (the `remaining <= 0` branch and the `asyncio.TimeoutError` except, ~line 900-920) via
+        `continue` instead of an immediate cutoff.
+      - **Fix 3** (`src/engine/completion.py`): `_CUTOFF_ONLY_SUMMARY_RE` (new, right before
+        `_build_findings_source_material`) matches the cutoff marker text when it's the ENTIRE
+        summary (not when real content precedes it — a partial synthesis still gets shown). A
+        matching entry now falls into the existing `uncited_task_names` branch instead of being
+        rendered as a citable `### Source:` entry.
+      - Both covered by `test_structural_checks.py` (new assertions: `_ring_fenced_deadline`'s cap
+        math including the case where the SDK ceiling leaves no room to extend at all;
+        `_CUTOFF_ONLY_SUMMARY_RE` against both marker variants and against real-content-plus-marker
+        summaries) — full suite still passes.
+  - **Comparative survey against 5 other real deep-research-agent projects** (Tongyi DeepResearch,
+    dzhng/deep-research, CYC2002tommy/Deep-Research-Agent, SkyworkAI/DeepResearchAgent, nashsu/
+    llm_wiki — all already credited in README's References) answered a deliberate test question from
+    the user honestly: DeepDelve's 10-layer grounding pipeline is more elaborate than any of the 5
+    for the SPECIFIC problem of post-hoc citation verification on a small/local model — but this is
+    explicitly NOT "most sophisticated deep research agent, period." Tongyi DeepResearch solves
+    reliability via a much larger purpose-trained model, a different and likely more effective lever
+    DeepDelve's own local-only constraint doesn't have access to; and "sophisticated mechanism" is
+    not the same claim as "proven real-world catch rate" — most of DeepDelve's own grounding checks
+    still lack real-captured-fabrication test coverage (see "Test coverage debt" note in session
+    history). See `RESEARCH.md` §7 for the full, appropriately-bounded writeup.
+  - **A non-generative routing-classifier design for `delegate_tasks`** is now a scoped "Pending"
+    item (see above) rather than a research note, prerequisite data already confirmed sufficient.
+- **Full grounding/completion-check compliance audit (2026-07-18), all 12 README-claimed guarantees
+  re-verified against the actual code, not just the docs.** Checked each of: URL grounding with
+  path-boundary matching, content-level zero-fact-overlap, non-URL citation detection, regulation-
+  identifier check, stub-fetch detection, `uncited_claims`, NLI entailment
+  (`nli-deberta-v3-small`), atomic-claim segmentation (`decompose_claim_segments`), FEVER-style
+  cross-source contradiction, topical relevance (`bge-reranker-v2-m3`), coverage accounting
+  (`RunState.coverage()`), and the `test_structural_checks.py` verdict-matrix pin. **All 12 found
+  genuinely implemented and reachable from the real completion-check flow** (`GROUNDING_CHECKS`/
+  `COMPLETION_CHECKS` in `src/engine/completion.py:563-582`) — no dead code, no orphaned function,
+  no early-return that silently skips a check, no always-false gating condition. Every check fails
+  open (returns `None`) on model-load failure rather than crashing a run, confirmed as deliberate
+  documented behavior rather than an oversight. `check_not_grounded`'s ordering as the last, generic
+  catch-all in `GROUNDING_CHECKS` is deliberate so the more specific verdicts fire first. Net: the
+  README's grounding-guarantees section does not overclaim relative to the code as of this date.
+- **Grounding check verifies provenance, not topical relevance.** A live GOA (Grasshopper Optimization Algorithm) research query got a citation from `globaldrivetozero.org` — actually fetched, and sharing surface terms like "GOA"/"Goa" — that's actually about the Indian state of Goa's EV policy, not the algorithm. The URL-presence + term-overlap check passed it because it only checks "was this fetched" and "do terms overlap," not "is this source about the same subject." Acronym collisions are the clearest way to trigger this; unclear how common the failure mode is outside them. **Fixed 2026-07-14 — see "Completed" (Phase 4, `topical_relevance_problem`).**
+- **JS-gated pages return bot-challenge stubs, not content.** Several fetches (Cloudflare "Just a moment...", a "Human Verification" page, a Prezi slide deck) came back as 16-18 byte stubs since the fetcher doesn't execute JavaScript. *(Fixed for most cases — see "Completed": headless/headed-browser fetch fallback, 2026-07-14. Recovers Springer (headless-sufficient) and MDPI (needed headed). NOT a universal fix: a genuine Cloudflare Turnstile challenge (ScienceDirect) resists both headless AND headed Chromium regardless of patience or `navigator.webdriver` spoofing — confirmed to be automation/CDP-fingerprint detection, not a solvable timing issue, and deliberately not pursued further; see the ScienceDirect sub-bullet above for the full investigation. Still correctly falls through to the stub flag rather than silently failing.)*
+- **A citation being present in a report's "Sources" list doesn't mean it was fetched.** Across several market-research runs, more than half of named sources were routinely never actually fetched (recalled from the model's training data) — and when independently fact-checked, specific statistics tied to unfetched sources were measurably wrong, usually understated.
+- **Hard exclusion rules ("do not research sector X") repeatedly fail to hold**, confirmed across at least 2 independent runs with different prompt wordings: an explicitly-excluded "Agricultural"/"agribusiness" sector got researched and included in the final report anyway — once purely from memory, once with the model actually delegating and fetching a real source for the excluded sector. Simply naming the exclusion in the prompt isn't enough; `delegate_tasks`'s existing dispatch-time skip (`_extract_excluded_topics`) only stopped NEW research on the topic, not the topic showing up in the final report anyway via a sibling task's tangential findings. **Fixed 2026-07-14** — see "Completed" below (`check_excluded_topic`).
+- **Non-URL "citations" evade the grounding check entirely.** A live report sourced several claims to `"Expert opinion from a cold storage facility manager in Colombia"` — not URL-shaped, so `extract_cited_urls` never sees it, even though it's exactly as ungrounded as a fabricated URL. The grounding check's whole model is "cross-reference cited URLs against fetched URLs" — a citation with no URL at all currently gets a free pass. **Fixed — see "Completed" above (`non_url_citation_check`).**
+- **Scaling down scope (12 sectors → 5) improved surface polish, not actual grounding rate.** A 5-sector re-run produced far more plausible-looking, consistently-formatted citations than a 12-sector run, but cross-referencing against `_run_state.json`'s real `fetched_urls` showed most of them were still fabricated — only 5 URLs were ever fetched all run, while the final report cited well over twice that many distinct domains. Fewer sectors did not proportionally reduce the fabrication rate.
+- **Shared cumulative `web_search` quota pool can starve a specific task of the ability to
+  synthesize what it already fetched (2026-07-14).** Live sales-forecasting benchmark run
+  (`research_output/i_want_documentation_on_heuristic_algoritms_for_de_20260714_225720/`): the
+  final report was well-grounded on its technical content but silently dropped the Colombia
+  cultural-context section (holidays/paydays) ENTIRELY, despite the query explicitly requiring it
+  and the research genuinely happening — NOT the same bug as the FindingsWriter dedup fix shipped
+  earlier this session (that fix worked correctly here; the empty-summary entry reached
+  FindingsWriter's material intact, there was just nothing usable in it).
+  `SubAgent_Colombian cultural events affecting sales` was dispatched 4 separate times across the
+  run's retries. Dispatch #1 genuinely fetched 2 real sources
+  (`timeanddate.com/holidays/colombia/2024`, an ADP payroll-calendar article) but its
+  `RunState.add_finding` entries have EMPTY summaries — it fetched but never got to actually
+  analyze/synthesize before being cut off. Dispatch #4 (the last one) has a real summary, but it's
+  just an apology: *"I've reached the maximum number of web-search calls allowed for this session
+  (15). No sources were successfully fetched..."* Root cause: `web_search`'s quota
+  (`build_quota_pool`) is ONE shared, cumulative pool across every sub-agent in the run — other
+  tasks (particularly "Top 5 common heuristic algorithms," which shows heavy repeated web activity
+  in this run's findings) burned through the pool first, so by the time the Colombia task got
+  redispatched on retries #3/#4, the shared quota was already exhausted, and it could never finish
+  analyzing the sources it originally fetched. **Partially fixed 2026-07-18 — see "Completed" above
+  (`check_quota`'s ring-fence)**, which addresses angle (b) below (a dispatch that already fetched
+  something real no longer gets hard-blocked mid-synthesis). Angles (a)/(c) remain open — candidate
+  angles: (a) a per-task reserved minimum quota allotment, (b) [addressed] protecting/ring-fencing a
+  task's remaining quota once it's shown real fetch activity (distinguishing "genuinely
+  progressing but interrupted" from "never started"), (c) some kind of fairness/round-robin
+  ordering across redispatched tasks instead of first-come-first-served on a shared pool. Distinct
+  from `retry_quota_topup` (which already tops up the pool between completion-check ROUNDS) —
+  this is about fairness WITHIN a round, across concurrently/sequentially dispatched sibling
+  tasks sharing the same pool.
+
+- **gpt-oss hallucinates entire tool names, not just filenames (2026-07-12).** Distinct from the
+  fuzzy-filename problem fixed this session (a real tool called with a garbled argument) — this is
+  the model inventing a function that was never in its schema at all: `grep_search?` and `justify`
+  both fired as literal function-call names in one live run (heuristic-algorithms sales-forecasting
+  query), 3 occurrences total. Each one only cost a turn (clean error, `malformed_tool_call_nudge`
+  path, sub-agent recovered without stalling) but three in a single run is a real pattern worth its
+  own investigation, not noise to fold into the filename fix.
+  - **Investigated 2026-07-14 — no code fix, re-tested live, existing infra already covers it.**
+    Re-ran the EXACT same benchmark query live (`research_output/i_want_documentation_on_heuristic_
+    algoritms_for_de_20260714_225720/`, 939.3s, clean pass, converged by attempt 3): **zero**
+    hallucinated-tool-name errors this time, out of 11 total tool errors recorded (all legitimate —
+    a real missing-field validation error, a real missing file, expected quota-exhaustion
+    messages). Doesn't prove the underlying tendency is gone (one run against one prior run is weak
+    evidence either way — could be genuine improvement from the many structural fixes shipped since
+    2026-07-12, or just run-to-run variance), but two things make further code investment
+    unjustified without stronger recurrence evidence: (1) the tool schema the model sees is the
+    real, structural OpenAI-style function-calling schema (name/description/params passed via the
+    API's own `tools` parameter), not prose — occasional hallucination despite having the correct
+    schema in context is a generation-sampling failure, not a missing-information one, so "tighter
+    prompt framing" was never likely to help; (2) `tool_result_error_nudge`
+    (`src/engine/orchestrator.py:268`, shipped 2026-07-14, AFTER this finding was first recorded)
+    already generically pattern-matches the exact `Requested function "..." not found` error text
+    and gives a corrective nudge — so even if this recurs, it's no longer a silently-wasted turn,
+    it costs at most one extra turn with real guidance, same fix that already closed the "zero
+    recovery path" gap for this exact error class. Revisit only if this resurfaces with real
+    frequency data across multiple runs, not as a standalone investment.
+- **gpt-oss endgame-collapse reproduced again, fresh data point (2026-07-12), now also observed
+  INSIDE Builder (2026-07-13).** Same live run above: 9 completion-check attempts, cascading
+  `web_search`/`grep_workspace_file`/`fetch_url_to_workspace` quota exhaustion across multiple
+  re-delegation rounds (including a genuine `QuotaAbortException` nested-agent abort), before
+  finally falling back to the quarantine-restore path at attempt 9/9 — the query (peer-reviewed
+  sourcing for heuristic algorithms + deep learning + multi-franchise sales forecasting, a 3-way
+  AND) never had a real source satisfying all three criteria. Already tracked as a known gap (runs
+  11/13) — not a new finding on its own, but confirms it's not resolved and reproduces on a
+  genuinely hard query, not just a fluke. **Re-tested 2026-07-13 against the same exact query after
+  the Builder architecture shipped**: the collapse shape moved, it didn't disappear — Build→Review→Fix
+  correctly fired 3 times on real `not_grounded` problems, but on attempts 4-6 Builder itself ran out
+  of the shared `write_workspace_file` quota and fell back to narrating the report as chat text
+  instead of writing it (Builder's own output: "I'm unable to create new files because the
+  `write_workspace_file` quota has been exhausted") — the identical failure shape the Planner used
+  to exhibit, now happening one level down. The quarantine-restore fallback still worked exactly as
+  designed both times: final artifact carries a loud warning banner (or is fully restored from the
+  best surviving quarantined draft) instead of a fabricated clean-looking report or a lost one. See
+  "Pending" below for the quota-sharing angle this surfaced.
+- **Line-scoped claim grounding (2026-07-12):** `claim_grounding_problem` compared WHOLE-report terms against each source, so generic shared terms masked per-claim fabrication (run 12's flagship figure was absent from its cited source but passed via other lines' overlap). Now each line with a fetched citation is checked against its own source(s) — the regulation-check pattern generalized; conservative as before (≥1 checkable term + zero overlap only, URL slugs stripped).
+- **Structural eval scorer (2026-07-12):** new `eval_type: structural` in `eval/evaluate.py` — rubric tier 1 scored deterministically from `_run_state.json` + workspace files (cited⊆fetched, findings.md grounded, no salvage/quarantine banner, no unresolved final problem), which no other scorer read at all.
+- **Four concrete findings from a fresh live run of the standing sales-forecasting benchmark
+  (2026-07-13, later the same day the Builder loop shipped)** — user killed the run after it
+  stalled; each finding traced to an exact file/line, not guessed:
+  - **`_strip_trailing_punct` (`src/utils/grounding.py:59-66`) didn't strip a trailing `*`.**
+    *(Fixed 2026-07-14.)* Builder's own citation format `**[Title](URL)**` puts `**`
+    immediately after the link's closing `)` with no space; the existing unbalanced-`)`-stripping
+    loop only fired when the string *ends* with `)`, so a URL ending in `)**` was never cleaned up.
+    Confirmed live: two of this run's four completion-check attempts were `not_grounded` verdicts
+    citing the literal string `...546e2a498c2f)**` as "unverified" — a genuinely-fetched,
+    correctly-cited source false-flagged as hallucinated purely by this string-handling gap,
+    burning half the run's retry budget on a checker bug, not a model failure. Fix: added `*` to
+    the initial `rstrip()` char set, stripped BEFORE the balanced-paren check so a bold-wrapped
+    URL's real trailing `)` is exposed to it correctly (verified against a bold URL that also has
+    its own internal balanced parens, e.g. a Wikipedia disambiguator page — both layers now
+    resolve in the right order). Two new assertions in `test_structural_checks.py`.
+  - **Sub-agent "tool not found"/"argument parsing failed" errors had zero recovery path.**
+    *(Fixed 2026-07-14.)* Confirmed via code trace: these come back from `agent_framework`'s SDK
+    as in-band tool-result text, never as exceptions, so they never reached `_run_single_task`'s
+    `except` block and never triggered the existing `malformed_tool_call_nudge` (which only covers
+    transport-level "error parsing tool call" failures). Confirmed live: a `SubAgent_BuilderFix`
+    retry hallucinated a call to `delegate_tasks` (Builder's real tool list never includes it — the
+    model invented the call, not a config leak); a separate sub-agent called a malformed
+    `grep_workspace?`; `PeerReviewer` tried reading a nonexistent `workspace.txt`. Each burned a
+    turn with no corrective nudge of any kind, unlike the Planner's own conversation. Fix: new
+    `engine/orchestrator.py::tool_result_error_nudge`, a sibling of `malformed_tool_call_nudge`
+    scoped to the exact SDK error strings pulled from `agent_framework/_tools.py` source (not
+    guessed) — `Error: Requested function "{name}" not found.` (hallucinated tool name),
+    `Error: Argument parsing failed.` (rejected arguments), and `tools/fs.py`'s
+    `Error: '{filename}' not found.` (missing file). Wired into `_run_single_task`'s stream loop:
+    the pending nudge is overwritten on every `function_result` seen, so a LATER successful call
+    after an earlier error (the model already self-correcting within the SDK's own internal turn)
+    clears it — only an error still standing at the end of the stream gets nudged, capped at 2
+    retries like `malformed_retries`. Deliberately narrow (three specific, evidence-backed error
+    shapes, not every possible tool failure) so a legitimate business-logic error (a real search
+    that genuinely failed, a quota genuinely exhausted) doesn't get blindly retried when that
+    wouldn't help — verified against both the three matching cases and two non-matching ones (a
+    real fetch-success string, `web_search`'s own timeout error) with no false positives. New
+    assertions in `test_structural_checks.py`. **Deliberately NOT extended to the Planner's own
+    loop** (`run_agent`/`run_cli` in `engine/tui.py`) despite this project's usual TUI/CLI parity
+    rule — this is a reasoned scope decision, not an oversight: the Planner already has independent
+    recovery via its multi-attempt completion-check loop (several full outer retries across an
+    entire run, each with fresh nudges and quota top-ups), unlike a sub-agent's single one-shot
+    dispatch with no outer safety net at all — the asymmetry this fix closes is specific to
+    sub-agents, not a gap in the Planner too. **Relationship to the researched LangGraph
+    `RetryPolicy` pattern** (see the earlier-recorded research-pass note): that pattern's
+    retryable-vs-fatal split maps onto DIFFERENT layers of this codebase rather than one function —
+    the genuinely *retryable* class (timeout, rate-limit, transient parse garble) is exactly what
+    `web_search`'s own daemon-timeout fix and the SDK's built-in 429/5xx backoff already handle;
+    `tool_result_error_nudge` covers what that pattern calls *fatal* (hallucinated tool name,
+    rejected arguments) — except here "fatal" doesn't mean "give up," it means "immediately
+    actionable by telling the model exactly what's wrong," which is what the nudge does.
+  - **`web_search`/`probe_search_health` (`src/tools/web.py`) had no outer wall-clock timeout.**
+    *(Fixed 2026-07-14.)* `DDGS()` is built with no explicit timeout at either call site, relying
+    on the `ddgs` library's own internal 5s-per-engine default — not a real ceiling, since `ddgs`
+    runs engines in a `ThreadPoolExecutor` and its context-manager exit calls `shutdown(wait=True)`,
+    which blocks until every thread finishes regardless of the nominal per-engine timeout. Confirmed
+    live: the process ended up blocked with one established TCP connection open 9+ minutes to a
+    yandex.ru-resolving IP (not an intentional backend anywhere in this codebase — almost certainly
+    a redirect inside `ddgs`), local model unloaded, GPU idle. Generalizes the already-tracked
+    "no liveness/stall detection" gap (previously scoped to hosted/NIM runs only) to local
+    `web_search` too. Fix: `tools/web.py::_run_with_daemon_timeout` — a real `threading.Thread(daemon=True)`
+    with `.join(timeout)`, not a bare `asyncio.wait_for(asyncio.to_thread(...))`. That distinction
+    mattered in practice: a plain `wait_for` DOES unblock the awaiting coroutine on time, but its
+    underlying executor thread is not a daemon thread, so if the search call never actually returns
+    (confirmed against two real GitHub issues, `HKUDS/nanobot#2804` and `microsoft/amplifier#219`,
+    describing `ddgs`'s `primp` Rust HTTP client blocking below anything asyncio can interrupt), the
+    orphaned thread then blocks the WHOLE PROCESS from exiting cleanly at the end of a run — verified
+    directly with a `time.sleep(999)`-hung call: bare `wait_for`/`to_thread` times out the caller
+    fine but the process itself never exits; the daemon-thread version times out the caller AND lets
+    the process exit cleanly. `settings.web_search.timeout_seconds` (default 20), shared by both
+    `web_search`'s two attempts and the pre-run `probe_search_health` check
+    (`src/engine/tui.py`, `run_cli`). Process-based isolation (spawn+kill a subprocess) was
+    considered and rejected — it would require calling `ddgs` from a picklable module-level worker,
+    breaking the existing in-process `ddgs.DDGS` monkeypatch test in `test_structural_checks.py`
+    since a subprocess re-imports fresh, unpatched modules; the daemon-thread approach closes the
+    same gap (including the exit-hang) without that cost.
+  - **Sub-agent status widgets had no staleness indication.** *(Fixed 2026-07-14.)*
+    (`src/engine/tui.py`, `handle_agent_update`). Unlike `ProcessingWidget`/`ToolCallWidget`'s
+    animated timers, the per-sub-agent `Static` widget showed `"▶ {agent_name} executing..."` with
+    no timer and no upper bound — if the underlying dispatch never resolved (exactly what the stall
+    above causes), it stayed frozen on "executing" forever with zero visual signal anything was
+    wrong. Same bug *class* as the already-fixed `ProcessingWidget` elapsed-counter issue, but that
+    fix never got applied here — this is what "stuck agent" looked like from the user's side that
+    night. Fix: new `SubAgentStatusWidget` class (mirrors `ProcessingWidget`'s animated-dots +
+    live elapsed-seconds pattern exactly), swapped in at the one mount site in
+    `handle_agent_update`; `mark_finished(elapsed)` replaces the old one-shot `.update(...)` call
+    on completion. Also wired into `/stop`'s existing widget-cleanup block (alongside
+    `ToolCallWidget`/`ProcessingWidget`/`ThinkingWidget`) so a manually-stopped run marks these
+    stopped too instead of leaving them frozen mid-animation — a related gap the bare `Static`
+    couldn't have supported anyway (no `mark_stopped` method existed to call).
+  - Full prioritized fix plan (strip-punct fix → search timeout → sub-agent error nudge → widget
+    staleness indicator) was written to a local plan file during triage. All four items fixed
+    2026-07-14 — see "Completed" above/below.
+  - **Builder's `write_workspace_file` quota was shared with the Planner and every prior Builder
+    dispatch, with no guaranteed headroom of its own.** *(Fixed 2026-07-14.)* On a long, many-retry
+    run, the shared pool could be exhausted by the time a later corrective Builder dispatch needed
+    it, degrading Builder to narrating the report as chat text instead of writing it — the same
+    "narrate instead of write" failure the Planner used to be prone to, now one level down.
+    `retry_quota_topup` already topped up the pool on every completion-check retry, so this wasn't
+    starved by DEFAULT config, but a config with a low `write_workspace_file` limit/topup would
+    starve Builder specifically. Fix: new `engine/completion.py::_ensure_builder_write_quota_headroom`,
+    called right before every `_dispatch_build_review_fix` dispatch (after the existing per-attempt
+    `topup_quota_pool`) — tops up ONLY `write_workspace_file`, and only by the exact headroom this
+    one cycle could need (2 units: Builder's initial rewrite + one possible corrective Fix pass),
+    not a blanket amount that would also quietly inflate the Planner's own budget. Chose this over
+    the other option on the table (a separate Builder-reserved quota pool) because a reserved pool
+    would work against `build_quota_pool`'s deliberate one-shared-cumulative-pool-per-role design,
+    not just extend it. New unit tests in `test_structural_checks.py` (near-exhausted pool topped
+    up to exactly 2 headroom, a pool with plenty already left untouched — no silent inflation —
+    and a pool missing the key entirely, no `KeyError`).
+
+
+### Model bake-off & backend investigation log (2026-07-11 through 2026-07-21)
+
+
+Real, finished testing/investigation work — every entry below concluded (a model disqualified, a
+backend confirmed/rejected, a benchmark scored), not open backlog. Kept separate from "Completed" since
+most entries are investigation conclusions rather than shipped code changes; kept separate from
+"Pending" since none of it is still-to-do. See README's "Model choice" table for the current-state
+summary; this section is the full evidence trail.
+
+- **Local-model bake-off: Gemma 4 12B, Bonsai-8B, and `qwen3:4b` vs. `gpt-oss:20b`** (found/verified 2026-07-13,
+  smoke-tested and partially live-tested 2026-07-14) — two real local-model candidates surfaced by
+  a 3-model research pass, independently verified (not taken on trust — one of the three research
+  responses fabricated citations, see below). **Gemma 4 12B** (Google, Apache 2.0, released
+  April/June 2026): dense, encoder-free multimodal, ~7.1-7.6GB at Q4_K_M GGUF (~6.7GB on the QAT
+  Q4_0 build) — comfortably inside the 16GB ceiling. **Bonsai-8B** (PrismML, Apache 2.0): trained
+  natively at 1-bit precision, 1.15GB, scores 73.3% on BFCL (format-compliance tool-calling) —
+  beating every model PrismML tested — but drops to 43.8% on NexusRaven (semantic API
+  understanding) vs. Qwen3.5-9B's 75%, a real and confirmed weakness on complex tool semantics, not
+  smoothed over in the source.
+  - **Derived `deepdelve-*` tags created** (`FROM <base>`, `PARAMETER num_ctx 16384`, matching the
+    project's existing `deepdelve-gpt-oss` pattern) for both, plus two more candidates the user
+    separately surfaced: `granite3.1-dense:8b` (IBM, Apache 2.0, 5.0GB, 128K context, model card
+    claims function-calling) and `phi4-mini:3.8b` (Microsoft, 2.5GB, 128K context, model card
+    claims function-calling) — both attractive on paper for being lightweight with a large context
+    window. Also fixed a real hygiene issue found along the way: the `SetneufPT`-uploaded Gemma 4
+    Ollama tag ships a baked-in `SYSTEM "You are a coding agent. Be concise."` default (verified
+    live it's fully overridden by DeepDelve's own system prompt at runtime, so not a functional
+    bug — but cleaned up in `deepdelve-gemma4-12b`'s Modelfile regardless, since the default is
+    actively misleading for a research agent).
+  - **Tool-calling smoke test (2026-07-14), DeepDelve's real `delegate_tasks` schema (2-task nested
+    array, `task_name`/`instructions`/`agent_id`), direct `/v1/chat/completions` calls**:
+    **`granite3.1-dense` and `phi4-mini` both FAIL outright** — despite each model card explicitly
+    claiming function-calling support, and Ollama's own capability introspection listing `tools`,
+    both narrated the tool call as literal text (`<tool_call>[{"arguments":...` /
+    `[{"type":"delegate_tasks","tasks":...`) instead of emitting a real structured `tool_calls`
+    response, every single attempt. Identical failure *class* already documented for
+    `devstral:24b` in this same file — a model that narrates perfectly-formatted JSON instead of
+    calling the tool is exactly as unusable here as one that can't format JSON at all, since
+    DeepDelve is 100% tool-call-driven with no narration fallback. **Both disqualified, pulls
+    removed** (`ollama rm granite3.1-dense:8b deepdelve-granite3.1-dense phi4-mini:3.8b
+    deepdelve-phi4-mini`) — not worth carrying disk space for models that fail the first, cheapest
+    gate. **`deepdelve-bonsai-8b` and `deepdelve-gemma4-12b` both PASS** — real structured
+    `tool_calls`, correctly shaped 2-task array, valid `task_name`/`agent_id` on both; Gemma 4's
+    instructions fields were notably more detailed (289-356 chars) than Bonsai's (73-102 chars),
+    a first hint in Bonsai's favor of the NexusRaven-flagged semantic-thinness concern above,
+    though not yet confirmed at full-benchmark scale.
+  - **First real end-to-end benchmark data point, Gemma 4 12B (2026-07-14)**: ran the standing
+    sales-forecasting benchmark (`eval/sales_forecasting_benchmark.md`) live end-to-end, config
+    pointed at `SetneufPT/Gemma4-12B-IT-QAT_Q4_64K_16GB-GPU:latest`. Result: **`Report: NOT
+    WRITTEN`** after 33 minutes (1998s) — but a clean, honest failure, not a stall or a silently-
+    accepted fabrication, and this run is what actually validated the same day's 5 reliability
+    fixes end-to-end: `web_search` 26/26 calls succeeded with zero failures (the timeout fix never
+    even needed to fire), 27 real sources fetched, the grounding check correctly rejected 4
+    straight ungrounded `findings.md` attempts, and the process exited cleanly with a clear
+    forensic verdict instead of hanging. The actual failure was model-specific: 22 occurrences of
+    `delegate_tasks call rejected` (sub-agents repeatedly submitting placeholder/pronoun-only/
+    cross-task-dependent instructions — the existing validator's already-detailed guidance, not a
+    missing-nudge gap), and a visible reasoning-loop pattern near the end ("Wait, I'll just do it.
+    *(Action)*", repeated ~13 times with no actual tool call) before `context_budget_chars` cut the
+    turn short. Same failure *shape* as `mistral-nemo` (README "Model choice" table): passes an
+    isolated schema smoke test, ceilings on the real multi-step benchmark.
+  - **Bonsai-8B benchmark result (2026-07-14): `Report: NOT WRITTEN` after 484.3s — DISQUALIFIED
+    for a more severe reason than Gemma 4's.** Ran the same standing sales-forecasting benchmark,
+    config pointed at `deepdelve-bonsai-8b`. Research itself worked completely fine: 22 real
+    findings recorded, 15 real sources fetched, zero `web_search` failures — the failure is
+    entirely isolated to the FindingsWriter/PeerReviewer writer-tier roles. Traced through the
+    persisted session log turn-by-turn (not just the final verdict): `FindingsWriterFix_attempt1`
+    through `attempt8` each "Finished" and PeerReviewer "found no issues" each time, yet
+    `check_missing_findings` kept re-firing every single retry and `findings.md` never existed on
+    disk at all by the end. Root cause confirmed by reading the actual logged tool calls:
+    `FindingsWriterFix_attempt1`'s only event was a bare, empty `text` response — it **never
+    called `write_workspace_file`**. `ReviewFix_attempt1` **never called `read_workspace_file`**
+    either — it went straight to `"REVIEW: CLEAN"\n\nThe file findings.md appears to be a
+    well-structured report...` for a file it never opened and that never existed. This repeated
+    across all 8 attempts before the retry budget exhausted. Distinct from and worse than every
+    other failure flavor documented in this project so far (Gemma 4's reasoning loops, `qwen3:4b`'s
+    repeated-identical-write-calls below, gpt-oss's hallucinated tool names): those all at least
+    attempt real tool calls; Bonsai-8B skipped tool calls entirely in a role requiring
+    read-then-reason-then-write composition, while its simpler single-shot Searcher/Analyzer tool
+    calls (web_search, fetch, read/grep) worked reliably throughout the same run. Also exposes a
+    real structural gap worth considering separately: `_dispatch_writer_review_fix`'s clean-check
+    only string-matched `"REVIEW: CLEAN"` in the response text, with no verification that a
+    `read_workspace_file` call actually happened first — a model confident enough to fabricate the
+    sentinel could defeat the review entirely. This is a model-reliability finding, not a code bug,
+    and the disqualification stands regardless. **Bonsai-8B ruled out as a `gpt-oss:20b`
+    replacement.** **Hardening fixed 2026-07-14** (`src/engine/completion.py::_dispatch_writer_review_fix`,
+    commit `bfd2cd5`): cross-checks the `read_workspace_file` quota's used-count delta around the
+    PeerReviewer dispatch — a CLEAN verdict with zero new reads is now treated as ISSUES FOUND,
+    forcing the existing corrective Fix pass instead of being trusted. Fails open when the quota
+    isn't tracked at all, so a config without it doesn't get every review falsely distrusted. New
+    tests in `test_structural_checks.py` (`_clean_check_read_verification_scenario`): a fabricated
+    CLEAN with zero reads forces the corrective pass, a CLEAN backed by a real read is still
+    trusted.
+  - **`qwen3:4b` added as a fourth candidate (2026-07-14)**, specifically sought out as "Bonsai-like
+    but more context": user asked for smaller/lighter alternatives with a bigger context window
+    than Bonsai's 64K. Checked and rejected first: Microsoft's official `BitNet b1.58-2B-4T` doesn't
+    even run on Ollama (needs Microsoft's own separate `bitnet.cpp` runtime, incompatible with
+    llama.cpp) and caps around 4-8K context regardless; PrismML's own newer "Ternary Bonsai" family
+    (1.58-bit, released 2026-04-16, same company as Bonsai-8B) turned out to be a context
+    *downgrade*, not an upgrade — 4096 tokens via llama.cpp/Ollama, worse than the original 1-bit
+    Bonsai-8B's 64K. `qwen3:4b` (Alibaba, Apache 2.0) is the real find: 2.5GB Q4_K_M, **262144
+    native context** (4x Bonsai's 64K, in the same size class as the disqualified `phi4-mini`),
+    established Ollama tool-calling track record in this project already (`qwen2.5-coder`,
+    `qwen3.6` both work). Derived tag `deepdelve-qwen3-4b` created (`num_ctx 16384`, same pattern).
+    **Passed the real `delegate_tasks` smoke test cleanly**: real structured `tool_calls`, correctly
+    shaped 2-task array, valid `task_name`/`agent_id` — and showed real semantic routing judgment
+    at this early stage, not just format compliance: correctly sent the more academic/technical task
+    ("hybrid statistical+DL forecasting methods") to `AcademicSearcher` and the cultural/retail task
+    to `WebSearcher`, rather than routing both identically. Instructions detail (143-171 chars) sits
+    between Bonsai's terse style (73-102) and Gemma 4's richer one (289-356). Not yet run through
+    the full sales-forecasting benchmark — that's the same next step as Bonsai-8B above.
+    - **New reliability finding (2026-07-14, Phase 4 smoke-test session)**: as `FindingsWriter` on
+      a trivially simple factual query ("boiling point of water at sea level"), `qwen3:4b` called
+      `write_workspace_file` **10 times in a row** with near-identical content (confirmed via the
+      persisted session log: every call succeeded cleanly, "Wrote 'findings.md' to disk.", no
+      error/rejection anywhere) instead of recognizing the file was already correctly written and
+      stopping — only the existing `write_workspace_file` quota (10) correctly halted it, with a
+      clear "you MUST summarize... and state you had to stop due to quota limits" message. Not a
+      hang, not a code bug — the quota mechanism worked exactly as designed; this is a genuine
+      `qwen3:4b` tool-calling non-convergence pattern, distinct in shape from Gemma4's own
+      documented reasoning-loop tendency (repeated `delegate_tasks`/narration without a real tool
+      call) and gpt-oss's hallucinated-tool-name pattern — same broader "small local model doesn't
+      recognize task completion" failure class, third distinct flavor of it now observed across
+      three different models in this project. Real cost: burned enough wall-clock across 2 separate
+      live smoke-test attempts (this model, this exact query) to exceed a 15-20 min budget each
+      time, purely on redundant `write_workspace_file` calls before the run ever reached its later
+      stages. Not yet run through the full sales-forecasting benchmark, so unclear if this is
+      systemic to `qwen3:4b`'s FindingsWriter behavior specifically or an isolated occurrence.
+    - **Full sales-forecasting benchmark result (2026-07-14): inconclusive, not a verdict.** Ran
+      the same standing benchmark as Bonsai-8B/Gemma 4 above, config pointed at
+      `deepdelve-qwen3-4b`. The research phase completed cleanly (Colombia-specific holidays/
+      paydays identified from Banco de la República, cultural cross-check against Latin American
+      market studies, top-5 ML techniques evaluated) and the Planner correctly recognized
+      completion and stopped delegating. The Write→Review→Fix cycle then began
+      (`FindingsWriterFix_attempt1` → `ReviewFix_attempt1` flagged issues → corrective pass), but
+      the whole process was killed by the smoke test's own 40-minute outer `timeout` before it
+      could finish. Confirmed via `journalctl -u ollama` this was NOT a hang: right up to the kill
+      moment, Ollama was actively, continuously decoding a response (steady ~59-62 tok/s, climbing
+      token count, no stall) — a fairly high volume of smaller, somewhat repetitive tool calls in
+      earlier sub-agent turns (consistent with the redundant-tool-call finding above) ate enough of
+      the budget that the writer-tier cycle didn't have room left to converge, not that the model
+      got stuck. Recorded as inconclusive rather than a pass or fail — user chose not to re-run
+      with a longer cap this session; **re-running with more wall-clock budget is the next concrete
+      step before drawing any verdict on `qwen3:4b`** vs. `gpt-oss:20b`. Flagged as a real data
+      point for the eventual full bake-off comparison, not yet a disqualification.
+    - **Conclusive re-run (2026-07-18), no outer timeout this time: `Report: NOT WRITTEN` after
+      1214.2s (20.2 min), retry budget exhausted (8/8) on an unresolved `thin_coverage` verdict.
+      `qwen3:4b` is DISQUALIFIED as a `gpt-oss:20b` replacement.** Real research did happen (5
+      sub-agent dispatches, `brave_web_search` calls fired throughout), but only 1 real source ever
+      landed (`statista.com/.../music-events/colombia`) against 4 delegated tasks. The disqualifying
+      behavior isn't the thin research itself, it's the model's response to being told about it:
+      every one of the 8 `thin_coverage` retries got the same canned non-response verbatim ("No
+      further tool calls needed... research scope is complete... complete with explicit
+      acknowledgment of gaps") instead of either re-delegating differently or actually writing the
+      honest-partial report the completion-check nudge was asking for. This is the SAME
+      non-convergence pattern already flagged above (the 10x redundant `write_workspace_file` case)
+      showing up in a third shape: doesn't recognize a real gap needs a different action, just
+      repeats a canned "I'm done" response until the retry budget hard-stops it. Two contributing
+      factors, kept separate from the model verdict since they're infra, not model quality: (1) a
+      real MCP bug independent of the model — `brave_web_search`'s `country` parameter enum
+      (`@brave/brave-search-mcp-server`, `settings.mcp_servers`) does NOT include `CO` (confirmed
+      via the literal rejection error, `tool_error_samples`: `"Invalid value for 'country' ... 'CO'
+      is not in ['AL..."`), so Colombia-targeted searches using an ISO alpha-2 country filter fail
+      outright — a real gap worth a small fix (drop/remap the country param, or catch and retry
+      without it) independent of which model is running; (2) one `read_workspace_file`/
+      `grep_workspace_file` call hit a not-found error on a source filename, the same known fuzzy-
+      filename class already documented elsewhere in this file. Neither infra issue excuses the
+      model's response, though: `gpt-oss:20b`'s own re-runs on this exact query have hit partial
+      fetch failures too and still produced a labeled, honest, written report rather than looping on
+      a fixed refusal string. **Bake-off conclusion: `gpt-oss:20b` remains the only candidate of the
+      seven-plus tried so far (`qwen3.6`, `mistral-nemo`, Gemma 4 12B, Bonsai-8B,
+      `granite3.1-dense`, `phi4-mini`, `qwen3:4b`) with a full, real, benchmark-scale pass.**
+
+- **`qwen3:8b` — new candidate found and tried 2026-07-18, DISQUALIFIED, same failure class as
+  `qwen3:4b`.** Surfaced by a research pass for tool-calling-capable Ollama models not yet tried
+  (Qwen3's 8B dense sibling, NOT the same model as `qwen3.6` (35b-a3b, already rejected) or
+  `qwen3:4b` — distinct checkpoint, in the Ollama library directly, Apache 2.0, ~5.2GB Q4_K_M).
+  **Passed the `delegate_tasks` tool-call smoke test cleanly**: real structured 2-task call,
+  correctly shaped `task_name`/`instructions`/`agent_id`, well-specified instructions comparable in
+  detail to Gemma 4's. Derived tag `deepdelve-qwen3-8b` created (`num_ctx 16384`, same pattern).
+  **Full sales-forecasting benchmark: `Report: NOT WRITTEN` after 1037.4s, retry budget exhausted
+  (8/8) on `thin_coverage`**, 5 sources fetched (better than `qwen3:4b`'s 1, still not enough — only
+  2/6 delegated tasks produced a real source). Same disqualifying shape as `qwen3:4b`: doesn't act
+  on the completion-check's corrective nudge. Distinctive final-turn behavior worth noting: instead
+  of dispatching a writer role, the model's last response NARRATED full `findings.md` and
+  `final_report.md` content inline as chat prose (headers, sections, a "Stop here." sign-off) —
+  neither file exists on disk (confirmed, `ls` on the run folder). Not the same mechanism as
+  Bonsai-8B's writer-role tool-skip (Bonsai had real `FindingsWriter` dispatches that skipped the
+  tool call; this never got there, the Planner-level conversation narrated instead of accepting the
+  `thin_coverage` verdict and letting the engine dispatch a writer for an honest partial artifact).
+  One non-fatal MCP schema mismatch during the run (`brave_web_search`'s `result_filter` enum
+  rejected an out-of-list value), handled cleanly via the existing detailed-tool-error mechanism,
+  not a contributing cause. **`qwen3:8b` DISQUALIFIED as a `gpt-oss:20b` replacement** — updates the
+  bake-off conclusion above: 8 candidates tried, `gpt-oss:20b` still the only full pass. Ministral-
+  8B-Instruct-2410, watt-tool-8B, and Salesforce Llama-xLAM-2-8b-fc-r were also surfaced by the same
+  research pass but not pulled/tested this session (the latter two are narrow function-calling
+  finetunes, a real risk for the writer role per this project's own repeated lesson — not worth GPU
+  time until a general-purpose candidate looks more promising than the two Qwen3 sizes just tried).
+
+- **`llama3.2:3b` — new lightweight candidate tried 2026-07-18, DISQUALIFIED at the tool-call
+  schema stage, root-caused rather than assumed.** Surfaced by a research pass specifically for
+  models LIGHTER than the two disqualified Qwen3 sizes, targeting their exact failure mode
+  ("doesn't follow a corrective instruction precisely") rather than a raw-capability gap —
+  Llama 3.2 3B has the best documented IFEval/BFCL combination in its weight class and a native
+  Ollama tool-call template. Derived tag `deepdelve-llama32-3b` created (`num_ctx 16384`).
+  **Real, structured `tool_calls` responses (correct function name, valid top-level JSON) — but
+  the `tasks` array parameter's VALUE is itself a JSON-encoded STRING** (`{"tasks":
+  "[{\"task_name\": ...}]"}`) instead of a real array, reproduced 3/3 times against the exact
+  `delegate_tasks` schema. **Root-caused, not just observed**: recreated the identical Pydantic
+  model `agent_framework` builds from `delegate_tasks(tasks: list[dict])`'s own type hint and fed
+  it the same malformed value — confirmed real rejection (`Input should be a valid list
+  [type=list_type]`), the same message DeepDelve's own "detailed tool-call validation errors"
+  feature would show the model live. **Then simulated the full round-trip**: fed the model that
+  exact real error and asked it to retry. Result: it did not correct the array, it **abandoned
+  structured tool-calling entirely** — wrote a Python code snippet in chat prose, then a
+  hand-typed single-quoted (invalid JSON) pseudo-call as plain text. Same "narrate instead of
+  call" disqualifying class as `granite3.1-dense`/`phi4-mini`, just reached one message later
+  (after a correction) instead of immediately. **DISQUALIFIED without a full benchmark run** —
+  same evidentiary bar this project already applies to schema-stage rejects (devstral, hermes3,
+  etc. in the README table): a model that gets WORSE after seeing the exact right correction isn't
+  worth 20-40 GPU-minutes to find out how it does on the full pipeline.
+  - **Documentation check (2026-07-18)**: this is a known, unresolved upstream Ollama limitation,
+    not something specific to this project's integration or to `llama3.2` itself.
+    `ollama/ollama#6155` ("Support Nested Parameters for Tools," filed Aug 2024, still open, no
+    maintainer fix) documents the identical stringified-nested-array symptom across
+    `llama3.1:8b`/`70b`, `mistral-nemo`, and `llama3-groq-tool-use` — an Ollama-side
+    parser/serialization limitation with array/nested-object tool parameters generally, not a
+    single model's chat-template quirk. `ollama/ollama#7860` separately documents Llama 3.2
+    mangling SCALAR parameter types too (ints returned as strings), so this model has broader
+    type-fidelity problems beyond just nested arrays. **No documented workaround exists anywhere
+    in the issue tracker or community discussion** (checked `#6155`, `#7860`, `#10552`, `#11805`,
+    `#13519`) — the only mitigation found anywhere is a LangChain-side client library that
+    re-parses shallow string-encoded JSON arguments after the fact, not a model-side or
+    Ollama-side fix. Because this is a shared Ollama-level limitation (not model-specific), it
+    could in principle affect ANY future candidate with an array-typed `delegate_tasks` argument,
+    including intermittently against models that otherwise pass — worth remembering as context if
+    a future candidate shows an occasional, not-fully-reproducible schema hiccup.
+  - **Deferred, not implemented, structural candidate**: a defensive "if a list-typed tool
+    argument arrives as a JSON-encoded string, parse it before validation" tolerance would be a
+    generically useful robustness improvement given the above (helps any model that hits this
+    known Ollama-side quirk, not just `llama3.2`) — but it wouldn't have rescued `llama3.2:3b`
+    itself (the disqualifying event is the collapse-into-narration on retry, which happens after
+    the string would already have been coerced), and the only interception point found
+    (`agent_framework.FunctionTool.invoke`'s internal Pydantic validation, built from
+    `delegate_tasks`'s own type hint) would require either widening that hint in a way that also
+    changes the JSON schema shown to every OTHER model including the working default, or
+    monkeypatching vendored `agent_framework` internals — real blast radius against a function
+    every single model/role depends on. Not attempted this session; flagged for a dedicated
+    reviewed session if a future candidate's only blocker turns out to be this exact quirk.
+  - **Ollama-alternative backend research (2026-07-18), conclusion: don't switch, not yet
+    justified.** Since the array-stringification bug looked Ollama-level rather than model-level,
+    researched whether switching the local inference backend entirely would sidestep it.
+    **`ollama/ollama#6155` is actually CLOSED** (merged via PR #13508, Dec 2025) — but the merged
+    fix only adds nested-object SCHEMA DEFINITION support (`api/types.go`'s `Properties` field, so
+    Ollama can describe a nested schema to the model); it does NOT touch the separate
+    response-parsing path that turns the model's raw tool-call text back into `arguments`, which
+    is exactly where `llama3.2:3b`'s failure was reproduced live on this project's installed
+    version (0.31.2, months newer than the merge). Worth a fresh, narrower upstream issue with the
+    exact repro if this recurs. **`llama.cpp`'s own server is not a cleaner alternative** — its
+    issue tracker has its own open, unfixed array/nested-object tool-call serialization bugs
+    (`ggml-org/llama.cpp#21384` closed as not-planned, `#20198`/`#22072` open, `#20359` on
+    malformed JSON for large payloads) on essentially the same grammar/parsing machinery class,
+    not a structurally different guarantee. **Native (non-Docker) vLLM on ROCm is now realistic**
+    on this exact card (AMD ships installable ROCm wheels as of Jan 2026, gfx1200 on the officially
+    supported list for ROCm 7.2+) — a real change since the earlier vLLM investigation, which only
+    ever hit the NTFS+Docker-overlayfs blocker and never tried a native pip install. vLLM's
+    grammar-constrained structured-output tool-calling (token-level schema constraint, not
+    post-hoc regex/PEG re-serialization) is theoretically more robust for array-of-objects
+    arguments than either Ollama's or llama.cpp's approach, but no direct comparative evidence was
+    found confirming it actually avoids this exact failure mode — the recommendation is
+    theoretical, not proven. Model-weight storage on the NTFS mount is a non-issue for any backend
+    (the NTFS/symlink constraint was specific to Python venvs and llama.cpp's/HF's own auto-download
+    symlink cache; a directly-specified local GGUF/safetensors file path has no symlink
+    requirement). **Conclusion: not worth migrating now** — `qwen2.5:3b-instruct` and both `qwen3`
+    sizes already don't hit this bug on Ollama as currently installed, so there's no live blocker
+    actually forcing a backend change; revisit only if a future candidate's sole blocker turns out
+    to be this exact array-stringification bug with no working Ollama-served alternative.
+  - **HANDS-ON CROSS-BACKEND EXPERIMENT DONE (2026-07-18) — CONCLUSIVE: the bug is MODEL-side, not
+    Ollama-side.** The prior research pass above was necessarily theoretical (no direct test of
+    the actual failure). Ran a real, controlled A/B: downloaded `llama.cpp`'s official prebuilt
+    ROCm 7.2 release (`ggml-org/llama.cpp` tag `b10068`, `llama-b10068-bin-ubuntu-rocm-7.2-x64.tar.gz`
+    — matches this card's `gfx1200`/ROCm 7.2+ support directly, no build needed) and ran
+    `llama-server --jinja` (the model's own embedded chat template, confirmed genuine by reading
+    the GGUF's `tokenizer.chat_template` metadata directly — the real official Meta Llama
+    tool-calling template, not a generic fallback) against the SAME two models already tested on
+    Ollama, GGUF weights pulled fresh from Hugging Face onto the NTFS mount
+    (`/mnt/nuevovol/llm-models/`, confirms model-weight NTFS storage really is a non-issue for any
+    backend as predicted — plain `hf_hub_download` calls, no symlink involved). **Result: `llama3.2:3b`
+    reproduces the IDENTICAL array-stringification bug 3/3 times on `llama.cpp`'s own server**
+    (`{"tasks": "[{...}]"}`, a JSON-encoded string, not a real array) — same failure, completely
+    different serving software, different parser, different (grammar-constrained, not regex-based)
+    tool-call extraction mechanism. **`qwen2.5:3b-instruct` produces a clean, correctly-typed array
+    3/3 times on the exact same `llama.cpp` server** — matching its behavior on Ollama. This is a
+    clean, well-controlled result: same backend, same template-authenticity check, one model fails
+    consistently and the other passes consistently — the variable that predicts the bug is the
+    MODEL, not the serving software. Directly answers the concern that this project might be
+    missing out on real model options because of an Ollama-specific defect: it isn't one. A model
+    that fails this way on Ollama will very likely fail the same way on `llama.cpp` or (by
+    extension, though not directly tested) vLLM, since the failure tracks the model's own learned
+    generation behavior around nested-array arguments, not a serving-layer parsing quirk.
+    **Conclusion reinforced, now with direct evidence instead of just literature research: no
+    backend migration would have saved `llama3.2:3b`,** and there's still no live blocker forcing
+    one for any candidate that currently works. `llama.cpp` binary and both test GGUFs left on the
+    NTFS mount (`/mnt/nuevovol/llm-models/`, ~4GB total) in case a similar quick cross-backend check
+    is useful again later — trivial against the drive's 1.1TB free.
+  - **Third backend added to the A/B, same day: native (non-Docker) vLLM-on-ROCm, not just
+    theorized — actually run.** The "no direct evidence" caveat above was addressed head-on rather
+    than left as a gap. Built a real native vLLM install (`vllm==0.25.1+rocm723`, the official
+    AMD-published ROCm wheel from `wheels.vllm.ai`, matching this exact `gfx1200` card) in a
+    throwaway venv on the root disk (per the existing venv-must-be-on-ext4 rule; NTFS still can't
+    hold the Python venv's symlinks). Getting it running required manually resolving a long chain
+    of missing shared libraries one `ldd` sweep at a time (no root/sudo available in this
+    environment) — OpenMPI runtime libs, several ROCm math libs (`rocFFT`, `rocRAND`,
+    `rocSPARSE`, `hipFFT`/`hipRAND`/`hipSPARSE`/`hipSOLVER`/`hipSPARSELt`, `RCCL`, `rocm-core`,
+    `roctracer`/`libroctx`) not present anywhere on this system outside Ollama's own bundled,
+    incomplete copy — each fetched directly as a `.deb` from `repo.radeon.com`'s public ROCm 7.2
+    apt pool and extracted with `dpkg-deb -x` into a scratch dir (no `apt install`/root needed),
+    then wired in via `LD_LIBRARY_PATH`/`ROCM_HOME`. Confirmed working: `torch.cuda.is_available()`
+    True, `gcnArchName` correctly `gfx1200`. Served `unsloth/Llama-3.2-3B-Instruct` (an ungated
+    mirror; the official `meta-llama` repo is gated and wasn't authenticated in this environment)
+    via `vllm serve --enable-auto-tool-choice --tool-call-parser llama3_json` — vLLM's own
+    purpose-built parser for the Llama 3.x tool-call format, its most favorable possible
+    configuration for this exact model family. **Result: identical bug, 3/3** — `{"tasks":
+    "[{...}]"}`, a JSON-encoded string, not a real array, exactly matching Ollama and `llama.cpp`.
+    **Three independent backends, three structurally different tool-call extraction mechanisms
+    (Ollama's Go templating, `llama.cpp`'s GBNF grammar, vLLM's own structured-output constraint
+    engine with a model-family-specific parser) — same model, same failure, every time.** This is
+    now definitive, not theoretical: the bug is 100% attributable to `llama3.2:3b` itself, and no
+    realistic backend migration would recover it. Root-disk cleanup done immediately after (venv +
+    manually-fetched ROCm libs removed, ~16GB freed, root back to 61GB free) — same disk-hygiene
+    lesson as the GRPO smoke test session, a throwaway experiment venv doesn't linger.
+
+- **`qwen2.5:3b-instruct` — new lightweight candidate tried 2026-07-18, DISQUALIFIED, different
+  failure class than `llama3.2:3b`.** Second candidate from the same "lighter than the disqualified
+  Qwen3 sizes" research pass. **Passed the `delegate_tasks` schema test cleanly, 7/8 across two
+  batches** (one silent empty-response outlier, otherwise a real, correctly-typed array every
+  time) — does NOT reproduce the array-stringification bug that disqualified `llama3.2:3b`, so
+  worth the full benchmark run this time. Derived tag `deepdelve-qwen25-3b` (`num_ctx 16384`).
+  **Full sales-forecasting benchmark: `Report: NOT WRITTEN` after 254.6s, retry budget exhausted
+  (8/8) on `missing_findings`** — much faster to fail than either Qwen3 size (255s vs. 1000+s),
+  because the failure surface is different and narrower: real research DID happen (2 sources
+  fetched cleanly, `en.wikipedia.org/wiki/Heuristic_(computer_science)` and
+  `.../Public_holidays_in_Colombia`, 0 search failures), and the Planner correctly stopped
+  delegating and let the engine dispatch `FindingsWriter` — but `FindingsWriter` never
+  successfully produced `findings.md` across all 8 attempts. Confirmed via `_run_state.json`:
+  20 tool errors recorded, the overwhelming majority `"'findings.md' not found"` from
+  `ReviewFix_attempt{1..8}` trying to read a file that was never written. This is the **same root
+  cause already documented for Bonsai-8B** (writer-tier sub-agent "Finishes" its turn without ever
+  successfully calling `write_workspace_file`) — and it's a second live confirmation that the
+  2026-07-14 hardening (`_dispatch_writer_review_fix`'s read-quota-delta cross-check, commit
+  `bfd2cd5`) is working exactly as designed: every `ReviewFix` attempt got a genuine, correctly-
+  surfaced "file not found" error rather than a false "REVIEW: CLEAN" on a file that was never
+  read. **`qwen2.5:3b-instruct` DISQUALIFIED as a `gpt-oss:20b` replacement** — updates the bake-off
+  conclusion: 10 candidates tried total (counting `llama3.2:3b`), `gpt-oss:20b` still the only full
+  pass. Net signal from both new lightweight candidates this session: smaller models in the 2-5B
+  range are failing at TWO distinct, well-characterized points in the pipeline (schema-stage
+  double-encoding for `llama3.2:3b`; writer-role tool-call omission for `qwen2.5:3b-instruct` and
+  `Bonsai-8B`) rather than one common weakness — there's no single fix that would rescue this whole
+  size class, which is itself useful evidence for the fine-tuning plan above: `qwen3:4b` remains
+  the better fine-tuning target precisely because ITS failure (thin_coverage non-convergence) is
+  the single narrowest, most well-characterized gap of any candidate tried so far.
+
+- **`gpt-oss:20b` re-confirmed live (2026-07-14), same benchmark, same session**: `deepdelve-gpt-oss`
+  produced a real, grounded `final_report.md` in 1079.1s, 15 sources fetched, 0 search failures,
+  passing the NLI entailment check along the way (one `nli_unsupported` retry, corrected). First
+  fresh confirmation this session that the documented default actually still passes end-to-end,
+  directly alongside the same-day Bonsai-8B/`qwen3:4b`/Gemma-4 attempts on the identical query —
+  the only one of the four to produce a written report at all. Content covers the heuristic-
+  optimization side of the query well (PSO, GA, moving-average, rule-of-thumb) but drops the
+  Colombia-specific cultural-context research the run itself actually did earlier (holidays/
+  paydays from Banco de la República were researched but never made it into the final report) and
+  doesn't surface the gold reference's DL-architecture families — a real report, correctly
+  grounded, but likely a partial (not top) score against the full manual rubric if formally scored.
+  Not manually scored this session (would need a careful pass against
+  `eval/reference/sales_forecasting_deepseek.md`).
+  - **Formally scored 2026-07-18, per `eval/sales_forecasting_benchmark.md`'s rubric: 6/10 ("usable
+    with manual verification").** Tier 1 structural integrity 2/2 (`findings.md`+`final_report.md`
+    both exist, 18/18 fetched URLs clean, none flagged `stub` among the ones actually cited, run
+    converged clean by completion-check attempt 3). Tier 2 architecture coverage vs. reference
+    **0/2**: the report covers 3 optimization/feature-search heuristics (GA time-lag selection,
+    TS_Adam, Randomized Uphill Climbing) but none of the reference's 4 forecasting-architecture
+    families (TFT, N-HiTS, DQN, EventCast/multimodal) — a real, grounded, but structurally
+    different literature set, not a fabrication. Tier 3 heuristic-optimization coverage 2/2 (GA
+    applied to LSTM hyperparameter tuning, matching the query's actual framing). Tier 4 Colombia
+    cultural context **0/2**, and this is the more interesting result: `_run_state.json` shows
+    `timeanddate.com/holidays/colombia/2024` WAS fetched cleanly (not a stub) alongside one stubbed
+    ADP payroll-calendar fetch, yet neither `findings.md` nor `final_report.md` mentions Colombia
+    even once — a second, independent live confirmation of the shared-quota-pool starvation bug
+    logged above (a different run, different model context than the original find), not a new bug.
+    Tier 5 quantitative grounding 2/2 (every reported figure traces to an `*Evidence:*` line from a
+    real fetched source). Net: the defense layers correctly prevented fabrication on a topically
+    disjoint literature set; the score ceiling here is entirely the quota-starvation bug, not a
+    grounding failure.
+
+- **Heterogeneous role tiering (option 2 above) — implementation and A/B test detail.** A UNIFORM
+  small-model dispatcher was tried and rejected 2026-07-11 (nemo scored 2/10 across every role);
+  this instead tiers by role, keeping `gpt-oss:20b` for Planner/Builder/FindingsWriter/PeerReviewer
+  (the roles needing multi-step self-correction) and routing WebSearcher/AcademicSearcher/
+  DocumentAnalyzer/DataAnalyzer to a new optional `settings.specialist_model`.
+  - **Implementation**: `_build_client(model_override=None)` (`src/engine/orchestrator.py`) now
+    takes an optional model override; `create_local_agent` builds a second client only when
+    `specialist_model` is set and differs from `api.openai_model` (a no-op object-reuse
+    otherwise); `_run_single_task` picks the specialist client when `agent_id` is in the new
+    `_SPECIALIST_MODEL_ROLES` set (the deliberate complement of the existing
+    `_NON_RESEARCH_DISPATCH_ROLES`). TUI/CLI status lines updated in parity to show
+    `<model> (+specialist: <model>)` when configured. `config_template.yaml` documents the key.
+    No `SubAgentConfig`/Pydantic changes needed — the routing decision lives entirely at the one
+    dispatch point. `test_structural_checks.py` passes unchanged.
+  - **Design flaw, foreseeable before any A/B test ran — added retrospectively 2026-07-21, per
+    user pushback that this should have been caught at design time, not after measuring it.** The
+    2026-07-18 "agreed order" (structural fix → tiering → fine-tuning → stay on gpt-oss) approved
+    trying tiering as a strategy step, not this specific pairing's reasoning — that reasoning was
+    never spelled out before implementation. The VRAM probe below was run BEFORE writing code and
+    already showed the disqualifying fact: this card cannot hold `gpt-oss:20b` and any second
+    model resident at once. Given that, pairing a "heavy" coordinator model that must stay loaded
+    for Planner/Builder/FindingsWriter/PeerReviewer with a "light" specialist for the remaining
+    roles was never actually lighter in aggregate VRAM terms — `gpt-oss:20b` doesn't get unloaded
+    between specialist calls, so the specialist tier only adds a second model competing for the
+    same fixed budget, guaranteeing constant eviction/reload thrashing regardless of which small
+    model was chosen. The 4.2x slowdown below is the confirming measurement of a result the probe's
+    own numbers already implied — it should have been treated as a go/no-go gate before running the
+    A/B, not just a footnote alongside it. **Standing implication for any future specialist-model
+    retry**: before implementing, check whether the specialist's footprint fits ALONGSIDE the
+    coordinator model's resident footprint (not just its own footprint against the total VRAM
+    budget) — if the coordinator model can't be unloaded between specialist dispatches, tiering
+    cannot reduce peak VRAM pressure, only add to it.
+  - **VRAM probe done BEFORE writing any code**: confirmed live via `ollama ps`/`rocm-smi` that
+    this card does NOT keep two different Ollama models resident simultaneously — `gpt-oss:20b`
+    (12GB) and `qwen3:4b` (5.1GB loaded, inflated by KV cache) together exceed the ~15.9GiB budget,
+    so Ollama evicts the previous model on every switch. Measured reload cost: ~5-23s per switch.
+  - **Real timed A/B run (2026-07-18)**, same sales-forecasting benchmark, `gpt-oss:20b` +
+    `specialist_model: deepdelve-qwen3-4b`, confirmed via `ollama ps` mid-run that both roles
+    really did route to their intended model. **Result: 4513.1s (75.2 min) vs. the pure
+    `gpt-oss:20b` baseline's 1079.1s — 4.2x SLOWER**, not faster, driven by the reload tax
+    compounding across an unusually retry-heavy run (`thin_coverage` → `missing_findings` →
+    `missing_artifact` before converging) plus qwen3:4b needing repeated redispatches
+    (`background_heuristics#2/#3/#4`) to produce anything usable for its assigned angle.
+    **Worse, the run converged CLEANLY (no fabrication, real grounding, `Report:` written) but the
+    content itself silently dropped the query's entire main topic**: `findings.md` and
+    `final_report.md` are 100% about Colombian holidays/payroll, with ZERO mention of heuristic
+    algorithms or deep learning, despite `_run_state.json` confirming the specialist model DID
+    eventually fetch two genuinely relevant real sources for that angle
+    (`sciencedirect.com/.../S1546221825008872`, `forecastio.ai/blog/time-series-forecasting`) that
+    even show up in `RunState.data["findings"]`. The content existed; the writer-tier synthesis
+    (on `gpt-oss:20b`, the coordinator model, not the specialist) dropped it anyway. This is a NEW
+    instance of the pattern already tracked elsewhere in this file (real fetched content silently
+    absent from final synthesis) — previously always tied to an observable quota-exhaustion
+    trigger, but no quota exhaustion is visible in this run's own attempt log, suggesting the
+    underlying issue may be a broader writer-tier prioritization/attention problem, not solely the
+    already-scoped quota-fairness bug. Not investigated further this session — flagged as a new,
+    distinct candidate worth its own root-cause pass.
+  - **Conclusion: tiering the code is correct and reusable, but THIS pairing
+    (`gpt-oss:20b`+`qwen3:4b`) on THIS hardware is a net loss** — slower AND lower quality than
+    just running `gpt-oss:20b` alone. `specialist_model` left unset in the live config (defaulting
+    to today's single-model behavior). Worth retrying only if: a specialist model with a smaller
+    combined VRAM footprint (fits alongside `gpt-oss:20b` without eviction) is found, or the
+    newly-surfaced writer-tier content-dropping bug gets root-caused and fixed first — as scoped,
+    tiering does not currently deliver the hoped-for benefit.
+
+
+## Completed
+
 
 - **Non-generative routing classifier for `delegate_tasks`'s `agent_id` — IMPLEMENTED and
   live-verified 2026-07-20.** Merged from the SOTA literature review (`RESEARCH.md` §6): small/mid
@@ -811,348 +1701,9 @@ Status as of 2026-07-20.
   Unit-verified directly against a fake `call_tool` before the live smoke test confirmed no
   regressions.
 
-## Findings from live testing (not yet acted on / informational)
 
-- **SOTA literature review, durable conclusions merged 2026-07-20** (full detail, primary-source
-  citations, and still-open leads in `RESEARCH.md`, which stays the standalone working document).
-  - **MAST's 14-mode failure taxonomy (arXiv:2503.13657, NeurIPS 2025) maps closely onto this
-    project's own bug catalog**, confirming DeepDelve's failures are named, published patterns
-    rather than idiosyncratic bugs: FM 2.6 "Reasoning-Action Mismatch" = the "narrate instead of
-    write" bug; FM 1.5 "Unaware of Termination Conditions" = the over-research/STOP-EARLY problem;
-    FM 3.2/3.3 "No/Incorrect Verification" = the entire reason the grounding-check layer exists;
-    FM 1.1 "Disobey Task Specification" = the exclusion-enforcement bug class. A follow-on
-    production-telemetry replication (639K steps/23.6K runs, one closed-alpha platform) found
-    verification gaps dominate real deployment failures while coordination failures nearly vanish
-    (1.14% of runs) — closer to DeepDelve's own lived experience than MAST's benchmark-derived
-    aggregate, though caveated as one platform, not peer-reviewed. A large-scale coding-agent study
-    (arXiv:2605.29442, 16,118 validated episodes) independently found the same two DeepDelve
-    patterns (inaccurate self-reporting ≈ "narrate instead of write"; constraint violation ≈
-    exclusion-enforcement) in a totally different agent domain — real, cross-domain corroboration,
-    not a DeepDelve-specific quirk.
-  - **Three independent sources now converge on "verification/architecture amplifies a capable
-    model, it doesn't rescue an incapable one"**: the capacity-floor paper (arXiv:2601.16280, 14B
-    "minimum viable" for tool invocation), PIVOT (arXiv:2605.11225, "repair quality remains bounded
-    by the underlying model reasoning capacity"), and ATLAS/AdaMAST (its own 8pp residual gap on
-    OlympiadBench, attributed to an "architectural-vs-parametric distinction"). Relevant to every
-    future decision about fixing a small-model gap with more structure vs. a bigger/better model.
-  - **A third, distinct candidate mechanism for the recurring "real fetched content silently
-    vanishes during final synthesis" pattern** (already independently observed 3 times in this
-    project — quota-starvation drop, heterogeneous-tiering drop, citation-truncation drop, each
-    fixed individually; see the scattered incidents at lines ~481, ~689, ~966, ~1440, ~1858 above).
-    "Lost in the Middle" (arXiv:2307.03172, TACL 2024, foundational/highly-credible) shows models
-    use context well at the start/end and poorly in the middle — a candidate SECOND cause distinct
-    from truncation, not yet checked against DeepDelve's own findings-ordering. PIVOT
-    (arXiv:2605.11225) adds a candidate THIRD: 100% of its tested models' thinking tokens fire on
-    the FIRST turn (task decomposition), 99.2% of final-synthesis steps get ZERO thinking tokens,
-    REGARDLESS of how large the thinking budget is raised — models don't naturally allocate
-    reasoning to synthesis/verification, only to planning. None of these three are confirmed as
-    DeepDelve's own root cause; each is a real, externally-sourced, testable hypothesis for the
-    still-open "common structural cause" investigation already flagged in this file.
-  - **CONFIRMED, 2026-07-21 — a 4th, DeepDelve-internal mechanism, ground-truthed against real
-    `_run_state.json` files on disk, not a literature hypothesis.** Directly answers the
-    heterogeneous-tiering incident's own open question above ("no quota exhaustion is visible in
-    this run's own attempt log") — the missing variable was never a quota at all.
-    - **Mechanism**: `sub_agent_timeout_minutes` (`src/engine/orchestrator.py:701-703,721-738`) is
-      a hard wall-clock cutoff on a sub-agent dispatch's ENTIRE stream, independent of the quota
-      pools and invisible to `completion_check_attempts`' logging. It can fire AFTER a
-      Searcher/WebSearcher has already fetched a real URL (via `fetch_url_to_workspace`,
-      tracked in `task_fetched_urls_ctx`) but BEFORE the model emits its synthesized summary text —
-      leaving a `run_state.findings` entry with a REAL `source_url` whose entire `summary` is
-      verbatim `"[SYSTEM: task '<name>' cut short -- sub_agent_timeout_minutes (N) exceeded...]"`,
-      zero actual content. When `check_thin_coverage` (or a completion-check retry) redispatches
-      the SAME `task_name` — a fresh-context dispatch with no memory of the earlier partial
-      progress — the retry sometimes narrates genuinely good synthesized content but without
-      re-fetching a URL this round (relying on reasoning/recall, or citing something not captured
-      as a real fetch), landing in `add_finding`'s task_name-fallback bucket (see the source_url
-      fabrication fix earlier this file). **The real content and its real URL end up split across
-      two separate, un-mergeable `findings` entries for the same task** — one has the citable URL
-      with nothing worth citing, the other has real content FindingsWriter cannot legitimately cite
-      (per its own "never a bare task name" rule, correctly enforced). Net effect: the whole topic
-      silently vanishes from `findings.md`, with nothing in the attempt log pointing at why.
-    - **Confirmed NOT a one-off, ground-truthed against every real run on disk** (107
-      `_run_state.json` files under `research_output/`): 44 findings entries across 9 distinct runs
-      show the exact real-URL + timeout-cutoff-only-summary pattern. In 3 of those 9 runs, the full
-      split-brain pattern is present — a same-`task_name` entry with substantial real-looking
-      content (300+ chars) under the task-name-fallback `source_url` — confirmed reproduced across
-      THREE different dates and backends: `20260714_201217` (`top_heuristics`), `20260718_141225`
-      (the exact heterogeneous-tiering A/B run analyzed above — `background_heuristics`'s two
-      cutoff entries carry the real `sciencedirect.com`/`forecastio.ai` URLs with nothing but the
-      cutoff message, while a THIRD `background_heuristics` entry has a genuinely detailed N-BEATS/
-      TFT/arXiv writeup under the bare task-name fallback), and `20260721_174718` (this same
-      session's killed `qwen3:8b` vLLM re-test run).
-    - **Candidate fixes, not yet implemented, pending user sign-off (touches the shared dispatch
-      loop, every sub-agent's blast radius)**:
-      1. **Ring-fence the timeout, mirroring the existing quota-fairness fix.** `check_quota`
-         already ring-fences remaining QUOTA for a task that's shown real fetch activity (see the
-         quota-starvation incident above); the same philosophy applied to
-         `sub_agent_timeout_minutes` (extend the deadline once, by a bounded amount, for a task
-         that has a real `task_fetched_urls_ctx` entry but hasn't finished synthesizing) would
-         prevent the cutoff from ever severing a real fetch from its own summary in the first
-         place — closest to a true root-cause fix, most consistent with prior art in this codebase.
-      2. **Give a retry context of its own prior partial progress.** A redispatch of a `task_name`
-         that already has an on-disk fetched file from an earlier cut-short attempt currently starts
-         from a totally blank slate. Telling it explicitly ("you already fetched `<url>`, saved as
-         `<filename>` — delegate it to an Analyzer now instead of searching again") would let the
-         retry finish the SAME real work instead of restarting and orphaning it.
-      3. **Contain, don't recover**: at minimum, a `findings` entry whose entire summary is the
-         cutoff system message should be excluded from `_build_findings_source_material`'s citable
-         entries (same treatment as today's non-http fallback fix) and named in the uncited-tasks
-         note instead — turns a silent loss into an explicit, acknowledged gap even without
-         recovering the content. Smallest fix, but doesn't rescue anything.
-    - **1+3 IMPLEMENTED, 2026-07-21**, after a dedicated pre-implementation audit against the real
-      code and external prior art (not just re-reading the plan). Audit found the recommendation
-      itself sound but surfaced one real, non-obvious implementation risk before it shipped: an
-      unbounded deadline extension could push a dispatch's `task_deadline` past `_build_client`'s
-      own `sdk_timeout` (floored at 3600s), reintroducing the exact "SDK's blunt timeout wins the
-      race" bug that timeout's own comment already documents fixing once. Reference check: Temporal's
-      documented pattern for this exact failure class (long LLM activity, timeout severs partial
-      progress) is heartbeat-and-resume — record partial progress as a heartbeat, extend the
-      deadline instead of killing the activity — structurally identical to fix 1, confirming it's
-      the standard answer, not a bespoke hack. Separately checked whether "just add real
-      checkpointing" (candidate fix 4, previously deprioritized) has become easier anywhere since —
-      no: LangGraph, the most checkpoint-mature agent framework, still has no native mid-node
-      partial-state persistence in 2026 (its own forum confirms the workaround needs a raw async
-      generator with every field manually wired to reducers, "fragile and easy to misconfigure"),
-      confirming fix 4 was correctly scoped as new capability, not underestimated.
-      - **Fix 1** (`src/engine/orchestrator.py`): `_ring_fenced_deadline` (new pure function, ~line
-        171, next to `_extract_excluded_topics`) computes the capped extension —
-        `min(task_start + sub_agent_timeout_minutes*2*60, task_start + sdk_timeout_ceiling-60)` —
-        so the fix can never reintroduce the SDK-race bug. `_sdk_timeout_ceiling_seconds` (new, in
-        `create_local_agent`, mirrors `_build_client`'s own `sdk_timeout` formula exactly) is the
-        cap. `_try_extend_deadline_once` (new closure in `_run_single_task`, next to `task_deadline`)
-        checks `task_fetched_urls_ctx` and extends once per dispatch; wired into both cutoff sites
-        (the `remaining <= 0` branch and the `asyncio.TimeoutError` except, ~line 900-920) via
-        `continue` instead of an immediate cutoff.
-      - **Fix 3** (`src/engine/completion.py`): `_CUTOFF_ONLY_SUMMARY_RE` (new, right before
-        `_build_findings_source_material`) matches the cutoff marker text when it's the ENTIRE
-        summary (not when real content precedes it — a partial synthesis still gets shown). A
-        matching entry now falls into the existing `uncited_task_names` branch instead of being
-        rendered as a citable `### Source:` entry.
-      - Both covered by `test_structural_checks.py` (new assertions: `_ring_fenced_deadline`'s cap
-        math including the case where the SDK ceiling leaves no room to extend at all;
-        `_CUTOFF_ONLY_SUMMARY_RE` against both marker variants and against real-content-plus-marker
-        summaries) — full suite still passes.
-  - **Comparative survey against 5 other real deep-research-agent projects** (Tongyi DeepResearch,
-    dzhng/deep-research, CYC2002tommy/Deep-Research-Agent, SkyworkAI/DeepResearchAgent, nashsu/
-    llm_wiki — all already credited in README's References) answered a deliberate test question from
-    the user honestly: DeepDelve's 10-layer grounding pipeline is more elaborate than any of the 5
-    for the SPECIFIC problem of post-hoc citation verification on a small/local model — but this is
-    explicitly NOT "most sophisticated deep research agent, period." Tongyi DeepResearch solves
-    reliability via a much larger purpose-trained model, a different and likely more effective lever
-    DeepDelve's own local-only constraint doesn't have access to; and "sophisticated mechanism" is
-    not the same claim as "proven real-world catch rate" — most of DeepDelve's own grounding checks
-    still lack real-captured-fabrication test coverage (see "Test coverage debt" note in session
-    history). See `RESEARCH.md` §7 for the full, appropriately-bounded writeup.
-  - **A non-generative routing-classifier design for `delegate_tasks`** is now a scoped "Planned"
-    item (see above) rather than a research note, prerequisite data already confirmed sufficient.
-- **Full grounding/completion-check compliance audit (2026-07-18), all 12 README-claimed guarantees
-  re-verified against the actual code, not just the docs.** Checked each of: URL grounding with
-  path-boundary matching, content-level zero-fact-overlap, non-URL citation detection, regulation-
-  identifier check, stub-fetch detection, `uncited_claims`, NLI entailment
-  (`nli-deberta-v3-small`), atomic-claim segmentation (`decompose_claim_segments`), FEVER-style
-  cross-source contradiction, topical relevance (`bge-reranker-v2-m3`), coverage accounting
-  (`RunState.coverage()`), and the `test_structural_checks.py` verdict-matrix pin. **All 12 found
-  genuinely implemented and reachable from the real completion-check flow** (`GROUNDING_CHECKS`/
-  `COMPLETION_CHECKS` in `src/engine/completion.py:563-582`) — no dead code, no orphaned function,
-  no early-return that silently skips a check, no always-false gating condition. Every check fails
-  open (returns `None`) on model-load failure rather than crashing a run, confirmed as deliberate
-  documented behavior rather than an oversight. `check_not_grounded`'s ordering as the last, generic
-  catch-all in `GROUNDING_CHECKS` is deliberate so the more specific verdicts fire first. Net: the
-  README's grounding-guarantees section does not overclaim relative to the code as of this date.
-- **Grounding check verifies provenance, not topical relevance.** A live GOA (Grasshopper Optimization Algorithm) research query got a citation from `globaldrivetozero.org` — actually fetched, and sharing surface terms like "GOA"/"Goa" — that's actually about the Indian state of Goa's EV policy, not the algorithm. The URL-presence + term-overlap check passed it because it only checks "was this fetched" and "do terms overlap," not "is this source about the same subject." Acronym collisions are the clearest way to trigger this; unclear how common the failure mode is outside them. **Fixed 2026-07-14 — see "Done" (Phase 4, `topical_relevance_problem`).**
-- **JS-gated pages return bot-challenge stubs, not content.** Several fetches (Cloudflare "Just a moment...", a "Human Verification" page, a Prezi slide deck) came back as 16-18 byte stubs since the fetcher doesn't execute JavaScript. *(Fixed for most cases — see "Done": headless/headed-browser fetch fallback, 2026-07-14. Recovers Springer (headless-sufficient) and MDPI (needed headed). NOT a universal fix: a genuine Cloudflare Turnstile challenge (ScienceDirect) resists both headless AND headed Chromium regardless of patience or `navigator.webdriver` spoofing — confirmed to be automation/CDP-fingerprint detection, not a solvable timing issue, and deliberately not pursued further; see the ScienceDirect sub-bullet above for the full investigation. Still correctly falls through to the stub flag rather than silently failing.)*
-- **A citation being present in a report's "Sources" list doesn't mean it was fetched.** Across several market-research runs, more than half of named sources were routinely never actually fetched (recalled from the model's training data) — and when independently fact-checked, specific statistics tied to unfetched sources were measurably wrong, usually understated.
-- **Hard exclusion rules ("do not research sector X") repeatedly fail to hold**, confirmed across at least 2 independent runs with different prompt wordings: an explicitly-excluded "Agricultural"/"agribusiness" sector got researched and included in the final report anyway — once purely from memory, once with the model actually delegating and fetching a real source for the excluded sector. Simply naming the exclusion in the prompt isn't enough; `delegate_tasks`'s existing dispatch-time skip (`_extract_excluded_topics`) only stopped NEW research on the topic, not the topic showing up in the final report anyway via a sibling task's tangential findings. **Fixed 2026-07-14** — see "Done" below (`check_excluded_topic`).
-- **Non-URL "citations" evade the grounding check entirely.** A live report sourced several claims to `"Expert opinion from a cold storage facility manager in Colombia"` — not URL-shaped, so `extract_cited_urls` never sees it, even though it's exactly as ungrounded as a fabricated URL. The grounding check's whole model is "cross-reference cited URLs against fetched URLs" — a citation with no URL at all currently gets a free pass. **Fixed — see "Done" above (`non_url_citation_check`).**
-- **Scaling down scope (12 sectors → 5) improved surface polish, not actual grounding rate.** A 5-sector re-run produced far more plausible-looking, consistently-formatted citations than a 12-sector run, but cross-referencing against `_run_state.json`'s real `fetched_urls` showed most of them were still fabricated — only 5 URLs were ever fetched all run, while the final report cited well over twice that many distinct domains. Fewer sectors did not proportionally reduce the fabrication rate.
-- **Shared cumulative `web_search` quota pool can starve a specific task of the ability to
-  synthesize what it already fetched (2026-07-14).** Live sales-forecasting benchmark run
-  (`research_output/i_want_documentation_on_heuristic_algoritms_for_de_20260714_225720/`): the
-  final report was well-grounded on its technical content but silently dropped the Colombia
-  cultural-context section (holidays/paydays) ENTIRELY, despite the query explicitly requiring it
-  and the research genuinely happening — NOT the same bug as the FindingsWriter dedup fix shipped
-  earlier this session (that fix worked correctly here; the empty-summary entry reached
-  FindingsWriter's material intact, there was just nothing usable in it).
-  `SubAgent_Colombian cultural events affecting sales` was dispatched 4 separate times across the
-  run's retries. Dispatch #1 genuinely fetched 2 real sources
-  (`timeanddate.com/holidays/colombia/2024`, an ADP payroll-calendar article) but its
-  `RunState.add_finding` entries have EMPTY summaries — it fetched but never got to actually
-  analyze/synthesize before being cut off. Dispatch #4 (the last one) has a real summary, but it's
-  just an apology: *"I've reached the maximum number of web-search calls allowed for this session
-  (15). No sources were successfully fetched..."* Root cause: `web_search`'s quota
-  (`build_quota_pool`) is ONE shared, cumulative pool across every sub-agent in the run — other
-  tasks (particularly "Top 5 common heuristic algorithms," which shows heavy repeated web activity
-  in this run's findings) burned through the pool first, so by the time the Colombia task got
-  redispatched on retries #3/#4, the shared quota was already exhausted, and it could never finish
-  analyzing the sources it originally fetched. **Partially fixed 2026-07-18 — see "Done" above
-  (`check_quota`'s ring-fence)**, which addresses angle (b) below (a dispatch that already fetched
-  something real no longer gets hard-blocked mid-synthesis). Angles (a)/(c) remain open — candidate
-  angles: (a) a per-task reserved minimum quota allotment, (b) [addressed] protecting/ring-fencing a
-  task's remaining quota once it's shown real fetch activity (distinguishing "genuinely
-  progressing but interrupted" from "never started"), (c) some kind of fairness/round-robin
-  ordering across redispatched tasks instead of first-come-first-served on a shared pool. Distinct
-  from `retry_quota_topup` (which already tops up the pool between completion-check ROUNDS) —
-  this is about fairness WITHIN a round, across concurrently/sequentially dispatched sibling
-  tasks sharing the same pool.
+## Pending
 
-- **gpt-oss hallucinates entire tool names, not just filenames (2026-07-12).** Distinct from the
-  fuzzy-filename problem fixed this session (a real tool called with a garbled argument) — this is
-  the model inventing a function that was never in its schema at all: `grep_search?` and `justify`
-  both fired as literal function-call names in one live run (heuristic-algorithms sales-forecasting
-  query), 3 occurrences total. Each one only cost a turn (clean error, `malformed_tool_call_nudge`
-  path, sub-agent recovered without stalling) but three in a single run is a real pattern worth its
-  own investigation, not noise to fold into the filename fix.
-  - **Investigated 2026-07-14 — no code fix, re-tested live, existing infra already covers it.**
-    Re-ran the EXACT same benchmark query live (`research_output/i_want_documentation_on_heuristic_
-    algoritms_for_de_20260714_225720/`, 939.3s, clean pass, converged by attempt 3): **zero**
-    hallucinated-tool-name errors this time, out of 11 total tool errors recorded (all legitimate —
-    a real missing-field validation error, a real missing file, expected quota-exhaustion
-    messages). Doesn't prove the underlying tendency is gone (one run against one prior run is weak
-    evidence either way — could be genuine improvement from the many structural fixes shipped since
-    2026-07-12, or just run-to-run variance), but two things make further code investment
-    unjustified without stronger recurrence evidence: (1) the tool schema the model sees is the
-    real, structural OpenAI-style function-calling schema (name/description/params passed via the
-    API's own `tools` parameter), not prose — occasional hallucination despite having the correct
-    schema in context is a generation-sampling failure, not a missing-information one, so "tighter
-    prompt framing" was never likely to help; (2) `tool_result_error_nudge`
-    (`src/engine/orchestrator.py:268`, shipped 2026-07-14, AFTER this finding was first recorded)
-    already generically pattern-matches the exact `Requested function "..." not found` error text
-    and gives a corrective nudge — so even if this recurs, it's no longer a silently-wasted turn,
-    it costs at most one extra turn with real guidance, same fix that already closed the "zero
-    recovery path" gap for this exact error class. Revisit only if this resurfaces with real
-    frequency data across multiple runs, not as a standalone investment.
-- **gpt-oss endgame-collapse reproduced again, fresh data point (2026-07-12), now also observed
-  INSIDE Builder (2026-07-13).** Same live run above: 9 completion-check attempts, cascading
-  `web_search`/`grep_workspace_file`/`fetch_url_to_workspace` quota exhaustion across multiple
-  re-delegation rounds (including a genuine `QuotaAbortException` nested-agent abort), before
-  finally falling back to the quarantine-restore path at attempt 9/9 — the query (peer-reviewed
-  sourcing for heuristic algorithms + deep learning + multi-franchise sales forecasting, a 3-way
-  AND) never had a real source satisfying all three criteria. Already tracked as a known gap (runs
-  11/13) — not a new finding on its own, but confirms it's not resolved and reproduces on a
-  genuinely hard query, not just a fluke. **Re-tested 2026-07-13 against the same exact query after
-  the Builder architecture shipped**: the collapse shape moved, it didn't disappear — Build→Review→Fix
-  correctly fired 3 times on real `not_grounded` problems, but on attempts 4-6 Builder itself ran out
-  of the shared `write_workspace_file` quota and fell back to narrating the report as chat text
-  instead of writing it (Builder's own output: "I'm unable to create new files because the
-  `write_workspace_file` quota has been exhausted") — the identical failure shape the Planner used
-  to exhibit, now happening one level down. The quarantine-restore fallback still worked exactly as
-  designed both times: final artifact carries a loud warning banner (or is fully restored from the
-  best surviving quarantined draft) instead of a fabricated clean-looking report or a lost one. See
-  "Planned" below for the quota-sharing angle this surfaced.
-- **Line-scoped claim grounding (2026-07-12):** `claim_grounding_problem` compared WHOLE-report terms against each source, so generic shared terms masked per-claim fabrication (run 12's flagship figure was absent from its cited source but passed via other lines' overlap). Now each line with a fetched citation is checked against its own source(s) — the regulation-check pattern generalized; conservative as before (≥1 checkable term + zero overlap only, URL slugs stripped).
-- **Structural eval scorer (2026-07-12):** new `eval_type: structural` in `eval/evaluate.py` — rubric tier 1 scored deterministically from `_run_state.json` + workspace files (cited⊆fetched, findings.md grounded, no salvage/quarantine banner, no unresolved final problem), which no other scorer read at all.
-- **Four concrete findings from a fresh live run of the standing sales-forecasting benchmark
-  (2026-07-13, later the same day the Builder loop shipped)** — user killed the run after it
-  stalled; each finding traced to an exact file/line, not guessed:
-  - **`_strip_trailing_punct` (`src/utils/grounding.py:59-66`) didn't strip a trailing `*`.**
-    *(Fixed 2026-07-14.)* Builder's own citation format `**[Title](URL)**` puts `**`
-    immediately after the link's closing `)` with no space; the existing unbalanced-`)`-stripping
-    loop only fired when the string *ends* with `)`, so a URL ending in `)**` was never cleaned up.
-    Confirmed live: two of this run's four completion-check attempts were `not_grounded` verdicts
-    citing the literal string `...546e2a498c2f)**` as "unverified" — a genuinely-fetched,
-    correctly-cited source false-flagged as hallucinated purely by this string-handling gap,
-    burning half the run's retry budget on a checker bug, not a model failure. Fix: added `*` to
-    the initial `rstrip()` char set, stripped BEFORE the balanced-paren check so a bold-wrapped
-    URL's real trailing `)` is exposed to it correctly (verified against a bold URL that also has
-    its own internal balanced parens, e.g. a Wikipedia disambiguator page — both layers now
-    resolve in the right order). Two new assertions in `test_structural_checks.py`.
-  - **Sub-agent "tool not found"/"argument parsing failed" errors had zero recovery path.**
-    *(Fixed 2026-07-14.)* Confirmed via code trace: these come back from `agent_framework`'s SDK
-    as in-band tool-result text, never as exceptions, so they never reached `_run_single_task`'s
-    `except` block and never triggered the existing `malformed_tool_call_nudge` (which only covers
-    transport-level "error parsing tool call" failures). Confirmed live: a `SubAgent_BuilderFix`
-    retry hallucinated a call to `delegate_tasks` (Builder's real tool list never includes it — the
-    model invented the call, not a config leak); a separate sub-agent called a malformed
-    `grep_workspace?`; `PeerReviewer` tried reading a nonexistent `workspace.txt`. Each burned a
-    turn with no corrective nudge of any kind, unlike the Planner's own conversation. Fix: new
-    `engine/orchestrator.py::tool_result_error_nudge`, a sibling of `malformed_tool_call_nudge`
-    scoped to the exact SDK error strings pulled from `agent_framework/_tools.py` source (not
-    guessed) — `Error: Requested function "{name}" not found.` (hallucinated tool name),
-    `Error: Argument parsing failed.` (rejected arguments), and `tools/fs.py`'s
-    `Error: '{filename}' not found.` (missing file). Wired into `_run_single_task`'s stream loop:
-    the pending nudge is overwritten on every `function_result` seen, so a LATER successful call
-    after an earlier error (the model already self-correcting within the SDK's own internal turn)
-    clears it — only an error still standing at the end of the stream gets nudged, capped at 2
-    retries like `malformed_retries`. Deliberately narrow (three specific, evidence-backed error
-    shapes, not every possible tool failure) so a legitimate business-logic error (a real search
-    that genuinely failed, a quota genuinely exhausted) doesn't get blindly retried when that
-    wouldn't help — verified against both the three matching cases and two non-matching ones (a
-    real fetch-success string, `web_search`'s own timeout error) with no false positives. New
-    assertions in `test_structural_checks.py`. **Deliberately NOT extended to the Planner's own
-    loop** (`run_agent`/`run_cli` in `engine/tui.py`) despite this project's usual TUI/CLI parity
-    rule — this is a reasoned scope decision, not an oversight: the Planner already has independent
-    recovery via its multi-attempt completion-check loop (several full outer retries across an
-    entire run, each with fresh nudges and quota top-ups), unlike a sub-agent's single one-shot
-    dispatch with no outer safety net at all — the asymmetry this fix closes is specific to
-    sub-agents, not a gap in the Planner too. **Relationship to the researched LangGraph
-    `RetryPolicy` pattern** (see the earlier-recorded research-pass note): that pattern's
-    retryable-vs-fatal split maps onto DIFFERENT layers of this codebase rather than one function —
-    the genuinely *retryable* class (timeout, rate-limit, transient parse garble) is exactly what
-    `web_search`'s own daemon-timeout fix and the SDK's built-in 429/5xx backoff already handle;
-    `tool_result_error_nudge` covers what that pattern calls *fatal* (hallucinated tool name,
-    rejected arguments) — except here "fatal" doesn't mean "give up," it means "immediately
-    actionable by telling the model exactly what's wrong," which is what the nudge does.
-  - **`web_search`/`probe_search_health` (`src/tools/web.py`) had no outer wall-clock timeout.**
-    *(Fixed 2026-07-14.)* `DDGS()` is built with no explicit timeout at either call site, relying
-    on the `ddgs` library's own internal 5s-per-engine default — not a real ceiling, since `ddgs`
-    runs engines in a `ThreadPoolExecutor` and its context-manager exit calls `shutdown(wait=True)`,
-    which blocks until every thread finishes regardless of the nominal per-engine timeout. Confirmed
-    live: the process ended up blocked with one established TCP connection open 9+ minutes to a
-    yandex.ru-resolving IP (not an intentional backend anywhere in this codebase — almost certainly
-    a redirect inside `ddgs`), local model unloaded, GPU idle. Generalizes the already-tracked
-    "no liveness/stall detection" gap (previously scoped to hosted/NIM runs only) to local
-    `web_search` too. Fix: `tools/web.py::_run_with_daemon_timeout` — a real `threading.Thread(daemon=True)`
-    with `.join(timeout)`, not a bare `asyncio.wait_for(asyncio.to_thread(...))`. That distinction
-    mattered in practice: a plain `wait_for` DOES unblock the awaiting coroutine on time, but its
-    underlying executor thread is not a daemon thread, so if the search call never actually returns
-    (confirmed against two real GitHub issues, `HKUDS/nanobot#2804` and `microsoft/amplifier#219`,
-    describing `ddgs`'s `primp` Rust HTTP client blocking below anything asyncio can interrupt), the
-    orphaned thread then blocks the WHOLE PROCESS from exiting cleanly at the end of a run — verified
-    directly with a `time.sleep(999)`-hung call: bare `wait_for`/`to_thread` times out the caller
-    fine but the process itself never exits; the daemon-thread version times out the caller AND lets
-    the process exit cleanly. `settings.web_search.timeout_seconds` (default 20), shared by both
-    `web_search`'s two attempts and the pre-run `probe_search_health` check
-    (`src/engine/tui.py`, `run_cli`). Process-based isolation (spawn+kill a subprocess) was
-    considered and rejected — it would require calling `ddgs` from a picklable module-level worker,
-    breaking the existing in-process `ddgs.DDGS` monkeypatch test in `test_structural_checks.py`
-    since a subprocess re-imports fresh, unpatched modules; the daemon-thread approach closes the
-    same gap (including the exit-hang) without that cost.
-  - **Sub-agent status widgets had no staleness indication.** *(Fixed 2026-07-14.)*
-    (`src/engine/tui.py`, `handle_agent_update`). Unlike `ProcessingWidget`/`ToolCallWidget`'s
-    animated timers, the per-sub-agent `Static` widget showed `"▶ {agent_name} executing..."` with
-    no timer and no upper bound — if the underlying dispatch never resolved (exactly what the stall
-    above causes), it stayed frozen on "executing" forever with zero visual signal anything was
-    wrong. Same bug *class* as the already-fixed `ProcessingWidget` elapsed-counter issue, but that
-    fix never got applied here — this is what "stuck agent" looked like from the user's side that
-    night. Fix: new `SubAgentStatusWidget` class (mirrors `ProcessingWidget`'s animated-dots +
-    live elapsed-seconds pattern exactly), swapped in at the one mount site in
-    `handle_agent_update`; `mark_finished(elapsed)` replaces the old one-shot `.update(...)` call
-    on completion. Also wired into `/stop`'s existing widget-cleanup block (alongside
-    `ToolCallWidget`/`ProcessingWidget`/`ThinkingWidget`) so a manually-stopped run marks these
-    stopped too instead of leaving them frozen mid-animation — a related gap the bare `Static`
-    couldn't have supported anyway (no `mark_stopped` method existed to call).
-  - Full prioritized fix plan (strip-punct fix → search timeout → sub-agent error nudge → widget
-    staleness indicator) was written to a local plan file during triage. All four items fixed
-    2026-07-14 — see "Done" above/below.
-  - **Builder's `write_workspace_file` quota was shared with the Planner and every prior Builder
-    dispatch, with no guaranteed headroom of its own.** *(Fixed 2026-07-14.)* On a long, many-retry
-    run, the shared pool could be exhausted by the time a later corrective Builder dispatch needed
-    it, degrading Builder to narrating the report as chat text instead of writing it — the same
-    "narrate instead of write" failure the Planner used to be prone to, now one level down.
-    `retry_quota_topup` already topped up the pool on every completion-check retry, so this wasn't
-    starved by DEFAULT config, but a config with a low `write_workspace_file` limit/topup would
-    starve Builder specifically. Fix: new `engine/completion.py::_ensure_builder_write_quota_headroom`,
-    called right before every `_dispatch_build_review_fix` dispatch (after the existing per-attempt
-    `topup_quota_pool`) — tops up ONLY `write_workspace_file`, and only by the exact headroom this
-    one cycle could need (2 units: Builder's initial rewrite + one possible corrective Fix pass),
-    not a blanket amount that would also quietly inflate the Planner's own budget. Chose this over
-    the other option on the table (a separate Builder-reserved quota pool) because a reserved pool
-    would work against `build_quota_pool`'s deliberate one-shared-cumulative-pool-per-role design,
-    not just extend it. New unit tests in `test_structural_checks.py` (near-exhausted pool topped
-    up to exactly 2 headroom, a pool with plenty already left untouched — no silent inflation —
-    and a pool missing the key entirely, no `KeyError`).
-
-## Planned (not started)
 
 - **`run_cli`/`BasicTuiAgent` run-lifecycle duplication in `src/engine/tui.py` — still open,
   reconfirmed by the whole-repo Ponytail audit 2026-07-21, tracked under a new name to avoid
@@ -1847,7 +2398,7 @@ Status as of 2026-07-20.
   fine-tuning structurally can't guarantee. Four options, in the order agreed to try them,
   1-2 now DONE and tested, 3 still genuinely open:
   1. **Structural fix instead of a new model — DONE.** The immediate narration-salvage fix (see
-     "Done" above) — correct and shipped, but on live re-test didn't rescue its motivating case
+     "Completed" above) — correct and shipped, but on live re-test didn't rescue its motivating case
      (`qwen2.5:3b-instruct` returns genuinely empty responses, nothing to salvage). Full result in
      the investigation log below.
   2. **Heterogeneous role tiering — DONE, real negative result, and CLOSED as a strategy
@@ -1877,7 +2428,7 @@ Status as of 2026-07-20.
      of how far 1-3 get: nothing is actually blocking the project's local-only goal right now.
   5. **RAG-augmented small model — raised by the user 2026-07-20, not yet scoped.** Initially
      framed as "identify what made the user's prior RAG attempt fail" without knowing the specifics
-     — **found the actual prior attempt already documented in this same "Evaluated and rejected"
+     — **found the actual prior attempt already documented in this same "Rejected"
      section below, and it's IN THIS PROJECT, not a different one**: `src/utils/knowledge_cache.py`
      (deleted commit `929b987`, 2026-07-11). Confirmed via git history
      (`session_status/2026-07-13.md`): **it wasn't real RAG at all** — no embeddings, no chunking,
@@ -1946,546 +2497,14 @@ Status as of 2026-07-20.
     source metadata; `TabbedContent` to split findings/report/sources instead of one scrolling
     feed; `SelectionList` for multi-file/multi-seed-URL picking).
   - **Explicitly deferred, not scoped into a phase yet** — user chose to record as a backlog item
-    rather than implement immediately, given Phase 6 (now shipped, see "Done") and the model
+    rather than implement immediately, given Phase 6 (now shipped, see "Completed") and the model
     bake-off (see the "Model bake-off & backend investigation log" section) were the priority at
     the time. Next session should scope a concrete subset (the `AgentMessageWidget` copy button +
     right-click paste are the two smallest, most directly user-requested items) before touching
     the framework-capability survey items, which need real prioritization first.
-## Model Evaluation Standard (added 2026-07-21, applies to all bake-off entries going forward)
 
-Written after the user pushed back on two real fairness gaps found by re-reading the bake-off log
-critically rather than taking past "discard" verdicts on trust: (1) the heterogeneous-tiering
-entry above measured a foreseeable VRAM-thrashing result instead of catching it at design time,
-and (2) MiniCPM5-1B's own FINAL VERDICT run (below) swapped the Planner/Builder off `gpt-oss:20b`
-onto `mistral-nemo:latest` to free VRAM — meaning that verdict wasn't actually isolating the
-specialist model as the one variable under test; some of what got blamed on MiniCPM5-1B (the
-uncorrected `"[Authors' names]"` placeholders, specifically) was explicitly attributed to the
-swapped-in Builder failing to catch it, not to MiniCPM5-1B itself. Neither gap was hidden — both
-are documented in the entries themselves — but neither was caught BEFORE being treated as a
-concluded verdict, which is the actual complaint. Going forward, a candidate is not "discarded" or
-"adopted" until it clears all of the below:
+### Candidates from the 2026-07-12 reference-repo review (see README References)
 
-1. **Confirm the operating mode actually reaches the model before scoring anything.** Don't infer
-   a feature (nothink mode, tool-calling format, context length) from a model card or vendor docs
-   alone — prove it with a raw API-level request (a direct `curl`/SDK call showing the expected
-   field, e.g. `enable_thinking:false` producing zero `<think>` content) BEFORE running any full
-   DeepDelve benchmark through it. This is exactly what MiniCPM5-1B's entire think-mode saga
-   should have started with, and what caught the Qwen3-family Ollama passthrough bug only after
-   several models had already been scored under it.
-2. **Isolate the candidate as the only variable.** Every other role (Planner/Builder/
-   FindingsWriter/PeerReviewer) stays on the project's known-good baseline (`gpt-oss:20b`) unless
-   the candidate itself IS one of those roles. If VRAM genuinely forces a swap elsewhere in the
-   pipeline for a test to run at all, that test cannot produce a clean verdict on the candidate —
-   it can only be reported as informational, and the entry must say so explicitly. MiniCPM5-1B's
-   FINAL VERDICT run above did not meet this bar — the Planner/Builder was swapped to
-   `mistral-nemo` for VRAM. In principle that calls for an isolated retest; in this specific case
-   the user has explicitly decided NOT to pursue that retest (see the MiniCPM5-1B entry's
-   "Retest explicitly NOT queued" note and the "Heterogeneous role tiering" closure note below) —
-   pairing `gpt-oss:20b` with any small specialist model is a closed strategy on this hardware
-   regardless of which small model fills the slot. The general rule (isolate before verdicting)
-   still applies to any FUTURE candidate; it does not retroactively reopen MiniCPM5-1B.
-3. **State the serving backend and version alongside every verdict.** "Disqualified" must mean the
-   MODEL failed, not that Ollama's serving layer mishandled it — the nested-array stringification
-   bug (`ollama/ollama#6155`, affecting `mistral-nemo`/`llama3-groq-tool-use`/`llama3.2:3b`) and
-   the think-mode passthrough bug (Qwen3 family) both mean some existing README/ROADMAP
-   disqualifications may need a backend-corrected retest before they're trustworthy, not just the
-   ones already flagged for the planned vLLM re-run.
-4. **More than one run before a verdict, when the result is a discard.** A single run's failure
-   can be a real capability ceiling or an unlucky decode/retry cascade — this project's own log has
-   both (`qwen3:4b`'s multiple redispatch attempts vs. a genuine hard ceiling). A clean pass can
-   still be reported off one run; a discard claim should be corroborated by at least a second run
-   before being written up as final, or explicitly marked "single-run, not yet corroborated" if
-   time didn't allow a second one.
-5. **Keep a verdict changelog instead of silently overwriting.** If a verdict was reached under a
-   later-found-flawed methodology (wrong operating mode, confounded pipeline, backend bug), don't
-   delete or rewrite the old entry — mark it superseded and link to the corrected retest, so a
-   reader can see which methodology produced which conclusion. This is why MiniCPM5-1B's entry
-   already has separate "think-mode" and "FINAL VERDICT (nothink)" sub-entries rather than one
-   overwritten verdict — keep doing that, and extend it to the confound flagged in point 2.
-6. **A candidate that can't fit the project's ~16K-token context floor is discarded outright on
-   hardware grounds, not proportionally rescaled to squeeze it in — user decision, 2026-07-21.**
-   `config_template.yaml`'s `context_budget_chars: 50000` is explicitly calibrated as "safe margin
-   under a 16K-token num_ctx" (see `README.md`'s Context management section and the
-   `get_context_budget()` docstring, `src/engine/orchestrator.py`) — this is the project's assumed
-   minimum operating context, not a soft target. When MiniCPM3-4B's real per-token KV cost on this
-   hardware capped its feasible serving context at 6144 tokens (well under that floor), the
-   response was to proportionally scale `context_budget_chars` down to fit — this is now the wrong
-   call going forward. Doing so tests the candidate under a context regime the project doesn't
-   actually run at, and produces one of two uninformative outcomes: a pass that doesn't generalize
-   to any real DeepDelve usage, or a failure that's actually a context-fit problem miscounted as a
-   capability problem. **Going forward**: check the candidate's actual max feasible serving context
-   on this hardware (via vLLM's own KV-cache-budget error message, same as this evaluation did)
-   BEFORE running any benchmark; if it can't clear ~16K tokens, discard immediately with the reason
-   recorded as "insufficient context on current hardware," and revisit only if better GPU/VRAM
-   becomes available — don't rescale the project's own safety margins to accommodate it.
-   **Clarified 2026-07-21, `llama3-groq-tool-use:8b`**: this point targets a HARDWARE-forced squeeze
-   (a candidate whose architecture could serve more context but this GPU's VRAM/KV-cache budget
-   won't allow it) — it does NOT apply to a model whose own native `max_position_embeddings` is
-   simply small by training (`llama3-groq-tool-use:8b`'s is 8192, a real fixed fact about the
-   model, not something any amount of better GPU/VRAM would ever change). The user's own distinction:
-   a permanent model-level limit is worth actually testing at its real native ceiling — only the
-   hardware-driven, potentially-temporary kind gets the outright-discard treatment. Test the
-   candidate at its true native context in this case, don't discard on point 6 grounds.
-
-## Model bake-off & backend investigation log (completed 2026-07-11 through 2026-07-18)
-
-Real, finished testing/investigation work — every entry below concluded (a model disqualified, a
-backend confirmed/rejected, a benchmark scored), not open backlog. Kept separate from "Done" since
-most entries are investigation conclusions rather than shipped code changes; kept separate from
-"Planned" since none of it is still-to-do. See README's "Model choice" table for the current-state
-summary; this section is the full evidence trail.
-
-- **Local-model bake-off: Gemma 4 12B, Bonsai-8B, and `qwen3:4b` vs. `gpt-oss:20b`** (found/verified 2026-07-13,
-  smoke-tested and partially live-tested 2026-07-14) — two real local-model candidates surfaced by
-  a 3-model research pass, independently verified (not taken on trust — one of the three research
-  responses fabricated citations, see below). **Gemma 4 12B** (Google, Apache 2.0, released
-  April/June 2026): dense, encoder-free multimodal, ~7.1-7.6GB at Q4_K_M GGUF (~6.7GB on the QAT
-  Q4_0 build) — comfortably inside the 16GB ceiling. **Bonsai-8B** (PrismML, Apache 2.0): trained
-  natively at 1-bit precision, 1.15GB, scores 73.3% on BFCL (format-compliance tool-calling) —
-  beating every model PrismML tested — but drops to 43.8% on NexusRaven (semantic API
-  understanding) vs. Qwen3.5-9B's 75%, a real and confirmed weakness on complex tool semantics, not
-  smoothed over in the source.
-  - **Derived `deepdelve-*` tags created** (`FROM <base>`, `PARAMETER num_ctx 16384`, matching the
-    project's existing `deepdelve-gpt-oss` pattern) for both, plus two more candidates the user
-    separately surfaced: `granite3.1-dense:8b` (IBM, Apache 2.0, 5.0GB, 128K context, model card
-    claims function-calling) and `phi4-mini:3.8b` (Microsoft, 2.5GB, 128K context, model card
-    claims function-calling) — both attractive on paper for being lightweight with a large context
-    window. Also fixed a real hygiene issue found along the way: the `SetneufPT`-uploaded Gemma 4
-    Ollama tag ships a baked-in `SYSTEM "You are a coding agent. Be concise."` default (verified
-    live it's fully overridden by DeepDelve's own system prompt at runtime, so not a functional
-    bug — but cleaned up in `deepdelve-gemma4-12b`'s Modelfile regardless, since the default is
-    actively misleading for a research agent).
-  - **Tool-calling smoke test (2026-07-14), DeepDelve's real `delegate_tasks` schema (2-task nested
-    array, `task_name`/`instructions`/`agent_id`), direct `/v1/chat/completions` calls**:
-    **`granite3.1-dense` and `phi4-mini` both FAIL outright** — despite each model card explicitly
-    claiming function-calling support, and Ollama's own capability introspection listing `tools`,
-    both narrated the tool call as literal text (`<tool_call>[{"arguments":...` /
-    `[{"type":"delegate_tasks","tasks":...`) instead of emitting a real structured `tool_calls`
-    response, every single attempt. Identical failure *class* already documented for
-    `devstral:24b` in this same file — a model that narrates perfectly-formatted JSON instead of
-    calling the tool is exactly as unusable here as one that can't format JSON at all, since
-    DeepDelve is 100% tool-call-driven with no narration fallback. **Both disqualified, pulls
-    removed** (`ollama rm granite3.1-dense:8b deepdelve-granite3.1-dense phi4-mini:3.8b
-    deepdelve-phi4-mini`) — not worth carrying disk space for models that fail the first, cheapest
-    gate. **`deepdelve-bonsai-8b` and `deepdelve-gemma4-12b` both PASS** — real structured
-    `tool_calls`, correctly shaped 2-task array, valid `task_name`/`agent_id` on both; Gemma 4's
-    instructions fields were notably more detailed (289-356 chars) than Bonsai's (73-102 chars),
-    a first hint in Bonsai's favor of the NexusRaven-flagged semantic-thinness concern above,
-    though not yet confirmed at full-benchmark scale.
-  - **First real end-to-end benchmark data point, Gemma 4 12B (2026-07-14)**: ran the standing
-    sales-forecasting benchmark (`eval/sales_forecasting_benchmark.md`) live end-to-end, config
-    pointed at `SetneufPT/Gemma4-12B-IT-QAT_Q4_64K_16GB-GPU:latest`. Result: **`Report: NOT
-    WRITTEN`** after 33 minutes (1998s) — but a clean, honest failure, not a stall or a silently-
-    accepted fabrication, and this run is what actually validated the same day's 5 reliability
-    fixes end-to-end: `web_search` 26/26 calls succeeded with zero failures (the timeout fix never
-    even needed to fire), 27 real sources fetched, the grounding check correctly rejected 4
-    straight ungrounded `findings.md` attempts, and the process exited cleanly with a clear
-    forensic verdict instead of hanging. The actual failure was model-specific: 22 occurrences of
-    `delegate_tasks call rejected` (sub-agents repeatedly submitting placeholder/pronoun-only/
-    cross-task-dependent instructions — the existing validator's already-detailed guidance, not a
-    missing-nudge gap), and a visible reasoning-loop pattern near the end ("Wait, I'll just do it.
-    *(Action)*", repeated ~13 times with no actual tool call) before `context_budget_chars` cut the
-    turn short. Same failure *shape* as `mistral-nemo` (README "Model choice" table): passes an
-    isolated schema smoke test, ceilings on the real multi-step benchmark.
-  - **Bonsai-8B benchmark result (2026-07-14): `Report: NOT WRITTEN` after 484.3s — DISQUALIFIED
-    for a more severe reason than Gemma 4's.** Ran the same standing sales-forecasting benchmark,
-    config pointed at `deepdelve-bonsai-8b`. Research itself worked completely fine: 22 real
-    findings recorded, 15 real sources fetched, zero `web_search` failures — the failure is
-    entirely isolated to the FindingsWriter/PeerReviewer writer-tier roles. Traced through the
-    persisted session log turn-by-turn (not just the final verdict): `FindingsWriterFix_attempt1`
-    through `attempt8` each "Finished" and PeerReviewer "found no issues" each time, yet
-    `check_missing_findings` kept re-firing every single retry and `findings.md` never existed on
-    disk at all by the end. Root cause confirmed by reading the actual logged tool calls:
-    `FindingsWriterFix_attempt1`'s only event was a bare, empty `text` response — it **never
-    called `write_workspace_file`**. `ReviewFix_attempt1` **never called `read_workspace_file`**
-    either — it went straight to `"REVIEW: CLEAN"\n\nThe file findings.md appears to be a
-    well-structured report...` for a file it never opened and that never existed. This repeated
-    across all 8 attempts before the retry budget exhausted. Distinct from and worse than every
-    other failure flavor documented in this project so far (Gemma 4's reasoning loops, `qwen3:4b`'s
-    repeated-identical-write-calls below, gpt-oss's hallucinated tool names): those all at least
-    attempt real tool calls; Bonsai-8B skipped tool calls entirely in a role requiring
-    read-then-reason-then-write composition, while its simpler single-shot Searcher/Analyzer tool
-    calls (web_search, fetch, read/grep) worked reliably throughout the same run. Also exposes a
-    real structural gap worth considering separately: `_dispatch_writer_review_fix`'s clean-check
-    only string-matched `"REVIEW: CLEAN"` in the response text, with no verification that a
-    `read_workspace_file` call actually happened first — a model confident enough to fabricate the
-    sentinel could defeat the review entirely. This is a model-reliability finding, not a code bug,
-    and the disqualification stands regardless. **Bonsai-8B ruled out as a `gpt-oss:20b`
-    replacement.** **Hardening fixed 2026-07-14** (`src/engine/completion.py::_dispatch_writer_review_fix`,
-    commit `bfd2cd5`): cross-checks the `read_workspace_file` quota's used-count delta around the
-    PeerReviewer dispatch — a CLEAN verdict with zero new reads is now treated as ISSUES FOUND,
-    forcing the existing corrective Fix pass instead of being trusted. Fails open when the quota
-    isn't tracked at all, so a config without it doesn't get every review falsely distrusted. New
-    tests in `test_structural_checks.py` (`_clean_check_read_verification_scenario`): a fabricated
-    CLEAN with zero reads forces the corrective pass, a CLEAN backed by a real read is still
-    trusted.
-  - **`qwen3:4b` added as a fourth candidate (2026-07-14)**, specifically sought out as "Bonsai-like
-    but more context": user asked for smaller/lighter alternatives with a bigger context window
-    than Bonsai's 64K. Checked and rejected first: Microsoft's official `BitNet b1.58-2B-4T` doesn't
-    even run on Ollama (needs Microsoft's own separate `bitnet.cpp` runtime, incompatible with
-    llama.cpp) and caps around 4-8K context regardless; PrismML's own newer "Ternary Bonsai" family
-    (1.58-bit, released 2026-04-16, same company as Bonsai-8B) turned out to be a context
-    *downgrade*, not an upgrade — 4096 tokens via llama.cpp/Ollama, worse than the original 1-bit
-    Bonsai-8B's 64K. `qwen3:4b` (Alibaba, Apache 2.0) is the real find: 2.5GB Q4_K_M, **262144
-    native context** (4x Bonsai's 64K, in the same size class as the disqualified `phi4-mini`),
-    established Ollama tool-calling track record in this project already (`qwen2.5-coder`,
-    `qwen3.6` both work). Derived tag `deepdelve-qwen3-4b` created (`num_ctx 16384`, same pattern).
-    **Passed the real `delegate_tasks` smoke test cleanly**: real structured `tool_calls`, correctly
-    shaped 2-task array, valid `task_name`/`agent_id` — and showed real semantic routing judgment
-    at this early stage, not just format compliance: correctly sent the more academic/technical task
-    ("hybrid statistical+DL forecasting methods") to `AcademicSearcher` and the cultural/retail task
-    to `WebSearcher`, rather than routing both identically. Instructions detail (143-171 chars) sits
-    between Bonsai's terse style (73-102) and Gemma 4's richer one (289-356). Not yet run through
-    the full sales-forecasting benchmark — that's the same next step as Bonsai-8B above.
-    - **New reliability finding (2026-07-14, Phase 4 smoke-test session)**: as `FindingsWriter` on
-      a trivially simple factual query ("boiling point of water at sea level"), `qwen3:4b` called
-      `write_workspace_file` **10 times in a row** with near-identical content (confirmed via the
-      persisted session log: every call succeeded cleanly, "Wrote 'findings.md' to disk.", no
-      error/rejection anywhere) instead of recognizing the file was already correctly written and
-      stopping — only the existing `write_workspace_file` quota (10) correctly halted it, with a
-      clear "you MUST summarize... and state you had to stop due to quota limits" message. Not a
-      hang, not a code bug — the quota mechanism worked exactly as designed; this is a genuine
-      `qwen3:4b` tool-calling non-convergence pattern, distinct in shape from Gemma4's own
-      documented reasoning-loop tendency (repeated `delegate_tasks`/narration without a real tool
-      call) and gpt-oss's hallucinated-tool-name pattern — same broader "small local model doesn't
-      recognize task completion" failure class, third distinct flavor of it now observed across
-      three different models in this project. Real cost: burned enough wall-clock across 2 separate
-      live smoke-test attempts (this model, this exact query) to exceed a 15-20 min budget each
-      time, purely on redundant `write_workspace_file` calls before the run ever reached its later
-      stages. Not yet run through the full sales-forecasting benchmark, so unclear if this is
-      systemic to `qwen3:4b`'s FindingsWriter behavior specifically or an isolated occurrence.
-    - **Full sales-forecasting benchmark result (2026-07-14): inconclusive, not a verdict.** Ran
-      the same standing benchmark as Bonsai-8B/Gemma 4 above, config pointed at
-      `deepdelve-qwen3-4b`. The research phase completed cleanly (Colombia-specific holidays/
-      paydays identified from Banco de la República, cultural cross-check against Latin American
-      market studies, top-5 ML techniques evaluated) and the Planner correctly recognized
-      completion and stopped delegating. The Write→Review→Fix cycle then began
-      (`FindingsWriterFix_attempt1` → `ReviewFix_attempt1` flagged issues → corrective pass), but
-      the whole process was killed by the smoke test's own 40-minute outer `timeout` before it
-      could finish. Confirmed via `journalctl -u ollama` this was NOT a hang: right up to the kill
-      moment, Ollama was actively, continuously decoding a response (steady ~59-62 tok/s, climbing
-      token count, no stall) — a fairly high volume of smaller, somewhat repetitive tool calls in
-      earlier sub-agent turns (consistent with the redundant-tool-call finding above) ate enough of
-      the budget that the writer-tier cycle didn't have room left to converge, not that the model
-      got stuck. Recorded as inconclusive rather than a pass or fail — user chose not to re-run
-      with a longer cap this session; **re-running with more wall-clock budget is the next concrete
-      step before drawing any verdict on `qwen3:4b`** vs. `gpt-oss:20b`. Flagged as a real data
-      point for the eventual full bake-off comparison, not yet a disqualification.
-    - **Conclusive re-run (2026-07-18), no outer timeout this time: `Report: NOT WRITTEN` after
-      1214.2s (20.2 min), retry budget exhausted (8/8) on an unresolved `thin_coverage` verdict.
-      `qwen3:4b` is DISQUALIFIED as a `gpt-oss:20b` replacement.** Real research did happen (5
-      sub-agent dispatches, `brave_web_search` calls fired throughout), but only 1 real source ever
-      landed (`statista.com/.../music-events/colombia`) against 4 delegated tasks. The disqualifying
-      behavior isn't the thin research itself, it's the model's response to being told about it:
-      every one of the 8 `thin_coverage` retries got the same canned non-response verbatim ("No
-      further tool calls needed... research scope is complete... complete with explicit
-      acknowledgment of gaps") instead of either re-delegating differently or actually writing the
-      honest-partial report the completion-check nudge was asking for. This is the SAME
-      non-convergence pattern already flagged above (the 10x redundant `write_workspace_file` case)
-      showing up in a third shape: doesn't recognize a real gap needs a different action, just
-      repeats a canned "I'm done" response until the retry budget hard-stops it. Two contributing
-      factors, kept separate from the model verdict since they're infra, not model quality: (1) a
-      real MCP bug independent of the model — `brave_web_search`'s `country` parameter enum
-      (`@brave/brave-search-mcp-server`, `settings.mcp_servers`) does NOT include `CO` (confirmed
-      via the literal rejection error, `tool_error_samples`: `"Invalid value for 'country' ... 'CO'
-      is not in ['AL..."`), so Colombia-targeted searches using an ISO alpha-2 country filter fail
-      outright — a real gap worth a small fix (drop/remap the country param, or catch and retry
-      without it) independent of which model is running; (2) one `read_workspace_file`/
-      `grep_workspace_file` call hit a not-found error on a source filename, the same known fuzzy-
-      filename class already documented elsewhere in this file. Neither infra issue excuses the
-      model's response, though: `gpt-oss:20b`'s own re-runs on this exact query have hit partial
-      fetch failures too and still produced a labeled, honest, written report rather than looping on
-      a fixed refusal string. **Bake-off conclusion: `gpt-oss:20b` remains the only candidate of the
-      seven-plus tried so far (`qwen3.6`, `mistral-nemo`, Gemma 4 12B, Bonsai-8B,
-      `granite3.1-dense`, `phi4-mini`, `qwen3:4b`) with a full, real, benchmark-scale pass.**
-
-- **`qwen3:8b` — new candidate found and tried 2026-07-18, DISQUALIFIED, same failure class as
-  `qwen3:4b`.** Surfaced by a research pass for tool-calling-capable Ollama models not yet tried
-  (Qwen3's 8B dense sibling, NOT the same model as `qwen3.6` (35b-a3b, already rejected) or
-  `qwen3:4b` — distinct checkpoint, in the Ollama library directly, Apache 2.0, ~5.2GB Q4_K_M).
-  **Passed the `delegate_tasks` tool-call smoke test cleanly**: real structured 2-task call,
-  correctly shaped `task_name`/`instructions`/`agent_id`, well-specified instructions comparable in
-  detail to Gemma 4's. Derived tag `deepdelve-qwen3-8b` created (`num_ctx 16384`, same pattern).
-  **Full sales-forecasting benchmark: `Report: NOT WRITTEN` after 1037.4s, retry budget exhausted
-  (8/8) on `thin_coverage`**, 5 sources fetched (better than `qwen3:4b`'s 1, still not enough — only
-  2/6 delegated tasks produced a real source). Same disqualifying shape as `qwen3:4b`: doesn't act
-  on the completion-check's corrective nudge. Distinctive final-turn behavior worth noting: instead
-  of dispatching a writer role, the model's last response NARRATED full `findings.md` and
-  `final_report.md` content inline as chat prose (headers, sections, a "Stop here." sign-off) —
-  neither file exists on disk (confirmed, `ls` on the run folder). Not the same mechanism as
-  Bonsai-8B's writer-role tool-skip (Bonsai had real `FindingsWriter` dispatches that skipped the
-  tool call; this never got there, the Planner-level conversation narrated instead of accepting the
-  `thin_coverage` verdict and letting the engine dispatch a writer for an honest partial artifact).
-  One non-fatal MCP schema mismatch during the run (`brave_web_search`'s `result_filter` enum
-  rejected an out-of-list value), handled cleanly via the existing detailed-tool-error mechanism,
-  not a contributing cause. **`qwen3:8b` DISQUALIFIED as a `gpt-oss:20b` replacement** — updates the
-  bake-off conclusion above: 8 candidates tried, `gpt-oss:20b` still the only full pass. Ministral-
-  8B-Instruct-2410, watt-tool-8B, and Salesforce Llama-xLAM-2-8b-fc-r were also surfaced by the same
-  research pass but not pulled/tested this session (the latter two are narrow function-calling
-  finetunes, a real risk for the writer role per this project's own repeated lesson — not worth GPU
-  time until a general-purpose candidate looks more promising than the two Qwen3 sizes just tried).
-
-- **`llama3.2:3b` — new lightweight candidate tried 2026-07-18, DISQUALIFIED at the tool-call
-  schema stage, root-caused rather than assumed.** Surfaced by a research pass specifically for
-  models LIGHTER than the two disqualified Qwen3 sizes, targeting their exact failure mode
-  ("doesn't follow a corrective instruction precisely") rather than a raw-capability gap —
-  Llama 3.2 3B has the best documented IFEval/BFCL combination in its weight class and a native
-  Ollama tool-call template. Derived tag `deepdelve-llama32-3b` created (`num_ctx 16384`).
-  **Real, structured `tool_calls` responses (correct function name, valid top-level JSON) — but
-  the `tasks` array parameter's VALUE is itself a JSON-encoded STRING** (`{"tasks":
-  "[{\"task_name\": ...}]"}`) instead of a real array, reproduced 3/3 times against the exact
-  `delegate_tasks` schema. **Root-caused, not just observed**: recreated the identical Pydantic
-  model `agent_framework` builds from `delegate_tasks(tasks: list[dict])`'s own type hint and fed
-  it the same malformed value — confirmed real rejection (`Input should be a valid list
-  [type=list_type]`), the same message DeepDelve's own "detailed tool-call validation errors"
-  feature would show the model live. **Then simulated the full round-trip**: fed the model that
-  exact real error and asked it to retry. Result: it did not correct the array, it **abandoned
-  structured tool-calling entirely** — wrote a Python code snippet in chat prose, then a
-  hand-typed single-quoted (invalid JSON) pseudo-call as plain text. Same "narrate instead of
-  call" disqualifying class as `granite3.1-dense`/`phi4-mini`, just reached one message later
-  (after a correction) instead of immediately. **DISQUALIFIED without a full benchmark run** —
-  same evidentiary bar this project already applies to schema-stage rejects (devstral, hermes3,
-  etc. in the README table): a model that gets WORSE after seeing the exact right correction isn't
-  worth 20-40 GPU-minutes to find out how it does on the full pipeline.
-  - **Documentation check (2026-07-18)**: this is a known, unresolved upstream Ollama limitation,
-    not something specific to this project's integration or to `llama3.2` itself.
-    `ollama/ollama#6155` ("Support Nested Parameters for Tools," filed Aug 2024, still open, no
-    maintainer fix) documents the identical stringified-nested-array symptom across
-    `llama3.1:8b`/`70b`, `mistral-nemo`, and `llama3-groq-tool-use` — an Ollama-side
-    parser/serialization limitation with array/nested-object tool parameters generally, not a
-    single model's chat-template quirk. `ollama/ollama#7860` separately documents Llama 3.2
-    mangling SCALAR parameter types too (ints returned as strings), so this model has broader
-    type-fidelity problems beyond just nested arrays. **No documented workaround exists anywhere
-    in the issue tracker or community discussion** (checked `#6155`, `#7860`, `#10552`, `#11805`,
-    `#13519`) — the only mitigation found anywhere is a LangChain-side client library that
-    re-parses shallow string-encoded JSON arguments after the fact, not a model-side or
-    Ollama-side fix. Because this is a shared Ollama-level limitation (not model-specific), it
-    could in principle affect ANY future candidate with an array-typed `delegate_tasks` argument,
-    including intermittently against models that otherwise pass — worth remembering as context if
-    a future candidate shows an occasional, not-fully-reproducible schema hiccup.
-  - **Deferred, not implemented, structural candidate**: a defensive "if a list-typed tool
-    argument arrives as a JSON-encoded string, parse it before validation" tolerance would be a
-    generically useful robustness improvement given the above (helps any model that hits this
-    known Ollama-side quirk, not just `llama3.2`) — but it wouldn't have rescued `llama3.2:3b`
-    itself (the disqualifying event is the collapse-into-narration on retry, which happens after
-    the string would already have been coerced), and the only interception point found
-    (`agent_framework.FunctionTool.invoke`'s internal Pydantic validation, built from
-    `delegate_tasks`'s own type hint) would require either widening that hint in a way that also
-    changes the JSON schema shown to every OTHER model including the working default, or
-    monkeypatching vendored `agent_framework` internals — real blast radius against a function
-    every single model/role depends on. Not attempted this session; flagged for a dedicated
-    reviewed session if a future candidate's only blocker turns out to be this exact quirk.
-  - **Ollama-alternative backend research (2026-07-18), conclusion: don't switch, not yet
-    justified.** Since the array-stringification bug looked Ollama-level rather than model-level,
-    researched whether switching the local inference backend entirely would sidestep it.
-    **`ollama/ollama#6155` is actually CLOSED** (merged via PR #13508, Dec 2025) — but the merged
-    fix only adds nested-object SCHEMA DEFINITION support (`api/types.go`'s `Properties` field, so
-    Ollama can describe a nested schema to the model); it does NOT touch the separate
-    response-parsing path that turns the model's raw tool-call text back into `arguments`, which
-    is exactly where `llama3.2:3b`'s failure was reproduced live on this project's installed
-    version (0.31.2, months newer than the merge). Worth a fresh, narrower upstream issue with the
-    exact repro if this recurs. **`llama.cpp`'s own server is not a cleaner alternative** — its
-    issue tracker has its own open, unfixed array/nested-object tool-call serialization bugs
-    (`ggml-org/llama.cpp#21384` closed as not-planned, `#20198`/`#22072` open, `#20359` on
-    malformed JSON for large payloads) on essentially the same grammar/parsing machinery class,
-    not a structurally different guarantee. **Native (non-Docker) vLLM on ROCm is now realistic**
-    on this exact card (AMD ships installable ROCm wheels as of Jan 2026, gfx1200 on the officially
-    supported list for ROCm 7.2+) — a real change since the earlier vLLM investigation, which only
-    ever hit the NTFS+Docker-overlayfs blocker and never tried a native pip install. vLLM's
-    grammar-constrained structured-output tool-calling (token-level schema constraint, not
-    post-hoc regex/PEG re-serialization) is theoretically more robust for array-of-objects
-    arguments than either Ollama's or llama.cpp's approach, but no direct comparative evidence was
-    found confirming it actually avoids this exact failure mode — the recommendation is
-    theoretical, not proven. Model-weight storage on the NTFS mount is a non-issue for any backend
-    (the NTFS/symlink constraint was specific to Python venvs and llama.cpp's/HF's own auto-download
-    symlink cache; a directly-specified local GGUF/safetensors file path has no symlink
-    requirement). **Conclusion: not worth migrating now** — `qwen2.5:3b-instruct` and both `qwen3`
-    sizes already don't hit this bug on Ollama as currently installed, so there's no live blocker
-    actually forcing a backend change; revisit only if a future candidate's sole blocker turns out
-    to be this exact array-stringification bug with no working Ollama-served alternative.
-  - **HANDS-ON CROSS-BACKEND EXPERIMENT DONE (2026-07-18) — CONCLUSIVE: the bug is MODEL-side, not
-    Ollama-side.** The prior research pass above was necessarily theoretical (no direct test of
-    the actual failure). Ran a real, controlled A/B: downloaded `llama.cpp`'s official prebuilt
-    ROCm 7.2 release (`ggml-org/llama.cpp` tag `b10068`, `llama-b10068-bin-ubuntu-rocm-7.2-x64.tar.gz`
-    — matches this card's `gfx1200`/ROCm 7.2+ support directly, no build needed) and ran
-    `llama-server --jinja` (the model's own embedded chat template, confirmed genuine by reading
-    the GGUF's `tokenizer.chat_template` metadata directly — the real official Meta Llama
-    tool-calling template, not a generic fallback) against the SAME two models already tested on
-    Ollama, GGUF weights pulled fresh from Hugging Face onto the NTFS mount
-    (`/mnt/nuevovol/llm-models/`, confirms model-weight NTFS storage really is a non-issue for any
-    backend as predicted — plain `hf_hub_download` calls, no symlink involved). **Result: `llama3.2:3b`
-    reproduces the IDENTICAL array-stringification bug 3/3 times on `llama.cpp`'s own server**
-    (`{"tasks": "[{...}]"}`, a JSON-encoded string, not a real array) — same failure, completely
-    different serving software, different parser, different (grammar-constrained, not regex-based)
-    tool-call extraction mechanism. **`qwen2.5:3b-instruct` produces a clean, correctly-typed array
-    3/3 times on the exact same `llama.cpp` server** — matching its behavior on Ollama. This is a
-    clean, well-controlled result: same backend, same template-authenticity check, one model fails
-    consistently and the other passes consistently — the variable that predicts the bug is the
-    MODEL, not the serving software. Directly answers the concern that this project might be
-    missing out on real model options because of an Ollama-specific defect: it isn't one. A model
-    that fails this way on Ollama will very likely fail the same way on `llama.cpp` or (by
-    extension, though not directly tested) vLLM, since the failure tracks the model's own learned
-    generation behavior around nested-array arguments, not a serving-layer parsing quirk.
-    **Conclusion reinforced, now with direct evidence instead of just literature research: no
-    backend migration would have saved `llama3.2:3b`,** and there's still no live blocker forcing
-    one for any candidate that currently works. `llama.cpp` binary and both test GGUFs left on the
-    NTFS mount (`/mnt/nuevovol/llm-models/`, ~4GB total) in case a similar quick cross-backend check
-    is useful again later — trivial against the drive's 1.1TB free.
-  - **Third backend added to the A/B, same day: native (non-Docker) vLLM-on-ROCm, not just
-    theorized — actually run.** The "no direct evidence" caveat above was addressed head-on rather
-    than left as a gap. Built a real native vLLM install (`vllm==0.25.1+rocm723`, the official
-    AMD-published ROCm wheel from `wheels.vllm.ai`, matching this exact `gfx1200` card) in a
-    throwaway venv on the root disk (per the existing venv-must-be-on-ext4 rule; NTFS still can't
-    hold the Python venv's symlinks). Getting it running required manually resolving a long chain
-    of missing shared libraries one `ldd` sweep at a time (no root/sudo available in this
-    environment) — OpenMPI runtime libs, several ROCm math libs (`rocFFT`, `rocRAND`,
-    `rocSPARSE`, `hipFFT`/`hipRAND`/`hipSPARSE`/`hipSOLVER`/`hipSPARSELt`, `RCCL`, `rocm-core`,
-    `roctracer`/`libroctx`) not present anywhere on this system outside Ollama's own bundled,
-    incomplete copy — each fetched directly as a `.deb` from `repo.radeon.com`'s public ROCm 7.2
-    apt pool and extracted with `dpkg-deb -x` into a scratch dir (no `apt install`/root needed),
-    then wired in via `LD_LIBRARY_PATH`/`ROCM_HOME`. Confirmed working: `torch.cuda.is_available()`
-    True, `gcnArchName` correctly `gfx1200`. Served `unsloth/Llama-3.2-3B-Instruct` (an ungated
-    mirror; the official `meta-llama` repo is gated and wasn't authenticated in this environment)
-    via `vllm serve --enable-auto-tool-choice --tool-call-parser llama3_json` — vLLM's own
-    purpose-built parser for the Llama 3.x tool-call format, its most favorable possible
-    configuration for this exact model family. **Result: identical bug, 3/3** — `{"tasks":
-    "[{...}]"}`, a JSON-encoded string, not a real array, exactly matching Ollama and `llama.cpp`.
-    **Three independent backends, three structurally different tool-call extraction mechanisms
-    (Ollama's Go templating, `llama.cpp`'s GBNF grammar, vLLM's own structured-output constraint
-    engine with a model-family-specific parser) — same model, same failure, every time.** This is
-    now definitive, not theoretical: the bug is 100% attributable to `llama3.2:3b` itself, and no
-    realistic backend migration would recover it. Root-disk cleanup done immediately after (venv +
-    manually-fetched ROCm libs removed, ~16GB freed, root back to 61GB free) — same disk-hygiene
-    lesson as the GRPO smoke test session, a throwaway experiment venv doesn't linger.
-
-- **`qwen2.5:3b-instruct` — new lightweight candidate tried 2026-07-18, DISQUALIFIED, different
-  failure class than `llama3.2:3b`.** Second candidate from the same "lighter than the disqualified
-  Qwen3 sizes" research pass. **Passed the `delegate_tasks` schema test cleanly, 7/8 across two
-  batches** (one silent empty-response outlier, otherwise a real, correctly-typed array every
-  time) — does NOT reproduce the array-stringification bug that disqualified `llama3.2:3b`, so
-  worth the full benchmark run this time. Derived tag `deepdelve-qwen25-3b` (`num_ctx 16384`).
-  **Full sales-forecasting benchmark: `Report: NOT WRITTEN` after 254.6s, retry budget exhausted
-  (8/8) on `missing_findings`** — much faster to fail than either Qwen3 size (255s vs. 1000+s),
-  because the failure surface is different and narrower: real research DID happen (2 sources
-  fetched cleanly, `en.wikipedia.org/wiki/Heuristic_(computer_science)` and
-  `.../Public_holidays_in_Colombia`, 0 search failures), and the Planner correctly stopped
-  delegating and let the engine dispatch `FindingsWriter` — but `FindingsWriter` never
-  successfully produced `findings.md` across all 8 attempts. Confirmed via `_run_state.json`:
-  20 tool errors recorded, the overwhelming majority `"'findings.md' not found"` from
-  `ReviewFix_attempt{1..8}` trying to read a file that was never written. This is the **same root
-  cause already documented for Bonsai-8B** (writer-tier sub-agent "Finishes" its turn without ever
-  successfully calling `write_workspace_file`) — and it's a second live confirmation that the
-  2026-07-14 hardening (`_dispatch_writer_review_fix`'s read-quota-delta cross-check, commit
-  `bfd2cd5`) is working exactly as designed: every `ReviewFix` attempt got a genuine, correctly-
-  surfaced "file not found" error rather than a false "REVIEW: CLEAN" on a file that was never
-  read. **`qwen2.5:3b-instruct` DISQUALIFIED as a `gpt-oss:20b` replacement** — updates the bake-off
-  conclusion: 10 candidates tried total (counting `llama3.2:3b`), `gpt-oss:20b` still the only full
-  pass. Net signal from both new lightweight candidates this session: smaller models in the 2-5B
-  range are failing at TWO distinct, well-characterized points in the pipeline (schema-stage
-  double-encoding for `llama3.2:3b`; writer-role tool-call omission for `qwen2.5:3b-instruct` and
-  `Bonsai-8B`) rather than one common weakness — there's no single fix that would rescue this whole
-  size class, which is itself useful evidence for the fine-tuning plan above: `qwen3:4b` remains
-  the better fine-tuning target precisely because ITS failure (thin_coverage non-convergence) is
-  the single narrowest, most well-characterized gap of any candidate tried so far.
-
-- **`gpt-oss:20b` re-confirmed live (2026-07-14), same benchmark, same session**: `deepdelve-gpt-oss`
-  produced a real, grounded `final_report.md` in 1079.1s, 15 sources fetched, 0 search failures,
-  passing the NLI entailment check along the way (one `nli_unsupported` retry, corrected). First
-  fresh confirmation this session that the documented default actually still passes end-to-end,
-  directly alongside the same-day Bonsai-8B/`qwen3:4b`/Gemma-4 attempts on the identical query —
-  the only one of the four to produce a written report at all. Content covers the heuristic-
-  optimization side of the query well (PSO, GA, moving-average, rule-of-thumb) but drops the
-  Colombia-specific cultural-context research the run itself actually did earlier (holidays/
-  paydays from Banco de la República were researched but never made it into the final report) and
-  doesn't surface the gold reference's DL-architecture families — a real report, correctly
-  grounded, but likely a partial (not top) score against the full manual rubric if formally scored.
-  Not manually scored this session (would need a careful pass against
-  `eval/reference/sales_forecasting_deepseek.md`).
-  - **Formally scored 2026-07-18, per `eval/sales_forecasting_benchmark.md`'s rubric: 6/10 ("usable
-    with manual verification").** Tier 1 structural integrity 2/2 (`findings.md`+`final_report.md`
-    both exist, 18/18 fetched URLs clean, none flagged `stub` among the ones actually cited, run
-    converged clean by completion-check attempt 3). Tier 2 architecture coverage vs. reference
-    **0/2**: the report covers 3 optimization/feature-search heuristics (GA time-lag selection,
-    TS_Adam, Randomized Uphill Climbing) but none of the reference's 4 forecasting-architecture
-    families (TFT, N-HiTS, DQN, EventCast/multimodal) — a real, grounded, but structurally
-    different literature set, not a fabrication. Tier 3 heuristic-optimization coverage 2/2 (GA
-    applied to LSTM hyperparameter tuning, matching the query's actual framing). Tier 4 Colombia
-    cultural context **0/2**, and this is the more interesting result: `_run_state.json` shows
-    `timeanddate.com/holidays/colombia/2024` WAS fetched cleanly (not a stub) alongside one stubbed
-    ADP payroll-calendar fetch, yet neither `findings.md` nor `final_report.md` mentions Colombia
-    even once — a second, independent live confirmation of the shared-quota-pool starvation bug
-    logged above (a different run, different model context than the original find), not a new bug.
-    Tier 5 quantitative grounding 2/2 (every reported figure traces to an `*Evidence:*` line from a
-    real fetched source). Net: the defense layers correctly prevented fabrication on a topically
-    disjoint literature set; the score ceiling here is entirely the quota-starvation bug, not a
-    grounding failure.
-
-- **Heterogeneous role tiering (option 2 above) — implementation and A/B test detail.** A UNIFORM
-  small-model dispatcher was tried and rejected 2026-07-11 (nemo scored 2/10 across every role);
-  this instead tiers by role, keeping `gpt-oss:20b` for Planner/Builder/FindingsWriter/PeerReviewer
-  (the roles needing multi-step self-correction) and routing WebSearcher/AcademicSearcher/
-  DocumentAnalyzer/DataAnalyzer to a new optional `settings.specialist_model`.
-  - **Implementation**: `_build_client(model_override=None)` (`src/engine/orchestrator.py`) now
-    takes an optional model override; `create_local_agent` builds a second client only when
-    `specialist_model` is set and differs from `api.openai_model` (a no-op object-reuse
-    otherwise); `_run_single_task` picks the specialist client when `agent_id` is in the new
-    `_SPECIALIST_MODEL_ROLES` set (the deliberate complement of the existing
-    `_NON_RESEARCH_DISPATCH_ROLES`). TUI/CLI status lines updated in parity to show
-    `<model> (+specialist: <model>)` when configured. `config_template.yaml` documents the key.
-    No `SubAgentConfig`/Pydantic changes needed — the routing decision lives entirely at the one
-    dispatch point. `test_structural_checks.py` passes unchanged.
-  - **Design flaw, foreseeable before any A/B test ran — added retrospectively 2026-07-21, per
-    user pushback that this should have been caught at design time, not after measuring it.** The
-    2026-07-18 "agreed order" (structural fix → tiering → fine-tuning → stay on gpt-oss) approved
-    trying tiering as a strategy step, not this specific pairing's reasoning — that reasoning was
-    never spelled out before implementation. The VRAM probe below was run BEFORE writing code and
-    already showed the disqualifying fact: this card cannot hold `gpt-oss:20b` and any second
-    model resident at once. Given that, pairing a "heavy" coordinator model that must stay loaded
-    for Planner/Builder/FindingsWriter/PeerReviewer with a "light" specialist for the remaining
-    roles was never actually lighter in aggregate VRAM terms — `gpt-oss:20b` doesn't get unloaded
-    between specialist calls, so the specialist tier only adds a second model competing for the
-    same fixed budget, guaranteeing constant eviction/reload thrashing regardless of which small
-    model was chosen. The 4.2x slowdown below is the confirming measurement of a result the probe's
-    own numbers already implied — it should have been treated as a go/no-go gate before running the
-    A/B, not just a footnote alongside it. **Standing implication for any future specialist-model
-    retry**: before implementing, check whether the specialist's footprint fits ALONGSIDE the
-    coordinator model's resident footprint (not just its own footprint against the total VRAM
-    budget) — if the coordinator model can't be unloaded between specialist dispatches, tiering
-    cannot reduce peak VRAM pressure, only add to it.
-  - **VRAM probe done BEFORE writing any code**: confirmed live via `ollama ps`/`rocm-smi` that
-    this card does NOT keep two different Ollama models resident simultaneously — `gpt-oss:20b`
-    (12GB) and `qwen3:4b` (5.1GB loaded, inflated by KV cache) together exceed the ~15.9GiB budget,
-    so Ollama evicts the previous model on every switch. Measured reload cost: ~5-23s per switch.
-  - **Real timed A/B run (2026-07-18)**, same sales-forecasting benchmark, `gpt-oss:20b` +
-    `specialist_model: deepdelve-qwen3-4b`, confirmed via `ollama ps` mid-run that both roles
-    really did route to their intended model. **Result: 4513.1s (75.2 min) vs. the pure
-    `gpt-oss:20b` baseline's 1079.1s — 4.2x SLOWER**, not faster, driven by the reload tax
-    compounding across an unusually retry-heavy run (`thin_coverage` → `missing_findings` →
-    `missing_artifact` before converging) plus qwen3:4b needing repeated redispatches
-    (`background_heuristics#2/#3/#4`) to produce anything usable for its assigned angle.
-    **Worse, the run converged CLEANLY (no fabrication, real grounding, `Report:` written) but the
-    content itself silently dropped the query's entire main topic**: `findings.md` and
-    `final_report.md` are 100% about Colombian holidays/payroll, with ZERO mention of heuristic
-    algorithms or deep learning, despite `_run_state.json` confirming the specialist model DID
-    eventually fetch two genuinely relevant real sources for that angle
-    (`sciencedirect.com/.../S1546221825008872`, `forecastio.ai/blog/time-series-forecasting`) that
-    even show up in `RunState.data["findings"]`. The content existed; the writer-tier synthesis
-    (on `gpt-oss:20b`, the coordinator model, not the specialist) dropped it anyway. This is a NEW
-    instance of the pattern already tracked elsewhere in this file (real fetched content silently
-    absent from final synthesis) — previously always tied to an observable quota-exhaustion
-    trigger, but no quota exhaustion is visible in this run's own attempt log, suggesting the
-    underlying issue may be a broader writer-tier prioritization/attention problem, not solely the
-    already-scoped quota-fairness bug. Not investigated further this session — flagged as a new,
-    distinct candidate worth its own root-cause pass.
-  - **Conclusion: tiering the code is correct and reusable, but THIS pairing
-    (`gpt-oss:20b`+`qwen3:4b`) on THIS hardware is a net loss** — slower AND lower quality than
-    just running `gpt-oss:20b` alone. `specialist_model` left unset in the live config (defaulting
-    to today's single-model behavior). Worth retrying only if: a specialist model with a smaller
-    combined VRAM footprint (fits alongside `gpt-oss:20b` without eviction) is found, or the
-    newly-surfaced writer-tier content-dropping bug gets root-caused and fixed first — as scoped,
-    tiering does not currently deliver the hoped-for benefit.
-
-## Candidates from the 2026-07-12 reference-repo review (see README References)
 
 - **Engine-driven iterative deepening** (from `dzhng/deep-research`): a STRUCTURAL refine loop —
   each round's findings + the Searchers' FOLLOW-UP DIRECTIONS get composed by the ENGINE into the
@@ -2538,12 +2557,66 @@ summary; this section is the full evidence trail.
     only test that means anything, and neither quant has passed one yet. Not recommended for
     further local benchmarking without a materially different quant or a context/prompt-length
     investigation into why the full system prompt specifically breaks it.
-## Fine-tuning — DEFERRED indefinitely, paused 2026-07-21 (user decision, not a technical blocker)
 
-**All LLM fine-tuning/GRPO work (this section, formerly "Stretch") is paused until the user
+## Rejected
+
+
+- Large/small model dispatcher: rejected 2026-07-11 — benchmark showed small models fail sub-agent reasoning (nemo 2/10); revisit only if a small model scores ≥5 on the Colombia rubric solo.
+- Knowledge cache (any backend): rejected — poisoned benchmarks/grounding; deleted in commit 929b987; do not reintroduce.
+- **Bibliographic-API citation verification** (Semantic Scholar/OpenAlex/Crossref/arXiv, from
+  `imbad0202/academic-research-skills`): rejected as a bundled default for the academic output
+  mode — a genuinely stronger check than DeepDelve's own fetch-based grounding for *published*
+  academic sources, but adds an external API dependency (rate limits, another failure mode to
+  handle) for a benefit that only applies to formal papers, not the market-research/general-web
+  sources most DeepDelve runs actually cite. Revisit as an opt-in flag specifically for
+  `--style academic` if that mode's own fetch-based grounding proves insufficient in practice.
+- **`SkyworkAI/DeepResearchAgent`** (reviewed 2026-07-12): a general self-evolution agent runtime
+  (RSPL/SEPL protocol layers, RL-based prompt/solution optimizers, versioned tracing) with example
+  agents for trading/ESG/mobile — not a deep-research-specialized project despite the name.
+  Rejected: same reasoning as the existing "no DI framework, no plugin system" stance above: its
+  tracing/versioning goal is already served by `_run_state.json`, and its optimizer/self-evolution
+  loop is out of scope for a project explicitly avoiding RL infrastructure outside the
+  "Fine-tuning" section above (itself now deferred indefinitely).
+- **Fabricated/misattributed sources caught during the 2026-07-13 3-model research pass** —
+  recorded so a future session doesn't re-trust them without re-checking: a "GAVEL: Evidence-
+  Contract Debate with Mechanized Scrutiny" paper with a fake ACL-2026-Findings DOI does not exist
+  anywhere (checked directly, zero hits). Separately, one of the three responses attached invented
+  mechanisms to two *real* papers it likely never actually read: it claimed `arXiv:2603.18000`
+  (AgentFactory) describes a disk-quota/`task_uuid` workspace-isolation mechanism — the real paper
+  is about reusable sub-agent code, no quota mechanism anywhere in it — and separately claimed a
+  real TechRxiv paper (Piskala, *Agent, Sub-Agent, Skill, or Tool?*) describes a "Try-Catch-
+  Critique" 1B-parameter tool-error classifier — the real paper is an orchestration-pattern
+  taxonomy (tool-centric/hierarchical/decentralized), no such mechanism anywhere in it. That
+  response's citations were <25% reliable on direct inspection; its other two ideas (cross-encoder
+  reranking, Gemma 4 12B) happened to be individually sound but were not verified by that response
+  itself — treat as unsourced until independently re-checked, which is what happened before either
+  was added to "Pending" above.
+- **`platoyaoxu/pdfdownload`** (reviewed 2026-07-14, user-supplied link, directly relevant given the
+  same-day ScienceDirect/Cloudflare Turnstile investigation above): a personal Elsevier/ScienceDirect
+  batch PDF downloader — `DrissionPage` opens each DOI in a real visible Chromium tab, a companion
+  `AutoClick.py` subprocess does OS-level `pyautogui` screenshot/template-match clicking (real mouse
+  input, not CDP-synthetic) against user-supplied PNGs of the Cloudflare checkbox and the download
+  button, with a human physically present to solve anything the templates can't handle. Confirms our
+  own finding from the same investigation: it's very plausibly beating Turnstile specifically because
+  `pyautogui` drives genuinely trusted OS-level input events, not CDP's synthetic `Input.dispatchMouseEvent`
+  — a more fundamental distinction than `navigator.webdriver` or Playwright-vs-DrissionPage as
+  libraries. **Not adopted, on the same principle already applied to ScienceDirect above**: its entire
+  purpose is defeating anti-bot protection to bulk-scrape copyrighted publisher content (the repo's
+  own `.gitignore` excludes downloaded PDFs "copyrighted & large," so the author knows what this is) —
+  that doesn't belong in DeepDelve's default fetch path even though the "real trusted input" technique
+  is a genuinely interesting, confirmed data point. Secondary code-quality notes for the record, not
+  actionable for us: no timeout anywhere in either the click-watch loop or the download-wait loop (a
+  wrong screen resolution or an inaccessible paper hangs the whole batch indefinitely), and the
+  `images/` template folder it depends on isn't shipped in the repo, so it isn't runnable as-is.
+
+## Stretch
+
+
+**All LLM fine-tuning/GRPO work (this section, renamed from "Fine-tuning — DEFERRED indefinitely"
+back to "Stretch" during the 2026-07-21 ROADMAP reorg) is paused until the user
 explicitly decides to resume it — not a priority, not to be picked back up on inference.** Reason
 given directly: a prior fine-tuned checkpoint (the `qwen3:4b` GRPO combined LoRA — see its
-disk-loss note in the vLLM re-test "Planned" entry above, "the GRPO fine-tune's merge/LoRA
+disk-loss note in the vLLM re-test "Pending" entry above, "the GRPO fine-tune's merge/LoRA
 checkpoint is gone from disk") was lost following a suggestion from the assistant the user
 considered a mistake; exact mechanics not re-litigated here, but the standing takeaway is: **no
 fine-tuning round starts, and nothing under `finetune/artifacts/`/LoRA output dirs gets touched
@@ -2972,52 +3045,3 @@ too. Both stay here, ready but inert, until the user says go.
        citation-grounding GRPO fine-tune above: the target behavior is specifically "when your
        source material contains a verification warning naming your only candidate URL as
        unfetched, do not cite it" — a clean binary reward signal, same shape as `thin_coverage`.
-## Evaluated and rejected
-
-- Large/small model dispatcher: rejected 2026-07-11 — benchmark showed small models fail sub-agent reasoning (nemo 2/10); revisit only if a small model scores ≥5 on the Colombia rubric solo.
-- Knowledge cache (any backend): rejected — poisoned benchmarks/grounding; deleted in commit 929b987; do not reintroduce.
-- **Bibliographic-API citation verification** (Semantic Scholar/OpenAlex/Crossref/arXiv, from
-  `imbad0202/academic-research-skills`): rejected as a bundled default for the academic output
-  mode — a genuinely stronger check than DeepDelve's own fetch-based grounding for *published*
-  academic sources, but adds an external API dependency (rate limits, another failure mode to
-  handle) for a benefit that only applies to formal papers, not the market-research/general-web
-  sources most DeepDelve runs actually cite. Revisit as an opt-in flag specifically for
-  `--style academic` if that mode's own fetch-based grounding proves insufficient in practice.
-- **`SkyworkAI/DeepResearchAgent`** (reviewed 2026-07-12): a general self-evolution agent runtime
-  (RSPL/SEPL protocol layers, RL-based prompt/solution optimizers, versioned tracing) with example
-  agents for trading/ESG/mobile — not a deep-research-specialized project despite the name.
-  Rejected: same reasoning as the existing "no DI framework, no plugin system" stance above: its
-  tracing/versioning goal is already served by `_run_state.json`, and its optimizer/self-evolution
-  loop is out of scope for a project explicitly avoiding RL infrastructure outside the
-  "Fine-tuning" section above (itself now deferred indefinitely).
-- **Fabricated/misattributed sources caught during the 2026-07-13 3-model research pass** —
-  recorded so a future session doesn't re-trust them without re-checking: a "GAVEL: Evidence-
-  Contract Debate with Mechanized Scrutiny" paper with a fake ACL-2026-Findings DOI does not exist
-  anywhere (checked directly, zero hits). Separately, one of the three responses attached invented
-  mechanisms to two *real* papers it likely never actually read: it claimed `arXiv:2603.18000`
-  (AgentFactory) describes a disk-quota/`task_uuid` workspace-isolation mechanism — the real paper
-  is about reusable sub-agent code, no quota mechanism anywhere in it — and separately claimed a
-  real TechRxiv paper (Piskala, *Agent, Sub-Agent, Skill, or Tool?*) describes a "Try-Catch-
-  Critique" 1B-parameter tool-error classifier — the real paper is an orchestration-pattern
-  taxonomy (tool-centric/hierarchical/decentralized), no such mechanism anywhere in it. That
-  response's citations were <25% reliable on direct inspection; its other two ideas (cross-encoder
-  reranking, Gemma 4 12B) happened to be individually sound but were not verified by that response
-  itself — treat as unsourced until independently re-checked, which is what happened before either
-  was added to "Planned" above.
-- **`platoyaoxu/pdfdownload`** (reviewed 2026-07-14, user-supplied link, directly relevant given the
-  same-day ScienceDirect/Cloudflare Turnstile investigation above): a personal Elsevier/ScienceDirect
-  batch PDF downloader — `DrissionPage` opens each DOI in a real visible Chromium tab, a companion
-  `AutoClick.py` subprocess does OS-level `pyautogui` screenshot/template-match clicking (real mouse
-  input, not CDP-synthetic) against user-supplied PNGs of the Cloudflare checkbox and the download
-  button, with a human physically present to solve anything the templates can't handle. Confirms our
-  own finding from the same investigation: it's very plausibly beating Turnstile specifically because
-  `pyautogui` drives genuinely trusted OS-level input events, not CDP's synthetic `Input.dispatchMouseEvent`
-  — a more fundamental distinction than `navigator.webdriver` or Playwright-vs-DrissionPage as
-  libraries. **Not adopted, on the same principle already applied to ScienceDirect above**: its entire
-  purpose is defeating anti-bot protection to bulk-scrape copyrighted publisher content (the repo's
-  own `.gitignore` excludes downloaded PDFs "copyrighted & large," so the author knows what this is) —
-  that doesn't belong in DeepDelve's default fetch path even though the "real trusted input" technique
-  is a genuinely interesting, confirmed data point. Secondary code-quality notes for the record, not
-  actionable for us: no timeout anywhere in either the click-watch loop or the download-wait loop (a
-  wrong screen resolution or an inaccessible paper hangs the whole batch indefinitely), and the
-  `images/` template folder it depends on isn't shipped in the repo, so it isn't runnable as-is.
