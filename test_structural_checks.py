@@ -257,7 +257,12 @@ def main():
     # original fix only rescued the FIRST task per tool/run to hit the wall (a single `_rescued`
     # bool on the shared entry) -- a second/third task with its own real progress got no rescue at
     # all. Now tracked per-task via task_id_ctx, so every distinct task showing real progress gets
-    # exactly one rescue, and the SAME task hitting the wall twice does not get rescued twice. ---
+    # exactly one rescue, and the SAME task hitting the wall twice does not get rescued twice.
+    # CLOSED 2026-07-21: the task_fetched_urls_ctx requirement was dropped (see check_quota's own
+    # comment) -- a task blocked on its own FIRST web_search call can never have fetched anything
+    # yet, so requiring proof of progress made the rescue unreachable for exactly the tasks that
+    # need it most (four sibling comparison tasks starved by one heavily-redispatched sibling,
+    # confirmed live). Every distinct task_id now gets one grace top-up regardless of progress. ---
     def _quota_ring_fence_scenario():
         from tools.core import tool_quotas_ctx as q_ctx, check_quota
         from utils.run_state import task_fetched_urls_ctx, task_id_ctx
@@ -292,16 +297,61 @@ def main():
             "exact per-task fairness fix, not a repeat of task A's single rescue")
         assert q_ctx.get()["web_search"]["limit"] == 6
 
-        # Task C: over quota with NO real progress (empty task_fetched_urls_ctx) -> never rescued,
-        # ring-fence must stay bounded to genuine in-progress work only.
+        # Task C: over quota with NO real progress (empty task_fetched_urls_ctx) -> STILL gets its
+        # one grace rescue (2026-07-21 fix) -- a task blocked on its own first web_search call has
+        # never had the chance to populate task_fetched_urls_ctx at all, so this is exactly the
+        # case the fix exists for, not an exception to it.
         q_ctx.set({"web_search": {"used": 2, "limit": 2}})
         task_fetched_urls_ctx.set([])
         task_id_ctx.set(103)
+        assert check_quota("web_search") is None, (
+            "a task with no real progress yet must still get its one grace rescue")
+        assert q_ctx.get()["web_search"]["limit"] == 4
+        assert q_ctx.get()["web_search"]["used"] == 3
+
+        # Consume the rescued headroom unit (used 3 -> 4, at the new limit), same as Task A above.
+        assert check_quota("web_search") is None
+        assert q_ctx.get()["web_search"]["used"] == 4
+
+        # Task C again, genuinely back over the already-rescued limit -> must NOT be rescued a
+        # second time, same bound as every other task_id.
         err = check_quota("web_search")
         assert err and "Quota reached" in err, (
-            "a task with no real progress must never be rescued", err)
+            "the SAME task must not be rescued twice even with no proven progress", err)
 
     contextvars.copy_context().run(_quota_ring_fence_scenario)
+
+    # --- delegate_tasks batch pre-reservation (ROADMAP's tracked open angle (c), 2026-07-21):
+    # live-confirmed a heavily-redispatched sibling can structurally starve later-listed siblings
+    # in the same batch before they ever get a turn, even across completion-check topups. Pure
+    # arithmetic, pulled out of delegate_tasks's own closure for direct testability. ---
+    from engine.orchestrator import _reserve_batch_quota_headroom
+
+    def _batch_reservation_scenario():
+        # Pool already mostly drained (the exact shape seen live: an earlier sibling ate most of
+        # web_search's budget) -> a 5-task batch must get topped up to guarantee 2 calls each.
+        pool = {"web_search": {"used": 13, "limit": 15}, "fetch_url_to_workspace": {"used": 2, "limit": 15}}
+        _reserve_batch_quota_headroom(pool, batch_size=5)
+        assert pool["web_search"]["limit"] == 23, pool  # 13 used + need 10 headroom (2*5) -> limit 23
+        assert pool["fetch_url_to_workspace"]["limit"] == 15, pool  # already has 13 headroom >= 1*5
+
+        # Plenty of headroom already -> no-op, must not shrink or otherwise touch the limit.
+        pool2 = {"web_search": {"used": 0, "limit": 15}}
+        _reserve_batch_quota_headroom(pool2, batch_size=3)
+        assert pool2["web_search"]["limit"] == 15, pool2
+
+        # A single-task "batch" can't starve a sibling -> no-op regardless of pool state.
+        pool3 = {"web_search": {"used": 15, "limit": 15}}
+        _reserve_batch_quota_headroom(pool3, batch_size=1)
+        assert pool3["web_search"]["limit"] == 15, pool3
+
+        # An untracked tool (not in the pool dict at all, e.g. quota disabled for it) must be
+        # skipped silently, not raise.
+        pool4 = {"web_search": {"used": 15, "limit": 15}}
+        _reserve_batch_quota_headroom(pool4, batch_size=4)  # touches fetch_url_to_workspace too, absent here
+        assert pool4["web_search"]["limit"] == 23, pool4  # 15 used + need 8 (2*4) -> limit 23
+
+    _batch_reservation_scenario()
 
     # --- malformed-tool-call recovery predicate (live case: gpt-oss bad escape -> Ollama 500) ---
     from engine.orchestrator import malformed_tool_call_nudge
@@ -2969,6 +3019,27 @@ def main():
             _config.cfg["settings"].pop("context_budget_chars", None)
         else:
             _config.cfg["settings"]["context_budget_chars"] = _orig_cb
+
+    # --- role-aware budget nudge (2026-07-21, live-caught): SUBAGENT_BUDGET_NUDGE's "do NOT call
+    # any more tools, return as your final message" is correct for Searcher/Analyzer roles but
+    # directly CAUSES the narrate-instead-of-write bug for writer roles (Builder/FindingsWriter),
+    # whose entire success criterion IS calling write_workspace_file. Live case: a 25-finding run
+    # pushed FindingsWriter's own generation over budget, the old nudge told it to stop calling
+    # tools and narrate instead, and the narration itself then got salvaged as an unverified,
+    # truncated draft (3 of 25 real findings) instead of a real file ever being written. ---
+    from engine.orchestrator import (
+        _select_budget_nudge, SUBAGENT_BUDGET_NUDGE, SUBAGENT_BUDGET_NUDGE_WRITER,
+    )
+
+    assert _select_budget_nudge("FindingsWriter") == SUBAGENT_BUDGET_NUDGE_WRITER
+    assert _select_budget_nudge("Builder") == SUBAGENT_BUDGET_NUDGE_WRITER
+    assert _select_budget_nudge("PeerReviewer") == SUBAGENT_BUDGET_NUDGE
+    assert _select_budget_nudge("WebSearcher") == SUBAGENT_BUDGET_NUDGE
+    assert _select_budget_nudge(None) == SUBAGENT_BUDGET_NUDGE
+    # The writer nudge must actually tell the model to call write_workspace_file, not to narrate —
+    # pin the actual behavioral difference, not just object identity.
+    assert "write_workspace_file" in SUBAGENT_BUDGET_NUDGE_WRITER
+    assert "do not call any more tools" not in SUBAGENT_BUDGET_NUDGE_WRITER.lower()
 
     # --- C8 charset handling (run 14: the flagship 750KB DIAN law text was saved as mojibake —
     # 'Resolución'/'número' could never string-match, silently gutting every Spanish-term check) ---

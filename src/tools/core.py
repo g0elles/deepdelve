@@ -27,31 +27,35 @@ def check_quota(tool_name: str) -> str | None:
     if ctx and tool_name in ctx:
         entry = ctx[tool_name]
         if entry["used"] >= entry["limit"]:
-            # Ring-fence real progress against the shared-pool starvation bug (ROADMAP "Findings
-            # from live testing", confirmed live twice: 2026-07-14 and 2026-07-18). The pool is
-            # ONE dict shared cumulatively across every sub-agent dispatch this run (by design,
-            # see build_quota_pool's docstring) — a task that has already fetched real sources
-            # THIS dispatch (task_fetched_urls_ctx non-empty, per-task and race-free, see
-            # utils/run_state.py) can otherwise be cut off by a sibling task's share of the same
-            # pool before it ever gets to analyze/synthesize what it fetched (confirmed live: a
-            # dispatch fetched 2 real sources, then hit a bare "Quota reached" wall on its very
-            # next call). One small, one-time-per-tool-per-run top-up — not a per-task reserved
-            # pool, which would be a bigger structural change against the shared-pool design —
-            # gives real, in-progress work a chance to actually finish its turn.
+            # Ring-fence against the shared-pool starvation bug (ROADMAP "Findings from live
+            # testing", confirmed live 2026-07-14, 2026-07-18, and again 2026-07-21 in a fresh
+            # gpt-oss benchmark run). The pool is ONE dict shared cumulatively across every
+            # sub-agent dispatch this run (by design, see build_quota_pool's docstring) — a task
+            # can be cut off by a sibling task's share of the same pool before it ever gets a real
+            # turn at all.
             #
-            # Generalized 2026-07-19 QA audit (ROADMAP's tracked open angle (a), per-task
-            # fairness): originally a single `_rescued` bool meant only the FIRST task per
-            # tool/run to hit the wall got rescued — a second or third task that also showed real
-            # progress (e.g. a redispatched retry that re-fetched something before being cut off
-            # again) got no rescue at all, the exact shared-pool-starvation shape this exists to
-            # fix. Now tracked per-task via task_id_ctx (a stable per-dispatch id, see
-            # utils/run_state.py) in a set, so EVERY distinct task showing real progress gets
-            # exactly one rescue — still bounded (each task id can only ever be rescued once,
-            # same "one small one-time top-up" ceiling as before, just applied per task instead of
-            # once globally).
+            # Generalized 2026-07-19 QA audit (per-task fairness): originally a single `_rescued`
+            # bool meant only the FIRST task per tool/run to hit the wall got rescued. Now tracked
+            # per-task via task_id_ctx (a stable per-dispatch id, see utils/run_state.py) in a
+            # set, so EVERY distinct task gets exactly one rescue — bounded (each task id can only
+            # ever be rescued once per tool, same "one small one-time top-up" ceiling as before).
+            #
+            # ROADMAP's tracked open angle (a), CLOSED 2026-07-21: the rescue used to additionally
+            # require task_fetched_urls_ctx to be non-empty ("has this task's dispatch already
+            # fetched a real URL"), on the theory that only PROVEN progress deserves a top-up. Live
+            # evidence found this backwards: web_search itself never touches task_fetched_urls_ctx
+            # (only fetch_url_to_workspace does), so a task blocked on its OWN FIRST web_search
+            # call — the exact shape seen live, four sibling comparison tasks starved by one
+            # heavily-redispatched sibling that ate the shared pool first — could never satisfy
+            # that condition no matter what, since it never got far enough to fetch anything. A
+            # task that hasn't started yet needs a fair first shot MORE than one already proven to
+            # be working, not less. Dropped the requirement: every distinct task_id now gets one
+            # guaranteed grace top-up the first time it hits the wall, proven progress or not —
+            # still bounded to exactly once per task_id per tool (rescued_ids), and the existing
+            # `used > limit + 3` hard abort below still catches genuine infinite-loop spinning.
             task_id = task_id_ctx.get()
             rescued_ids = entry.setdefault("_rescued_task_ids", set())
-            if task_id is not None and task_id not in rescued_ids and (task_fetched_urls_ctx.get() or None):
+            if task_id is not None and task_id not in rescued_ids:
                 rescued_ids.add(task_id)
                 entry["limit"] += 2
                 entry["used"] += 1

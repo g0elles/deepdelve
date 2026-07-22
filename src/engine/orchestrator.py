@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Optional
 from agent_framework.openai import OpenAIChatCompletionClient
 from agent_framework import tool, AgentSession, Message
-from tools import with_quota, think_tool, QuotaAbortException
+from tools import with_quota, think_tool, QuotaAbortException, tool_quotas_ctx
 from utils.run_state import run_state_ctx, task_fetched_urls_ctx, scope_entities_ctx, task_id_ctx, _next_task_id
 from prompts import (
     SUBAGENT_INSTRUCTIONS, SUBAGENT_DELEGATION_INSTRUCTIONS,
@@ -55,6 +55,30 @@ def _extract_follow_up_directions(text: str) -> list:
     if not m:
         return []
     return [b.strip() for b in _FOLLOW_UP_BULLET_RE.findall(m.group(1)) if b.strip()]
+
+
+_BATCH_MIN_CALLS_PER_TASK = {"web_search": 2, "fetch_url_to_workspace": 1}
+
+
+def _reserve_batch_quota_headroom(pool: dict, batch_size: int) -> None:
+    """Pure quota-mutation logic for delegate_tasks's pre-batch reservation (ROADMAP's tracked
+    open angle (c), 2026-07-21) -- pulled out of delegate_tasks's own closure so it's directly
+    testable without the full async tool/contextvar machinery, same shape as
+    _agent_routing_rejection_reason above. See delegate_tasks' own call site for the full
+    rationale; this function only does the arithmetic: top up each tracked tool's limit by
+    whatever's needed so the batch as a whole has at least _BATCH_MIN_CALLS_PER_TASK[tool] *
+    batch_size headroom BEFORE any task in the batch starts consuming it. No-op for batch_size <= 1
+    (a single task can't starve a sibling) or an untracked tool (pool.get(tool) is None)."""
+    if batch_size <= 1:
+        return
+    for tool_name, min_per_task in _BATCH_MIN_CALLS_PER_TASK.items():
+        entry = pool.get(tool_name)
+        if entry is None:
+            continue
+        needed_total = min_per_task * batch_size
+        headroom = entry["limit"] - entry["used"]
+        if headroom < needed_total:
+            entry["limit"] += (needed_total - headroom)
 
 
 def _agent_routing_rejection_reason(
@@ -293,6 +317,39 @@ SUBAGENT_BUDGET_NUDGE = (
     "already gathered: each finding with its source URL and exact figures/names, plus your "
     "FOLLOW-UP DIRECTIONS. An incomplete summary now beats a truncated context."
 )
+
+# Roles whose entire success criterion IS calling write_workspace_file (Builder writes
+# final_report.md, FindingsWriter writes findings.md) -- distinct from _NON_RESEARCH_DISPATCH_ROLES
+# above, which also includes PeerReviewer (no artifact-writing job of its own).
+_ARTIFACT_WRITER_ROLES = frozenset({"Builder", "FindingsWriter"})
+
+# 2026-07-21, found live: SUBAGENT_BUDGET_NUDGE's "do NOT call any more tools... return as your
+# final message" is exactly correct for a Searcher/Analyzer (their final message IS their
+# findings, consumed via final_text -> run_state.add_finding) -- but for a writer role it directly
+# CAUSES the "narrate instead of write" bug this project has fought repeatedly: it tells a model
+# whose entire job is calling write_workspace_file to STOP calling tools and narrate text instead,
+# on a real live run where a large finding set (25 real findings) pushed FindingsWriter's own
+# generation (much of it gpt-oss's harmony-format reasoning channel, which counts toward
+# stream_chars like any other streamed text) over budget before it ever called write_workspace_file
+# once. The narrated result then needed _salvage_narrated_report to recover at all, and that
+# narration was ITSELF truncated mid-way by this same nudge's own "wrap up NOW" framing, capturing
+# only 3 of 25 real findings -- the exact "content vanishes during synthesis" pattern this project
+# has already fixed four other distinct mechanisms for, via a fifth mechanism none of them cover.
+SUBAGENT_BUDGET_NUDGE_WRITER = (
+    "SYSTEM: you have reached your context budget for this task. Do NOT keep reasoning or "
+    "narrating as chat text. Immediately call write_workspace_file NOW with everything you have "
+    "consolidated so far -- an incomplete file written to disk beats a complete answer that only "
+    "exists as unsaved chat text and gets lost."
+)
+
+
+def _select_budget_nudge(agent_id: str | None) -> str:
+    """Pure selection logic, pulled out of _run_single_task's stream loop for direct testability
+    (same shape as _agent_routing_rejection_reason/_reserve_batch_quota_headroom above). A writer
+    role (Builder/FindingsWriter) gets the write-workspace_file-NOW nudge; every other role
+    (Searcher/Analyzer/PeerReviewer, or an unrecognized agent_id) gets the original
+    return-as-final-message nudge, which is correct for them."""
+    return SUBAGENT_BUDGET_NUDGE_WRITER if agent_id in _ARTIFACT_WRITER_ROLES else SUBAGENT_BUDGET_NUDGE
 
 
 def malformed_tool_call_nudge(e: BaseException) -> str | None:
@@ -852,7 +909,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                             stream_chars = 0
                             from agent_framework import Message
                             new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
-                            new_inputs.append(Message("user", [{"type": "text", "text": SUBAGENT_BUDGET_NUDGE}]))
+                            new_inputs.append(Message("user", [{"type": "text", "text": _select_budget_nudge(agent_id)}]))
                             current_input = new_inputs
                             has_requests = True
                             final_text += f"\n\n[SYSTEM: task '{task_name}' hit its context budget — findings below were wrapped up early.]"
@@ -1293,6 +1350,24 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                 "excluded — none were dispatched. Re-read the query's exclusion list and delegate "
                 "only topics that are actually in scope.\n" + "\n".join(skipped)
             )
+
+        # Pre-reserve enough shared-pool headroom for the WHOLE batch before any task in it starts
+        # (ROADMAP's tracked open angle (c), 2026-07-21): with max_concurrent_tasks small (often
+        # 1), tasks in one delegate_tasks batch run in roughly the order listed, sequentially
+        # draining the SAME shared quota pool -- confirmed live, a heavily-redispatched sibling
+        # (comparison_GA, 14 finding entries across the run) consistently ran before its siblings
+        # (comparison_PSO/SA/ACO/BO) each retry round and left them nothing, even though
+        # run_completion_check tops the pool up between rounds. tools/core.py::check_quota's
+        # per-task rescue (angle (a), same date) only helps AFTER a task already hit the wall;
+        # this closes the gap one level earlier by guaranteeing the pool has enough TOTAL headroom
+        # for every task in this batch to get at least a fair minimum before any of them spend it
+        # -- not true round-robin scheduling (that would need cooperative mid-turn interleaving, a
+        # much bigger change), but it removes the structural incentive for dispatch order alone to
+        # fully starve later siblings. See _reserve_batch_quota_headroom's own docstring for the
+        # arithmetic (pulled out for direct testability).
+        pool = tool_quotas_ctx.get()
+        if pool is not None:
+            _reserve_batch_quota_headroom(pool, len(coroutines))
 
         was_holding = holds_token.get()
         if was_holding:
