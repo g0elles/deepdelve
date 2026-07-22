@@ -891,9 +891,699 @@ summary; this section is the full evidence trail.
     tiering does not currently deliver the hoped-for benefit.
 
 
+**vLLM bake-off re-test — candidate verdicts, appended as concluded** (moved from Pending
+during the 2026-07-21 ROADMAP status audit; the pre-flight/plan framing sentences are kept
+as-written since they're accurate history, even though the umbrella task itself is not
+finished — see Pending for what's still open):
+
+- **Re-run the full 11-candidate local-model bake-off via vLLM instead of Ollama — planned
+  2026-07-21, not started.** Two independent, confirmed Ollama-serving-layer bugs (the think-mode
+  passthrough failure documented in this file's Qwen3-family entry above, and the pre-existing
+  `ollama/ollama#6155` nested-array tool-parameter stringification bug affecting `mistral-nemo`,
+  `llama3-groq-tool-use`, and `llama3.2:3b`) mean several of README.md's 11 bake-off disqualifications
+  may reflect Ollama's own serving bugs rather than genuine model incapability. Full plan (per-candidate
+  VRAM/quantization feasibility, tool-parser mapping, execution order, and the real blockers found
+  during research — this vLLM install has **no GGUF support at all**, `bitsandbytes` isn't installed,
+  Bonsai-8B's quant type is unrecognized by vLLM, the GRPO fine-tune's merge checkpoint is gone from
+  disk, `qwen3.6`/`Gemma 4 12B`'s HF availability is unconfirmed) written to
+  `~/.claude/plans/moonlit-plotting-simon.md`. Scoped explicitly as a multi-session effort, not a
+  single sitting.
+  - **Both pre-flight checks DONE, 2026-07-21 — cleared, execution can proceed.**
+    - **HF repo IDs confirmed to exist**: `google/gemma-4-12B-it` (official Google org, not the
+      community `SetneufPT` GGUF reupload originally used) and `Qwen/Qwen3.6-35B-A3B` — plus a
+      bonus find, a pre-quantized `Qwen/Qwen3.6-35B-A3B-FP8` checkpoint exists too, which helps the
+      MoE-fits-at-all question the plan flagged as unconfirmed.
+    - **`bitsandbytes` spiked on ROCm, real functional pass, not just import success.** Installed
+      cleanly (`pip install bitsandbytes` — wasn't present before). Checked bitsandbytes' own
+      support matrix first (not assumed): this GPU's `gfx1200` target (confirmed via `rocminfo`,
+      RX 9060 XT) IS on their officially-supported RDNA list. Ran a real discriminating test on
+      `mistralai/Mistral-7B-Instruct-v0.3` (`--quantization bitsandbytes --load-format
+      bitsandbytes`): failed to fit in a deliberately tight 0.3 `gpu_memory_utilization` budget
+      (~5.1GB) with "no available memory for cache blocks," then succeeded cleanly at 0.45 (~7.7GB
+      total, weights+KV). Since the real bf16 checkpoint is 13.5GB, fitting inside 7.7GB total is
+      only possible if the weights are genuinely quantized to roughly 4-5GB, not silently loaded at
+      full precision — confirmed real, working 4-bit quantization on this hardware, not a silent
+      no-op. Correct generation output ("Paris") and a real structured `tool_calls` response (via
+      `mistral_tool_parser.py`) both verified. **The 8-candidate quantization bucket in the plan
+      above is now trustworthy to execute.**
+    - **New operational lesson, found mid-spike, applies to EVERY vLLM launch/kill in this
+      project from now on**: killing an already-running (not self-crashed) `vllm serve` process
+      with `pkill -9`/`kill -9` reliably orphans its `VLLM::EngineCore` child (confirmed via
+      `ps -ef --forest`: EngineCore is a real child of the APIServer process, spawned via Python
+      `multiprocessing` with no death-signal hookup to its parent) — SIGKILL can't be trapped, so
+      vLLM's own shutdown code never runs to tear down the child, and it keeps holding VRAM
+      indefinitely. This explains every "stale EngineCore still holding Xgb" gotcha hit repeatedly
+      this session (MiniCPM5-1B twice, MiniCPM3-4B, this spike's first kill attempt). **Fix: use
+      plain SIGTERM first** (`pkill -f "vllm serve ..."`, no `-9`) and give it a few seconds — this
+      lets vLLM's own cleanup path run, confirmed via a clean SIGTERM kill on this exact spike's
+      running server leaving zero orphan afterward. Only escalate to `-9` on whatever's left if
+      `rocm-smi --showpids` still shows something after a graceful SIGTERM attempt.
+  - **Next session/execution starting point**: proceed straight to the plan's per-candidate
+    procedure, in its documented priority order (`mistral-nemo:12b` and `llama3-groq-tool-use:8b`
+    first — highest information value, directly implicated in the confirmed `#6155` Ollama bug).
+
+  - **`mistral-nemo:12b` re-test, 2026-07-21 — BLOCKED, a real infrastructure incompatibility, not
+    a capability verdict.** `mistralai/Mistral-Nemo-Instruct-2407` (not gated, native
+    `MistralForCausalLM` support, confirmed real bf16 checkpoint) loaded cleanly via
+    `~/.venvs/vllm` with `bitsandbytes` 4-bit quantization (same proven path as the pre-flight
+    spike) and the `mistral` tool-call parser. **Isolated tool-call smoke test with DeepDelve's
+    real nested `delegate_tasks` schema PASSED cleanly**: a genuine structured array
+    (`tasks: [{...}]`), not the stringified-JSON shape from Ollama's `#6155` bug — direct
+    confirmation the bug is absent on this backend, exactly as expected.
+    **But the full DeepDelve run failed immediately on its very first request, 100% reproducibly,
+    with `400: "chat_template is not supported for Mistral tokenizers."`** Root cause traced to
+    vLLM's own source (`vllm/tokenizers/mistral.py::validate_request_params`): vLLM's
+    Mistral-native tokenizer class unconditionally REJECTS any request containing
+    `chat_template_kwargs` — and DeepDelve's `_get_default_options()` (`src/engine/
+    orchestrator.py`) unconditionally SENDS `chat_template_kwargs: {"enable_thinking": ...}` on
+    every single dispatch, regardless of model family. This is a hard, structural mismatch between
+    DeepDelve's client and any genuine Mistral-family repo served via vLLM's native tokenizer mode
+    — not something a benchmark run can work around.
+    - **Both alternate tokenizer modes tried and both failed for a different reason each**:
+      `--tokenizer-mode auto` still auto-detects Mistral's native tokenizer class from the repo's
+      shipped `tekken.json`/`params.json` (same rejection, unchanged). `--tokenizer-mode hf` fails
+      at engine startup entirely with `AttributeError: CachedMistralCommonBackend has no attribute
+      is_fast` — this repo's shipped tokenizer files aren't compatible enough with vLLM's
+      HF-tokenizer-mode wrapper either. No third option exists in this vLLM version.
+    - **Verdict: BLOCKED, not disqualified and not re-testable as-is.** MiniCPM3-4B's "genuinely
+      open infrastructure question" framing applies here too — this never reached testing
+      `mistral-nemo`'s actual research/delegation behavior at all, so the original Ollama-served
+      2/10 score stands unconfirmed/unrefuted by this attempt. **Real fix, if this is worth pursuing
+      later, is a DeepDelve-side change**: make `_get_default_options()`'s `chat_template_kwargs`
+      injection conditional (e.g., skip it for models that don't need/support the `enable_thinking`
+      toggle at all, or catch/strip on this specific 400 and retry once) — out of scope to hack
+      into production code mid-benchmark without the user's sign-off, since it touches every model's
+      request path, not just this one candidate's. **Confirmed to affect every other genuine
+      Mistral-family repo in this project's candidate list, not just a possibility**: checked
+      `mistralai/Devstral-Small-2507` directly — same `MistralForCausalLM` architecture, same
+      shipped `tekken.json` (Mistral's native tokenizer format), so `devstral:24b`'s re-test would
+      hit the identical 400 block. `mistral:7b-instruct-v0.3` (already spiked earlier this session
+      for the bitsandbytes pre-flight check, same `mistralai` org/format) would too. **All three
+      Mistral-family candidates in the vLLM re-test plan are blocked by this same issue** — none
+      re-testable until DeepDelve's client-side fix above lands. Cleanup: config reverted to
+      `deepdelve-gpt-oss:latest`/`rag_cache: enabled: true`, vLLM server shut down cleanly (SIGTERM,
+      confirmed zero orphan both times it was killed during this attempt).
+
+  - **`llama3-groq-tool-use:8b` re-test, 2026-07-21 — DISQUALIFIED on real, docs-grounded evidence,
+    NOT a serving-stack artifact.** `Groq/Llama-3-Groq-8B-Tool-Use` (not gated, native
+    `LlamaForCausalLM`, real bf16 checkpoint). Its own native `max_position_embeddings` is only
+    8192 — below the project's ~16K floor, but this is a permanent model-level training fact, not a
+    hardware-forced squeeze, so the "discard outright below 16K" standard point 6 does NOT apply
+    here (clarified in that point above) — tested at its real native 8192 ceiling instead.
+    - **First smoke test (plain OpenAI-style `tools=` + `tool_choice: "auto"`) failed outright**:
+      the model narrated a plain-text answer, never attempting a tool call at all. Root cause
+      checked directly, not assumed: this repo's own `tokenizer_config.json` chat template has ZERO
+      tool-rendering logic (`'tools' in chat_template` is False) — a bare vanilla Llama-3 template.
+      vLLM's `tools=` parameter never got rendered into the prompt in any form this model could act
+      on, so this first result wasn't a real capability test yet.
+    - **Read the model's own HF README** (credits NousResearch for this exact tag convention) and
+      manually built its documented raw system-prompt format (`<tools>...</tools>` +
+      `<tool_call>...</tool_call>` instructions embedded directly in the system message, bypassing
+      the broken auto-render path). Result: 3/3 samples (including the model card's own recommended
+      `temperature=0.5, top_p=0.65`) produced genuinely well-formed, correctly-structured JSON with
+      a real nested `tasks` array (`#6155`-class bug confirmed absent) — but the model consistently
+      omitted the required `<tool_call>`/`</tool_call>` XML wrapper tags every single time.
+    - **Caught mid-investigation, per the user's explicit correction**: tried priming the assistant
+      turn with a literal `<tool_call>` opening tag as a fix — an UNSOURCED generic technique, not
+      verified against this model's own documentation first. User stopped this and asked directly
+      whether the model's docs had actually been consulted; they hadn't. Went back to primary
+      sources instead: checked Groq's own cookbook (documents their HOSTED API, a different serving
+      stack, not applicable to local vLLM hosting), then found and read NousResearch's own
+      `Hermes-Function-Calling` reference repo (the exact upstream implementation this model's tag
+      convention is credited to) and its real parsing code —
+      `utils.py::validate_and_extract_tool_calls` requires the literal `<tool_call>` XML element via
+      `root.findall(".//tool_call")` and returns zero tool calls without it. **Confirmed vLLM's own
+      bundled `hermes_tool_parser.py` requires the identical `<tool_call>` token** (same
+      `tool_call_start_token` check before extraction) — so this isn't a vLLM-specific integration
+      gap either; both the credited reference implementation and vLLM's own parser agree the tags
+      are mandatory.
+    - **Verdict, now grounded in real evidence rather than assumption**: the model's underlying
+      JSON-generation quality is genuinely good (correct structure, real BFCL-consistent
+      capability, no `#6155`-class bug) — but it does not reliably emit the `<tool_call>` wrapper
+      tags any correctly-built Hermes-style parser requires to extract a real structured tool call,
+      confirmed against 2 independent authoritative sources (the credited upstream reference parser
+      and vLLM's own bundled parser), not just this session's own serving setup. This is a genuine,
+      dual-confirmed disqualification, not the Ollama `#6155` artifact this candidate was
+      originally suspected of — the original schema-stage rejection stands, now on firmer evidence
+      than before. Cleanup: server shut down cleanly (SIGTERM, zero orphan), no config change
+      needed (never got far enough to wire DeepDelve's config at all — disqualified at the isolated
+      smoke-test stage, per the plan's own step 3 evidentiary bar, no full benchmark run spent).
+
+- **`qwen3:8b` vLLM re-test, 2026-07-21 — KILLED mid-run, real DeepDelve-side fabrication bug
+  found and fixed, no verdict on the model yet.** Loaded via `~/.venvs/vllm`, nothink mode
+  confirmed clean via direct curl before running (README's qwen3-family think-mode bug is Ollama's
+  own serving-layer defect, not the model's — already confirmed absent on vLLM the same session).
+  Run was genuinely progressing (3rd delegation round, 18 fetched URLs, 19 findings, clearly
+  better-behaved than any MiniCPM candidate) when a user-requested cross-check against the real
+  `sources/` folder caught a real integrity problem: only 15 files on disk vs. 18 claimed
+  `fetched_urls` and 19 findings, and **5 of 19 findings had a fabricated `source_url`** — a leaked
+  task/instruction name string instead of a real URL. Run killed before reaching FindingsWriter;
+  no verdict reached on `qwen3:8b` itself.
+  - **Root-caused, 2026-07-21, confirmed model-agnostic**: `_run_single_task`'s `add_finding`
+    fallback (`src/engine/orchestrator.py`) used the bare `task_name` as `source_url` whenever a
+    dispatched task (any Analyzer-tier call, by design) fetched no URL of its own, with no marker
+    distinguishing it from a real citation. `_build_findings_source_material`
+    (`src/engine/completion.py`) then rendered every finding identically as `### Source:
+    {source_url}` regardless of whether that value was a real URL or the placeholder — FindingsWriter
+    (any model, on any backend) had no structural signal to tell them apart. This is the same
+    mechanism regardless of which model is serving FindingsWriter, so it was not `qwen3:8b`-specific
+    and would have equally exposed every other vLLM re-test candidate still to come.
+  - **Fixed, commit `0852cc4`**: (1) `orchestrator.py` now recovers the real reference URL a
+    Searcher handed its Analyzer (already extracted for the reconstructed-URL check, now computed
+    unconditionally rather than gated behind `grounding_check.enabled`) before ever falling back to
+    `task_name`; (2) `_build_findings_source_material` never renders a non-`http(s)` `source_url` as
+    a `### Source: ...` entry anymore — such findings are named in a separate, explicitly
+    non-citable list instead, with instructions not to invent a source for them. Matters more given
+    this project tiers some writer roles onto smaller specialist models
+    (`settings.specialist_model`), which are less likely to infer the ambiguity on their own.
+    `test_structural_checks.py` extended (`_findings_uncited_fallback_scenario`) and existing
+    filename-scenario assertion corrected to match the new behavior; both pass.
+  - **No past verdict in this file was corrupted by this bug**: MiniCPM5-1B's disqualification was
+    zero `delegate_tasks` calls (never reached findings.md), `llama3-groq-tool-use:8b`'s was a
+    missing `<tool_call>` wrapper (never reached research), `mistral-nemo:12b`'s was a first-request
+    400 (never reached research) — none of the currently-closed vLLM re-test verdicts relied on
+    findings.md content, so none need re-opening.
+  - **Next step**: retest `qwen3:8b` fresh now that the bug is fixed — this candidate is the most
+    informative next run precisely because it's the one that surfaced the bug.
+
+- **MiniCPM5-1B evaluated as both a paired specialist AND a full single-model replacement,
+  2026-07-20/21 — DISQUALIFIED in both forms, fully closed, see the single-model entry near the
+  end of this bullet for the final, clean, decisive result.**
+  User asked to check other MiniCPM4-family options after the MiniCPM4-MCP evaluation below;
+  research (RESEARCH.md's earlier MiniCPM5-1B leaderboard entry) already flagged this as a
+  sub-1.5B model, far below this project's own established capacity floor — but user's explicit
+  framing was "one thing is documentation, another is test, let's try," so tested live rather
+  than ruled out on priors alone.
+  - **Genuinely simpler integration than MiniCPM4-MCP, confirmed by reading docs first this time**
+    (see the correction above about not doing that for MiniCPM4-MCP): MiniCPM5-1B emits XML-style
+    `<function name="...">...<param name="...">value</param></function>` tool calls (its own
+    `chat_template.jinja`, read directly), a format close enough to the Hermes/Qwen convention
+    that **Ollama's built-in tool-call parser handles it natively** — confirmed live, direct
+    `/api/chat` calls with a `tools=` param returned correct OpenAI-shaped `tool_calls` with zero
+    custom proxy code. Plain `LlamaForCausalLM` architecture (config.json), no custom kernels.
+    OpenBMB has an official Ollama deployment cookbook (`docs/deployment/ollama.md`) confirming
+    the same integration path and recommended sampling (`temperature=0.7, top_p=0.95` no-think
+    mode; `0.9/0.95` think mode) — used exactly as documented, not reverse-engineered.
+  - **Pulled via `ollama pull hf.co/openbmb/MiniCPM5-1B-GGUF:Q8_0`** (1.1GB), local tag
+    `minicpm5-1b` with `num_ctx` set to 131072 (the model's actual native max per its own
+    `config.json`'s `max_position_embeddings`, not the cookbook's conservative 8192 example
+    value — same standard applied to MiniCPM4-MCP's 32768 setting earlier).
+  - **Isolated 5-case smoke test: 5/5 passed**, correct function selection, correct abstention on
+    a non-tool question (honestly declined an arithmetic question rather than fabricating an
+    answer — a real, observed instance of a friend's claim that small models given permission to
+    say "I don't know" avoid confident hallucination). One real gap already visible in this
+    isolated test, though: one `delegate_tasks` call dropped the actual task instructions,
+    keeping only `task_name` — an argument-completeness weakness, not a format failure.
+  - **Specialist-role system prompts audited before testing further** (per the same
+    read-first correction): `WebSearcherInstructions`/`AcademicSearcherInstructions`
+    (`src/prompts.py`) already explicitly ban finishing a task from "search snippets or your own
+    prior knowledge" — exactly the strategy a friend of the user's independently recommended for
+    small models. No prompt changes were needed; this was already the existing design.
+  - **Live end-to-end test, same query used throughout this evaluation**: the single most
+    favorable MiniCPM result of the day. Correctly found not just the arXiv preprint
+    (2404.02680) but also the actual peer-reviewed PUBLISHED version (ACM DOI 10.1145/3674640)
+    of the same paper, and correctly flagged that a third source (ETH Zürich) self-labels
+    "peer-reviewed" without evidence of external review — a more careful preprint-vs-published-
+    vs-self-claimed distinction than any earlier gpt-oss or MiniCPM4-MCP run made. Rust version
+    (1.97.1, plus beta/nightly) correct. Lowest tool-error count of any MiniCPM variant tested
+    (11, vs. 27-53 for MiniCPM4-MCP's runs), closest yet to the clean gpt-oss baseline (0-8).
+  - **Real problem, still present**: the `related_work` sub-agent was forcibly aborted TWICE
+    ("Agent trapped in loop. Quota exceeded multiple times for fetch_url_to_workspace") before
+    finally succeeding on retry attempt #4. Same underlying category as MiniCPM4-MCP's issues
+    (not reliably knowing when to stop), different specific shape. The system's own retry/
+    recovery machinery absorbed this and still produced a good outcome, but first-attempt
+    reliability isn't clean.
+  - **CORRECTION, 2026-07-21 — every result above was very likely produced in unintended THINK
+    mode, not the nothink mode intended for this role.** User asked for an in-depth read of the
+    full official `openbmb/minicpm` docs/skills tree before treating anything as a settled
+    "discard" — all 23 currently-relevant English docs read directly (main README, all 8
+    deployment cookbooks, all 5 fine-tuning cookbooks, both `minicpm5-deploy`/`minicpm5-deploy-
+    ollama` Agent Skills). Confirmed empirically first: every live `/api/chat` response from the
+    `minicpm5-1b` Ollama tag includes a populated `"thinking"` field with real verbose
+    chain-of-thought, even with a custom Modelfile injecting an empty `<think>\n\n</think>\n\n`
+    prefix meant to force nothink mode per the model's own `chat_template.jinja` logic — the
+    injection did not suppress it. **This is not a mistake unique to this setup — it's a
+    documented, vendor-acknowledged gap in Ollama's OWN official cookbook and shared by other
+    edge/consumer backends**: `docs/deployment/ollama.md`'s own example Modelfile only sets
+    `temperature`/`top_p` and comments them "tuned for no-think mode," but never actually injects
+    a `<think>` prefix into the `TEMPLATE` block — because "Ollama does not auto-evaluate the
+    GGUF-embedded Jinja chat template; it falls back to the Modelfile's Go `TEMPLATE` block."
+    Independently confirmed by two OTHER backends' own docs: `docs/deployment/mlx.md` states
+    plainly "the released chat template auto-injects `<think>\n` when no system message disables
+    it, so you get think-mode behaviour by default"; `docs/deployment/lmstudio.md` states LM
+    Studio's `chat_template_kwargs.enable_thinking` flag is not consistently honored either. Only
+    **vLLM and SGLang** correctly implement real `enable_thinking` (both evaluate the actual HF
+    template). Practical tool-calling path found for each: SGLang's MiniCPM5 XML parser only
+    exists on an unreleased `main` branch (merged 2026-05-22, no pip release yet); vLLM is more
+    practical right now — the repo itself ships the parser file
+    (`tool_parsers/minicpm5xml_tool_parser.py`, same as the pending upstream PR) loadable into a
+    normal `pip install vllm>=0.21` via `--tool-parser-plugin`, no from-source build needed.
+    **Implication**: every positive result recorded above (best report quality of any MiniCPM
+    candidate, correct preprint-vs-published distinction) was very likely produced in the heavier,
+    more deliberate think mode, not the fast/latency-bound mode this role actually calls for — so
+    neither the positive results nor the one real weakness (the forced-abort looping) can be
+    trusted as representative of the model's intended operating mode. No discard-or-keep verdict
+    is actually settled; this reopens the question rather than closing it either way. Next step:
+    stand up vLLM with the bridged tool-parser plugin and re-run the same live query in genuine
+    nothink mode before drawing any conclusion. Real hardware caveat checked (not assumed): the
+    user's GPU (RX 9060 XT) is AMD RDNA4, not NVIDIA — vLLM defaults to CUDA-only, but ROCm 7.2
+    (March 2026) added official RDNA4 vLLM support with "out-of-the-box parity" alongside Ollama/
+    llama.cpp, so this should work, just via the ROCm-specific install path (Docker image or ROCm
+    wheel) and less battle-tested than the CUDA default every vLLM doc assumes.
+  - **Status: not yet a final call either way**, now for a second, more fundamental reason than
+    "needs more runs" — the model hasn't even been tested in its correct operating mode yet. Best
+    MiniCPM candidate tested by a real margin under think mode; live config left pointed at it
+    (`specialist_model: minicpm5-1b`) rather than reverted, pending a proper nothink-mode re-test
+    via vLLM before any final call.
+  - **FINAL VERDICT, 2026-07-20 — genuine nothink-mode retest via vLLM completed; DISCARD for this
+    role.** Fixed the pre-existing, broken `~/.venvs/vllm` install (missing `libopenmpi3t64`, then
+    ROCm userspace libs stale relative to the current kernel — fixed via
+    `sudo amdgpu-install --usecase=rocm,hip --no-dkms`, no kernel module/DKMS involved, fully
+    reversible; a system-level DKMS attempt tried first failed on a genuine kernel-symbol conflict
+    against `7.0.0-28-generic` and was cleaned up before this correct approach was found). Launched
+    `vllm serve openbmb/MiniCPM5-1B --tool-call-parser minicpm5 --enforce-eager
+    --gpu-memory-utilization 0.20 --max-model-len 16384` (memory-utilization and `--enforce-eager`
+    both driven down from the plan's defaults after gpt-oss's usual 14.6GB Planner footprint left no
+    VRAM headroom on the 17.1GB card — swapped Planner to `deepdelve-mistral-nemo:latest`, 7.1GB,
+    for this test only; **`api.openai_model` in `~/.deepdelve/config.yaml` is still set to this
+    temporary value and must be reverted to `deepdelve-gpt-oss:latest` once this entry is read**).
+    Confirmed via direct `curl` with `chat_template_kwargs: {"enable_thinking": false}` that
+    real nothink mode now works (no `<think>` leakage) — DeepDelve needed zero new code for this,
+    since `orchestrator.py::_get_default_options()` already threads `enable_thinking` through
+    `extra_body`/`chat_template_kwargs` at both dispatch sites (line ~678 specialist, ~1274 main).
+    Ran the same live query used throughout this whole evaluation. Result, traced through the raw
+    session log rather than assumed:
+    - **A genuine content hallucination reached the final report.** The model's own first-pass
+      reasoning (session log event 17, well before any remediation pass) already commits to
+      "Blog Rust 1.85.0 - URL: https://blog.rust-lang.org/2025/02/20/Rust-1.85.0/" — a real but
+      *stale* blog post surfaced by a web-search snippet — as "the latest stable version." It later
+      correctly fetches the actually-current `releases.rs` page (which plainly states
+      `Stable: 1.97.1`, confirmed by directly grepping the saved source file), but never revises
+      its earlier claim — instead the final findings/report cite `<https://releases.rs/>` as the
+      source for the wrong "1.85.0, released on February 20, 2025" value. This is not a
+      misread-ambiguous-source case like the earlier MiniCPM4-MCP filename-hash mistake; the
+      correct number was sitting in a source the model itself fetched and cited, and it reported
+      the wrong one anyway. Traced with certainty to MiniCPM5-1B's own Searcher/Analyzer
+      reasoning, not to the temporarily-swapped mistral-nemo Planner's remediation passes
+      (`FindingsWriterFix_attempt2`/`BuilderFix_attempt3` copied this text forward verbatim from
+      the same flawed `findings.md`, they did not introduce it).
+    - **`findings.md` itself never passed the grounding check on its own terms**: it shipped as an
+      "AUTO-RECOVERED DRAFT" (the model narrated the findings as chat text instead of calling
+      `write_workspace_file`, across the full retry budget) — the salvage path saved the run from
+      an outright `missing_findings` failure, but the underlying content was never actually
+      verified before being carried into `final_report.md`.
+    - **Six identical malformed tool calls**: `fetch_url_to_workspace` called with
+      `{"url": "sources/paper_143022.md"}` — a workspace-relative path to a file it had already
+      saved, not a real URL — repeated six times with no self-correction, on top of one
+      argument-parsing failure elsewhere. Confusing "fetch a URL" with "read a file I already
+      wrote" is a new, distinct failure shape from anything seen in the earlier think-mode run.
+    - Two literal `"[Authors' names]"` placeholder strings (HAL preprint, ACM paper) also reached
+      the final report uncorrected — a completeness/fabrication-adjacent defect the downstream
+      Builder (mistral-nemo, not gpt-oss, for this run) failed to catch, unlike an earlier same-day
+      run where gpt-oss's Builder did catch and fix an analogous mistake.
+    - Required 4 completion-check attempts (`not_delegated`, `missing_findings`, `missing_artifact`,
+      then clean) before the run closed at all.
+    **Conclusion**: genuine nothink mode is now confirmed reachable and correctly wired end-to-end
+    (infrastructure verdict: works, zero new code needed), but this properly-configured test is, on
+    content reliability, *worse* than the earlier (unintentional think-mode) run — not better. A
+    single model-generated hallucination that directly contradicts its own cited source, shipped
+    past an already-degraded (auto-recovered, unverified) grounding path, past a Builder that didn't
+    catch it, into the user-facing report, is disqualifying for an unsupervised specialist role
+    regardless of mode. Sub-1.5B parameter budget was flagged as a priors-based concern from the
+    very start of this evaluation (RESEARCH.md); this live result confirms rather than contradicts
+    that prior. **Discarding MiniCPM5-1B (both modes now tested) for the specialist role.** Cleanup
+    still open: revert `api.openai_model` to `deepdelve-gpt-oss:latest`, decide whether to keep or
+    stop the standing `~/.venvs/vllm` server, remove `specialist_model`/`specialist_base_url` from
+    live config (or point them at a different, larger candidate later).
+    - **RE-FLAGGED 2026-07-21, per the new "Model Evaluation Standard" section above (point 2,
+      isolation): this verdict does not actually isolate MiniCPM5-1B as the only variable** — the
+      Planner/Builder was swapped off `gpt-oss:20b` onto `mistral-nemo:latest` to free VRAM for
+      this run (see line ~1186 above), and the uncorrected `"[Authors' names]"` placeholders were
+      explicitly attributed to that swapped-in Builder failing to catch them, not to MiniCPM5-1B's
+      own output. The traced-to-source Rust-version hallucination and the six malformed
+      `fetch_url_to_workspace` calls ARE cleanly attributable to MiniCPM5-1B itself (confirmed via
+      the raw session log, not the Builder), so the discard isn't baseless — but it was reached
+      under a confounded pipeline, not a clean one, and should not be read as a fully settled,
+      isolated verdict on the model's own capability.
+      **Retest explicitly NOT queued — user decision, 2026-07-21**: a clean isolated retest
+      (`gpt-oss:20b` kept in the Planner/Builder seat) was initially proposed as the outstanding
+      item, but the user rejected pursuing that combination further at all — pairing `gpt-oss:20b`
+      as coordinator with any small model as a specialist is a strategy the user doesn't want tried
+      again regardless of which small model sits in the specialist slot (see the "Heterogeneous
+      role tiering" closure note above). MiniCPM5-1B's status is therefore left as: discard
+      reached under a confounded test, not fairly re-litigated, and not going to be re-tested in
+      that same paired form.
+      **Single-model bake-off run — COMPLETED 2026-07-21, clean and decisive: DISQUALIFIED, no
+      caveats this time.** `MiniCPM5-1B` set as `api.openai_model` across ALL roles (Planner/
+      Builder/FindingsWriter/PeerReviewer, not just Searcher/Analyzer) — the same architecture
+      every other bake-off candidate in this section was measured under, and the one evaluation
+      MiniCPM5-1B had never actually had. Ran via `~/.venvs/vllm` with the model's real full context
+      (`--max-model-len 131072`, not the earlier tests' 16384 — the actual `max_position_embeddings`
+      from the model's own `config.json`; needed `--gpu-memory-utilization 0.9` once nothing else
+      was competing for VRAM, since a stale `VLLM::EngineCore` process from an earlier launch
+      attempt was still holding 8.1GB and had to be killed first). Confirmed via direct `curl`
+      before running anything through DeepDelve: nothink mode clean (`reasoning: null`, zero
+      `<think>` leakage) — same infrastructure verdict as before, this part was never in question.
+      Ran the exact standing sales-forecasting benchmark prompt (`eval/sales_forecasting_
+      benchmark.md`) used throughout this whole bake-off.
+      **Result, traced through the raw session log**: the model called `list_workspace_files` once,
+      then `think_tool` with near-identical reflection text ~20 times in a row, burning its entire
+      `think_tool` quota (30) without ever once calling `delegate_tasks` — no Searcher was ever
+      spawned, `fetched_urls` stayed empty, `findings.md` was never written. It then asserted
+      "I'll compile the findings and final report now based on the delegated tasks" — a flatly false
+      claim, since nothing had been delegated and no findings existed — repeated verbatim several
+      times in the trailing text output. The engine's own `not_delegated` completion check caught
+      this correctly (`_run_state.json`: `"No delegate_tasks call was ever made — this looks like an
+      answer from memory, not real research."`) and the run terminated with `Report: NOT WRITTEN`
+      once the overall retry budget was exhausted — no artifact, no fabrication reaching the user,
+      the failure mode this project's completion checks exist to catch, working as designed.
+      **This clears every point of the Model Evaluation Standard above with no exceptions**:
+      operating mode confirmed via raw API call before scoring (point 1); MiniCPM5-1B was the only
+      variable in the entire pipeline, nothing paired or swapped (point 2, the exact gap the two
+      earlier verdicts had); backend/version stated (vLLM 0.25.1, ROCm, ~/.venvs/vllm) (point 3).
+      A second corroborating run was not initially executed given how early and total the failure
+      was (dead by turn ~20 of a 30-call quota, zero real work of any kind produced).
+      **Point 4 corroborated with a real second run, same day**: after this session separately
+      found and fixed a real process-hygiene bug (killing an already-running `vllm serve` with
+      `-9` orphans its `VLLM::EngineCore` child, since SIGKILL can't be trapped — see the
+      "Heterogeneous role tiering"/vLLM re-test entry above), the user asked whether that finding
+      could have contaminated THIS verdict's VRAM/context state. Traced the actual timeline: the
+      one stale-process contamination hit during this evaluation happened BEFORE the scored run
+      (an 8.1GB orphan from a failed 16384-ctx attempt, found and killed before the successful
+      131072-ctx relaunch that the benchmark actually ran against) — the scored run itself used a
+      clean, correctly-provisioned, freshly-confirmed server throughout, so the original verdict was
+      never actually contaminated. Re-ran anyway as a precaution, from a freshly-clean GPU state
+      (`rocm-smi --showpids` confirmed zero KFD processes before relaunch), same full 131072
+      context, same nothink-mode curl confirmation. **Result: reproduced the identical core
+      failure** — 63 events this time (`list_workspace_files` x11, `think_tool` x10, spread across
+      3 completion-check attempts instead of 1), but again ZERO `delegate_tasks` calls across the
+      entire run, `Report: NOT WRITTEN`. Point 4 (discard needs >1 run) is now genuinely satisfied,
+      not just argued around.
+      **Final verdict, now doubly corroborated**: MiniCPM5-1B is disqualified as a DeepDelve model
+      candidate in BOTH forms tested — paired specialist (confounded, not re-litigated per the
+      user's own decision) and full single-model replacement (clean, decisive, reproduced on an
+      independent run). No further MiniCPM5-1B testing is planned; nothing about this model's
+      evaluation remains open.
+  - **Cleanup done, 2026-07-21**: `api.openai_model` reverted to `deepdelve-gpt-oss:latest`,
+    `settings.specialist_model`/`settings.specialist_base_url` removed from `~/.deepdelve/
+    config.yaml` (confirmed `_build_client`'s `.get(...)` fallback in `orchestrator.py` handles
+    their absence, single-model config resumes cleanly), test `vllm serve` process killed.
+    `~/.venvs/vllm` itself kept on disk — a verified-working general ROCm+vLLM install for this
+    exact GPU/kernel, reusable for a future, larger specialist candidate without redoing the ROCm
+    fix.
+  - **Cleanup done again, 2026-07-21, after the single-model run above**: `api.openai_model`
+    reverted to `deepdelve-gpt-oss:latest`/`http://localhost:11434/v1` (confirmed via config diff),
+    the config backup at `~/.deepdelve/config.yaml.bak_pre_minicpm_singlemodel_20260721` can be
+    deleted once this entry is read, the vLLM server process (port 8000) killed and confirmed via
+    `rocm-smi` back to near-zero VRAM use.
+
+- **Qwen3-family think-mode control confirmed broken on Ollama too, 2026-07-21 — every Qwen3
+  benchmark row in README.md's model table was very likely reasoning-polluted.** Surfaced while
+  answering the user's direct question ("could the models we benchmarked have a nothink mode too?")
+  after the MiniCPM5-1B finding above. Tested live against Ollama 0.31.2, both mechanisms DeepDelve
+  could plausibly rely on:
+  - `chat_template_kwargs.enable_thinking: false` via the OpenAI-compat endpoint (the mechanism
+    `orchestrator.py::_get_default_options()` actually sends): confirmed via direct `curl` against
+    `deepdelve-qwen3-4b` that this has **zero effect** — the model still burns its full token budget
+    on unrequested reasoning (a populated `reasoning` field, `content` left empty on a 200-token cap).
+  - Ollama's own native `/api/chat` `"think": false` field (the mechanism Ollama itself recommends
+    for hybrid-reasoning models, and which DeepDelve does NOT currently send at all): confirmed via
+    direct `curl` against the plain, unmodified `qwen3:4b` base tag that this is **actively worse
+    than doing nothing**. With `think: false`, the model still reasons at length but the raw,
+    unstructured chain-of-thought is dumped straight into `message.content` with no `<think>` tag
+    and no separate `thinking` field at all. With `think: true`, the exact same request correctly
+    separates reasoning into its own field and `content` holds only the clean final answer ("4").
+    The "off" setting is the one that pollutes the model's real working output; "on" is the one
+    that's clean.
+  - **Why this doesn't apply to `gpt-oss:20b` (the current default)**: tested the same two
+    mechanisms against `deepdelve-gpt-oss` — also ineffective at fully suppressing reasoning (gpt-oss's
+    harmony format always produces an analysis channel by design, this isn't a bug), but critically,
+    Ollama keeps that reasoning cleanly separated into its own `reasoning`/`thinking` field in BOTH
+    cases, never mixed into `content`. Confirmed via `agent_framework`'s own client source
+    (`choice.message.content` read directly at the point a `Content.from_text(...)` is built;
+    `reasoning_details` handled as a distinct `text_reasoning` content type, never merged into the
+    text DeepDelve's agents treat as the model's actual output) that DeepDelve only ever consumes
+    `.content` — so gpt-oss's inability to fully disable thinking is benign here, while Qwen3's
+    content-pollution bug is not.
+  - **Implication**: `qwen3.6` (35b-a3b), `qwen3:4b`, `qwen3:8b`, and the `qwen3:4b` GRPO fine-tune's
+    live Ollama benchmark run (its TRAINING pipeline correctly used `enable_thinking=False` via HF's
+    own `apply_chat_template`, unaffected — see the training entry below — this is specifically
+    about the live benchmark's inference path) were almost certainly running with large amounts of
+    uncontrolled reasoning text bleeding directly into every tool-call argument and piece of written
+    output across their entire benchmarked runs, this whole time. This is a real, previously-unknown
+    contributing factor to their disqualifying failure modes (thin_coverage stalls, narrated-instead-
+    of-written reports, canned non-responses on the corrective nudge) — plausibly consistent with
+    "a small model getting confused/derailed by its own unmanaged internal monologue," layered on
+    top of (not a replacement for) the capacity-floor literature evidence already cited in README.md.
+  - **Not yet re-tested and not re-scored**: no Qwen3 candidate has been re-run with genuine nothink
+    mode (would need the same vLLM/SGLang fix class used for MiniCPM5-1B — `~/.venvs/vllm` is
+    already available for this). Existing scores are left standing as the best evidence so far, not
+    silently trusted as clean; README.md's model table now flags every affected row with a `†` and
+    an explanation rather than treating the old numbers as unaffected. Whether re-testing is worth
+    the time (these are all still sub-14B, below the literature's own capacity floor regardless) is
+    an open call, not yet made.
+  - **Confirmed via vLLM, 2026-07-21: the bug is Ollama-specific, not a Qwen3 model limitation.**
+    Unloaded `gpt-oss` from Ollama first (`ollama stop`, freed ~14.3GB, matching the earlier lesson
+    about not squeezing vLLM into leftover VRAM), launched `vllm serve Qwen/Qwen3-4B --tool-call-
+    parser hermes --enforce-eager --gpu-memory-utilization 0.85 --max-model-len 16384` (first attempt
+    at `0.55` under-budgeted the KV cache and failed cleanly with a clear `ValueError`, not a crash —
+    raised to `0.85`, succeeded). Direct `curl` against the real vLLM server (genuine jinja
+    chat-template evaluation, same class of fix as MiniCPM5-1B):
+    - `chat_template_kwargs.enable_thinking: false` → clean `"4."`, `reasoning: null`, 3 completion
+      tokens, zero `<think>` content anywhere.
+    - Same request with `enable_thinking: true` → full `<think>...reasoning...</think>` block
+      inline in `content` (Qwen3's own convention keeps it in `content`, unlike gpt-oss's separate
+      channel — confirmed as the model's real, correct behavior, not a bug).
+    - A real `tools=` request with `enable_thinking: false` → clean OpenAI-shaped `tool_calls`
+      (`web_search({"query": "population of Tokyo"})`), no reasoning leakage, no stray text.
+    **Conclusion**: Qwen3-4B's nothink mode is real and works correctly end-to-end once served by
+    something that actually evaluates its chat template — Ollama's failure to do so (confirmed
+    earlier in this same entry) is entirely Ollama's own gap, not evidence against the model. This
+    makes a genuine, clean re-benchmark of the Qwen3 family (via vLLM, same infra now proven twice)
+    a real, low-friction option if it's ever worth revisiting — test server stopped after
+    verification, nothing left running.
+
+- **MiniCPM3-4B scoped and attempted as a single-model candidate, 2026-07-21 — INCONCLUSIVE, a real
+  infrastructure hang, not a capability verdict.** After MiniCPM5-1B's disqualification, checked
+  other real MiniCPM-family candidates. `MiniCPM4-8B`/`MiniCPM4.1-8B` ruled out immediately — their
+  own model cards document no function-calling support at all (only `MiniCPM4-MCP`, already
+  discarded, was OpenBMB's dedicated tool-use variant of that generation). `MiniCPM3-4B` looked
+  genuinely promising: documented BFCL v2 71.6 (beats several 7-9B models), Apache-2.0, native vLLM
+  model support (`MiniCPM3ForCausalLM`). Initially concluded (wrongly, corrected by the user — see
+  `feedback_read_docs_before_building.md`) that no vLLM tool-call-parser existed for its custom
+  `<|tool_call_start|>`/Python-function-call format, having only checked the locally installed vLLM
+  package's bundled parsers. OpenBMB's own `github.com/OpenBMB/MiniCPM` repo
+  (`demo/minicpm3/function_call/`) ships a ready `minicpm_tool_parser.py` + matching jinja chat
+  template for exactly this — needed two small compatibility fixes for this vLLM version (0.25.1):
+  import paths moved (`vllm.entrypoints.openai.protocol` → `.chat_completion.protocol` +
+  `.engine.protocol`; `vllm.entrypoints.openai.tool_parsers` → `vllm.tool_parsers`), and the base
+  `ToolParser.__init__` now takes a second `tools` param the reference script's subclass didn't
+  accept. Confirmed working after patching: real structured `tool_calls` out of a direct `curl`
+  test, no narrated JSON.
+  - **Real hardware ceiling found, applied correctly THIS time before benchmarking**: MiniCPM3-4B's
+    62-layer, non-MLA-optimized-in-this-config KV cache cost forced a real serving ceiling of ~6144
+    tokens on this GPU (vLLM's own KV-cache-budget error gave this number directly), well under the
+    project's ~16K-token floor (`context_budget_chars: 50000`'s documented "safe margin under a
+    16K-token num_ctx"). **First response was to proportionally scale `context_budget_chars` down
+    to 8000 and run the benchmark anyway — the user corrected this as the wrong general policy
+    going forward** (new Model Evaluation Standard point 6, above): a candidate that can't clear
+    ~16K tokens should be discarded outright on hardware grounds, not accommodated by rescaling the
+    project's own safety margins. This specific run was allowed to finish since it was already
+    informative either way, but is not the template for future candidates.
+  - **Result: a real hang, not a clean pass or fail.** The DeepDelve run itself showed zero visible
+    progress for ~16+ minutes past the startup banner. Diagnosis: vLLM's own periodic engine-stats
+    logger (normally prints every ~10s) went completely silent after the first exchange, the
+    APIServer process (not EngineCore) was pinned at ~94% CPU while GPU utilization sat at only 7%,
+    and even the lightest possible request (`GET /v1/models`) timed out entirely. This pattern
+    points at OpenBMB's own reference `extract_tool_calls_streaming` — it re-scans the ENTIRE
+    accumulated generation text with a nested-parentheses regex
+    (`r"(\w+)\(((?:[^()]*|\([^()]*\))*)\)"`) on every single streamed token, a known catastrophic-
+    backtracking risk class, not something DeepDelve's own code touches. Killed the hung run and
+    server rather than let it burn GPU time indefinitely; confirmed no leftover `VLLM::EngineCore`
+    process afterward (this evaluation's third time hitting that exact leftover-process gotcha —
+    always `rocm-smi --showpids` after any `pkill`/kill of a `vllm serve` parent, the EngineCore
+    child does not reliably die with it).
+  - **Verdict**: NOT a capability disqualification like MiniCPM5-1B's — this never reached the
+    point of testing MiniCPM3-4B's actual research/delegation behavior at all, so per the Model
+    Evaluation Standard's point 1 (confirm the operating mode works before scoring), this doesn't
+    count as a settled discard. It's an open infrastructure question: OpenBMB's own reference
+    tool-parser has an apparent streaming-performance bug (or this vLLM version's streaming
+    invocation pattern doesn't suit it) that would need a real fix (e.g., incremental parsing
+    instead of re-scanning full text per token) before a fair benchmark could run. Not pursued
+    further this session — flagged as genuinely unresolved, not "MiniCPM3-4B discarded."
+
+- **MiniCPM4-MCP evaluated as a specialist-role candidate, 2026-07-20 — real infrastructure built
+  and kept, model itself not yet viable.** User surfaced `github.com/openbmb/minicpm`; downloaded
+  `MiniCPM4-MCP` (the tool-use SFT checkpoint, not the base chat model — see RESEARCH.md's §6.2
+  entry on why the base checkpoint doesn't inherit the MCP fine-tune's tool-calling numbers),
+  Q5_K_M GGUF via `ollama pull hf.co/mradermacher/MiniCPM4-MCP-GGUF:Q5_K_M` (5.8GB, comfortable
+  on 16GB VRAM), local tag `minicpm4-mcp` with `num_ctx` set to the model's real native max
+  (32768, confirmed via the GGUF's own `minicpm.context_length` metadata and the upstream
+  `config.json`'s `max_position_embeddings` — going further to the maker's documented
+  128K-validated LongRoPE factors would require re-converting the GGUF from patched source
+  weights, not just an Ollama parameter, deferred for later).
+  - **Format mismatch found and solved**: MiniCPM4-MCP's own embedded chat template doesn't emit
+    OpenAI-style JSON `tool_calls` — it emits a `<|thought_start|>...<|tool_call_start|>
+    func(arg=val)<|tool_call_end|>` Python-code-block format. Ollama's generic `/v1/chat/
+    completions` tool-calling support assumes OpenAI JSON and fails outright against this model
+    ("peg-native format" 500 error, confirmed live). **Built `finetune/minicpm_tool_proxy.py`**: a
+    FastAPI translation proxy (checked GitHub for prior art first — `philipluo/MY-LITE-LLM` does
+    the same class of thing generically for `minicpm-v`; this one is tailored to MiniCPM4-MCP's
+    actual documented format instead of generic JSON-prompting) that builds the model's own
+    "# Functions" prompt block from OpenAI `tools=` schema, renders full multi-turn history
+    (including prior tool_calls/tool-result messages) into the model's native turn format, and
+    parses its Python-code-block output back into OpenAI-shaped `tool_calls` JSON. Verified in
+    isolation: single-turn tool call, multi-turn tool-result round-trip (model correctly answered
+    directly instead of re-calling once given a result), both correct.
+  - **New config plumbing added to make this pluggable**: `settings.specialist_base_url`
+    (`src/tools/config_template.yaml`, `src/engine/orchestrator.py`'s `_build_client`) — an escape
+    hatch alongside the existing `settings.specialist_model` for a specialist model that needs a
+    DIFFERENT endpoint (the translation proxy), not just a different model name on the same
+    endpoint. Real bug caught and fixed while wiring this in: `_build_client`'s injected
+    `AsyncOpenAI(base_url=...)` — the object that actually issues HTTP requests, not the wrapper
+    `OpenAIChatCompletionClient` — was still hardcoded to `api_cfg["openai_base_url"]` even after
+    adding the override parameter, so the first live-test attempt silently bypassed the proxy
+    entirely and hit Ollama directly (same "peg-native format" error as before this whole effort).
+    Fixed; `test_structural_checks.py` and `ruff check` both clean after.
+  - **Live end-to-end result, real query, real pipeline** (same Rust-version + borrow-checker
+    query used throughout the routing-classifier verification above): the fix held — proxy
+    received real traffic, tool calls flowed correctly in both directions, run completed with a
+    real report (not a crash, not a silent drop). **One genuine positive**: this run's
+    `AcademicSearcher`/`DocumentAnalyzer` chain (via MiniCPM) surfaced a real academic source
+    (`ETH Zürich "Implementing a Sound Borrow-Checker"`) that the earlier gpt-oss run never
+    found, alongside the same arXiv LLBC paper both runs found.
+  - **A real, distinctive new failure mode also surfaced, not predicted by the isolated tool-call
+    test**: a nested `DocumentAnalyzer` sub-agent (routed through MiniCPM, since Analyzer roles
+    share the specialist tier) called `read_workspace_file`/`grep_workspace_file`/
+    `extract_structured_data` with `filename: "Analyze paper metadata"` — ITS OWN TASK LABEL, not
+    a real file — repeatedly, never correcting after identical "not found" errors each time,
+    until the sub-agent was re-dispatched as a fresh instance 10 separate times. Task-name/
+    filename confusion with no self-correction, a new category distinct from anything the earlier
+    routing-classifier or grounding-check work targeted.
+  - **Reliability was meaningfully worse than the current tier under real load**: 53 tool errors
+    this run vs. 0-8 in clean `deepdelve-gpt-oss` baseline runs, ~900s runtime vs. ~680-810s, 4
+    `BuilderFix` + 4 `ReviewFix` remediation cycles to clear an `uncited_claims` check (Builder
+    itself still runs on the main model, so this is downstream noise from messier findings
+    content feeding it, not MiniCPM's tool-calling directly — but a real cost of using it anyway).
+  - **Verdict**: the translation-proxy infrastructure is sound and kept as a real, reusable
+    project artifact — genuinely solves the format-mismatch problem for any future MiniCPM-family
+    (or similarly non-OpenAI-native) candidate. MiniCPM4-MCP itself is **not yet a viable
+    specialist-role candidate** — directly the same standing lesson this project has hit
+    repeatedly: an isolated tool-call test passing does not predict live multi-agent-role
+    reliability. Live config's `specialist_model`/`specialist_base_url` reverted to unset
+    (back to the known-good single-model baseline) after this evaluation.
+  - **Not done, deferred**: re-converting a GGUF with the maker's 128K-validated LongRoPE factors
+    (32K is architecturally native/what's baked into the current GGUF, not an Ollama-imposed
+    ceiling — see the maker's own README) — user wants to revisit 128K-context options generally
+    later, not specific to MiniCPM.
+  - **CORRECTION, same day**: the verdict above was reached before reading OpenBMB's own reference
+    implementation (`demo/minicpm4/MCP/generate_example.py` + model-card usage docs) — user
+    caught this explicitly ("I told you to search implementations and you did the development
+    believing you're a bad ass, don't do the mistake again, if it's new we need to read
+    documentation"). Reading it afterward surfaced two real, concrete gaps in the proxy, not
+    assumptions: (1) OpenBMB's own reference system prompt has explicit anti-repeat-tool-call
+    guidance ("If a tool fails... DO NOT call it again with the same inputs... avoid redundant or
+    circular behavior") that this proxy's system prompt never included; (2) their reference parser
+    (`parse_tool_for_minicpm3`) handles Python-keyword-colliding argument names and hyphenated
+    tool/argument names (real MCP tool-naming conventions) via a temp-rename round-trip that this
+    proxy's simpler regex+`ast.literal_eval` parser silently dropped. Confirmed their own
+    raw-prompt-plus-custom-parser integration pattern (`client.completions.create` with a
+    `tokenizer.apply_chat_template`-rendered prompt, not the chat/tools API) validates this
+    proxy's core architecture, though — not a wrong approach, an incomplete one.
+    - **Both gaps fixed** in `finetune/minicpm_tool_proxy.py`: added the anti-repeat guidance
+      verbatim to `build_functions_preamble`; replaced the parser with an AST-module-body walk
+      (`parse_tool_call_block`) ported from their `parse_tool_for_minicpm3`/
+      `resolve_ast_call`/`resolve_ast_by_type`, handling keyword-collision and hyphen
+      round-tripping the same way. Verified in isolation: `search_papers(from="2020", to="2024")`
+      and `get-weather(city="London")` — both previously silent parse failures — now parse
+      correctly.
+    - **THIRD live test, same query, with both fixes**: the SPECIFIC bug this was meant to fix
+      (task-name-as-filename looping) did NOT recur — confirmed gone. But the run surfaced
+      DIFFERENT reliability problems in its place: `web_search`/`fetch_url_to_workspace` quota
+      exhausted (17 calls against a 15 limit, excessive re-querying rather than converging); the
+      existing `topical_mismatch` completion check caught the draft report citing a Yahoo Sports
+      article and an unrelated tech listicle as "Rust" sources (noisy search, safety net worked,
+      but reveals messy upstream search behavior); and the final report itself regressed in
+      accuracy versus the earlier successful run — cited a blog aggregator
+      (`emergentmind.com`) instead of the real peer-reviewed arXiv paper the second run found
+      correctly, and reported Rust 1.97.0 as current when 1.97.1 (confirmed correct in earlier
+      runs) is the actual latest patch.
+    - **Revised, still-honest verdict**: the doc-informed fixes solved the exact bug they
+      targeted, but MiniCPM4-MCP's reliability in this real multi-step research role remains
+      inconsistent run-to-run — one problem fixed, two different problems surfaced in its place.
+      Still not a stable specialist-role candidate as of this evaluation. Live config's
+      `specialist_model`/`specialist_base_url` reverted to unset again; proxy process stopped.
+
+
+**`Tongyi-DeepResearch-30B-A3B` candidate — two real benchmark attempts, both impractical**
+(moved from the reference-repo candidates list during the 2026-07-21 status audit: this was
+tried, twice, not merely proposed):
+
+- **Tongyi-DeepResearch-30B-A3B as a benchmark candidate** (from `Alibaba-NLP/DeepResearch`):
+  30B MoE / 3.3B active — same size class as deepdelve-qwen3.6, but trained specifically for
+  long-horizon research. **Architecture, read directly from the primary paper (arXiv:2510.24701)
+  during the comparative survey, `RESEARCH.md` §7, 2026-07-20**: this is a SINGLE fine-tuned model
+  operating via ReAct or an "IterResearch"-based Heavy test-time-scaling mode — not a multi-agent
+  system in DeepDelve's sense at all (no Planner delegating to typed specialists with independent
+  context). No published runtime grounding/citation-verification layer comparable to DeepDelve's
+  own — reliability, to the extent it's addressed, comes from the training pipeline (continual
+  agentic pre-training + on-policy GRPO) rather than a deployment-time safeguard. Backed by an
+  18-paper research program (WebWalker, WebDancer, WebSailor, WebShaper, WebResearcher, and more) —
+  a frontier-lab-scale effort DeepDelve isn't attempting to match; if adopted, it would be solving
+  DeepDelve's reliability gap by swapping in a much larger purpose-trained model rather than by
+  DeepDelve's own verification-layer approach, and would still need DeepDelve's own grounding checks
+  layered on top if citation-level provenance matters for the use case (Tongyi's benchmarks measure
+  answer-correctness, not per-citation provenance the way DeepDelve's own checks do). **Chat-template/tool-call compatibility check done, 2026-07-12 — the
+  flagged risk is resolved**: `deepdelve-tongyi` (built pre-outage from
+  `hf.co/mradermacher/Tongyi-DeepResearch-30B-A3B-GGUF:Q4_K_M`, 18.6GB, `num_ctx 16384`) reports
+  Ollama capabilities `['completion', 'tools', 'thinking']` — the community GGUF's chat template
+  parses the model's native `<tool_call>` XML into real structured `tool_calls` (verified live via
+  a direct `/api/chat` call with a tool schema: returned a proper `tool_calls` array, not raw XML
+  text). A real `--depth quick` trial run (`compare_the_vector_search_capabilities_of_elastics_...`)
+  confirmed `delegate_tasks` actually gets invoked with 2 real specialist tasks, 2 real fetches,
+  and `write_todos` populated correctly — passing the exact bar `devstral:24b` failed (README
+  "Model choice": zero real `delegate_tasks` calls, narrated JSON instead). The run didn't finish
+  within a 5-minute smoke-test window — Tongyi's `<think>` traces are verbose (one single-tool-call
+  test round-tripped a 1000+ token thinking block for "15 + 27") — so a real benchmark round needs
+  a longer time budget than the other local candidates, not a template fix. Config for testing:
+  `~/.deepdelve/config-tongyi.yaml` (not in git, mirrors the live config with `openai_model:
+  deepdelve-tongyi`).
+  - **Two real benchmark attempts, both inconclusive on quality — the model is not currently
+    usable at either quant tried, for two different reasons.** Q4_K_M: killed at 1h6min (the
+    `max_run_minutes` bug this exposed and fixed, see "Repo governance + CI" entry above) — GPU
+    was genuinely computing the whole time, real progress happened (delegate_tasks invoked, 2
+    fetches), just far too slow to be practical. Then tried `deepdelve-tongyi-iq3`
+    (`hf.co/mradermacher/Tongyi-DeepResearch-30B-A3B-i1-GGUF:IQ3_M`, 13.5GB — passed the same
+    isolated tool-call smoke test, and was noticeably faster/less verbose on that trivial test:
+    2.7s vs. 5.9s eval time for "15+27") expecting it to be the practical answer. **It was worse
+    on the real workload**: 37+ minutes against the actual Planner system prompt with ZERO
+    progress — no `write_todos`, no `delegate_tasks`, no run folder content at all (`_run_state.json`
+    stayed at its initialized empty state the whole time), unlike Q4_K_M which at least made real
+    tool calls in a comparable window. Killed manually. The isolated single-tool-call smoke test
+    (README's `curl .../api/chat` snippet) evidently does NOT predict real-workload viability at
+    this quant level — a real trial against the actual multi-thousand-token Planner prompt is the
+    only test that means anything, and neither quant has passed one yet. Not recommended for
+    further local benchmarking without a materially different quant or a context/prompt-length
+    investigation into why the full system prompt specifically breaks it.
+
+
 ## Completed
 
 
+- **Engine-driven iterative deepening (ROADMAP item 10, from `dzhng/deep-research`) — IMPLEMENTED
+  2026-07-19, found still mis-listed as an untried candidate during the 2026-07-21 status audit.**
+  A STRUCTURAL refine loop: each round's Searcher findings carry a `FOLLOW-UP DIRECTIONS` section
+  (`_extract_follow_up_directions`, `src/engine/orchestrator.py`), stored per-finding
+  (`RunState.add_finding`'s `follow_up_directions` field, `src/utils/run_state.py`). When
+  `check_thin_coverage` fires, `_select_deepening_tasks` (`src/engine/completion.py:1002`) picks
+  real, unconsumed directions and geometrically narrows them — `math.ceil(coverage["total"] / 2)`,
+  the exact `newBreadth = ceil(breadth/2)` formula from the source project — deduplicated against
+  `run_state.data["consumed_directions"]` so a retry never redispatches the same lead twice.
+  `_dispatch_deepening_round` (`completion.py:1040`) then dispatches them directly via
+  `dispatch_task`, bypassing the Planner entirely (same mechanism `_dispatch_writer_review_fix`
+  already used for Builder/FindingsWriter retries) — the ENGINE drives the extra research round,
+  not a hope that the Planner model chooses to loop. Wired live into `run_completion_check`
+  (`completion.py:1277`). Covered by `test_structural_checks.py`'s `_deepening_round_scenario`.
 - **Non-generative routing classifier for `delegate_tasks`'s `agent_id` — IMPLEMENTED and
   live-verified 2026-07-20.** Merged from the SOTA literature review (`RESEARCH.md` §6): small/mid
   models fail disproportionately at STRUCTURED SERIALIZATION (schema-valid output, wrong content),
@@ -1702,6 +2392,39 @@ summary; this section is the full evidence trail.
   regressions.
 
 
+- **Completion-check remediation loop exhausting `read_workspace_file`'s quota before the final
+  Builder pass gets to read what it needs — FIXED.** Found live 2026-07-20 during the routing
+  classifier's second re-test run: a run hitting multiple completion-check remediation cycles
+  (missing two-pass discipline, missing artifact, unsupported-claim flag) dispatches a corrective
+  sub-agent per cycle (`FindingsWriterFix`, `BuilderFix`, `ReviewFix`), each burning
+  `read_workspace_file` calls against the SAME shared quota (limit 30) as normal first-pass work —
+  confirmed live, 3 remediation cycles in one run exhausted the quota, and the final `BuilderFix`
+  pass silently dropped an entire correctly-researched section (`findings.md` had it,
+  `final_report.md` didn't) rather than erroring loudly. **Fixed 2026-07-21 (commit `e1ba577`)**:
+  `_ensure_reader_quota_headroom` (`src/engine/completion.py:734`), mirroring the existing
+  writer-side `_ensure_writer_quota_headroom`, tops up the quota at both Builder/FindingsWriter
+  remediation dispatch sites. `test_structural_checks.py` extended, passes.
+
+- **TUI QoE improvements, two shipped items** (moved from Pending during the 2026-07-21 status
+  audit; the rest of that backlog item is still open, see Pending):
+
+  - **`AgentMessageWidget` click-to-copy — DONE 2026-07-14, commit `577fd53`.** Mirrors
+    `UserMessageWidget`'s existing `on_click` → `_copy_to_system_clipboard`/OSC52 fallback pattern
+    exactly — one-click copy on the agent's actual answers/reports, not just the user's own
+    prompt.
+  - **Right-click paste — DONE 2026-07-14, commit `577fd53`.** New
+    `engine/tui.py::_paste_from_system_clipboard` (read-side mirror of
+    `_copy_to_system_clipboard`: `wl-paste --no-newline` / `xclip -o -selection clipboard`, no
+    OSC52 equivalent since that escape sequence is write-only) wired into `PromptInput.on_click`
+    on `button == 3` (right-click, confirmed against this project's installed
+    `textual/_xterm_parser.py`'s SGR mouse-button mapping), inserting at cursor / replacing the
+    current selection. Live-verified: a real `_copy_to_system_clipboard` → `_paste_from_system_clipboard`
+    round trip returned the exact original text. Required installing `wl-clipboard` on the dev
+    machine — neither it nor `xclip` was present beforehand, so this had never actually worked via
+    either mechanism (copy silently fell back to OSC52, unverified; paste had no fallback at all).
+    Worth checking for on any fresh setup — without one of these two tools, paste always shows a
+    "clipboard paste failed" warning instead of pasting.
+
 ## Pending
 
 
@@ -1717,637 +2440,30 @@ summary; this section is the full evidence trail.
   current vLLM model bake-off is fully complete (session_status/CURRENT.md, 2026-07-21). Replacement
   when picked up: extract the shared run-lifecycle steps into one function both entry points call.
 
-- **Re-run the full 11-candidate local-model bake-off via vLLM instead of Ollama — planned
-  2026-07-21, not started.** Two independent, confirmed Ollama-serving-layer bugs (the think-mode
-  passthrough failure documented in this file's Qwen3-family entry above, and the pre-existing
-  `ollama/ollama#6155` nested-array tool-parameter stringification bug affecting `mistral-nemo`,
-  `llama3-groq-tool-use`, and `llama3.2:3b`) mean several of README.md's 11 bake-off disqualifications
-  may reflect Ollama's own serving bugs rather than genuine model incapability. Full plan (per-candidate
-  VRAM/quantization feasibility, tool-parser mapping, execution order, and the real blockers found
-  during research — this vLLM install has **no GGUF support at all**, `bitsandbytes` isn't installed,
-  Bonsai-8B's quant type is unrecognized by vLLM, the GRPO fine-tune's merge checkpoint is gone from
-  disk, `qwen3.6`/`Gemma 4 12B`'s HF availability is unconfirmed) written to
-  `~/.claude/plans/moonlit-plotting-simon.md`. Scoped explicitly as a multi-session effort, not a
-  single sitting.
-  - **Both pre-flight checks DONE, 2026-07-21 — cleared, execution can proceed.**
-    - **HF repo IDs confirmed to exist**: `google/gemma-4-12B-it` (official Google org, not the
-      community `SetneufPT` GGUF reupload originally used) and `Qwen/Qwen3.6-35B-A3B` — plus a
-      bonus find, a pre-quantized `Qwen/Qwen3.6-35B-A3B-FP8` checkpoint exists too, which helps the
-      MoE-fits-at-all question the plan flagged as unconfirmed.
-    - **`bitsandbytes` spiked on ROCm, real functional pass, not just import success.** Installed
-      cleanly (`pip install bitsandbytes` — wasn't present before). Checked bitsandbytes' own
-      support matrix first (not assumed): this GPU's `gfx1200` target (confirmed via `rocminfo`,
-      RX 9060 XT) IS on their officially-supported RDNA list. Ran a real discriminating test on
-      `mistralai/Mistral-7B-Instruct-v0.3` (`--quantization bitsandbytes --load-format
-      bitsandbytes`): failed to fit in a deliberately tight 0.3 `gpu_memory_utilization` budget
-      (~5.1GB) with "no available memory for cache blocks," then succeeded cleanly at 0.45 (~7.7GB
-      total, weights+KV). Since the real bf16 checkpoint is 13.5GB, fitting inside 7.7GB total is
-      only possible if the weights are genuinely quantized to roughly 4-5GB, not silently loaded at
-      full precision — confirmed real, working 4-bit quantization on this hardware, not a silent
-      no-op. Correct generation output ("Paris") and a real structured `tool_calls` response (via
-      `mistral_tool_parser.py`) both verified. **The 8-candidate quantization bucket in the plan
-      above is now trustworthy to execute.**
-    - **New operational lesson, found mid-spike, applies to EVERY vLLM launch/kill in this
-      project from now on**: killing an already-running (not self-crashed) `vllm serve` process
-      with `pkill -9`/`kill -9` reliably orphans its `VLLM::EngineCore` child (confirmed via
-      `ps -ef --forest`: EngineCore is a real child of the APIServer process, spawned via Python
-      `multiprocessing` with no death-signal hookup to its parent) — SIGKILL can't be trapped, so
-      vLLM's own shutdown code never runs to tear down the child, and it keeps holding VRAM
-      indefinitely. This explains every "stale EngineCore still holding Xgb" gotcha hit repeatedly
-      this session (MiniCPM5-1B twice, MiniCPM3-4B, this spike's first kill attempt). **Fix: use
-      plain SIGTERM first** (`pkill -f "vllm serve ..."`, no `-9`) and give it a few seconds — this
-      lets vLLM's own cleanup path run, confirmed via a clean SIGTERM kill on this exact spike's
-      running server leaving zero orphan afterward. Only escalate to `-9` on whatever's left if
-      `rocm-smi --showpids` still shows something after a graceful SIGTERM attempt.
-  - **Next session/execution starting point**: proceed straight to the plan's per-candidate
-    procedure, in its documented priority order (`mistral-nemo:12b` and `llama3-groq-tool-use:8b`
-    first — highest information value, directly implicated in the confirmed `#6155` Ollama bug).
 
-  - **`mistral-nemo:12b` re-test, 2026-07-21 — BLOCKED, a real infrastructure incompatibility, not
-    a capability verdict.** `mistralai/Mistral-Nemo-Instruct-2407` (not gated, native
-    `MistralForCausalLM` support, confirmed real bf16 checkpoint) loaded cleanly via
-    `~/.venvs/vllm` with `bitsandbytes` 4-bit quantization (same proven path as the pre-flight
-    spike) and the `mistral` tool-call parser. **Isolated tool-call smoke test with DeepDelve's
-    real nested `delegate_tasks` schema PASSED cleanly**: a genuine structured array
-    (`tasks: [{...}]`), not the stringified-JSON shape from Ollama's `#6155` bug — direct
-    confirmation the bug is absent on this backend, exactly as expected.
-    **But the full DeepDelve run failed immediately on its very first request, 100% reproducibly,
-    with `400: "chat_template is not supported for Mistral tokenizers."`** Root cause traced to
-    vLLM's own source (`vllm/tokenizers/mistral.py::validate_request_params`): vLLM's
-    Mistral-native tokenizer class unconditionally REJECTS any request containing
-    `chat_template_kwargs` — and DeepDelve's `_get_default_options()` (`src/engine/
-    orchestrator.py`) unconditionally SENDS `chat_template_kwargs: {"enable_thinking": ...}` on
-    every single dispatch, regardless of model family. This is a hard, structural mismatch between
-    DeepDelve's client and any genuine Mistral-family repo served via vLLM's native tokenizer mode
-    — not something a benchmark run can work around.
-    - **Both alternate tokenizer modes tried and both failed for a different reason each**:
-      `--tokenizer-mode auto` still auto-detects Mistral's native tokenizer class from the repo's
-      shipped `tekken.json`/`params.json` (same rejection, unchanged). `--tokenizer-mode hf` fails
-      at engine startup entirely with `AttributeError: CachedMistralCommonBackend has no attribute
-      is_fast` — this repo's shipped tokenizer files aren't compatible enough with vLLM's
-      HF-tokenizer-mode wrapper either. No third option exists in this vLLM version.
-    - **Verdict: BLOCKED, not disqualified and not re-testable as-is.** MiniCPM3-4B's "genuinely
-      open infrastructure question" framing applies here too — this never reached testing
-      `mistral-nemo`'s actual research/delegation behavior at all, so the original Ollama-served
-      2/10 score stands unconfirmed/unrefuted by this attempt. **Real fix, if this is worth pursuing
-      later, is a DeepDelve-side change**: make `_get_default_options()`'s `chat_template_kwargs`
-      injection conditional (e.g., skip it for models that don't need/support the `enable_thinking`
-      toggle at all, or catch/strip on this specific 400 and retry once) — out of scope to hack
-      into production code mid-benchmark without the user's sign-off, since it touches every model's
-      request path, not just this one candidate's. **Confirmed to affect every other genuine
-      Mistral-family repo in this project's candidate list, not just a possibility**: checked
-      `mistralai/Devstral-Small-2507` directly — same `MistralForCausalLM` architecture, same
-      shipped `tekken.json` (Mistral's native tokenizer format), so `devstral:24b`'s re-test would
-      hit the identical 400 block. `mistral:7b-instruct-v0.3` (already spiked earlier this session
-      for the bitsandbytes pre-flight check, same `mistralai` org/format) would too. **All three
-      Mistral-family candidates in the vLLM re-test plan are blocked by this same issue** — none
-      re-testable until DeepDelve's client-side fix above lands. Cleanup: config reverted to
-      `deepdelve-gpt-oss:latest`/`rag_cache: enabled: true`, vLLM server shut down cleanly (SIGTERM,
-      confirmed zero orphan both times it was killed during this attempt).
-
-  - **`llama3-groq-tool-use:8b` re-test, 2026-07-21 — DISQUALIFIED on real, docs-grounded evidence,
-    NOT a serving-stack artifact.** `Groq/Llama-3-Groq-8B-Tool-Use` (not gated, native
-    `LlamaForCausalLM`, real bf16 checkpoint). Its own native `max_position_embeddings` is only
-    8192 — below the project's ~16K floor, but this is a permanent model-level training fact, not a
-    hardware-forced squeeze, so the "discard outright below 16K" standard point 6 does NOT apply
-    here (clarified in that point above) — tested at its real native 8192 ceiling instead.
-    - **First smoke test (plain OpenAI-style `tools=` + `tool_choice: "auto"`) failed outright**:
-      the model narrated a plain-text answer, never attempting a tool call at all. Root cause
-      checked directly, not assumed: this repo's own `tokenizer_config.json` chat template has ZERO
-      tool-rendering logic (`'tools' in chat_template` is False) — a bare vanilla Llama-3 template.
-      vLLM's `tools=` parameter never got rendered into the prompt in any form this model could act
-      on, so this first result wasn't a real capability test yet.
-    - **Read the model's own HF README** (credits NousResearch for this exact tag convention) and
-      manually built its documented raw system-prompt format (`<tools>...</tools>` +
-      `<tool_call>...</tool_call>` instructions embedded directly in the system message, bypassing
-      the broken auto-render path). Result: 3/3 samples (including the model card's own recommended
-      `temperature=0.5, top_p=0.65`) produced genuinely well-formed, correctly-structured JSON with
-      a real nested `tasks` array (`#6155`-class bug confirmed absent) — but the model consistently
-      omitted the required `<tool_call>`/`</tool_call>` XML wrapper tags every single time.
-    - **Caught mid-investigation, per the user's explicit correction**: tried priming the assistant
-      turn with a literal `<tool_call>` opening tag as a fix — an UNSOURCED generic technique, not
-      verified against this model's own documentation first. User stopped this and asked directly
-      whether the model's docs had actually been consulted; they hadn't. Went back to primary
-      sources instead: checked Groq's own cookbook (documents their HOSTED API, a different serving
-      stack, not applicable to local vLLM hosting), then found and read NousResearch's own
-      `Hermes-Function-Calling` reference repo (the exact upstream implementation this model's tag
-      convention is credited to) and its real parsing code —
-      `utils.py::validate_and_extract_tool_calls` requires the literal `<tool_call>` XML element via
-      `root.findall(".//tool_call")` and returns zero tool calls without it. **Confirmed vLLM's own
-      bundled `hermes_tool_parser.py` requires the identical `<tool_call>` token** (same
-      `tool_call_start_token` check before extraction) — so this isn't a vLLM-specific integration
-      gap either; both the credited reference implementation and vLLM's own parser agree the tags
-      are mandatory.
-    - **Verdict, now grounded in real evidence rather than assumption**: the model's underlying
-      JSON-generation quality is genuinely good (correct structure, real BFCL-consistent
-      capability, no `#6155`-class bug) — but it does not reliably emit the `<tool_call>` wrapper
-      tags any correctly-built Hermes-style parser requires to extract a real structured tool call,
-      confirmed against 2 independent authoritative sources (the credited upstream reference parser
-      and vLLM's own bundled parser), not just this session's own serving setup. This is a genuine,
-      dual-confirmed disqualification, not the Ollama `#6155` artifact this candidate was
-      originally suspected of — the original schema-stage rejection stands, now on firmer evidence
-      than before. Cleanup: server shut down cleanly (SIGTERM, zero orphan), no config change
-      needed (never got far enough to wire DeepDelve's config at all — disqualified at the isolated
-      smoke-test stage, per the plan's own step 3 evidentiary bar, no full benchmark run spent).
-
-- **`qwen3:8b` vLLM re-test, 2026-07-21 — KILLED mid-run, real DeepDelve-side fabrication bug
-  found and fixed, no verdict on the model yet.** Loaded via `~/.venvs/vllm`, nothink mode
-  confirmed clean via direct curl before running (README's qwen3-family think-mode bug is Ollama's
-  own serving-layer defect, not the model's — already confirmed absent on vLLM the same session).
-  Run was genuinely progressing (3rd delegation round, 18 fetched URLs, 19 findings, clearly
-  better-behaved than any MiniCPM candidate) when a user-requested cross-check against the real
-  `sources/` folder caught a real integrity problem: only 15 files on disk vs. 18 claimed
-  `fetched_urls` and 19 findings, and **5 of 19 findings had a fabricated `source_url`** — a leaked
-  task/instruction name string instead of a real URL. Run killed before reaching FindingsWriter;
-  no verdict reached on `qwen3:8b` itself.
-  - **Root-caused, 2026-07-21, confirmed model-agnostic**: `_run_single_task`'s `add_finding`
-    fallback (`src/engine/orchestrator.py`) used the bare `task_name` as `source_url` whenever a
-    dispatched task (any Analyzer-tier call, by design) fetched no URL of its own, with no marker
-    distinguishing it from a real citation. `_build_findings_source_material`
-    (`src/engine/completion.py`) then rendered every finding identically as `### Source:
-    {source_url}` regardless of whether that value was a real URL or the placeholder — FindingsWriter
-    (any model, on any backend) had no structural signal to tell them apart. This is the same
-    mechanism regardless of which model is serving FindingsWriter, so it was not `qwen3:8b`-specific
-    and would have equally exposed every other vLLM re-test candidate still to come.
-  - **Fixed, commit `0852cc4`**: (1) `orchestrator.py` now recovers the real reference URL a
-    Searcher handed its Analyzer (already extracted for the reconstructed-URL check, now computed
-    unconditionally rather than gated behind `grounding_check.enabled`) before ever falling back to
-    `task_name`; (2) `_build_findings_source_material` never renders a non-`http(s)` `source_url` as
-    a `### Source: ...` entry anymore — such findings are named in a separate, explicitly
-    non-citable list instead, with instructions not to invent a source for them. Matters more given
-    this project tiers some writer roles onto smaller specialist models
-    (`settings.specialist_model`), which are less likely to infer the ambiguity on their own.
-    `test_structural_checks.py` extended (`_findings_uncited_fallback_scenario`) and existing
-    filename-scenario assertion corrected to match the new behavior; both pass.
-  - **No past verdict in this file was corrupted by this bug**: MiniCPM5-1B's disqualification was
-    zero `delegate_tasks` calls (never reached findings.md), `llama3-groq-tool-use:8b`'s was a
-    missing `<tool_call>` wrapper (never reached research), `mistral-nemo:12b`'s was a first-request
-    400 (never reached research) — none of the currently-closed vLLM re-test verdicts relied on
-    findings.md content, so none need re-opening.
-  - **Next step**: retest `qwen3:8b` fresh now that the bug is fixed — this candidate is the most
-    informative next run precisely because it's the one that surfaced the bug.
-
-- **MiniCPM5-1B evaluated as both a paired specialist AND a full single-model replacement,
-  2026-07-20/21 — DISQUALIFIED in both forms, fully closed, see the single-model entry near the
-  end of this bullet for the final, clean, decisive result.**
-  User asked to check other MiniCPM4-family options after the MiniCPM4-MCP evaluation below;
-  research (RESEARCH.md's earlier MiniCPM5-1B leaderboard entry) already flagged this as a
-  sub-1.5B model, far below this project's own established capacity floor — but user's explicit
-  framing was "one thing is documentation, another is test, let's try," so tested live rather
-  than ruled out on priors alone.
-  - **Genuinely simpler integration than MiniCPM4-MCP, confirmed by reading docs first this time**
-    (see the correction above about not doing that for MiniCPM4-MCP): MiniCPM5-1B emits XML-style
-    `<function name="...">...<param name="...">value</param></function>` tool calls (its own
-    `chat_template.jinja`, read directly), a format close enough to the Hermes/Qwen convention
-    that **Ollama's built-in tool-call parser handles it natively** — confirmed live, direct
-    `/api/chat` calls with a `tools=` param returned correct OpenAI-shaped `tool_calls` with zero
-    custom proxy code. Plain `LlamaForCausalLM` architecture (config.json), no custom kernels.
-    OpenBMB has an official Ollama deployment cookbook (`docs/deployment/ollama.md`) confirming
-    the same integration path and recommended sampling (`temperature=0.7, top_p=0.95` no-think
-    mode; `0.9/0.95` think mode) — used exactly as documented, not reverse-engineered.
-  - **Pulled via `ollama pull hf.co/openbmb/MiniCPM5-1B-GGUF:Q8_0`** (1.1GB), local tag
-    `minicpm5-1b` with `num_ctx` set to 131072 (the model's actual native max per its own
-    `config.json`'s `max_position_embeddings`, not the cookbook's conservative 8192 example
-    value — same standard applied to MiniCPM4-MCP's 32768 setting earlier).
-  - **Isolated 5-case smoke test: 5/5 passed**, correct function selection, correct abstention on
-    a non-tool question (honestly declined an arithmetic question rather than fabricating an
-    answer — a real, observed instance of a friend's claim that small models given permission to
-    say "I don't know" avoid confident hallucination). One real gap already visible in this
-    isolated test, though: one `delegate_tasks` call dropped the actual task instructions,
-    keeping only `task_name` — an argument-completeness weakness, not a format failure.
-  - **Specialist-role system prompts audited before testing further** (per the same
-    read-first correction): `WebSearcherInstructions`/`AcademicSearcherInstructions`
-    (`src/prompts.py`) already explicitly ban finishing a task from "search snippets or your own
-    prior knowledge" — exactly the strategy a friend of the user's independently recommended for
-    small models. No prompt changes were needed; this was already the existing design.
-  - **Live end-to-end test, same query used throughout this evaluation**: the single most
-    favorable MiniCPM result of the day. Correctly found not just the arXiv preprint
-    (2404.02680) but also the actual peer-reviewed PUBLISHED version (ACM DOI 10.1145/3674640)
-    of the same paper, and correctly flagged that a third source (ETH Zürich) self-labels
-    "peer-reviewed" without evidence of external review — a more careful preprint-vs-published-
-    vs-self-claimed distinction than any earlier gpt-oss or MiniCPM4-MCP run made. Rust version
-    (1.97.1, plus beta/nightly) correct. Lowest tool-error count of any MiniCPM variant tested
-    (11, vs. 27-53 for MiniCPM4-MCP's runs), closest yet to the clean gpt-oss baseline (0-8).
-  - **Real problem, still present**: the `related_work` sub-agent was forcibly aborted TWICE
-    ("Agent trapped in loop. Quota exceeded multiple times for fetch_url_to_workspace") before
-    finally succeeding on retry attempt #4. Same underlying category as MiniCPM4-MCP's issues
-    (not reliably knowing when to stop), different specific shape. The system's own retry/
-    recovery machinery absorbed this and still produced a good outcome, but first-attempt
-    reliability isn't clean.
-  - **CORRECTION, 2026-07-21 — every result above was very likely produced in unintended THINK
-    mode, not the nothink mode intended for this role.** User asked for an in-depth read of the
-    full official `openbmb/minicpm` docs/skills tree before treating anything as a settled
-    "discard" — all 23 currently-relevant English docs read directly (main README, all 8
-    deployment cookbooks, all 5 fine-tuning cookbooks, both `minicpm5-deploy`/`minicpm5-deploy-
-    ollama` Agent Skills). Confirmed empirically first: every live `/api/chat` response from the
-    `minicpm5-1b` Ollama tag includes a populated `"thinking"` field with real verbose
-    chain-of-thought, even with a custom Modelfile injecting an empty `<think>\n\n</think>\n\n`
-    prefix meant to force nothink mode per the model's own `chat_template.jinja` logic — the
-    injection did not suppress it. **This is not a mistake unique to this setup — it's a
-    documented, vendor-acknowledged gap in Ollama's OWN official cookbook and shared by other
-    edge/consumer backends**: `docs/deployment/ollama.md`'s own example Modelfile only sets
-    `temperature`/`top_p` and comments them "tuned for no-think mode," but never actually injects
-    a `<think>` prefix into the `TEMPLATE` block — because "Ollama does not auto-evaluate the
-    GGUF-embedded Jinja chat template; it falls back to the Modelfile's Go `TEMPLATE` block."
-    Independently confirmed by two OTHER backends' own docs: `docs/deployment/mlx.md` states
-    plainly "the released chat template auto-injects `<think>\n` when no system message disables
-    it, so you get think-mode behaviour by default"; `docs/deployment/lmstudio.md` states LM
-    Studio's `chat_template_kwargs.enable_thinking` flag is not consistently honored either. Only
-    **vLLM and SGLang** correctly implement real `enable_thinking` (both evaluate the actual HF
-    template). Practical tool-calling path found for each: SGLang's MiniCPM5 XML parser only
-    exists on an unreleased `main` branch (merged 2026-05-22, no pip release yet); vLLM is more
-    practical right now — the repo itself ships the parser file
-    (`tool_parsers/minicpm5xml_tool_parser.py`, same as the pending upstream PR) loadable into a
-    normal `pip install vllm>=0.21` via `--tool-parser-plugin`, no from-source build needed.
-    **Implication**: every positive result recorded above (best report quality of any MiniCPM
-    candidate, correct preprint-vs-published distinction) was very likely produced in the heavier,
-    more deliberate think mode, not the fast/latency-bound mode this role actually calls for — so
-    neither the positive results nor the one real weakness (the forced-abort looping) can be
-    trusted as representative of the model's intended operating mode. No discard-or-keep verdict
-    is actually settled; this reopens the question rather than closing it either way. Next step:
-    stand up vLLM with the bridged tool-parser plugin and re-run the same live query in genuine
-    nothink mode before drawing any conclusion. Real hardware caveat checked (not assumed): the
-    user's GPU (RX 9060 XT) is AMD RDNA4, not NVIDIA — vLLM defaults to CUDA-only, but ROCm 7.2
-    (March 2026) added official RDNA4 vLLM support with "out-of-the-box parity" alongside Ollama/
-    llama.cpp, so this should work, just via the ROCm-specific install path (Docker image or ROCm
-    wheel) and less battle-tested than the CUDA default every vLLM doc assumes.
-  - **Status: not yet a final call either way**, now for a second, more fundamental reason than
-    "needs more runs" — the model hasn't even been tested in its correct operating mode yet. Best
-    MiniCPM candidate tested by a real margin under think mode; live config left pointed at it
-    (`specialist_model: minicpm5-1b`) rather than reverted, pending a proper nothink-mode re-test
-    via vLLM before any final call.
-  - **FINAL VERDICT, 2026-07-20 — genuine nothink-mode retest via vLLM completed; DISCARD for this
-    role.** Fixed the pre-existing, broken `~/.venvs/vllm` install (missing `libopenmpi3t64`, then
-    ROCm userspace libs stale relative to the current kernel — fixed via
-    `sudo amdgpu-install --usecase=rocm,hip --no-dkms`, no kernel module/DKMS involved, fully
-    reversible; a system-level DKMS attempt tried first failed on a genuine kernel-symbol conflict
-    against `7.0.0-28-generic` and was cleaned up before this correct approach was found). Launched
-    `vllm serve openbmb/MiniCPM5-1B --tool-call-parser minicpm5 --enforce-eager
-    --gpu-memory-utilization 0.20 --max-model-len 16384` (memory-utilization and `--enforce-eager`
-    both driven down from the plan's defaults after gpt-oss's usual 14.6GB Planner footprint left no
-    VRAM headroom on the 17.1GB card — swapped Planner to `deepdelve-mistral-nemo:latest`, 7.1GB,
-    for this test only; **`api.openai_model` in `~/.deepdelve/config.yaml` is still set to this
-    temporary value and must be reverted to `deepdelve-gpt-oss:latest` once this entry is read**).
-    Confirmed via direct `curl` with `chat_template_kwargs: {"enable_thinking": false}` that
-    real nothink mode now works (no `<think>` leakage) — DeepDelve needed zero new code for this,
-    since `orchestrator.py::_get_default_options()` already threads `enable_thinking` through
-    `extra_body`/`chat_template_kwargs` at both dispatch sites (line ~678 specialist, ~1274 main).
-    Ran the same live query used throughout this whole evaluation. Result, traced through the raw
-    session log rather than assumed:
-    - **A genuine content hallucination reached the final report.** The model's own first-pass
-      reasoning (session log event 17, well before any remediation pass) already commits to
-      "Blog Rust 1.85.0 - URL: https://blog.rust-lang.org/2025/02/20/Rust-1.85.0/" — a real but
-      *stale* blog post surfaced by a web-search snippet — as "the latest stable version." It later
-      correctly fetches the actually-current `releases.rs` page (which plainly states
-      `Stable: 1.97.1`, confirmed by directly grepping the saved source file), but never revises
-      its earlier claim — instead the final findings/report cite `<https://releases.rs/>` as the
-      source for the wrong "1.85.0, released on February 20, 2025" value. This is not a
-      misread-ambiguous-source case like the earlier MiniCPM4-MCP filename-hash mistake; the
-      correct number was sitting in a source the model itself fetched and cited, and it reported
-      the wrong one anyway. Traced with certainty to MiniCPM5-1B's own Searcher/Analyzer
-      reasoning, not to the temporarily-swapped mistral-nemo Planner's remediation passes
-      (`FindingsWriterFix_attempt2`/`BuilderFix_attempt3` copied this text forward verbatim from
-      the same flawed `findings.md`, they did not introduce it).
-    - **`findings.md` itself never passed the grounding check on its own terms**: it shipped as an
-      "AUTO-RECOVERED DRAFT" (the model narrated the findings as chat text instead of calling
-      `write_workspace_file`, across the full retry budget) — the salvage path saved the run from
-      an outright `missing_findings` failure, but the underlying content was never actually
-      verified before being carried into `final_report.md`.
-    - **Six identical malformed tool calls**: `fetch_url_to_workspace` called with
-      `{"url": "sources/paper_143022.md"}` — a workspace-relative path to a file it had already
-      saved, not a real URL — repeated six times with no self-correction, on top of one
-      argument-parsing failure elsewhere. Confusing "fetch a URL" with "read a file I already
-      wrote" is a new, distinct failure shape from anything seen in the earlier think-mode run.
-    - Two literal `"[Authors' names]"` placeholder strings (HAL preprint, ACM paper) also reached
-      the final report uncorrected — a completeness/fabrication-adjacent defect the downstream
-      Builder (mistral-nemo, not gpt-oss, for this run) failed to catch, unlike an earlier same-day
-      run where gpt-oss's Builder did catch and fix an analogous mistake.
-    - Required 4 completion-check attempts (`not_delegated`, `missing_findings`, `missing_artifact`,
-      then clean) before the run closed at all.
-    **Conclusion**: genuine nothink mode is now confirmed reachable and correctly wired end-to-end
-    (infrastructure verdict: works, zero new code needed), but this properly-configured test is, on
-    content reliability, *worse* than the earlier (unintentional think-mode) run — not better. A
-    single model-generated hallucination that directly contradicts its own cited source, shipped
-    past an already-degraded (auto-recovered, unverified) grounding path, past a Builder that didn't
-    catch it, into the user-facing report, is disqualifying for an unsupervised specialist role
-    regardless of mode. Sub-1.5B parameter budget was flagged as a priors-based concern from the
-    very start of this evaluation (RESEARCH.md); this live result confirms rather than contradicts
-    that prior. **Discarding MiniCPM5-1B (both modes now tested) for the specialist role.** Cleanup
-    still open: revert `api.openai_model` to `deepdelve-gpt-oss:latest`, decide whether to keep or
-    stop the standing `~/.venvs/vllm` server, remove `specialist_model`/`specialist_base_url` from
-    live config (or point them at a different, larger candidate later).
-    - **RE-FLAGGED 2026-07-21, per the new "Model Evaluation Standard" section above (point 2,
-      isolation): this verdict does not actually isolate MiniCPM5-1B as the only variable** — the
-      Planner/Builder was swapped off `gpt-oss:20b` onto `mistral-nemo:latest` to free VRAM for
-      this run (see line ~1186 above), and the uncorrected `"[Authors' names]"` placeholders were
-      explicitly attributed to that swapped-in Builder failing to catch them, not to MiniCPM5-1B's
-      own output. The traced-to-source Rust-version hallucination and the six malformed
-      `fetch_url_to_workspace` calls ARE cleanly attributable to MiniCPM5-1B itself (confirmed via
-      the raw session log, not the Builder), so the discard isn't baseless — but it was reached
-      under a confounded pipeline, not a clean one, and should not be read as a fully settled,
-      isolated verdict on the model's own capability.
-      **Retest explicitly NOT queued — user decision, 2026-07-21**: a clean isolated retest
-      (`gpt-oss:20b` kept in the Planner/Builder seat) was initially proposed as the outstanding
-      item, but the user rejected pursuing that combination further at all — pairing `gpt-oss:20b`
-      as coordinator with any small model as a specialist is a strategy the user doesn't want tried
-      again regardless of which small model sits in the specialist slot (see the "Heterogeneous
-      role tiering" closure note above). MiniCPM5-1B's status is therefore left as: discard
-      reached under a confounded test, not fairly re-litigated, and not going to be re-tested in
-      that same paired form.
-      **Single-model bake-off run — COMPLETED 2026-07-21, clean and decisive: DISQUALIFIED, no
-      caveats this time.** `MiniCPM5-1B` set as `api.openai_model` across ALL roles (Planner/
-      Builder/FindingsWriter/PeerReviewer, not just Searcher/Analyzer) — the same architecture
-      every other bake-off candidate in this section was measured under, and the one evaluation
-      MiniCPM5-1B had never actually had. Ran via `~/.venvs/vllm` with the model's real full context
-      (`--max-model-len 131072`, not the earlier tests' 16384 — the actual `max_position_embeddings`
-      from the model's own `config.json`; needed `--gpu-memory-utilization 0.9` once nothing else
-      was competing for VRAM, since a stale `VLLM::EngineCore` process from an earlier launch
-      attempt was still holding 8.1GB and had to be killed first). Confirmed via direct `curl`
-      before running anything through DeepDelve: nothink mode clean (`reasoning: null`, zero
-      `<think>` leakage) — same infrastructure verdict as before, this part was never in question.
-      Ran the exact standing sales-forecasting benchmark prompt (`eval/sales_forecasting_
-      benchmark.md`) used throughout this whole bake-off.
-      **Result, traced through the raw session log**: the model called `list_workspace_files` once,
-      then `think_tool` with near-identical reflection text ~20 times in a row, burning its entire
-      `think_tool` quota (30) without ever once calling `delegate_tasks` — no Searcher was ever
-      spawned, `fetched_urls` stayed empty, `findings.md` was never written. It then asserted
-      "I'll compile the findings and final report now based on the delegated tasks" — a flatly false
-      claim, since nothing had been delegated and no findings existed — repeated verbatim several
-      times in the trailing text output. The engine's own `not_delegated` completion check caught
-      this correctly (`_run_state.json`: `"No delegate_tasks call was ever made — this looks like an
-      answer from memory, not real research."`) and the run terminated with `Report: NOT WRITTEN`
-      once the overall retry budget was exhausted — no artifact, no fabrication reaching the user,
-      the failure mode this project's completion checks exist to catch, working as designed.
-      **This clears every point of the Model Evaluation Standard above with no exceptions**:
-      operating mode confirmed via raw API call before scoring (point 1); MiniCPM5-1B was the only
-      variable in the entire pipeline, nothing paired or swapped (point 2, the exact gap the two
-      earlier verdicts had); backend/version stated (vLLM 0.25.1, ROCm, ~/.venvs/vllm) (point 3).
-      A second corroborating run was not initially executed given how early and total the failure
-      was (dead by turn ~20 of a 30-call quota, zero real work of any kind produced).
-      **Point 4 corroborated with a real second run, same day**: after this session separately
-      found and fixed a real process-hygiene bug (killing an already-running `vllm serve` with
-      `-9` orphans its `VLLM::EngineCore` child, since SIGKILL can't be trapped — see the
-      "Heterogeneous role tiering"/vLLM re-test entry above), the user asked whether that finding
-      could have contaminated THIS verdict's VRAM/context state. Traced the actual timeline: the
-      one stale-process contamination hit during this evaluation happened BEFORE the scored run
-      (an 8.1GB orphan from a failed 16384-ctx attempt, found and killed before the successful
-      131072-ctx relaunch that the benchmark actually ran against) — the scored run itself used a
-      clean, correctly-provisioned, freshly-confirmed server throughout, so the original verdict was
-      never actually contaminated. Re-ran anyway as a precaution, from a freshly-clean GPU state
-      (`rocm-smi --showpids` confirmed zero KFD processes before relaunch), same full 131072
-      context, same nothink-mode curl confirmation. **Result: reproduced the identical core
-      failure** — 63 events this time (`list_workspace_files` x11, `think_tool` x10, spread across
-      3 completion-check attempts instead of 1), but again ZERO `delegate_tasks` calls across the
-      entire run, `Report: NOT WRITTEN`. Point 4 (discard needs >1 run) is now genuinely satisfied,
-      not just argued around.
-      **Final verdict, now doubly corroborated**: MiniCPM5-1B is disqualified as a DeepDelve model
-      candidate in BOTH forms tested — paired specialist (confounded, not re-litigated per the
-      user's own decision) and full single-model replacement (clean, decisive, reproduced on an
-      independent run). No further MiniCPM5-1B testing is planned; nothing about this model's
-      evaluation remains open.
-  - **Cleanup done, 2026-07-21**: `api.openai_model` reverted to `deepdelve-gpt-oss:latest`,
-    `settings.specialist_model`/`settings.specialist_base_url` removed from `~/.deepdelve/
-    config.yaml` (confirmed `_build_client`'s `.get(...)` fallback in `orchestrator.py` handles
-    their absence, single-model config resumes cleanly), test `vllm serve` process killed.
-    `~/.venvs/vllm` itself kept on disk — a verified-working general ROCm+vLLM install for this
-    exact GPU/kernel, reusable for a future, larger specialist candidate without redoing the ROCm
-    fix.
-  - **Cleanup done again, 2026-07-21, after the single-model run above**: `api.openai_model`
-    reverted to `deepdelve-gpt-oss:latest`/`http://localhost:11434/v1` (confirmed via config diff),
-    the config backup at `~/.deepdelve/config.yaml.bak_pre_minicpm_singlemodel_20260721` can be
-    deleted once this entry is read, the vLLM server process (port 8000) killed and confirmed via
-    `rocm-smi` back to near-zero VRAM use.
-
-- **Qwen3-family think-mode control confirmed broken on Ollama too, 2026-07-21 — every Qwen3
-  benchmark row in README.md's model table was very likely reasoning-polluted.** Surfaced while
-  answering the user's direct question ("could the models we benchmarked have a nothink mode too?")
-  after the MiniCPM5-1B finding above. Tested live against Ollama 0.31.2, both mechanisms DeepDelve
-  could plausibly rely on:
-  - `chat_template_kwargs.enable_thinking: false` via the OpenAI-compat endpoint (the mechanism
-    `orchestrator.py::_get_default_options()` actually sends): confirmed via direct `curl` against
-    `deepdelve-qwen3-4b` that this has **zero effect** — the model still burns its full token budget
-    on unrequested reasoning (a populated `reasoning` field, `content` left empty on a 200-token cap).
-  - Ollama's own native `/api/chat` `"think": false` field (the mechanism Ollama itself recommends
-    for hybrid-reasoning models, and which DeepDelve does NOT currently send at all): confirmed via
-    direct `curl` against the plain, unmodified `qwen3:4b` base tag that this is **actively worse
-    than doing nothing**. With `think: false`, the model still reasons at length but the raw,
-    unstructured chain-of-thought is dumped straight into `message.content` with no `<think>` tag
-    and no separate `thinking` field at all. With `think: true`, the exact same request correctly
-    separates reasoning into its own field and `content` holds only the clean final answer ("4").
-    The "off" setting is the one that pollutes the model's real working output; "on" is the one
-    that's clean.
-  - **Why this doesn't apply to `gpt-oss:20b` (the current default)**: tested the same two
-    mechanisms against `deepdelve-gpt-oss` — also ineffective at fully suppressing reasoning (gpt-oss's
-    harmony format always produces an analysis channel by design, this isn't a bug), but critically,
-    Ollama keeps that reasoning cleanly separated into its own `reasoning`/`thinking` field in BOTH
-    cases, never mixed into `content`. Confirmed via `agent_framework`'s own client source
-    (`choice.message.content` read directly at the point a `Content.from_text(...)` is built;
-    `reasoning_details` handled as a distinct `text_reasoning` content type, never merged into the
-    text DeepDelve's agents treat as the model's actual output) that DeepDelve only ever consumes
-    `.content` — so gpt-oss's inability to fully disable thinking is benign here, while Qwen3's
-    content-pollution bug is not.
-  - **Implication**: `qwen3.6` (35b-a3b), `qwen3:4b`, `qwen3:8b`, and the `qwen3:4b` GRPO fine-tune's
-    live Ollama benchmark run (its TRAINING pipeline correctly used `enable_thinking=False` via HF's
-    own `apply_chat_template`, unaffected — see the training entry below — this is specifically
-    about the live benchmark's inference path) were almost certainly running with large amounts of
-    uncontrolled reasoning text bleeding directly into every tool-call argument and piece of written
-    output across their entire benchmarked runs, this whole time. This is a real, previously-unknown
-    contributing factor to their disqualifying failure modes (thin_coverage stalls, narrated-instead-
-    of-written reports, canned non-responses on the corrective nudge) — plausibly consistent with
-    "a small model getting confused/derailed by its own unmanaged internal monologue," layered on
-    top of (not a replacement for) the capacity-floor literature evidence already cited in README.md.
-  - **Not yet re-tested and not re-scored**: no Qwen3 candidate has been re-run with genuine nothink
-    mode (would need the same vLLM/SGLang fix class used for MiniCPM5-1B — `~/.venvs/vllm` is
-    already available for this). Existing scores are left standing as the best evidence so far, not
-    silently trusted as clean; README.md's model table now flags every affected row with a `†` and
-    an explanation rather than treating the old numbers as unaffected. Whether re-testing is worth
-    the time (these are all still sub-14B, below the literature's own capacity floor regardless) is
-    an open call, not yet made.
-  - **Confirmed via vLLM, 2026-07-21: the bug is Ollama-specific, not a Qwen3 model limitation.**
-    Unloaded `gpt-oss` from Ollama first (`ollama stop`, freed ~14.3GB, matching the earlier lesson
-    about not squeezing vLLM into leftover VRAM), launched `vllm serve Qwen/Qwen3-4B --tool-call-
-    parser hermes --enforce-eager --gpu-memory-utilization 0.85 --max-model-len 16384` (first attempt
-    at `0.55` under-budgeted the KV cache and failed cleanly with a clear `ValueError`, not a crash —
-    raised to `0.85`, succeeded). Direct `curl` against the real vLLM server (genuine jinja
-    chat-template evaluation, same class of fix as MiniCPM5-1B):
-    - `chat_template_kwargs.enable_thinking: false` → clean `"4."`, `reasoning: null`, 3 completion
-      tokens, zero `<think>` content anywhere.
-    - Same request with `enable_thinking: true` → full `<think>...reasoning...</think>` block
-      inline in `content` (Qwen3's own convention keeps it in `content`, unlike gpt-oss's separate
-      channel — confirmed as the model's real, correct behavior, not a bug).
-    - A real `tools=` request with `enable_thinking: false` → clean OpenAI-shaped `tool_calls`
-      (`web_search({"query": "population of Tokyo"})`), no reasoning leakage, no stray text.
-    **Conclusion**: Qwen3-4B's nothink mode is real and works correctly end-to-end once served by
-    something that actually evaluates its chat template — Ollama's failure to do so (confirmed
-    earlier in this same entry) is entirely Ollama's own gap, not evidence against the model. This
-    makes a genuine, clean re-benchmark of the Qwen3 family (via vLLM, same infra now proven twice)
-    a real, low-friction option if it's ever worth revisiting — test server stopped after
-    verification, nothing left running.
-
-- **MiniCPM3-4B scoped and attempted as a single-model candidate, 2026-07-21 — INCONCLUSIVE, a real
-  infrastructure hang, not a capability verdict.** After MiniCPM5-1B's disqualification, checked
-  other real MiniCPM-family candidates. `MiniCPM4-8B`/`MiniCPM4.1-8B` ruled out immediately — their
-  own model cards document no function-calling support at all (only `MiniCPM4-MCP`, already
-  discarded, was OpenBMB's dedicated tool-use variant of that generation). `MiniCPM3-4B` looked
-  genuinely promising: documented BFCL v2 71.6 (beats several 7-9B models), Apache-2.0, native vLLM
-  model support (`MiniCPM3ForCausalLM`). Initially concluded (wrongly, corrected by the user — see
-  `feedback_read_docs_before_building.md`) that no vLLM tool-call-parser existed for its custom
-  `<|tool_call_start|>`/Python-function-call format, having only checked the locally installed vLLM
-  package's bundled parsers. OpenBMB's own `github.com/OpenBMB/MiniCPM` repo
-  (`demo/minicpm3/function_call/`) ships a ready `minicpm_tool_parser.py` + matching jinja chat
-  template for exactly this — needed two small compatibility fixes for this vLLM version (0.25.1):
-  import paths moved (`vllm.entrypoints.openai.protocol` → `.chat_completion.protocol` +
-  `.engine.protocol`; `vllm.entrypoints.openai.tool_parsers` → `vllm.tool_parsers`), and the base
-  `ToolParser.__init__` now takes a second `tools` param the reference script's subclass didn't
-  accept. Confirmed working after patching: real structured `tool_calls` out of a direct `curl`
-  test, no narrated JSON.
-  - **Real hardware ceiling found, applied correctly THIS time before benchmarking**: MiniCPM3-4B's
-    62-layer, non-MLA-optimized-in-this-config KV cache cost forced a real serving ceiling of ~6144
-    tokens on this GPU (vLLM's own KV-cache-budget error gave this number directly), well under the
-    project's ~16K-token floor (`context_budget_chars: 50000`'s documented "safe margin under a
-    16K-token num_ctx"). **First response was to proportionally scale `context_budget_chars` down
-    to 8000 and run the benchmark anyway — the user corrected this as the wrong general policy
-    going forward** (new Model Evaluation Standard point 6, above): a candidate that can't clear
-    ~16K tokens should be discarded outright on hardware grounds, not accommodated by rescaling the
-    project's own safety margins. This specific run was allowed to finish since it was already
-    informative either way, but is not the template for future candidates.
-  - **Result: a real hang, not a clean pass or fail.** The DeepDelve run itself showed zero visible
-    progress for ~16+ minutes past the startup banner. Diagnosis: vLLM's own periodic engine-stats
-    logger (normally prints every ~10s) went completely silent after the first exchange, the
-    APIServer process (not EngineCore) was pinned at ~94% CPU while GPU utilization sat at only 7%,
-    and even the lightest possible request (`GET /v1/models`) timed out entirely. This pattern
-    points at OpenBMB's own reference `extract_tool_calls_streaming` — it re-scans the ENTIRE
-    accumulated generation text with a nested-parentheses regex
-    (`r"(\w+)\(((?:[^()]*|\([^()]*\))*)\)"`) on every single streamed token, a known catastrophic-
-    backtracking risk class, not something DeepDelve's own code touches. Killed the hung run and
-    server rather than let it burn GPU time indefinitely; confirmed no leftover `VLLM::EngineCore`
-    process afterward (this evaluation's third time hitting that exact leftover-process gotcha —
-    always `rocm-smi --showpids` after any `pkill`/kill of a `vllm serve` parent, the EngineCore
-    child does not reliably die with it).
-  - **Verdict**: NOT a capability disqualification like MiniCPM5-1B's — this never reached the
-    point of testing MiniCPM3-4B's actual research/delegation behavior at all, so per the Model
-    Evaluation Standard's point 1 (confirm the operating mode works before scoring), this doesn't
-    count as a settled discard. It's an open infrastructure question: OpenBMB's own reference
-    tool-parser has an apparent streaming-performance bug (or this vLLM version's streaming
-    invocation pattern doesn't suit it) that would need a real fix (e.g., incremental parsing
-    instead of re-scanning full text per token) before a fair benchmark could run. Not pursued
-    further this session — flagged as genuinely unresolved, not "MiniCPM3-4B discarded."
-
-- **MiniCPM4-MCP evaluated as a specialist-role candidate, 2026-07-20 — real infrastructure built
-  and kept, model itself not yet viable.** User surfaced `github.com/openbmb/minicpm`; downloaded
-  `MiniCPM4-MCP` (the tool-use SFT checkpoint, not the base chat model — see RESEARCH.md's §6.2
-  entry on why the base checkpoint doesn't inherit the MCP fine-tune's tool-calling numbers),
-  Q5_K_M GGUF via `ollama pull hf.co/mradermacher/MiniCPM4-MCP-GGUF:Q5_K_M` (5.8GB, comfortable
-  on 16GB VRAM), local tag `minicpm4-mcp` with `num_ctx` set to the model's real native max
-  (32768, confirmed via the GGUF's own `minicpm.context_length` metadata and the upstream
-  `config.json`'s `max_position_embeddings` — going further to the maker's documented
-  128K-validated LongRoPE factors would require re-converting the GGUF from patched source
-  weights, not just an Ollama parameter, deferred for later).
-  - **Format mismatch found and solved**: MiniCPM4-MCP's own embedded chat template doesn't emit
-    OpenAI-style JSON `tool_calls` — it emits a `<|thought_start|>...<|tool_call_start|>
-    func(arg=val)<|tool_call_end|>` Python-code-block format. Ollama's generic `/v1/chat/
-    completions` tool-calling support assumes OpenAI JSON and fails outright against this model
-    ("peg-native format" 500 error, confirmed live). **Built `finetune/minicpm_tool_proxy.py`**: a
-    FastAPI translation proxy (checked GitHub for prior art first — `philipluo/MY-LITE-LLM` does
-    the same class of thing generically for `minicpm-v`; this one is tailored to MiniCPM4-MCP's
-    actual documented format instead of generic JSON-prompting) that builds the model's own
-    "# Functions" prompt block from OpenAI `tools=` schema, renders full multi-turn history
-    (including prior tool_calls/tool-result messages) into the model's native turn format, and
-    parses its Python-code-block output back into OpenAI-shaped `tool_calls` JSON. Verified in
-    isolation: single-turn tool call, multi-turn tool-result round-trip (model correctly answered
-    directly instead of re-calling once given a result), both correct.
-  - **New config plumbing added to make this pluggable**: `settings.specialist_base_url`
-    (`src/tools/config_template.yaml`, `src/engine/orchestrator.py`'s `_build_client`) — an escape
-    hatch alongside the existing `settings.specialist_model` for a specialist model that needs a
-    DIFFERENT endpoint (the translation proxy), not just a different model name on the same
-    endpoint. Real bug caught and fixed while wiring this in: `_build_client`'s injected
-    `AsyncOpenAI(base_url=...)` — the object that actually issues HTTP requests, not the wrapper
-    `OpenAIChatCompletionClient` — was still hardcoded to `api_cfg["openai_base_url"]` even after
-    adding the override parameter, so the first live-test attempt silently bypassed the proxy
-    entirely and hit Ollama directly (same "peg-native format" error as before this whole effort).
-    Fixed; `test_structural_checks.py` and `ruff check` both clean after.
-  - **Live end-to-end result, real query, real pipeline** (same Rust-version + borrow-checker
-    query used throughout the routing-classifier verification above): the fix held — proxy
-    received real traffic, tool calls flowed correctly in both directions, run completed with a
-    real report (not a crash, not a silent drop). **One genuine positive**: this run's
-    `AcademicSearcher`/`DocumentAnalyzer` chain (via MiniCPM) surfaced a real academic source
-    (`ETH Zürich "Implementing a Sound Borrow-Checker"`) that the earlier gpt-oss run never
-    found, alongside the same arXiv LLBC paper both runs found.
-  - **A real, distinctive new failure mode also surfaced, not predicted by the isolated tool-call
-    test**: a nested `DocumentAnalyzer` sub-agent (routed through MiniCPM, since Analyzer roles
-    share the specialist tier) called `read_workspace_file`/`grep_workspace_file`/
-    `extract_structured_data` with `filename: "Analyze paper metadata"` — ITS OWN TASK LABEL, not
-    a real file — repeatedly, never correcting after identical "not found" errors each time,
-    until the sub-agent was re-dispatched as a fresh instance 10 separate times. Task-name/
-    filename confusion with no self-correction, a new category distinct from anything the earlier
-    routing-classifier or grounding-check work targeted.
-  - **Reliability was meaningfully worse than the current tier under real load**: 53 tool errors
-    this run vs. 0-8 in clean `deepdelve-gpt-oss` baseline runs, ~900s runtime vs. ~680-810s, 4
-    `BuilderFix` + 4 `ReviewFix` remediation cycles to clear an `uncited_claims` check (Builder
-    itself still runs on the main model, so this is downstream noise from messier findings
-    content feeding it, not MiniCPM's tool-calling directly — but a real cost of using it anyway).
-  - **Verdict**: the translation-proxy infrastructure is sound and kept as a real, reusable
-    project artifact — genuinely solves the format-mismatch problem for any future MiniCPM-family
-    (or similarly non-OpenAI-native) candidate. MiniCPM4-MCP itself is **not yet a viable
-    specialist-role candidate** — directly the same standing lesson this project has hit
-    repeatedly: an isolated tool-call test passing does not predict live multi-agent-role
-    reliability. Live config's `specialist_model`/`specialist_base_url` reverted to unset
-    (back to the known-good single-model baseline) after this evaluation.
-  - **Not done, deferred**: re-converting a GGUF with the maker's 128K-validated LongRoPE factors
-    (32K is architecturally native/what's baked into the current GGUF, not an Ollama-imposed
-    ceiling — see the maker's own README) — user wants to revisit 128K-context options generally
-    later, not specific to MiniCPM.
-  - **CORRECTION, same day**: the verdict above was reached before reading OpenBMB's own reference
-    implementation (`demo/minicpm4/MCP/generate_example.py` + model-card usage docs) — user
-    caught this explicitly ("I told you to search implementations and you did the development
-    believing you're a bad ass, don't do the mistake again, if it's new we need to read
-    documentation"). Reading it afterward surfaced two real, concrete gaps in the proxy, not
-    assumptions: (1) OpenBMB's own reference system prompt has explicit anti-repeat-tool-call
-    guidance ("If a tool fails... DO NOT call it again with the same inputs... avoid redundant or
-    circular behavior") that this proxy's system prompt never included; (2) their reference parser
-    (`parse_tool_for_minicpm3`) handles Python-keyword-colliding argument names and hyphenated
-    tool/argument names (real MCP tool-naming conventions) via a temp-rename round-trip that this
-    proxy's simpler regex+`ast.literal_eval` parser silently dropped. Confirmed their own
-    raw-prompt-plus-custom-parser integration pattern (`client.completions.create` with a
-    `tokenizer.apply_chat_template`-rendered prompt, not the chat/tools API) validates this
-    proxy's core architecture, though — not a wrong approach, an incomplete one.
-    - **Both gaps fixed** in `finetune/minicpm_tool_proxy.py`: added the anti-repeat guidance
-      verbatim to `build_functions_preamble`; replaced the parser with an AST-module-body walk
-      (`parse_tool_call_block`) ported from their `parse_tool_for_minicpm3`/
-      `resolve_ast_call`/`resolve_ast_by_type`, handling keyword-collision and hyphen
-      round-tripping the same way. Verified in isolation: `search_papers(from="2020", to="2024")`
-      and `get-weather(city="London")` — both previously silent parse failures — now parse
-      correctly.
-    - **THIRD live test, same query, with both fixes**: the SPECIFIC bug this was meant to fix
-      (task-name-as-filename looping) did NOT recur — confirmed gone. But the run surfaced
-      DIFFERENT reliability problems in its place: `web_search`/`fetch_url_to_workspace` quota
-      exhausted (17 calls against a 15 limit, excessive re-querying rather than converging); the
-      existing `topical_mismatch` completion check caught the draft report citing a Yahoo Sports
-      article and an unrelated tech listicle as "Rust" sources (noisy search, safety net worked,
-      but reveals messy upstream search behavior); and the final report itself regressed in
-      accuracy versus the earlier successful run — cited a blog aggregator
-      (`emergentmind.com`) instead of the real peer-reviewed arXiv paper the second run found
-      correctly, and reported Rust 1.97.0 as current when 1.97.1 (confirmed correct in earlier
-      runs) is the actual latest patch.
-    - **Revised, still-honest verdict**: the doc-informed fixes solved the exact bug they
-      targeted, but MiniCPM4-MCP's reliability in this real multi-step research role remains
-      inconsistent run-to-run — one problem fixed, two different problems surfaced in its place.
-      Still not a stable specialist-role candidate as of this evaluation. Live config's
-      `specialist_model`/`specialist_base_url` reverted to unset again; proxy process stopped.
-
-- **Completion-check remediation loop can exhaust `read_workspace_file`'s quota before the final
-  Builder pass gets to actually read what it needs — found live, 2026-07-20, during the routing
-  classifier's second re-test run.** A run that hits multiple completion-check remediation cycles
-  (missing two-pass discipline, missing artifact, unsupported-claim flag) dispatches a corrective
-  sub-agent per cycle (`FindingsWriterFix`, `BuilderFix`, `ReviewFix`), each burning its own
-  `read_workspace_file` calls against the SAME shared quota (limit 30) as normal first-pass work.
-  Confirmed live: 3 remediation cycles in one run exhausted the quota, and the final `BuilderFix`
-  pass self-reported it in the report text ("Due to workspace tool quota limits, I was unable to
-  re-read the source file") and silently dropped an entire correctly-researched section
-  (`findings.md` had it; `final_report.md` didn't) rather than erroring loudly. Candidate fixes:
-  separate quota pool for remediation sub-agents vs. first-pass work, or a harder failure mode
-  (explicit error surfaced to the user) instead of a silent content drop when quota is hit
-  mid-remediation.
+- **Re-run the full 11-candidate local-model bake-off via vLLM instead of Ollama — IN PROGRESS,
+  most candidates now closed, moved to History as each verdict lands.** Two independent, confirmed
+  Ollama-serving-layer bugs (Qwen3 think-mode passthrough, `ollama/ollama#6155` nested-array
+  tool-parameter stringification affecting `mistral-nemo`/`llama3-groq-tool-use`/`llama3.2:3b`) mean
+  several of README.md's 11 bake-off disqualifications may reflect Ollama's own serving bugs rather
+  than genuine model incapability. Full plan in `~/.claude/plans/moonlit-plotting-simon.md`.
+  Pre-flight checks (HF repo IDs, `bitsandbytes`-on-ROCm) and every candidate tested so far
+  (`mistral-nemo:12b` BLOCKED, `llama3-groq-tool-use:8b` DISQUALIFIED, `qwen3:8b` killed mid-run
+  with a real DeepDelve-side fabrication bug found and fixed, MiniCPM5-1B DISQUALIFIED in both
+  paired and single-model forms, the Qwen3-family think-mode bug confirmed Ollama-specific via
+  vLLM, MiniCPM3-4B INCONCLUSIVE on a real infra hang, MiniCPM4-MCP not yet viable) are all fully
+  concluded — see `History`'s "Model bake-off & backend investigation log" for the complete
+  evidence trail. **Still genuinely open**:
+  - `qwen3:8b` retest — the fabrication bug that killed its last run is now fixed (commit
+    `0852cc4`); this is the most informative next run since it's the one that surfaced the bug.
+  - `qwen3.6`/`Gemma 4 12B`/`llama3.2:3b` and the rest of the 11-candidate plan — not yet attempted.
+  - The Mistral family (`mistral-nemo:12b`, `devstral:24b`, `mistral:7b-instruct-v0.3`) stays
+    blocked until a DeepDelve-side fix makes `_get_default_options()`'s `chat_template_kwargs`
+    injection conditional — out of scope to hack in mid-benchmark without sign-off (touches every
+    model's request path).
+  - A clean Qwen3-family re-benchmark via vLLM (now proven to fix the think-mode bug) is a real,
+    low-friction option if it's ever worth revisiting — not committed to, since these are all still
+    below the literature's own capacity floor regardless.
 
 - **Forced `tool_choice` on vLLM as a structural fix for "narrate instead of write" — new candidate,
   2026-07-19, not yet prototyped.** Found while investigating whether vLLM is a realistic Ollama
@@ -2461,6 +2577,7 @@ summary; this section is the full evidence trail.
        be explicitly disabled or isolated per-model during comparative benchmarking, or the EXACT
        same contamination bug recurs regardless of what retrieval technique sits underneath it.
        That's the one concrete, non-negotiable design constraint from this project's own history.
+
 - **TUI QoE improvements** (researched 2026-07-14, not yet scoped/implemented) — triggered by a
   real usability complaint mid-Phase-6 smoke test ("copying from the console, not only the
   prompt", right-click paste, "a lot of QoE changes"). Investigated the actual installed Textual
@@ -2469,22 +2586,6 @@ summary; this section is the full evidence trail.
     `Ctrl+C` copy — `ALLOW_SELECT = True` is the framework default at `Widget`/`Screen`/`App`
     level, and `Screen.BINDINGS` already binds `ctrl+c` → `action_copy_text`
     (`textual/screen.py`); `BasicTuiAgent` doesn't override any of this.
-  - **`AgentMessageWidget` click-to-copy — DONE 2026-07-14, commit `577fd53`.** Mirrors
-    `UserMessageWidget`'s existing `on_click` → `_copy_to_system_clipboard`/OSC52 fallback pattern
-    exactly — one-click copy on the agent's actual answers/reports, not just the user's own
-    prompt.
-  - **Right-click paste — DONE 2026-07-14, commit `577fd53`.** New
-    `engine/tui.py::_paste_from_system_clipboard` (read-side mirror of
-    `_copy_to_system_clipboard`: `wl-paste --no-newline` / `xclip -o -selection clipboard`, no
-    OSC52 equivalent since that escape sequence is write-only) wired into `PromptInput.on_click`
-    on `button == 3` (right-click, confirmed against this project's installed
-    `textual/_xterm_parser.py`'s SGR mouse-button mapping), inserting at cursor / replacing the
-    current selection. Live-verified: a real `_copy_to_system_clipboard` → `_paste_from_system_clipboard`
-    round trip returned the exact original text. Required installing `wl-clipboard` on the dev
-    machine — neither it nor `xclip` was present beforehand, so this had never actually worked via
-    either mechanism (copy silently fell back to OSC52, unverified; paste had no fallback at all).
-    Worth checking for on any fresh setup — without one of these two tools, paste always shows a
-    "clipboard paste failed" warning instead of pasting.
   - **Unused framework capabilities surfaced, not yet scoped into concrete work**: command palette
     (`ENABLE_COMMAND_PALETTE`, `Ctrl+P`, separate from the hand-built `/`-command `OptionList`
     picker); widget maximize/minimize (`action_maximize`/`action_minimize`, blow up one
@@ -2499,64 +2600,14 @@ summary; this section is the full evidence trail.
   - **Explicitly deferred, not scoped into a phase yet** — user chose to record as a backlog item
     rather than implement immediately, given Phase 6 (now shipped, see "Completed") and the model
     bake-off (see the "Model bake-off & backend investigation log" section) were the priority at
-    the time. Next session should scope a concrete subset (the `AgentMessageWidget` copy button +
-    right-click paste are the two smallest, most directly user-requested items) before touching
-    the framework-capability survey items, which need real prioritization first.
+    the time. The two smallest, most directly user-requested items (`AgentMessageWidget` copy
+    button + right-click paste) have since shipped — see "Completed". Next session should scope a
+    concrete subset of the remaining framework-capability survey items, which need real
+    prioritization first.
+
 
 ### Candidates from the 2026-07-12 reference-repo review (see README References)
 
-
-- **Engine-driven iterative deepening** (from `dzhng/deep-research`): a STRUCTURAL refine loop —
-  each round's findings + the Searchers' FOLLOW-UP DIRECTIONS get composed by the ENGINE into the
-  next round's Planner input, with geometric narrowing (their `newBreadth = ceil(breadth/2)`,
-  depth counter). DeepDelve currently trusts the Planner model to loop, and local models
-  demonstrably under-loop (run 15: 1 niche of 4-6). Could integrate with `--depth`.
-- **Tongyi-DeepResearch-30B-A3B as a benchmark candidate** (from `Alibaba-NLP/DeepResearch`):
-  30B MoE / 3.3B active — same size class as deepdelve-qwen3.6, but trained specifically for
-  long-horizon research. **Architecture, read directly from the primary paper (arXiv:2510.24701)
-  during the comparative survey, `RESEARCH.md` §7, 2026-07-20**: this is a SINGLE fine-tuned model
-  operating via ReAct or an "IterResearch"-based Heavy test-time-scaling mode — not a multi-agent
-  system in DeepDelve's sense at all (no Planner delegating to typed specialists with independent
-  context). No published runtime grounding/citation-verification layer comparable to DeepDelve's
-  own — reliability, to the extent it's addressed, comes from the training pipeline (continual
-  agentic pre-training + on-policy GRPO) rather than a deployment-time safeguard. Backed by an
-  18-paper research program (WebWalker, WebDancer, WebSailor, WebShaper, WebResearcher, and more) —
-  a frontier-lab-scale effort DeepDelve isn't attempting to match; if adopted, it would be solving
-  DeepDelve's reliability gap by swapping in a much larger purpose-trained model rather than by
-  DeepDelve's own verification-layer approach, and would still need DeepDelve's own grounding checks
-  layered on top if citation-level provenance matters for the use case (Tongyi's benchmarks measure
-  answer-correctness, not per-citation provenance the way DeepDelve's own checks do). **Chat-template/tool-call compatibility check done, 2026-07-12 — the
-  flagged risk is resolved**: `deepdelve-tongyi` (built pre-outage from
-  `hf.co/mradermacher/Tongyi-DeepResearch-30B-A3B-GGUF:Q4_K_M`, 18.6GB, `num_ctx 16384`) reports
-  Ollama capabilities `['completion', 'tools', 'thinking']` — the community GGUF's chat template
-  parses the model's native `<tool_call>` XML into real structured `tool_calls` (verified live via
-  a direct `/api/chat` call with a tool schema: returned a proper `tool_calls` array, not raw XML
-  text). A real `--depth quick` trial run (`compare_the_vector_search_capabilities_of_elastics_...`)
-  confirmed `delegate_tasks` actually gets invoked with 2 real specialist tasks, 2 real fetches,
-  and `write_todos` populated correctly — passing the exact bar `devstral:24b` failed (README
-  "Model choice": zero real `delegate_tasks` calls, narrated JSON instead). The run didn't finish
-  within a 5-minute smoke-test window — Tongyi's `<think>` traces are verbose (one single-tool-call
-  test round-tripped a 1000+ token thinking block for "15 + 27") — so a real benchmark round needs
-  a longer time budget than the other local candidates, not a template fix. Config for testing:
-  `~/.deepdelve/config-tongyi.yaml` (not in git, mirrors the live config with `openai_model:
-  deepdelve-tongyi`).
-  - **Two real benchmark attempts, both inconclusive on quality — the model is not currently
-    usable at either quant tried, for two different reasons.** Q4_K_M: killed at 1h6min (the
-    `max_run_minutes` bug this exposed and fixed, see "Repo governance + CI" entry above) — GPU
-    was genuinely computing the whole time, real progress happened (delegate_tasks invoked, 2
-    fetches), just far too slow to be practical. Then tried `deepdelve-tongyi-iq3`
-    (`hf.co/mradermacher/Tongyi-DeepResearch-30B-A3B-i1-GGUF:IQ3_M`, 13.5GB — passed the same
-    isolated tool-call smoke test, and was noticeably faster/less verbose on that trivial test:
-    2.7s vs. 5.9s eval time for "15+27") expecting it to be the practical answer. **It was worse
-    on the real workload**: 37+ minutes against the actual Planner system prompt with ZERO
-    progress — no `write_todos`, no `delegate_tasks`, no run folder content at all (`_run_state.json`
-    stayed at its initialized empty state the whole time), unlike Q4_K_M which at least made real
-    tool calls in a comparable window. Killed manually. The isolated single-tool-call smoke test
-    (README's `curl .../api/chat` snippet) evidently does NOT predict real-workload viability at
-    this quant level — a real trial against the actual multi-thousand-token Planner prompt is the
-    only test that means anything, and neither quant has passed one yet. Not recommended for
-    further local benchmarking without a materially different quant or a context/prompt-length
-    investigation into why the full system prompt specifically breaks it.
 
 ## Rejected
 
@@ -3044,4 +3095,3 @@ too. Both stay here, ready but inert, until the user says go.
        acknowledging the gap. This is a more precise, now evidence-backed case for the
        citation-grounding GRPO fine-tune above: the target behavior is specifically "when your
        source material contains a verification warning naming your only candidate URL as
-       unfetched, do not cite it" — a clean binary reward signal, same shape as `thin_coverage`.
