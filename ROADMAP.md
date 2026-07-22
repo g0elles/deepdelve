@@ -2474,14 +2474,22 @@ tried, twice, not merely proposed):
   support chain touches a hallucinated ancestor. Needs scoping: DeepDelve doesn't currently track
   claim-level dependency structure at all (findings are flat, keyed by task_name), so this would
   need a real design pass before it's buildable, not just a new check function.
-  **Reference implementation found, 2026-07-22**: the PING paper's own code
-  (`github.com/yuhao-zhan/DeepHalluBench`, `eval_framework/core/`) is real, structured, per-category
-  detector code, not just benchmark data — `claim_verification.py` (NLI-to-LLM cascade grounding),
-  `constraint_checking.py` (restriction neglect), `decomposition.py` (trajectory → atomic units).
-  Confirmed the repo's architecture (decompose-then-check-per-category) directly, but did NOT
-  confirm the propagation/DAG-entailment code specifically exists in a reviewable form yet — worth
-  reading `decomposition.py` and whatever consumes it directly before treating this as a ready-made
-  reference rather than a repo worth investigating further.
+  **Reference code checked directly, 2026-07-22 — weaker than first reported, correcting an
+  earlier overclaim.** `github.com/yuhao-zhan/DeepHalluBench`'s `eval_framework/core/` is real,
+  structured detector code (`claim_verification.py`, `decomposition.py`, `constraint_checking.py`),
+  not just benchmark data — but reading the actual file contents (not just filenames) shows it does
+  **NOT** implement the DAG/entailment-chain propagation detector the paper's abstract described.
+  `decomposition.py`'s `TrajectoryDecomposer` produces flat per-iteration lists with no
+  claim-to-claim dependency structure at all — its `related_query`/`top_k_chunks` fields are present
+  but literally empty (`{}`) in the actual output, reading as an unfinished placeholder, not a
+  shipped feature. `claim_verification.py`'s `_reflection_check()` is the closest thing to
+  propagation detection that actually exists: it compares a new claim against a flat "Claim Memory"
+  of prior verified claims via KEYWORD-OVERLAP similarity (top-10 by keyword match), then an LLM
+  judges whether it's "a valid internal reflection" — a much simpler heuristic than the DAG +
+  NLI-entailment mechanism the candidate above describes wanting to adapt. **Net: this repo is
+  evidence the underlying problem (cascading claims) is worth checking against DeepDelve's own
+  data, but it is NOT a ready-made reference implementation for the DAG-based approach — that part
+  would need to be designed from scratch, the paper's own code doesn't have it built.**
 
 - **Force reasoning at synthesis time — new candidate, 2026-07-22, not yet scoped.** From PIVOT
   (Zhang, Popa, Xu, Song, Dimitriadis, Amazon; arXiv:2605.11225, preprint): trajectory inspection
@@ -2497,14 +2505,18 @@ tried, twice, not merely proposed):
   explicitly reason about each finding's inclusion/exclusion before finalizing, rather than relying
   on the model to self-allocate reasoning there. Not yet tested against DeepDelve's own runs — a
   real, concrete hypothesis, not a confirmed cause.
-  **Reference implementation found, 2026-07-22**: `The-AI-Alliance/deep-research-agent-for-
-  applications` (built on `lastmile-ai/mcp-agent`'s "Deep Orchestrator") documents exactly this
-  shape as a named workflow phase — "Input Processing → Plan Development → Execution → Verification
-  → Replanning (if needed)" — an explicit verification phase distinct from and after synthesis,
-  with an "Emergency stop" guard on repeated verification failures. Real prior art for "make
-  verification its own forced step" as a pattern, but this session's research did NOT confirm the
-  mechanical detail (is verification a distinct LLM call, rule-based, or hybrid) — that lives in
-  `mcp-agent`'s actual source, not yet read.
+  **Checked directly, 2026-07-22 — thinner than first reported.** `The-AI-Alliance/deep-research-
+  agent-for-applications`'s own docs do name a workflow phase — "Input Processing → Plan Development
+  → Execution → Verification → Replanning (if needed)" — as prior art for "make verification its
+  own forced step." But going to the actual `lastmile-ai/mcp-agent` repo this is built on, its own
+  README gives almost nothing beyond a one-line mention of `create_deep_orchestrator(...)`:
+  "Long-horizon research with knowledge extraction and policy checks" — no code, no detail on
+  whether verification is a distinct LLM call, a rule-based check, or something else, and no
+  detail on the actual replanning trigger. **Net: the WORKFLOW SHAPE (verification as its own
+  named phase, not folded into synthesis) is real, credible prior art at the design-pattern level —
+  but there is no confirmed, readable reference implementation to actually study before building
+  DeepDelve's own version.** Would need to read `mcp-agent`'s real source
+  (`src/mcp_agent`, not yet fetched) before treating this as more than a naming precedent.
 
 - **Sharper repetition-escalation fix for completion-check retries — new candidate, 2026-07-22, not
   yet scoped.** From "Do Agents Need to Plan Step-by-Step?" (Otani, Bhutani, Kim, Zhang, Hruschka,
@@ -2525,24 +2537,24 @@ tried, twice, not merely proposed):
   preferable for "exploratory or highly dynamic tool-calling tasks" — DeepDelve's actual domain may
   be exactly the exception the paper names, so the repetitive-loop mechanism is worth taking
   seriously but the accuracy-parity headline should not be assumed to transfer.
-  **Reference implementation found, 2026-07-22, a genuinely DIFFERENT granularity worth weighing
-  against "force whole-plan regeneration"**: `NousResearch/hermes-agent` issue #481 proposes a
-  Tool-Call Loop Guard operating one level BELOW DeepDelve's completion-check layer — inside a
-  single dispatch's own tool-call stream, not across completion-check retry attempts. Mechanism:
-  `SHA256(tool_name + serialized_args)` fingerprints each call in a sliding window (default 10),
-  detecting exact repeats, ping-pong (A→B→A→B), and multi-step cycles (A→B→C→A→B→C); graduated
-  response — inject a warning nudge first, hard-block the repeated call only after
-  `max_warnings_before_block` (default 2) further attempts, forcing a strategy change while
-  preserving agent agency rather than an immediate full replan. DeepDelve's
-  `CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD` operates on repeated COMPLETION-CHECK problems
-  across whole dispatches; this operates on repeated raw TOOL CALLS within one dispatch's own
-  turn — the two are complementary, not substitutes. Worth considering whether DeepDelve needs an
-  in-turn guard like this too (catching e.g. a Searcher calling `fetch_url_to_workspace` on the
-  same URL 6 times in one turn, the exact shape of the `qwen3:8b` `sources/paper_143022.md`
-  incident and the MiniCPM4-MCP task-name-as-filename loop, both in History) rather than only a
-  cross-attempt one. Not yet confirmed whether this feature actually shipped in `hermes-agent`
-  (found as an open issue/proposal, not verified as merged code) — needs checking before treating
-  it as a working reference rather than a design sketch.
+  **Checked directly, 2026-07-22 — CORRECTION, this is not real prior art.** `NousResearch/
+  hermes-agent` issue #481 (the proposed SHA-256 tool-call fingerprint loop guard, described below
+  for the idea's own merit) is **CLOSED with "No branches or pull requests"** — confirmed it was
+  never implemented or merged into `hermes-agent`, just a proposal that got closed. Originally
+  flagged in this entry as unconfirmed-but-promising reference code; it is not code at all. **The
+  idea itself may still be worth naming as a design option** (kept below, since a good idea doesn't
+  stop being a good idea for going unbuilt elsewhere), but treat it as a from-scratch design
+  sketch, not something to go copy: `SHA256(tool_name + serialized_args)` fingerprints each call in
+  a sliding window, detecting exact repeats/ping-pong/multi-step cycles, with graduated
+  warning-then-hard-block escalation — operating one level BELOW DeepDelve's completion-check layer
+  (inside a single dispatch's own tool-call stream, not across completion-check retry attempts).
+  DeepDelve's `CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD` operates on repeated COMPLETION-CHECK
+  problems across whole dispatches; this targets repeated raw TOOL CALLS within one dispatch's own
+  turn — a genuinely different, complementary granularity, worth considering on its own merits
+  (catching e.g. a Searcher calling `fetch_url_to_workspace` on the same URL 6 times in one turn,
+  the exact shape of the `qwen3:8b` `sources/paper_143022.md` incident and the MiniCPM4-MCP
+  task-name-as-filename loop, both in History) — but this would be new DeepDelve-original work, not
+  an adaptation of anyone else's shipped code.
 
 - **Re-run the full 11-candidate local-model bake-off via vLLM instead of Ollama — IN PROGRESS,
   most candidates now closed, moved to History as each verdict lands.** Two independent, confirmed
