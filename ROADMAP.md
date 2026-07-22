@@ -1570,6 +1570,63 @@ tried, twice, not merely proposed):
 ## Completed
 
 
+- **Shared-quota starvation, angles (a) and (c) — IMPLEMENTED and live-verified 2026-07-21**,
+  found via a live benchmark run (the standing sales-forecasting/heuristic-algorithms query, right
+  after this session's 4 synthesis fixes shipped) that failed outright: `Report: NOT WRITTEN`,
+  `thin_coverage` 4x consecutive, retry budget exhausted. Root-caused with hard evidence, not
+  assumption — one sibling task (`comparison_GA`) produced 14 finding entries and 26 tool-call log
+  lines; its four siblings (`comparison_PSO`/`SA`/`ACO`/`BO`) got exactly 1 log line each and the
+  model's own narration said outright "could not be retrieved due to exhausted search quota."
+  - **Angle (a)** (`src/tools/core.py::check_quota`): the existing per-task rescue required
+    `task_fetched_urls_ctx` to be non-empty (proof a task had already fetched something), but
+    `web_search` never populates that context var — only `fetch_url_to_workspace` does — so a task
+    blocked on its own FIRST `web_search` call could never qualify, exactly backwards from what a
+    starved task needs. Dropped the requirement: every task now gets one guaranteed grace top-up
+    the first time it hits the wall, proven progress or not, still bounded to once per task_id.
+  - **Angle (c)** (`src/engine/orchestrator.py`, new `_reserve_batch_quota_headroom` +
+    `delegate_tasks`'s call site): with `max_concurrent_tasks` small (often 1), tasks in one
+    `delegate_tasks` batch run roughly in listed order, sequentially draining the same shared
+    pool — a heavily-active sibling can structurally starve later-listed ones even across
+    completion-check topups. Pre-reserves enough total headroom for the WHOLE batch (2 calls/task
+    for `web_search`, 1 for `fetch_url_to_workspace`) before any task in it starts, removing the
+    structural first-mover advantage. Not true round-robin scheduling (would need cooperative
+    mid-turn interleaving, a much bigger change) — bounds the damage instead of eliminating dispatch
+    order entirely.
+  - **Live re-test #2, same query, confirmed the fix**: zero `thin_coverage` attempts (vs. 4),
+    25 findings recorded across 9 balanced task angles (vs. one task dominating 14/28), a real
+    report converged in 4 attempts. Quota starvation itself is closed.
+  - **A second, distinct bug found in that same re-test, also fixed**: `findings.md` carried an
+    `AUTO-RECOVERED DRAFT` banner — FindingsWriter narrated instead of calling
+    `write_workspace_file`, and the narration was itself cut short by its own generation budget
+    mid-way, capturing only 3 of 25 real findings. Root cause: `SUBAGENT_BUDGET_NUDGE`
+    (`orchestrator.py`) is a single, role-blind nudge shared across every dispatched role, and its
+    text — "do NOT call any more tools... return as your final message" — is correct for
+    Searcher/Analyzer (their final message IS their findings) but directly instructs a WRITER role
+    (Builder/FindingsWriter, whose entire success criterion is calling `write_workspace_file`) to do
+    the exact opposite of its job the moment it hits budget pressure. New `_select_budget_nudge`
+    (pure, testable) + `SUBAGENT_BUDGET_NUDGE_WRITER` route Builder/FindingsWriter to a
+    write-the-file-NOW nudge instead. **User's own catch, not found via self-audit**: this was
+    findable by reading the code (a shared mechanism used across roles with different real
+    requirements) without needing a live failure — folded into the standing "check all surfaces"
+    lesson.
+  - **Live re-test #3 confirmed this specific bug is fixed, but surfaced a DEEPER, still-open one**:
+    no `AUTO-RECOVERED` banner this time, `findings.md` written via a real `write_workspace_file`
+    call, faster convergence (2 real problems, not 4), 26 sources, 0 web_search failures. But
+    `findings.md` contained exactly 1 of 33 real findings recorded in `_run_state.json` — the model
+    chose to write a single well-formatted, fully-cited entry rather than all 33, and no existing
+    check verifies "findings.md reflects everything found," only "findings.md exists and is
+    formatted correctly." The final report was grounded (zero fabrication) but entirely about an
+    unrelated topic (a University of Rochester class project on Corning Inc.'s revenue), missing
+    every Colombia/heuristic-algorithm angle despite 9/26 fetched sources containing real Colombia
+    content. **Net: converted a total-loss failure (unverified narration, 3/25 kept) into a
+    partial-loss failure (verified real file, 1/33 kept)** — real progress, not a full fix. The
+    underlying pressure (`context_budget_chars`'s single ~50000-char ceiling is too tight for
+    FindingsWriter to consolidate a large finding set in one dispatch, narrating or writing) is
+    still open — see Pending, tracked as its own item, actively being hunted.
+  - All new logic pulled into pure, directly-testable functions (`_reserve_batch_quota_headroom`,
+    `_select_budget_nudge`), same established pattern as `_agent_routing_rejection_reason`.
+    `test_structural_checks.py` extended for all three; full suite green.
+
 - **Four literature-backed synthesis/reliability candidates — IMPLEMENTED 2026-07-22**, planned in
   `~/.claude/plans/vast-singing-creek.md` and executed the same session. All four extend
   `src/engine/completion.py`'s `GROUNDING_CHECKS`/`_dispatch_writer_review_fix`/
@@ -2490,6 +2547,27 @@ tried, twice, not merely proposed):
 
 ## Pending
 
+
+- **FindingsWriter drops most real findings even when it writes the file correctly — CONFIRMED
+  live 2026-07-21, actively being hunted.** Originally flagged from History (heterogeneous-tiering
+  investigation, 2026-07-18) as an untested hypothesis ("writer-tier content drop with no quota
+  exhaustion... may be a broader prioritization/attention problem"); now independently reproduced
+  with a fresh, real live run (see Completed's quota-starvation entry, "Live re-test #3"):
+  `_run_state.json` recorded 33 real findings, `findings.md` was written correctly (no
+  `AUTO-RECOVERED` banner, real `write_workspace_file` call, no format problems) but contained
+  exactly 1 of them. The final report was fully grounded (zero fabrication) but entirely off-topic
+  relative to the query (a University of Rochester class-project revenue forecast, no mention of
+  heuristic algorithms, multi-franchise sales, or Colombia) despite 9/26 fetched sources containing
+  real Colombia-specific content that was simply never included. No existing check verifies
+  "findings.md reflects everything the run actually found" — only "findings.md exists and is
+  correctly formatted," which a 1-of-33-findings file trivially satisfies. Candidate root cause,
+  not yet confirmed: the same `context_budget_chars` (~50000 chars) pressure that caused the
+  narration-cutoff bug (now fixed) may be pushing FindingsWriter to write a MINIMAL valid file
+  rather than a complete one once it senses budget pressure, whether narrating or writing directly.
+  This session's PIVOT (force reasoning at synthesis) and Lost-in-the-Middle (findings-ordering)
+  fixes target a related but distinct shape (content present in findings.md but under-used by
+  Builder) — this is upstream of that, content never REACHING findings.md at all, so those fixes
+  don't apply here. Needs its own root-cause investigation before a fix can be scoped.
 
 - **`run_cli`/`BasicTuiAgent` run-lifecycle duplication in `src/engine/tui.py` — still open,
   reconfirmed by the whole-repo Ponytail audit 2026-07-21, tracked under a new name to avoid
