@@ -934,10 +934,29 @@ _CUTOFF_ONLY_SUMMARY_RE = re.compile(
 
 def _is_citable_finding(f: dict) -> bool:
     """A real, http(s) source_url whose summary isn't a pure sub_agent_timeout_minutes cutoff
-    marker. Shared predicate (2026-07-22) so _build_findings_source_material,
-    _uncited_task_names, and _find_propagated_bad_content all agree on one definition."""
+    marker, AND isn't confirmed off-topic by the scope-relevance check. Shared predicate
+    (2026-07-22) so _build_findings_source_material, _uncited_task_names, and
+    _find_propagated_bad_content all agree on one definition.
+
+    The relevance-flag condition (found live 2026-07-21): orchestrator.py's topical-relevance
+    check appends a "[SYSTEM RELEVANCE WARNING: none of the sources fetched for this task
+    actually mention {entities}...]" marker when NONE of a task's fetched sources mention a
+    required scope entity -- but the finding was still rendered as an ordinary citable entry,
+    indistinguishable from genuinely useful findings around it. Live-observed: a Colombia-holidays
+    task that fetched a New Zealand page carried exactly this marker, sat near the front of a
+    30-entry evidence base, and FindingsWriter abandoned the whole structured list afterward
+    (confirmed via literature, not just this one incident: RAG noise-robustness research shows
+    irrelevant retrieved content measurably degrades generation; DeepResearch-Slice, arXiv:
+    2601.03261, names "distracted by spurious passages" as a root cause of exactly this pattern).
+    Scoped to RELEVANCE warnings only, not the two VERIFICATION-warning variants (citation-mismatch
+    flags) -- a relevance-flagged finding is confirmed off-topic for the required scope with zero
+    value regardless of its other content, whereas a verification warning flags a narrower
+    citation mismatch that may still coexist with other real, usable content in the same finding."""
     src = f.get("source_url") or ""
-    return src.startswith("http") and not _CUTOFF_ONLY_SUMMARY_RE.match(f.get("summary") or "")
+    summary = f.get("summary") or ""
+    if not (src.startswith("http") and not _CUTOFF_ONLY_SUMMARY_RE.match(summary)):
+        return False
+    return "[SYSTEM RELEVANCE WARNING" not in summary
 
 
 def _dedupe_findings(findings: list) -> list:
@@ -1054,7 +1073,7 @@ def _build_findings_source_material(run_state: "RunState") -> str:  # noqa: F821
     # not theoretical, failure mode. Explicitly showing it here means FindingsWriter's own
     # findings.md entries can carry the real filename too, and any downstream re-verification
     # (Builder, PeerReviewer, a human) never has to guess it either.
-    url_to_filename = {u.get("url", "").rstrip("/"): u.get("filename") for u in urls}
+    url_to_meta = {u.get("url", "").rstrip("/"): u for u in urls}
     # Split on whether source_url is a real fetched URL vs. add_finding's own bookkeeping
     # fallback (the bare task_name, used when a task produced no fetchable/reference URL at
     # all -- see orchestrator.py's _run_single_task). Rendering both under the same
@@ -1073,10 +1092,19 @@ def _build_findings_source_material(run_state: "RunState") -> str:  # noqa: F821
     for f in deduped:
         if _is_citable_finding(f):
             src = f.get("source_url") or ""
-            fn = url_to_filename.get(src.rstrip("/"))
+            meta = url_to_meta.get(src.rstrip("/"), {})
+            fn = meta.get("filename")
+            title = meta.get("title")
+            # A real title (tools/web.py::_extract_html_metadata, threaded through
+            # record_fetched_url as of 2026-07-21) lets this heading match
+            # FINDINGS_WRITER_INSTRUCTIONS' own required output format exactly -- turning most
+            # entries into a copy/light-edit task instead of invent-a-title-then-write for every
+            # one of them. Falls back to the plain "### Source: url" shape when no title was
+            # extracted (non-HTML fetches, or extraction failed) -- never a hard requirement.
+            heading = f"### [{title}]({src})" if title else f"### Source: {src}"
             entries.append((
                 f.get("task_name") or src,
-                f"### Source: {src}" + (f" (saved as {fn})" if fn else "") + f"\n{f.get('summary', '')}"
+                heading + (f" (saved as {fn})" if fn else "") + f"\n{f.get('summary', '')}"
             ))
     uncited_task_names = _uncited_task_names(deduped)
 

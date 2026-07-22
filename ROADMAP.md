@@ -1570,6 +1570,53 @@ tried, twice, not merely proposed):
 ## Completed
 
 
+- **FindingsWriter evidence-base quality, two fixes — IMPLEMENTED and live-verified 2026-07-21
+  (confirmed working at their own layer; the deeper root behavior they were meant to help with is
+  still open, see Pending).** Root-caused via the actual session transcript
+  (`~/.deepdelve/sessions/`, not guessed): a live run's FindingsWriter dispatch abandoned a
+  complete, in-budget, 30-real-finding evidence base ("we don't see them here," its own recorded
+  reasoning) and went to re-read raw source files by hand instead, writing `findings.md` from only
+  1 of 33 real findings. Researched real prior art before building (RAG noise-robustness
+  literature, DeepResearch-Slice arXiv:2601.03261 read in full — its diagnosis of "distracted by
+  spurious passages" as one root cause of exactly this retrieval-utilization gap directly
+  supported fix 1 below; LLM×MapReduce arXiv:2410.09342 read in full, informing the not-yet-built
+  chunked-dispatch alternative in Pending).
+  - **Fix 1 — filter relevance-flagged findings out of the citable list**
+    (`src/engine/completion.py::_is_citable_finding`): a finding confirmed off-topic by
+    `orchestrator.py`'s scope-relevance check (`[SYSTEM RELEVANCE WARNING...]`) was still rendered
+    as an ordinary citable entry, indistinguishable from genuinely useful findings around it —
+    live case was a Colombia-holidays task that fetched a New Zealand page. Scoped specifically to
+    the RELEVANCE marker (confirmed off-topic, zero value regardless of other content), not the two
+    VERIFICATION-warning variants (a narrower citation-mismatch that may coexist with real
+    content). Since `_is_citable_finding` is the shared predicate already reused by
+    `_build_findings_source_material`, `_uncited_task_names`, and `_find_propagated_bad_content`,
+    this one change correctly propagates everywhere.
+  - **Fix 2 — thread the already-extracted page title through to the evidence base**
+    (`src/utils/run_state.py::record_fetched_url`, `src/tools/web.py::_save_fetched`,
+    `completion.py::_build_findings_source_material`): the evidence base rendered
+    `### Source: {url}` (no title) while `FINDINGS_WRITER_INSTRUCTIONS` requires the model's own
+    output to be `### [Title](url)` — a real format mismatch forcing the model to invent a title
+    for every entry before it could start. A real title IS already extracted at fetch time
+    (`_extract_html_metadata`) but was only ever written into the saved file's own header, never
+    threaded to `run_state.data["fetched_urls"]`. Now is (same "absent key when not present"
+    convention as `stub`) — `_build_findings_source_material` renders `### [{title}]({url})` when
+    available, falling back to the plain shape when not (non-HTML fetches, extraction failures).
+    Confirmed safe first: `extract_cited_urls` (the actual URL-extraction workhorse every
+    grounding check uses) is a bare URL regex, completely format-agnostic — changing the heading
+    shape risked nothing downstream.
+  - **Live re-test #4 confirmed both fixes fire correctly**: the one relevance-flagged finding
+    this run was correctly excluded; 29/33 fetched URLs got a real title, 36/40 assembled entries
+    used the correct `[Title](url)` format. **But FindingsWriter's first action was again reading
+    raw source files directly, bypassing the (now cleaner, better-formatted) evidence base
+    entirely** — 2 of 44 real findings made it into `findings.md`, both generic definitional
+    content, no domain-specific or Colombia content. Two independent live runs now confirm the
+    model's raw-file-exploration habit is independent of evidence-base noise/format — real
+    progress on evidence-base quality, but not the fix for the actual behavior. See Pending for
+    the next candidate (workflow-order fix).
+  - `test_structural_checks.py` extended for both (`_is_citable_finding`'s relevance-exclusion
+    plus a VERIFICATION-warning control case; `record_fetched_url`'s title storage with/without a
+    title; `_build_findings_source_material`'s title-vs-fallback rendering). Full suite green.
+
 - **Shared-quota starvation, angles (a) and (c) — IMPLEMENTED and live-verified 2026-07-21**,
   found via a live benchmark run (the standing sales-forecasting/heuristic-algorithms query, right
   after this session's 4 synthesis fixes shipped) that failed outright: `Report: NOT WRITTEN`,
@@ -2548,26 +2595,58 @@ tried, twice, not merely proposed):
 ## Pending
 
 
-- **FindingsWriter drops most real findings even when it writes the file correctly — CONFIRMED
-  live 2026-07-21, actively being hunted.** Originally flagged from History (heterogeneous-tiering
-  investigation, 2026-07-18) as an untested hypothesis ("writer-tier content drop with no quota
-  exhaustion... may be a broader prioritization/attention problem"); now independently reproduced
-  with a fresh, real live run (see Completed's quota-starvation entry, "Live re-test #3"):
-  `_run_state.json` recorded 33 real findings, `findings.md` was written correctly (no
-  `AUTO-RECOVERED` banner, real `write_workspace_file` call, no format problems) but contained
-  exactly 1 of them. The final report was fully grounded (zero fabrication) but entirely off-topic
-  relative to the query (a University of Rochester class-project revenue forecast, no mention of
-  heuristic algorithms, multi-franchise sales, or Colombia) despite 9/26 fetched sources containing
-  real Colombia-specific content that was simply never included. No existing check verifies
-  "findings.md reflects everything the run actually found" — only "findings.md exists and is
-  correctly formatted," which a 1-of-33-findings file trivially satisfies. Candidate root cause,
-  not yet confirmed: the same `context_budget_chars` (~50000 chars) pressure that caused the
-  narration-cutoff bug (now fixed) may be pushing FindingsWriter to write a MINIMAL valid file
-  rather than a complete one once it senses budget pressure, whether narrating or writing directly.
-  This session's PIVOT (force reasoning at synthesis) and Lost-in-the-Middle (findings-ordering)
-  fixes target a related but distinct shape (content present in findings.md but under-used by
-  Builder) — this is upstream of that, content never REACHING findings.md at all, so those fixes
-  don't apply here. Needs its own root-cause investigation before a fix can be scoped.
+- **FindingsWriter drops most real findings even when it writes the file correctly — TWO
+  contributing factors found and fixed, ROOT BEHAVIORAL CAUSE still open after 2 independent live
+  re-tests, actively being hunted.** Originally flagged from History (heterogeneous-tiering
+  investigation, 2026-07-18) as an untested hypothesis; independently reproduced live 2026-07-21
+  (Completed's quota-starvation entry, "Live re-test #3"): `_run_state.json` recorded 33 real
+  findings, `findings.md` was written correctly (no `AUTO-RECOVERED` banner) but contained exactly
+  1 of them, and the final report was fully grounded but entirely off-topic (a University of
+  Rochester class project, no Colombia/heuristic-algorithm content) despite real matching sources
+  sitting unused.
+  - **Root-caused by reading the actual session transcript directly** (`~/.deepdelve/sessions/`,
+    not guessed): the assembled evidence base was complete and within budget (30 real findings,
+    44,897 chars — confirmed by replaying `_build_findings_source_material` against the real run's
+    `_run_state.json`, nothing omitted). The model's own recorded reasoning: *"we don't see them
+    here"* — it abandoned the structured evidence base entirely and went to re-read raw source
+    files by hand instead (guessing filenames, including one that doesn't exist), writing
+    `findings.md` from only the one file it happened to be looking at when it stopped.
+  - **Two concrete, literature-backed contributing factors found and FIXED** (`src/engine/
+    completion.py`, `src/utils/run_state.py`, `src/tools/web.py` — see Completed for full detail):
+    (1) a finding confirmed off-topic by the scope-relevance check
+    (`[SYSTEM RELEVANCE WARNING...]`) was still rendered as an ordinary citable entry,
+    indistinguishable from genuinely useful findings — now excluded via `_is_citable_finding`;
+    (2) the evidence base rendered `### Source: {url}` with no title, while
+    `FINDINGS_WRITER_INSTRUCTIONS` requires the model's OWN output to be `### [Title](url)` — a
+    real, avoidable format mismatch forcing the model to invent a title for every entry before it
+    could start. A real title IS already extracted at fetch time
+    (`tools/web.py::_extract_html_metadata`) but was never threaded through to
+    `run_state.data["fetched_urls"]` — now is.
+  - **Live re-test #4 confirmed BOTH fixes work correctly at their own layer, but the root
+    behavior is unchanged.** Directly verified against the real run: the 1 relevance-flagged
+    finding this run (`colombia_cultural_references_v2`) was correctly excluded; 29/33 fetched
+    URLs got a real title, 36/40 assembled entries used the correct `### [Title](url)` format.
+    **But the session transcript shows FindingsWriter's very FIRST action on this run was, again,
+    calling `read_workspace_file` directly on raw source files** (ResearchGate PSO paper, Springer
+    paper) — it never engaged with the compiled evidence block at all, exactly like before either
+    fix landed. `findings.md` ended up with 2 of 44 real findings (both generic Wikipedia
+    definitional content — "what is a heuristic," "what is a metaheuristic" — no domain
+    comparison, no Colombia content), after 7 completion-check rounds (`findings_ungrounded` fired
+    3x, triggering the whole-approach-rebuild escalation from earlier this session).
+  - **Conclusion, two independent live runs now agree**: the model's habit of exploring raw files
+    by hand instead of trusting the compiled evidence list is independent of that list's noise
+    level or format — fixing both didn't change the headline behavior. This makes the earlier-
+    deprioritized "reorder `FINDINGS_WRITER_INSTRUCTIONS`' workflow to require writing from the
+    compiled evidence FIRST, before any raw file re-reading" idea the best-supported next
+    candidate, not a request for more research. A secondary finding worth tracking separately:
+    titled entries are longer, so the assembled material can now exceed `context_budget_chars`
+    sooner than before (51,217 chars this run, over the 50,000 default) — not the main driver of
+    this specific failure (the model never got far enough to hit it), but worth revisiting once
+    the primary behavior is fixed.
+  - **Not yet scoped**: the workflow-reorder fix itself, and whether it alone is enough or needs
+    pairing with a real structural gate (e.g., disallow `read_workspace_file` before at least one
+    `write_workspace_file` attempt). Also still not built: the chunked map-reduce dispatch option
+    (LLM×MapReduce-style, arXiv:2410.09342) named earlier as a bigger, deferred alternative.
 
 - **`run_cli`/`BasicTuiAgent` run-lifecycle duplication in `src/engine/tui.py` — still open,
   reconfirmed by the whole-repo Ponytail audit 2026-07-21, tracked under a new name to avoid
@@ -3245,3 +3324,18 @@ too. Both stay here, ready but inert, until the user says go.
        acknowledging the gap. This is a more precise, now evidence-backed case for the
        citation-grounding GRPO fine-tune above: the target behavior is specifically "when your
        source material contains a verification warning naming your only candidate URL as
+       unfetched, do not cite it" — a clean binary reward signal, same shape as `thin_coverage`.
+
+- **New candidate, 2026-07-21, added to the list not the queue** (fine-tuning stays paused per this
+  section's own standing gate): DeepResearch-Slice (arXiv:2601.03261, read in full) formalizes
+  DeepDelve's own "content vanishes during synthesis" family as `P(Correct) = P(Retrieved) ×
+  P(Utilization|Retrieved)` and proposes a trained boundary-prediction head that slices retrieved
+  text down to only the relevant span before the reasoning model ever sees it — a real, measured
+  fix (+73% relative accuracy, Qwen2.5-7B frozen backbone, no fine-tuning of the reasoning model
+  itself, only the small slicing head). Directly relevant to the live-caught
+  FindingsWriter-abandons-the-evidence-base bug (found 2026-07-21, same session): their own
+  diagnosis names "distracted by spurious passages" as one of three root causes, which matches the
+  noisy `[SYSTEM RELEVANCE WARNING]`-flagged entry found sitting in DeepDelve's own assembled
+  evidence base. Not pursued now — needs training a real model (the boundary-prediction head),
+  same gate as every other fine-tuning candidate here. If fine-tuning ever resumes, this is a
+  concrete, evidence-backed target worth scoping alongside the citation-grounding reward above.

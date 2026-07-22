@@ -71,7 +71,8 @@ def reset_fetched_urls() -> None:
     fetched_urls_ctx.set([])
 
 
-def record_fetched_url(url: str, filename: str, stub: Optional[str] = None) -> None:
+def record_fetched_url(url: str, filename: str, stub: Optional[str] = None,
+                        title: Optional[str] = None) -> None:
     entry = {"url": url, "filename": filename, "timestamp": time.time()}
     # A truthy stub is the REASON string from tools/web.py's _stub_reason (soft-404/paywall
     # shell). Key absent when not a stub, so pre-existing _run_state.json files (and any reader
@@ -80,6 +81,13 @@ def record_fetched_url(url: str, filename: str, stub: Optional[str] = None) -> N
     # grounding layer needs to know a "successful" fetch had no real content behind it.
     if stub:
         entry["stub"] = stub
+    # Real page title, already extracted at fetch time (tools/web.py::_extract_html_metadata) but
+    # previously only written into the saved file's own header line, never surfaced here (found
+    # live 2026-07-21: _build_findings_source_material had no title to give FindingsWriter, forcing
+    # it to invent one for every entry before it could even start consolidating). Same
+    # absent-key-when-not-present convention as stub.
+    if title:
+        entry["title"] = title
 
     lst = fetched_urls_ctx.get()
     if lst is None:
