@@ -560,6 +560,46 @@ def check_cross_source_contradiction(ctx: Ctx) -> Optional[Verdict]:
     )
 
 
+def check_propagated_ungrounded_content(ctx: Ctx) -> Optional[Verdict]:
+    """Propagation-aware check (2026-07-22, PING taxonomy, see _find_propagated_bad_content's own
+    docstring for the mechanism). Only fires if a flagged task_name's suspect content also shows
+    up inside ctx.content itself -- otherwise this is a findings.md-hygiene issue the Builder never
+    actually drew on, not yet a report-level grounding problem worth quarantining over."""
+    if not ctx.content:
+        return None
+    findings = ctx.run_state.data.get("findings", []) if ctx.run_state else []
+    if not findings:
+        return None
+    from utils.grounding import extract_salient_terms
+    deduped = _dedupe_findings(findings)
+    uncited_task_names = _uncited_task_names(deduped)
+    flagged = _find_propagated_bad_content(deduped, uncited_task_names)
+    if not flagged:
+        return None
+    content_terms = extract_salient_terms(ctx.content)
+    for task_name in flagged:
+        for f in deduped:
+            if f.get("task_name") != task_name:
+                continue
+            src = f.get("source_url") or ""
+            if src.startswith("http") and not _CUTOFF_ONLY_SUMMARY_RE.match(f.get("summary") or ""):
+                summary_terms = extract_salient_terms(f.get("summary") or "")
+                if summary_terms and (summary_terms & content_terms):
+                    return Verdict(
+                        "propagated_ungrounded",
+                        f"`{ctx.req_artifact}` draws on findings for task '{task_name}' that reuse "
+                        f"content from an earlier, ungrounded (cutoff/unfetched) attempt at the same "
+                        f"task, without independent verification. Pushing agent to re-verify.",
+                        f"SYSTEM WARNING: {ctx.last_chance_prefix}Some content attributed to task "
+                        f"'{task_name}' in findings.md closely matches an EARLIER, ungrounded attempt "
+                        f"at that same task (one that was cut off or never fetched a real source) — "
+                        f"this looks like content propagated forward without being independently "
+                        f"re-verified. Do not simply repeat it in '{ctx.req_artifact}'; either confirm "
+                        f"it against a real fetched source or omit it.",
+                    )
+    return None
+
+
 def check_not_grounded(ctx: Ctx) -> Optional[Verdict]:
     """The generic hard gate: at least one cited URL matches nothing actually fetched this run."""
     gp = ctx.grounding_problem
@@ -594,6 +634,7 @@ GROUNDING_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
     check_uncited_claims,
     check_excluded_topic,
     check_cross_source_contradiction,
+    check_propagated_ungrounded_content,
     check_not_grounded,  # generic catch-all: fires on ANY grounding problem — keep it LAST
 ]
 
@@ -767,7 +808,19 @@ async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artif
     rather than silently doing nothing.
 
     Capped at 3 dispatches total (Write, Review, optional Fix) — no unbounded nesting."""
+    # Snapshot think_tool's usage BEFORE the write dispatch (2026-07-22, PIVOT arXiv:2605.11225,
+    # RESEARCH.md §1): both BUILDER_INSTRUCTIONS and FINDINGS_WRITER_INSTRUCTIONS already tell the
+    # writer to use think_tool before finalizing ("<Show Your Thinking>"), but a prompt-only nudge
+    # has a well-documented history in this project of being unreliable on small local models --
+    # this is the same reads_before/reads_after quota-delta VERIFICATION pattern already proven a
+    # few lines below for PeerReviewer's read_workspace_file, applied to the writer's think_tool
+    # instead. Fetched once here (not re-fetched per snapshot) since tool_quotas_ctx is one shared
+    # object for the life of this dispatch.
+    pool = tool_quotas_ctx.get()
+    think_before = pool.get("think_tool", {}).get("used") if pool else None
     write_result = await dispatch_task(f"{writer_role}Fix_attempt{attempt + 1}", write_instructions, writer_role)
+    think_after = pool.get("think_tool", {}).get("used") if pool else None
+    think_tool_skipped = think_before is not None and think_after == think_before
 
     # Immediate narration salvage (2026-07-18 bake-off finding): a writer role "Finishing" its
     # turn is NOT the same as it having called write_workspace_file — confirmed live twice this
@@ -798,8 +851,8 @@ async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artif
     # Snapshot read_workspace_file's usage count BEFORE dispatching PeerReviewer, so a fabricated
     # "REVIEW: CLEAN" that never actually opened the file can be caught below (see is_clean gate).
     # None (not 0) when the quota isn't tracked at all -- distinguishes "can't verify" from "verified
-    # zero reads," so a config with this quota disabled doesn't get falsely distrusted.
-    pool = tool_quotas_ctx.get()
+    # zero reads," so a config with this quota disabled doesn't get falsely distrusted. Reuses the
+    # `pool` object already fetched above for the think_tool snapshot (same object, same run).
     reads_before = pool.get("read_workspace_file", {}).get("used") if pool else None
 
     review = await dispatch_task(
@@ -832,7 +885,15 @@ async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artif
             )
 
     if is_clean:
-        notify(f"**System ({attempt + 1}):** PeerReviewer found no issues with the rebuilt `{req_artifact}`.")
+        # think_tool_skipped is NOT a hard gate here, deliberately (2026-07-22): a fabricated CLEAN
+        # review is a lie about a verification step that DID claim to happen (hence the hard
+        # reads_before/reads_after gate above); a writer skipping think_tool makes no claim either
+        # way, so the harm model differs -- gating on it risks burning retry budget on an otherwise
+        # -fine draft. Surfaced for run-telemetry visibility only when the draft is otherwise clean.
+        if think_tool_skipped:
+            notify(f"**System ({attempt + 1}):** PeerReviewer found no issues with the rebuilt `{req_artifact}` (note: {writer_role} skipped its own required think_tool reasoning step before writing).")
+        else:
+            notify(f"**System ({attempt + 1}):** PeerReviewer found no issues with the rebuilt `{req_artifact}`.")
         return
 
     notify(f"**System ({attempt + 1}):** PeerReviewer flagged issues in the rebuilt `{req_artifact}` — dispatching one corrective {writer_role} pass.")
@@ -846,11 +907,17 @@ async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artif
     # was nothing for it to find. Builder's source (findings.md itself) IS a real file it could
     # have re-read, but re-including write_instructions here is correct for both roles and keeps
     # this function writer-role-agnostic.
+    think_tool_note = (
+        f" Your last draft also skipped its own required think_tool reasoning step before "
+        f"writing — use think_tool this time to actually check each claim before finalizing."
+        if think_tool_skipped else ""
+    )
     fix_instructions = (
         f"PeerReviewer critiqued your last draft of '{req_artifact}'. Fix every issue it raised, "
         f"using only the real source material below (never your own prior knowledge), "
         f"then rewrite the file:\n\n{review_text}\n\n"
         f"--- YOUR ORIGINAL TASK INSTRUCTIONS AND SOURCE MATERIAL (unchanged) ---\n{write_instructions}"
+        f"{think_tool_note}"
     )
     await dispatch_task(f"{writer_role}Fix_attempt{attempt + 1}_reviewed", fix_instructions, writer_role)
 
@@ -863,6 +930,100 @@ _CUTOFF_ONLY_SUMMARY_RE = re.compile(
     r"^\s*\[SYSTEM: task '.*?' cut short -- sub_agent_timeout_minutes \(\d+\) exceeded"
     r"(?: \(stream produced no update before the deadline\))?\.\]\s*$"
 )
+
+
+def _is_citable_finding(f: dict) -> bool:
+    """A real, http(s) source_url whose summary isn't a pure sub_agent_timeout_minutes cutoff
+    marker. Shared predicate (2026-07-22) so _build_findings_source_material,
+    _uncited_task_names, and _find_propagated_bad_content all agree on one definition."""
+    src = f.get("source_url") or ""
+    return src.startswith("http") and not _CUTOFF_ONLY_SUMMARY_RE.match(f.get("summary") or "")
+
+
+def _dedupe_findings(findings: list) -> list:
+    """Exact (source_url, summary) dedup, shared by _build_findings_source_material and
+    check_propagated_ungrounded_content (2026-07-22) -- extracted so both stay in sync on the one
+    definition of "duplicate" instead of drifting."""
+    seen = set()
+    deduped = []
+    for f in findings:
+        key = (f.get("source_url"), f.get("summary"))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(f)
+    return deduped
+
+
+def _uncited_task_names(deduped: list) -> list:
+    """task_names of findings that aren't real, citable content -- non-http source_url (add_finding's
+    own task_name fallback) or a pure sub_agent_timeout_minutes cutoff marker. Shared by
+    _build_findings_source_material and check_propagated_ungrounded_content (2026-07-22)."""
+    return [
+        f.get("task_name") or "(unnamed task)" for f in deduped if not _is_citable_finding(f)
+    ]
+
+
+def _reorder_findings_for_position_bias(entries: list) -> list:
+    """Zigzag/sandwich reorder (2026-07-22, "Lost in the Middle" arXiv:2307.03172 + PING's "Anchor
+    Effect", both in RESEARCH.md §1): models use context well at the start/end and poorly in the
+    middle, and separately tend to over-favor early-retrieved info over late-retrieved info. No
+    per-finding value/importance signal exists anywhere in this project's data model (RunState.
+    add_finding's fields are source_url/summary/timestamp/task_name/depth/follow_up_directions/
+    agent_id — nothing to rank by), so this is a pure POSITIONAL transform, not a ranking: split
+    the chronological entries in half, interleave front-half-forward with back-half-reversed, so
+    every entry lands within one "hop" of either edge of the assembled block instead of only the
+    earliest entries getting favorable positioning and everything else drifting toward the middle
+    as a run accumulates more findings."""
+    mid = (len(entries) + 1) // 2
+    front, back = entries[:mid], entries[mid:][::-1]
+    out = []
+    for i in range(mid):
+        out.append(front[i])
+        if i < len(back):
+            out.append(back[i])
+    return out
+
+
+def _find_propagated_bad_content(deduped_findings: list, uncited_task_names: list) -> list:
+    """Propagation-aware hallucination check, narrowed scope (2026-07-22, PING taxonomy
+    arXiv:2601.22984, RESEARCH.md §1): the paper's own "Propagation" category is a later claim
+    built on an earlier hallucinated one, cascading through a multi-round trajectory. DeepDelve has
+    no claim-dependency graph to trace that generally (and confirmed the paper's own released code
+    doesn't build one either) -- this targets the SPECIFIC, already-documented failure shape in
+    this project's own History instead: a task gets redispatched, one attempt produces a real-URL-
+    but-cutoff-summary entry (routed to uncited_task_names by the check above), a LATER attempt for
+    the SAME task_name produces different "real-looking" content that reuses/derives from it
+    without ever being independently grounded -- the exact qwen3:8b/MiniCPM4-MCP split-brain
+    pattern already fixed at the citation-rendering level (2026-07-21) but not yet checked for at
+    the content level. Term-overlap only (extract_salient_terms, utils/grounding.py) -- no NLI
+    model, the smallest defensible version, same tool find_cross_source_contradictions already
+    uses for a structurally similar cross-source comparison."""
+    from utils.grounding import extract_salient_terms
+    uncited_set = set(uncited_task_names)
+    by_task = {}
+    for f in deduped_findings:
+        by_task.setdefault(f.get("task_name"), []).append(f)
+    flagged = []
+    for task_name, group in by_task.items():
+        if task_name not in uncited_set or len(group) < 2:
+            continue
+        bad_summaries = [f.get("summary") or "" for f in group if not _is_citable_finding(f)]
+        good_summaries = [f.get("summary") or "" for f in group if _is_citable_finding(f)]
+        if not bad_summaries or not good_summaries:
+            continue
+        for bad in bad_summaries:
+            bad_terms = extract_salient_terms(bad)
+            if not bad_terms:
+                continue
+            for good in good_summaries:
+                overlap = len(bad_terms & extract_salient_terms(good)) / len(bad_terms)
+                if overlap > 0.5:
+                    flagged.append(task_name)
+                    break
+            if task_name in flagged:
+                break
+    return flagged
 
 
 def _build_findings_source_material(run_state: "RunState") -> str:  # noqa: F821 — utils.run_state.RunState, annotation only
@@ -884,14 +1045,7 @@ def _build_findings_source_material(run_state: "RunState") -> str:  # noqa: F821
     duplicates don't affect, and the raw list is the audit trail other tooling may want intact."""
     findings = run_state.data.get("findings", [])
     urls = run_state.data.get("fetched_urls", [])
-    seen = set()
-    deduped = []
-    for f in findings:
-        key = (f.get("source_url"), f.get("summary"))
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(f)
+    deduped = _dedupe_findings(findings)
     # Real filename per entry, resolved from run_state's own fetched_urls record -- NOT left for
     # FindingsWriter to guess or reconstruct. Same fix shape as the delegate_tasks filename check
     # (2026-07-19): a model given only a bare URL has no reliable way to know the real saved
@@ -916,18 +1070,21 @@ def _build_findings_source_material(run_state: "RunState") -> str:  # noqa: F821
     # real to cite here even though the URL is genuine, so it goes in uncited_task_names instead
     # of being rendered as if it were real content.
     entries = []
-    uncited_task_names = []
     for f in deduped:
-        src = f.get("source_url") or ""
-        summary = f.get("summary") or ""
-        if src.startswith("http") and not _CUTOFF_ONLY_SUMMARY_RE.match(summary):
+        if _is_citable_finding(f):
+            src = f.get("source_url") or ""
             fn = url_to_filename.get(src.rstrip("/"))
             entries.append((
                 f.get("task_name") or src,
                 f"### Source: {src}" + (f" (saved as {fn})" if fn else "") + f"\n{f.get('summary', '')}"
             ))
-        else:
-            uncited_task_names.append(f.get("task_name") or "(unnamed task)")
+    uncited_task_names = _uncited_task_names(deduped)
+
+    # Positional-bias reorder (2026-07-22, see _reorder_findings_for_position_bias's own
+    # docstring) -- applied here, AFTER entries is fully built but BEFORE the budget-truncation
+    # scan below, so truncation still walks entries in their new (not chronological) order. The
+    # uncited_note/omitted_note bookkeeping stays keyed by task_name, insensitive to entry order.
+    entries = _reorder_findings_for_position_bias(entries)
 
     # 2026-07-19 QA audit ("real grounded content silently vanishes during synthesis" — 3
     # independently-fixed prior incidents, this is the common structural gap none of them closed):
@@ -1174,7 +1331,16 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
             # missing_findings — confirmed live (check_missing_findings's own docstring) to
             # genuinely self-correct after 6 identical-looking failures, on the 7th attempt; an
             # early cutoff here would have killed that exact run's real recovery.
+            # force_whole_rebuild (2026-07-22, ACM CAIS '26 planning-horizon paper, RESEARCH.md
+            # §1): single-step replanning (this project's own "ADAPTIVE PLANNING LOOP" shape) gets
+            # stuck in repetitive identical-action loops far more than full-horizon replanning,
+            # which instead regenerates the WHOLE plan on a repetition trigger and tends to revise
+            # strategy rather than keep re-patching the same failed local fix. Bounded to exactly
+            # ONE extra, more expensive attempt per problem type (whole_approach_retry_used_for,
+            # on run_state.data) before falling through to the pre-existing early-exit behavior
+            # unchanged -- never an unbounded loop.
             CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD = 3
+            force_whole_rebuild = False
             if problem and problem != "missing_findings":
                 consecutive = 0
                 for a in reversed(run_state.data.get("completion_check_attempts", [])):
@@ -1183,7 +1349,12 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                     else:
                         break
                 if consecutive >= CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD:
-                    attempt = max_attempts
+                    whole_approach_used = run_state.data.setdefault("whole_approach_retry_used_for", {})
+                    if not whole_approach_used.get(problem):
+                        whole_approach_used[problem] = True
+                        force_whole_rebuild = True
+                    else:
+                        attempt = max_attempts
 
             if verdict and attempt < max_attempts:
                 run_state.attempt = attempt + 1
@@ -1216,10 +1387,21 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                             _ensure_writer_quota_headroom(pool)
                             _ensure_reader_quota_headroom(pool)
                         try:
-                            builder_instructions = (
-                                f"Rewrite '{req_artifact}' from findings.md, fixing this specific problem:\n"
-                                f"{verdict.inject}\n\nWrite the corrected file now via write_workspace_file."
-                            )
+                            if force_whole_rebuild:
+                                builder_instructions = (
+                                    f"Multiple attempts to fix '{req_artifact}' the same way have not "
+                                    f"worked -- do NOT just patch the specific issue again. Rewrite "
+                                    f"'{req_artifact}' completely from scratch using findings.md, as if "
+                                    f"writing it for the first time, reconsidering your whole approach "
+                                    f"to this task rather than repeating the same local fix. The "
+                                    f"specific problem previously flagged was:\n{verdict.inject}\n\n"
+                                    f"Write the corrected file now via write_workspace_file."
+                                )
+                            else:
+                                builder_instructions = (
+                                    f"Rewrite '{req_artifact}' from findings.md, fixing this specific problem:\n"
+                                    f"{verdict.inject}\n\nWrite the corrected file now via write_workspace_file."
+                                )
                             await _dispatch_writer_review_fix(dispatch_task, "Builder", req_artifact, builder_instructions, attempt, notify)
                             run_state.save()
                             # Chained, not returned — see docstring. Loops straight into the next
@@ -1241,7 +1423,16 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                             # tool") and would be actively confusing to FindingsWriter, which has the
                             # opposite tool set (can write, can't delegate). FindingsWriter gets its
                             # own problem-appropriate directive plus its real evidence base instead.
-                            if problem == "findings_ungrounded":
+                            if force_whole_rebuild:
+                                write_directive = (
+                                    "Multiple attempts to fix findings.md the same way have not "
+                                    "worked -- do NOT just patch the specific issue again. "
+                                    "Reconsider your whole approach and rebuild findings.md "
+                                    "completely from scratch below, as if writing it for the "
+                                    "first time, using strictly the real research results — never "
+                                    "your own prior knowledge."
+                                )
+                            elif problem == "findings_ungrounded":
                                 write_directive = (
                                     "The previous findings.md draft was fabricated or wholesale "
                                     "ungrounded and has been moved aside. Rebuild it now, strictly "
@@ -1289,7 +1480,19 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
 
                 notify(f"**System ({attempt + 1}/{max_attempts}):** {verdict.warning}")
                 new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
-                new_inputs.append(Message("user", [{"type": "text", "text": verdict.inject}]))
+                # No artifact-rebuild equivalent at the Planner level (nothing to dispatch a fresh
+                # writer for here — this is the classic inject-into-Planner path, reached either
+                # because dispatch_task is unavailable or the problem isn't writer-fixable) --
+                # closest available equivalent to force_whole_rebuild is a reworded, stronger
+                # directive telling the Planner to reconsider its whole approach instead of
+                # repeating the same fix.
+                inject_text = (
+                    f"SYSTEM: The last {CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD} attempts to "
+                    f"fix this the same way have not worked. Do not repeat the same fix again -- "
+                    f"reconsider your whole approach to this task from scratch before retrying: "
+                    f"{verdict.inject}"
+                ) if force_whole_rebuild else verdict.inject
+                new_inputs.append(Message("user", [{"type": "text", "text": inject_text}]))
                 run_state.save()
                 return True, new_inputs
 
