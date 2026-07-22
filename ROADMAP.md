@@ -2474,6 +2474,14 @@ tried, twice, not merely proposed):
   support chain touches a hallucinated ancestor. Needs scoping: DeepDelve doesn't currently track
   claim-level dependency structure at all (findings are flat, keyed by task_name), so this would
   need a real design pass before it's buildable, not just a new check function.
+  **Reference implementation found, 2026-07-22**: the PING paper's own code
+  (`github.com/yuhao-zhan/DeepHalluBench`, `eval_framework/core/`) is real, structured, per-category
+  detector code, not just benchmark data — `claim_verification.py` (NLI-to-LLM cascade grounding),
+  `constraint_checking.py` (restriction neglect), `decomposition.py` (trajectory → atomic units).
+  Confirmed the repo's architecture (decompose-then-check-per-category) directly, but did NOT
+  confirm the propagation/DAG-entailment code specifically exists in a reviewable form yet — worth
+  reading `decomposition.py` and whatever consumes it directly before treating this as a ready-made
+  reference rather than a repo worth investigating further.
 
 - **Force reasoning at synthesis time — new candidate, 2026-07-22, not yet scoped.** From PIVOT
   (Zhang, Popa, Xu, Song, Dimitriadis, Amazon; arXiv:2605.11225, preprint): trajectory inspection
@@ -2489,6 +2497,14 @@ tried, twice, not merely proposed):
   explicitly reason about each finding's inclusion/exclusion before finalizing, rather than relying
   on the model to self-allocate reasoning there. Not yet tested against DeepDelve's own runs — a
   real, concrete hypothesis, not a confirmed cause.
+  **Reference implementation found, 2026-07-22**: `The-AI-Alliance/deep-research-agent-for-
+  applications` (built on `lastmile-ai/mcp-agent`'s "Deep Orchestrator") documents exactly this
+  shape as a named workflow phase — "Input Processing → Plan Development → Execution → Verification
+  → Replanning (if needed)" — an explicit verification phase distinct from and after synthesis,
+  with an "Emergency stop" guard on repeated verification failures. Real prior art for "make
+  verification its own forced step" as a pattern, but this session's research did NOT confirm the
+  mechanical detail (is verification a distinct LLM call, rule-based, or hybrid) — that lives in
+  `mcp-agent`'s actual source, not yet read.
 
 - **Sharper repetition-escalation fix for completion-check retries — new candidate, 2026-07-22, not
   yet scoped.** From "Do Agents Need to Plan Step-by-Step?" (Otani, Bhutani, Kim, Zhang, Hruschka,
@@ -2509,6 +2525,24 @@ tried, twice, not merely proposed):
   preferable for "exploratory or highly dynamic tool-calling tasks" — DeepDelve's actual domain may
   be exactly the exception the paper names, so the repetitive-loop mechanism is worth taking
   seriously but the accuracy-parity headline should not be assumed to transfer.
+  **Reference implementation found, 2026-07-22, a genuinely DIFFERENT granularity worth weighing
+  against "force whole-plan regeneration"**: `NousResearch/hermes-agent` issue #481 proposes a
+  Tool-Call Loop Guard operating one level BELOW DeepDelve's completion-check layer — inside a
+  single dispatch's own tool-call stream, not across completion-check retry attempts. Mechanism:
+  `SHA256(tool_name + serialized_args)` fingerprints each call in a sliding window (default 10),
+  detecting exact repeats, ping-pong (A→B→A→B), and multi-step cycles (A→B→C→A→B→C); graduated
+  response — inject a warning nudge first, hard-block the repeated call only after
+  `max_warnings_before_block` (default 2) further attempts, forcing a strategy change while
+  preserving agent agency rather than an immediate full replan. DeepDelve's
+  `CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD` operates on repeated COMPLETION-CHECK problems
+  across whole dispatches; this operates on repeated raw TOOL CALLS within one dispatch's own
+  turn — the two are complementary, not substitutes. Worth considering whether DeepDelve needs an
+  in-turn guard like this too (catching e.g. a Searcher calling `fetch_url_to_workspace` on the
+  same URL 6 times in one turn, the exact shape of the `qwen3:8b` `sources/paper_143022.md`
+  incident and the MiniCPM4-MCP task-name-as-filename loop, both in History) rather than only a
+  cross-attempt one. Not yet confirmed whether this feature actually shipped in `hermes-agent`
+  (found as an open issue/proposal, not verified as merged code) — needs checking before treating
+  it as a working reference rather than a design sketch.
 
 - **Re-run the full 11-candidate local-model bake-off via vLLM instead of Ollama — IN PROGRESS,
   most candidates now closed, moved to History as each verdict lands.** Two independent, confirmed
