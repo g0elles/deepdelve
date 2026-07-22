@@ -582,13 +582,93 @@ Dame + Vanderbilt University + Google), arXiv:2605.29442, 2026-05-28 (preprint, 
   benchmarks predict, and in ways that recur across agent domains) is not an artifact of any single
   study's methodology.
 
+### ✅ "Why Your Deep Research Agent Fails? On Hallucination Evaluation in Full Research Trajectory"
+— arXiv:2601.22984, 2026-01-22 (preprint, no venue stated, code and data released)
+
+- **Real, rigorous methodology, read in full (not just the abstract)**: 6 real deep-research
+  systems tested (Gemini, OpenAI, Perplexity, Qwen, Grok, Salesforce Deep Research) against a new
+  100-query benchmark (DeepHalluBench: 75 queries selected specifically for inducing severe
+  hallucination under Gemini, plus 25 adversarial "no-answer" queries). The claim-verification
+  pipeline itself is independently validated against FEVER (~95% accuracy) and SciFact-Open (>85%)
+  before being trusted on the target agents — the same "validate the checker before trusting its
+  verdicts" discipline this project's own grounding checks were built with.
+- **PING taxonomy, four categories, verified in detail**: **Grounding** (source-level — fabrication:
+  claims unsupported by any retrieved evidence; misattribution: citing a real fetched document that
+  doesn't actually support the claim) maps directly onto DeepDelve's own citation-fabrication bug
+  history (`source_url == task_name` fallback, the 2026-07-21 fix). **Noise-induced** (context-level
+  — relevant evidence WAS retrieved but got neglected during synthesis) is a real, independently-
+  sourced third framing of DeepDelve's own "content vanishes during synthesis" pattern, distinct in
+  mechanism from both Lost in the Middle (mid-context neglect) and PIVOT (no reasoning allocated to
+  synthesis) — see below. **Intent** (query-level — restriction neglect: a technically-executable
+  plan that silently ignores a stated user restriction) is the same shape as DeepDelve's own
+  "hard exclusion rules repeatedly fail to hold" bug (`check_excluded_topic`, partially fixed).
+  **Propagation** (trajectory-level — a later claim built on an earlier hallucinated one, cascading)
+  has NO DeepDelve equivalent — every existing grounding check operates per-claim/per-finding in
+  isolation; none trace whether a citable-looking claim was actually derived from an earlier finding
+  that itself failed grounding. A real, concrete, currently-unaddressed gap class.
+- **Directly corroborates DeepDelve's own "endgame collapse" open question** (`RESEARCH.md` §4 item
+  1, "Lost in the Middle gives a partial mechanism, not a complete account"): the paper's own
+  temporal-distribution finding shows Salesforce Deep Research suffers "late-stage collapse" (>40%
+  of its errors occur late in the trajectory) while Gemini/OpenAI show early-stage cascading
+  instead (>57% of errors) — an independently-measured, real system exhibiting the SAME
+  turn-by-turn late-session degradation pattern DeepDelve has observed but not yet found a
+  root-cause paper for. Also names a genuinely distinct positional-bias shape from Lost in the
+  Middle's mid-context U-curve: an **"Anchor Effect"** where agents disproportionately favor EARLY
+  retrievals and underuse LATER information "despite improving relevance" — recency-neglect, not
+  mid-context-neglect. Both may be real and coexist; this is a nuance the "findings-ordering"
+  ROADMAP candidate should account for (see that entry).
+- **Detection mechanisms are concrete, not just diagnostic categories**: Grounding uses an
+  NLI-then-LLM cascade with an adaptive second round to distinguish misattribution from fabrication.
+  Propagation maps claims into their own DAG, running NLI-based entailment between a claim and the
+  claims it depends on to trace whether a later claim's support chain touches an earlier hallucinated
+  one. Both are directly adaptable check shapes for DeepDelve's own `grounding.py`, not just
+  taxonomy labels.
+- **Stated limitations, verified**: the framework diagnoses WHERE hallucinations arise in the
+  workflow, not the underlying model's own parametric cause; text-only (no multimodal content);
+  the atomicity-based evaluation is "more expensive than lightweight end-to-end metrics" by design,
+  prioritizing diagnostic depth over throughput.
+
+### ✅ "Detecting and Correcting Reference Hallucinations in Commercial LLMs and Deep Research
+Agents" — Yuan et al., arXiv:2604.03173, 2026-04-03 (preprint, no venue stated)
+
+- **Real, statistically solid research, read in full**: two benchmarks (DRBench, 53,090 URLs across
+  10 models; ExpertQA, 168,021 URLs across 32 academic fields, 3 models), bootstrap 95% confidence
+  intervals throughout, self-correction results reported with p<10⁻³⁵. `urlhealth` itself (released
+  open-source, 83 lines of Python) is a simple, well-specified 3-step classifier: HTTP HEAD/GET →
+  200 is LIVE; 404 with a Wayback Machine snapshot on record is DEAD (stale, not fabricated); 404
+  with NO Wayback record is LIKELY_HALLUCINATED; anything else is UNKNOWN (10-20% of URLs land
+  here, mostly paywalls/bot-blocking, an acknowledged ceiling). Self-correction (feed the flagged
+  verdict back to the model, let it search for a replacement and re-verify) cut non-resolving
+  citation rates 6-79x across GPT-5.1/Gemini-2.5-Pro/Claude Sonnet 4.5 — but the paper's own
+  finding that GPT-5-nano called the tool and then ignored its verdict, repeatedly re-proposing the
+  same flagged URL, is a direct, independent confirmation of this project's own repeated lesson
+  (Model Evaluation Standard, MiniCPM5-1B's `not_delegated` false-completion claim): tool ACCESS
+  does not imply tool USE competence.
+- **Read specifically to check my own applicability caveat from the abstract-only pass — confirmed
+  correct, not adoptable here as originally hoped.** The paper's own text states this applies "to
+  search-augmented systems with web access," and its most striking finding cuts the other way for
+  DeepDelve: four OpenAI search-augmented models showed **zero stale URLs** among their
+  non-resolving citations — meaning 100% of those were outright fabrications generated WITHOUT ever
+  actually retrieving the page, despite having live web access available. `urlhealth`'s entire value
+  proposition is distinguishing "this URL is real but now rotted" from "this URL was never real" for
+  systems where a citation can appear WITHOUT a real fetch ever happening. DeepDelve's own
+  architecture already forecloses that failure mode more strongly than a Wayback cross-check could:
+  `extract_cited_urls` + `fetched_urls` cross-referencing means a URL cannot become citable at all
+  unless DeepDelve's OWN fetch tool actually retrieved it during the SAME run — there is no path for
+  a purely-invented URL (never fetched, never in `fetched_urls`) to pass the existing grounding
+  check in the first place, live or stale. **Verdict: real, well-evidenced research, genuinely not
+  adoptable for DeepDelve's specific architecture** — reviewed and not pursued, same shape as the
+  bibliographic-API citation-verification tool in ROADMAP's Rejected list (a stronger check for a
+  failure mode DeepDelve's own design doesn't actually have).
+
 ## 2. Found via terminology-chaining (citation-chaining using confirmed vocabulary), not yet
 primary-source-verified — ⚠️ treat as leads, not facts
 
-**Empty as of 2026-07-20.** All three entries that lived here (ATLAS, the MAST production-telemetry
-replication, and the coding-agent misalignment study) were read in primary form this session and
-moved to §1 as ✅ entries. This section is kept as a placeholder for the next lead this review turns
-up via citation-chaining, rather than deleted outright, since that's the section's actual purpose.
+**Empty as of 2026-07-22.** The three leads found here earlier this round (PING taxonomy, the
+urlhealth/CiteAudit paper, VMAO) were all read in primary/full-text form the same day — see §1
+(PING, urlhealth) and §3 (VMAO, downgraded after the full read). This section is kept as a
+placeholder for the next lead this review turns up via citation-chaining, rather than deleted
+outright, since that's the section's actual purpose.
 
 **Moved out previously (2026-07-20, earlier cleanup)**: "Do Agents Need to Plan Step-by-Step?"
 (arXiv:2605.08477), PIVOT (arXiv:2605.11225), and "Demystifying Reinforcement Learning in Agentic
@@ -608,6 +688,27 @@ Reasoning" (arXiv:2510.11701) — read and verified, now in §1. The Entropy Pri
   institution), preprint, not peer-reviewed. The *conceptual framing* (coordination as a layer
   separate from information/agent layers) is still a reasonable vocabulary, matching how DeepDelve
   is already structured — but it was never evidence, and I should not have presented it as such.
+
+- **"Verified Multi-Agent Orchestration" (VMAO)** (arXiv:2603.11445, 2026-03, preprint, no venue
+  stated) — presented from the abstract alone as "potentially the most architecturally relevant" of
+  a batch of new leads (its DAG of sub-questions with explicit inter-task DEPENDENCIES, something
+  DeepDelve's own `delegate_tasks` doesn't model). **Read in full: the evidence base is much
+  thinner than the abstract's headline numbers suggested.** Evaluation is 25 expert-curated queries,
+  ONE model family only (Claude Sonnet 4.5/Opus 4.5 for both execution and the LLM judge — the
+  paper's own text flags this as a same-family bias risk), no confidence intervals or significance
+  testing ("the paper explicitly acknowledges 25 queries is a modest evaluation set... pending
+  larger-scale evaluation"), and code "will be released upon publication" — not currently available
+  to inspect. Most importantly, the paper's own text undercuts the DAG-dependency mechanism as the
+  actual source of its claimed gains: "the majority of replanning actions are retries of incomplete
+  sub-questions rather than introduction of entirely new ones, indicating that agent execution
+  variance... is a larger contributor to gaps than poor initial decomposition" — i.e., much of the
+  +35%/+58% improvement may come from a verify-and-retry loop (a mechanism DeepDelve's own
+  completion-check system already has), not specifically from the DAG dependency structure that
+  made this lead interesting in the first place. Also costs 8.5x the tokens of a single agent.
+  **Downgraded from "candidate architectural direction" to "a named idea worth remembering, not
+  evidence to act on"** — the dependency-graph concept itself may still be worth a from-scratch
+  DeepDelve-specific evaluation someday, but this paper does not supply the evidence to justify
+  building it now, and was correctly NOT added to ROADMAP's Pending after this full read.
 
 ### ✅ "Do Agents Need to Plan Step-by-Step? Rethinking Planning Horizon in Data-Centric Tool
 Calling" — Otani, Bhutani, Kim, Zhang, Hruschka (Megagon Labs), ACM CAIS '26 (peer-reviewed,
@@ -815,6 +916,14 @@ Still open, in priority order:
    or more repetitive as a session/retry-loop lengthens, not just failing to use middle content).
    Still worth a targeted search specifically for that narrower phenomenon — possibly under
    "attention sink," "repetition degeneration," or "self-consuming generation" as search terms.
+   **Partial corroboration found, 2026-07-22, still not a root-cause account**: the PING taxonomy
+   paper (§1, arXiv:2601.22984) independently measured a real deep-research agent (Salesforce Deep
+   Research) suffering "late-stage collapse" — over 40% of its hallucinations occur late in the
+   trajectory, a different temporal profile than Gemini/OpenAI's early-stage cascading (>57%) on
+   the same benchmark. This confirms turn-by-turn late-session degradation is a real, independently
+   observed phenomenon in at least one other real system, not a DeepDelve-specific artifact — but
+   the paper diagnoses WHERE it happens, not WHY, so the targeted search for a mechanism (attention
+   sink / repetition degeneration / self-consuming generation) is still the open item.
 2. Verify the AXPO mechanism against DeepDelve's actual `writer_role_response_reward` prompt shapes
    before deciding whether to adapt it for the next combined GRPO round.
 3. ~~Consider whether an ATLAS-style domain-specific failure taxonomy...~~ **RESOLVED this round.**

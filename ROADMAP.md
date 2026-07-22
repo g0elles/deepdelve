@@ -2440,6 +2440,75 @@ tried, twice, not merely proposed):
   current vLLM model bake-off is fully complete (session_status/CURRENT.md, 2026-07-21). Replacement
   when picked up: extract the shared run-lifecycle steps into one function both entry points call.
 
+- **Findings-ordering check for the "content vanishes during synthesis" pattern — new candidate,
+  2026-07-22, not yet scoped.** From "Lost in the Middle" (Liu, Lin, Hewitt, Paranjape, Bevilacqua,
+  Petroni, Liang; arXiv:2307.03172, TACL 2024 — foundational, peer-reviewed, not a 2026 preprint):
+  models use context well at the very start/end of the input and significantly worse in the middle
+  (a U-shaped curve confirmed across GPT-3.5-Turbo, Claude-1.3, LongChat-13B, MPT-30B and widely
+  replicated since), independent of whether anything was truncated. `RESEARCH.md` §2 flags this as
+  untested against DeepDelve's own findings-ordering. The recently-shipped 4th synthesis-vanishing
+  mechanism fix (ring-fence + containment, commit `34e3e12`) addresses truncation and cutoff-only
+  content; this is a DISTINCT, still-open candidate cause — a finding correctly delivered, within
+  budget, could still be under-used by the model purely because of WHERE it sits in
+  `_build_findings_source_material`'s assembled context (e.g., the 8th of 15 dispatched tasks).
+  Candidate fix: reorder findings so higher-value/harder-to-corroborate ones land near the start or
+  end of what Builder/FindingsWriter actually sees, instead of strict chronological dispatch order.
+  Needs scoping: what "higher-value" means operationally (fewest corroborating sources? most
+  recently redispatched?) before this is buildable.
+  **Nuance added 2026-07-22, `RESEARCH.md` §1**: the PING taxonomy paper (arXiv:2601.22984) names a
+  distinct "Anchor Effect" — agents disproportionately favor EARLY retrievals and underuse LATER
+  ones, a recency-neglect pattern, not Lost in the Middle's mid-context neglect. Both may be real
+  and coexist; whatever findings-ordering scheme this candidate lands on should account for both
+  shapes (avoid burying a high-value finding in the middle AND avoid placing it last expecting
+  recency to save it), not just the original U-curve framing.
+
+- **Propagation-aware hallucination check — new candidate, 2026-07-22, not yet scoped.** From the
+  PING taxonomy paper (arXiv:2601.22984, read in full — see `RESEARCH.md` §1): "Propagation"
+  hallucination is a later claim built on an earlier hallucinated one, cascading through a
+  multi-round trajectory. DeepDelve's own `GROUNDING_CHECKS` (`src/engine/completion.py`) all
+  operate per-claim/per-finding in isolation — none currently trace whether a claim that itself
+  looks well-cited was actually derived from an earlier finding that failed grounding (e.g., a
+  redispatched task builds on a sibling task's already-flagged-fabricated summary without
+  re-verifying it). The paper's own detection mechanism is concretely adaptable: map claims into a
+  DAG and run NLI-based entailment between a claim and whatever it depends on, tracing whether the
+  support chain touches a hallucinated ancestor. Needs scoping: DeepDelve doesn't currently track
+  claim-level dependency structure at all (findings are flat, keyed by task_name), so this would
+  need a real design pass before it's buildable, not just a new check function.
+
+- **Force reasoning at synthesis time — new candidate, 2026-07-22, not yet scoped.** From PIVOT
+  (Zhang, Popa, Xu, Song, Dimitriadis, Amazon; arXiv:2605.11225, preprint): trajectory inspection
+  found 100% of a model's thinking-budget tokens fire on the FIRST turn (task decomposition/tool
+  selection), while 99.2% of final-answer-generation steps produce ZERO thinking tokens — this held
+  regardless of how high the thinking-budget ceiling was raised (1024→3072 in the paper's own
+  ablation, no consistent gain). Models don't naturally allocate reasoning to synthesis/
+  verification, only to planning, no matter how much budget is available. `RESEARCH.md` §2 names
+  this a 4th distinct candidate root cause for DeepDelve's own recurring "content vanishes during
+  synthesis" pattern (alongside truncation, positional attention above, and the already-fixed
+  timeout-severing mechanism) — none of the prior fixes force reasoning at the synthesis step
+  itself. Candidate fix: a structural nudge/instruction requiring Builder/FindingsWriter to
+  explicitly reason about each finding's inclusion/exclusion before finalizing, rather than relying
+  on the model to self-allocate reasoning there. Not yet tested against DeepDelve's own runs — a
+  real, concrete hypothesis, not a confirmed cause.
+
+- **Sharper repetition-escalation fix for completion-check retries — new candidate, 2026-07-22, not
+  yet scoped.** From "Do Agents Need to Plan Step-by-Step?" (Otani, Bhutani, Kim, Zhang, Hruschka,
+  Megagon Labs; ACM CAIS '26, peer-reviewed): Single-step-Horizon replanning (plan one tool call,
+  observe, replan — matches DeepDelve's own Planner "ADAPTIVE PLANNING LOOP" shape) gets stuck in
+  repetitive identical tool-call loops far more often than Full-Horizon replanning (30-45% of
+  instances on some datasets vs. 1.9-5.9%), because SH re-decides one action at a time after
+  failure and more often just repeats the same failed local action, while FH's lazy replanning
+  regenerates the entire remaining plan on trigger and tends to revise strategy instead. Directly
+  matches DeepDelve's own observed pattern: `missing_artifact` repeated 5x verbatim,
+  `thin_coverage` burning a full retry budget without converging — documented instances of exactly
+  this SH-style loop.
+  `CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD` (`src/engine/completion.py:979-1005`) already
+  detects the repetition; candidate fix is a sharper response once detected — force a whole-plan
+  regeneration (closer to FH's lazy-replan) instead of the current narrower corrective nudge. Real
+  domain caveat from the paper itself: evaluated on closed-tool-set structured QA (KBQA,
+  HotpotQA), not open-ended web research, and the paper explicitly flags SH as possibly still
+  preferable for "exploratory or highly dynamic tool-calling tasks" — DeepDelve's actual domain may
+  be exactly the exception the paper names, so the repetitive-loop mechanism is worth taking
+  seriously but the accuracy-parity headline should not be assumed to transfer.
 
 - **Re-run the full 11-candidate local-model bake-off via vLLM instead of Ollama — IN PROGRESS,
   most candidates now closed, moved to History as each verdict lands.** Two independent, confirmed
