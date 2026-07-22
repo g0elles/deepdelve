@@ -1466,3 +1466,29 @@ Deployment Trade-offs" — Sharma (Northeastern), Mehta (USC), arXiv:2510.03847
    multi-hop-reasoning-equivalent mechanism (F9's territory) without vector retrieval, so the
    highest-value RAG contribution is likely in the "avoid re-researching the same verified fact
    across runs" space, not in replacing the live web-search-based discovery process itself.
+5. **Three real graph-RAG projects reviewed as possible complements, 2026-07-22 — all reviewed and
+   NOT adopted, consistent with point 4's own conclusion above.** User asked to check
+   `HKUDS/LightRAG`, `HKUDS/RAG-Anything`, and `microsoft/graphrag` against DeepDelve's actual
+   `rag_cache` (`src/utils/rag_cache.py` — a lazy-loaded, flat semantic-similarity cache over
+   verified `(source_url, summary)` atomic findings via `all-MiniLM-L6-v2`, deliberately not a
+   graph). All three are real, mature, actively maintained projects, but architecturally heavier
+   than what point 4 already concluded DeepDelve needs:
+   - **LightRAG** (MIT, 38k+ stars, EMNLP 2025): full dual-layer vector+knowledge-graph RAG.
+     Requires an LLM call PER TEXT CHUNK for entity/relation extraction during indexing, 4 separate
+     storage backends (production use needs external Postgres/Neo4j/Milvus, not just files), 44+
+     config env vars. Real multi-hop reasoning DeepDelve doesn't need (its Searcher→Analyzer chain
+     already covers this, per point 4) at a real per-chunk LLM-call cost this project's own
+     local-hardware-constrained history treats as expensive.
+   - **RAG-Anything**: built ON TOP of LightRAG specifically for multimodal content (images,
+     tables, equations via MinerU/LibreOffice/VLM). DeepDelve's fetched content is web pages
+     processed as text/markdown — no evidence anywhere in the codebase that image/table/equation
+     extraction is a real gap. A dependency-heavy solution to a problem DeepDelve doesn't have.
+   - **Microsoft GraphRAG**: heaviest of the three — full community-detection (graph clustering +
+     hierarchical summarization) explicitly built for GLOBAL SENSEMAKING queries over large corpora
+     (~1M-token datasets in its own paper, arXiv:2404.16130), with indexing costs its own README
+     calls "expensive... start small." Not officially supported by Microsoft. Wrong shape entirely
+     for DeepDelve's actual use (caching individual verified atomic facts across runs, not
+     summarizing a large static corpus).
+   **Verdict for all three: reviewed and not adopted** — real, credible systems solving a
+   different, heavier problem than the one `rag_cache` was deliberately scoped narrow to solve.
+   Recorded here so a future session doesn't re-propose the same three repos without this context.

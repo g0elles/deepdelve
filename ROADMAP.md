@@ -1570,6 +1570,69 @@ tried, twice, not merely proposed):
 ## Completed
 
 
+- **Four literature-backed synthesis/reliability candidates — IMPLEMENTED 2026-07-22**, planned in
+  `~/.claude/plans/vast-singing-creek.md` and executed the same session. All four extend
+  `src/engine/completion.py`'s `GROUNDING_CHECKS`/`_dispatch_writer_review_fix`/
+  `run_completion_check`; `test_structural_checks.py` extended for each, full suite green
+  throughout. Two documentation errors found and corrected during planning (noted per-item below).
+  - **Findings-ordering (Lost in the Middle, arXiv:2307.03172 + PING's "Anchor Effect",
+    arXiv:2601.22984)**: `_reorder_findings_for_position_bias` (`completion.py`, right before
+    `_build_findings_source_material`) — a pure positional zigzag/sandwich reorder (no
+    value/importance signal exists anywhere in the data model to rank by), splitting chronological
+    `entries` in half and interleaving front-forward with back-reversed so every finding lands
+    within one "hop" of either edge of the assembled context instead of drifting toward the middle
+    as a run accumulates more findings. Called right before the existing budget-truncation scan,
+    which is untouched. Tested via a 6-item zigzag assertion plus length/set invariants across
+    edge cases (0/1/2/5/7 items).
+  - **Propagation-aware hallucination check (PING taxonomy, arXiv:2601.22984)**: narrowed from the
+    paper's full DAG+NLI-entailment design (confirmed DeepDelve has no claim-dependency structure,
+    and confirmed the paper's OWN released code doesn't actually implement that mechanism either —
+    see the History entry on this) to the specific, already-documented split-brain pattern: a
+    citable finding whose content substantially term-overlaps (`extract_salient_terms`, no NLI
+    model) an uncited/cutoff sibling for the SAME `task_name`. New `_find_propagated_bad_content`
+    + `check_propagated_ungrounded_content` (added to `GROUNDING_CHECKS`, before the generic
+    `check_not_grounded` catch-all) — only fires if the flagged content also appears inside the
+    report itself, not merely in findings.md. Refactored `_build_findings_source_material`'s
+    dedup/citability logic into 3 shared helpers (`_dedupe_findings`, `_uncited_task_names`,
+    `_is_citable_finding`) so the check and the findings-assembly function can't drift on the
+    definition of "citable." New verdict-matrix row (`propagated_ungrounded`) plus a standalone
+    unit test with a control (no-overlap) case.
+  - **Force reasoning at synthesis time (PIVOT, arXiv:2605.11225)**: correcting the original
+    candidate's premise — `BUILDER_INSTRUCTIONS`/`FINDINGS_WRITER_INSTRUCTIONS`
+    (`src/prompts.py`) already instruct `think_tool` use before finalizing (a "<Show Your
+    Thinking>" block), confirmed by reading both directly during planning. So this shipped as
+    VERIFICATION, not a new prompt: `_dispatch_writer_review_fix` (`completion.py`) now snapshots
+    `think_tool`'s quota usage before/after the Write dispatch, reusing the exact
+    reads-before/reads-after pattern already proven there for PeerReviewer's `read_workspace_file`
+    check. Deliberately NOT a hard gate (a writer skipping `think_tool` makes no false claim, unlike
+    a fabricated "REVIEW: CLEAN") — folded into the Fix-pass instructions only when PeerReviewer
+    separately flags real issues; a `notify()`-only note when PeerReviewer says CLEAN. 3-case test
+    (issues-found+skip, clean+skip, issues-found+used — the control).
+  - **Full-artifact-rebuild repetition-escalation (ACM CAIS '26 planning-horizon paper)**:
+    correcting the original candidate's premise — re-verified `CONSECUTIVE_SAME_PROBLEM_
+    ESCALATION_THRESHOLD` (actually at `completion.py`'s `run_completion_check`, not the
+    `completion.py:979-1005` location first cited, which was `check_missing_artifact`'s docstring
+    merely mentioning it) — its real current behavior was "give up early" (`attempt = max_attempts`
+    on 3 consecutive identical problems), not a "narrower nudge" as originally described; there was
+    no existing gentler nudge to sharpen. Decided (user: "the more complete one" — full rebuild,
+    not a wording-only reframe, matching the paper's actual full-horizon-replan mechanism): on the
+    3rd consecutive occurrence, grant exactly ONE extra attempt (`run_state.data[
+    "whole_approach_retry_used_for"]`, keyed by problem, bounds it to once per problem type) that
+    dispatches a genuine full rebuild (Builder: "rewrite completely from scratch... reconsidering
+    your whole approach," not the targeted-fix wording; FindingsWriter: same reframe on its
+    `write_directive`) instead of the usual targeted-fix instructions. Falls through to the
+    pre-existing early-exit unchanged once that one retry is spent. The classic inject-into-Planner
+    path (no `dispatch_task`, or a non-writer-fixable problem) gets the closest equivalent: a
+    reworded, stronger `verdict.inject`. Two PRE-EXISTING tests (`missing_artifact`/`thin_coverage`
+    escalation scenarios) updated for the new two-phase behavior since they encoded the old
+    immediate-stop assumption; one new test confirms the full-rebuild instruction shape actually
+    reaches the Builder dispatch (not just the classic-path text).
+  - **Three more literature leads found via fresh search (PING's own comparison, a citation-
+    hallucination/`urlhealth` tool, VMAO) and three RAG repos (LightRAG, RAG-Anything, GraphRAG,
+    user-requested) were also researched this session — see History and `RESEARCH.md` §1/§8 for
+    the full writeups; none were adopted (either reviewed-and-not-applicable, or too weak an
+    evidence base on full read), so nothing further to implement from those.
+
 - **Engine-driven iterative deepening (ROADMAP item 10, from `dzhng/deep-research`) — IMPLEMENTED
   2026-07-19, found still mis-listed as an untried candidate during the 2026-07-21 status audit.**
   A STRUCTURAL refine loop: each round's Searcher findings carry a `FOLLOW-UP DIRECTIONS` section
@@ -2440,121 +2503,15 @@ tried, twice, not merely proposed):
   current vLLM model bake-off is fully complete (session_status/CURRENT.md, 2026-07-21). Replacement
   when picked up: extract the shared run-lifecycle steps into one function both entry points call.
 
-- **Findings-ordering check for the "content vanishes during synthesis" pattern — new candidate,
-  2026-07-22, not yet scoped.** From "Lost in the Middle" (Liu, Lin, Hewitt, Paranjape, Bevilacqua,
-  Petroni, Liang; arXiv:2307.03172, TACL 2024 — foundational, peer-reviewed, not a 2026 preprint):
-  models use context well at the very start/end of the input and significantly worse in the middle
-  (a U-shaped curve confirmed across GPT-3.5-Turbo, Claude-1.3, LongChat-13B, MPT-30B and widely
-  replicated since), independent of whether anything was truncated. `RESEARCH.md` §2 flags this as
-  untested against DeepDelve's own findings-ordering. The recently-shipped 4th synthesis-vanishing
-  mechanism fix (ring-fence + containment, commit `34e3e12`) addresses truncation and cutoff-only
-  content; this is a DISTINCT, still-open candidate cause — a finding correctly delivered, within
-  budget, could still be under-used by the model purely because of WHERE it sits in
-  `_build_findings_source_material`'s assembled context (e.g., the 8th of 15 dispatched tasks).
-  Candidate fix: reorder findings so higher-value/harder-to-corroborate ones land near the start or
-  end of what Builder/FindingsWriter actually sees, instead of strict chronological dispatch order.
-  Needs scoping: what "higher-value" means operationally (fewest corroborating sources? most
-  recently redispatched?) before this is buildable.
-  **Nuance added 2026-07-22, `RESEARCH.md` §1**: the PING taxonomy paper (arXiv:2601.22984) names a
-  distinct "Anchor Effect" — agents disproportionately favor EARLY retrievals and underuse LATER
-  ones, a recency-neglect pattern, not Lost in the Middle's mid-context neglect. Both may be real
-  and coexist; whatever findings-ordering scheme this candidate lands on should account for both
-  shapes (avoid burying a high-value finding in the middle AND avoid placing it last expecting
-  recency to save it), not just the original U-curve framing.
-
-- **Propagation-aware hallucination check — new candidate, 2026-07-22, not yet scoped.** From the
-  PING taxonomy paper (arXiv:2601.22984, read in full — see `RESEARCH.md` §1): "Propagation"
-  hallucination is a later claim built on an earlier hallucinated one, cascading through a
-  multi-round trajectory. DeepDelve's own `GROUNDING_CHECKS` (`src/engine/completion.py`) all
-  operate per-claim/per-finding in isolation — none currently trace whether a claim that itself
-  looks well-cited was actually derived from an earlier finding that failed grounding (e.g., a
-  redispatched task builds on a sibling task's already-flagged-fabricated summary without
-  re-verifying it). The paper's own detection mechanism is concretely adaptable: map claims into a
-  DAG and run NLI-based entailment between a claim and whatever it depends on, tracing whether the
-  support chain touches a hallucinated ancestor. Needs scoping: DeepDelve doesn't currently track
-  claim-level dependency structure at all (findings are flat, keyed by task_name), so this would
-  need a real design pass before it's buildable, not just a new check function.
-  **Reference code checked directly, 2026-07-22 — weaker than first reported, correcting an
-  earlier overclaim.** `github.com/yuhao-zhan/DeepHalluBench`'s `eval_framework/core/` is real,
-  structured detector code (`claim_verification.py`, `decomposition.py`, `constraint_checking.py`),
-  not just benchmark data — but reading the actual file contents (not just filenames) shows it does
-  **NOT** implement the DAG/entailment-chain propagation detector the paper's abstract described.
-  `decomposition.py`'s `TrajectoryDecomposer` produces flat per-iteration lists with no
-  claim-to-claim dependency structure at all — its `related_query`/`top_k_chunks` fields are present
-  but literally empty (`{}`) in the actual output, reading as an unfinished placeholder, not a
-  shipped feature. `claim_verification.py`'s `_reflection_check()` is the closest thing to
-  propagation detection that actually exists: it compares a new claim against a flat "Claim Memory"
-  of prior verified claims via KEYWORD-OVERLAP similarity (top-10 by keyword match), then an LLM
-  judges whether it's "a valid internal reflection" — a much simpler heuristic than the DAG +
-  NLI-entailment mechanism the candidate above describes wanting to adapt. **Net: this repo is
-  evidence the underlying problem (cascading claims) is worth checking against DeepDelve's own
-  data, but it is NOT a ready-made reference implementation for the DAG-based approach — that part
-  would need to be designed from scratch, the paper's own code doesn't have it built.**
-
-- **Force reasoning at synthesis time — new candidate, 2026-07-22, not yet scoped.** From PIVOT
-  (Zhang, Popa, Xu, Song, Dimitriadis, Amazon; arXiv:2605.11225, preprint): trajectory inspection
-  found 100% of a model's thinking-budget tokens fire on the FIRST turn (task decomposition/tool
-  selection), while 99.2% of final-answer-generation steps produce ZERO thinking tokens — this held
-  regardless of how high the thinking-budget ceiling was raised (1024→3072 in the paper's own
-  ablation, no consistent gain). Models don't naturally allocate reasoning to synthesis/
-  verification, only to planning, no matter how much budget is available. `RESEARCH.md` §2 names
-  this a 4th distinct candidate root cause for DeepDelve's own recurring "content vanishes during
-  synthesis" pattern (alongside truncation, positional attention above, and the already-fixed
-  timeout-severing mechanism) — none of the prior fixes force reasoning at the synthesis step
-  itself. Candidate fix: a structural nudge/instruction requiring Builder/FindingsWriter to
-  explicitly reason about each finding's inclusion/exclusion before finalizing, rather than relying
-  on the model to self-allocate reasoning there. Not yet tested against DeepDelve's own runs — a
-  real, concrete hypothesis, not a confirmed cause.
-  **Checked directly, 2026-07-22 — thinner than first reported.** `The-AI-Alliance/deep-research-
-  agent-for-applications`'s own docs do name a workflow phase — "Input Processing → Plan Development
-  → Execution → Verification → Replanning (if needed)" — as prior art for "make verification its
-  own forced step." But going to the actual `lastmile-ai/mcp-agent` repo this is built on, its own
-  README gives almost nothing beyond a one-line mention of `create_deep_orchestrator(...)`:
-  "Long-horizon research with knowledge extraction and policy checks" — no code, no detail on
-  whether verification is a distinct LLM call, a rule-based check, or something else, and no
-  detail on the actual replanning trigger. **Net: the WORKFLOW SHAPE (verification as its own
-  named phase, not folded into synthesis) is real, credible prior art at the design-pattern level —
-  but there is no confirmed, readable reference implementation to actually study before building
-  DeepDelve's own version.** Would need to read `mcp-agent`'s real source
-  (`src/mcp_agent`, not yet fetched) before treating this as more than a naming precedent.
-
-- **Sharper repetition-escalation fix for completion-check retries — new candidate, 2026-07-22, not
-  yet scoped.** From "Do Agents Need to Plan Step-by-Step?" (Otani, Bhutani, Kim, Zhang, Hruschka,
-  Megagon Labs; ACM CAIS '26, peer-reviewed): Single-step-Horizon replanning (plan one tool call,
-  observe, replan — matches DeepDelve's own Planner "ADAPTIVE PLANNING LOOP" shape) gets stuck in
-  repetitive identical tool-call loops far more often than Full-Horizon replanning (30-45% of
-  instances on some datasets vs. 1.9-5.9%), because SH re-decides one action at a time after
-  failure and more often just repeats the same failed local action, while FH's lazy replanning
-  regenerates the entire remaining plan on trigger and tends to revise strategy instead. Directly
-  matches DeepDelve's own observed pattern: `missing_artifact` repeated 5x verbatim,
-  `thin_coverage` burning a full retry budget without converging — documented instances of exactly
-  this SH-style loop.
-  `CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD` (`src/engine/completion.py:979-1005`) already
-  detects the repetition; candidate fix is a sharper response once detected — force a whole-plan
-  regeneration (closer to FH's lazy-replan) instead of the current narrower corrective nudge. Real
-  domain caveat from the paper itself: evaluated on closed-tool-set structured QA (KBQA,
-  HotpotQA), not open-ended web research, and the paper explicitly flags SH as possibly still
-  preferable for "exploratory or highly dynamic tool-calling tasks" — DeepDelve's actual domain may
-  be exactly the exception the paper names, so the repetitive-loop mechanism is worth taking
-  seriously but the accuracy-parity headline should not be assumed to transfer.
-  **Checked directly, 2026-07-22 — CORRECTION, this is not real prior art.** `NousResearch/
-  hermes-agent` issue #481 (the proposed SHA-256 tool-call fingerprint loop guard, described below
-  for the idea's own merit) is **CLOSED with "No branches or pull requests"** — confirmed it was
-  never implemented or merged into `hermes-agent`, just a proposal that got closed. Originally
-  flagged in this entry as unconfirmed-but-promising reference code; it is not code at all. **The
-  idea itself may still be worth naming as a design option** (kept below, since a good idea doesn't
-  stop being a good idea for going unbuilt elsewhere), but treat it as a from-scratch design
-  sketch, not something to go copy: `SHA256(tool_name + serialized_args)` fingerprints each call in
-  a sliding window, detecting exact repeats/ping-pong/multi-step cycles, with graduated
-  warning-then-hard-block escalation — operating one level BELOW DeepDelve's completion-check layer
-  (inside a single dispatch's own tool-call stream, not across completion-check retry attempts).
-  DeepDelve's `CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD` operates on repeated COMPLETION-CHECK
-  problems across whole dispatches; this targets repeated raw TOOL CALLS within one dispatch's own
-  turn — a genuinely different, complementary granularity, worth considering on its own merits
-  (catching e.g. a Searcher calling `fetch_url_to_workspace` on the same URL 6 times in one turn,
-  the exact shape of the `qwen3:8b` `sources/paper_143022.md` incident and the MiniCPM4-MCP
-  task-name-as-filename loop, both in History) — but this would be new DeepDelve-original work, not
-  an adaptation of anyone else's shipped code.
+- **Sharper repetition-escalation idea, the NOT-adopted narrower granularity**: `NousResearch/
+  hermes-agent` issue #481's proposed SHA-256 tool-call fingerprint loop guard (per-tool-call, one
+  level below the completion-check layer) is confirmed CLOSED with "No branches or pull requests"
+  — never implemented, just a proposal. The completion-check-level escalation fix it inspired
+  shipped in a different, complementary shape (see Completed, "Full-artifact-rebuild
+  repetition-escalation"); this finer-grained IN-TURN loop guard (catching e.g. a Searcher calling
+  `fetch_url_to_workspace` on the same URL 6 times in one dispatch's own turn — the exact shape of
+  the `qwen3:8b`/MiniCPM4-MCP incidents in History) is still a real, distinct, un-built idea if
+  ever worth pursuing — would be new DeepDelve-original work, not an adaptation of anyone's code.
 
 - **Re-run the full 11-candidate local-model bake-off via vLLM instead of Ollama — IN PROGRESS,
   most candidates now closed, moved to History as each verdict lands.** Two independent, confirmed

@@ -10,7 +10,9 @@ from engine.orchestrator import (
     _extract_excluded_topics, _lacks_concrete_subject, _extract_follow_up_directions,
     _ring_fenced_deadline,
 )
-from engine.completion import _CUTOFF_ONLY_SUMMARY_RE
+from engine.completion import (
+    _CUTOFF_ONLY_SUMMARY_RE, _reorder_findings_for_position_bias, _find_propagated_bad_content,
+)
 from utils.grounding import find_non_url_citations, fully_ungrounded, partially_ungrounded, find_uncited_claim_lines, extract_cited_urls
 from utils.run_state import record_fetched_url, reset_fetched_urls
 
@@ -85,6 +87,47 @@ def main():
         "[SYSTEM: task 'top_heuristics' cut short -- sub_agent_timeout_minutes (10) exceeded.]"
     )
     assert not _CUTOFF_ONLY_SUMMARY_RE.match("Rust's current stable release is 1.97.1.")
+
+    # --- findings-ordering positional-bias reorder (2026-07-22, "Lost in the Middle" +
+    # PING's "Anchor Effect") --- pure positional zigzag, no value signal.
+    entries6 = [(f"T{i}", f"E{i}") for i in range(6)]
+    reordered = _reorder_findings_for_position_bias(entries6)
+    assert reordered == [entries6[i] for i in (0, 5, 1, 4, 2, 3)], reordered
+    # Invariants that must hold regardless of length -- nothing lost, nothing duplicated.
+    for n in (0, 1, 2, 5, 7):
+        sample = [(f"T{i}", f"E{i}") for i in range(n)]
+        result = _reorder_findings_for_position_bias(sample)
+        assert len(result) == n and set(result) == set(sample), (n, result)
+
+    # --- propagation-aware hallucination check (2026-07-22, PING taxonomy) --- narrowed to the
+    # documented split-brain pattern (ROADMAP History, 20260718_141225): the task-name-fallback
+    # (uncited) sibling carries the genuinely detailed real content, a LATER redispatch produces a
+    # different real URL whose summary closely paraphrases that same content without having
+    # independently re-verified it against its own claimed source -- suspicious regardless of
+    # which sibling has more detail, since a citable entry that just repeats an uncited sibling's
+    # content likely didn't come from its own fetch.
+    propagated_findings = [
+        {"task_name": "background_heuristics", "source_url": "background_heuristics",
+         "summary": "The Temporal Fusion Transformer improved forecast accuracy by 23% over "
+                     "classical baselines in a 2024 benchmark study of Time Series Models."},
+        {"task_name": "background_heuristics", "source_url": "https://forecastio.ai/other",
+         "summary": "The Temporal Fusion Transformer improved forecast accuracy by 23% over "
+                     "classical baselines in a 2024 benchmark study of Time Series Models."},
+    ]
+    flagged = _find_propagated_bad_content(
+        propagated_findings, ["background_heuristics"]
+    )
+    assert flagged == ["background_heuristics"], flagged
+    # Control: no term overlap between the uncited sibling and the citable one -- must NOT flag.
+    control_findings = [
+        {"task_name": "colombia_holidays", "source_url": "colombia_holidays",
+         "summary": "The Dual Granularity Memory pattern was proposed in a 2026 paper on agentic "
+                     "systems, unrelated to payroll timing."},
+        {"task_name": "colombia_holidays", "source_url": "https://adp.com/payroll-calendar",
+         "summary": "Payroll cycles in Colombia typically run twice monthly, aligned with the "
+                     "Minimum Wage Disbursement Rules published in 2024."},
+    ]
+    assert _find_propagated_bad_content(control_findings, ["colombia_holidays"]) == []
 
     # --- findings.md wholesale-fabrication gate ---
     reset_fetched_urls()
@@ -714,12 +757,37 @@ def main():
         ("clean_pass", True, {"findings.md": _FINDINGS_OK,
           "final_report.md": f"- el pais avanza de forma sostenida segun cifras oficiales [gov]({_SRC})"},
          None, None),
+        # Propagation-aware check (2026-07-22, PING taxonomy): run_state.data["findings"] carries
+        # a task-name-fallback (uncited) sibling with real detailed content, and a citable sibling
+        # (real URL) whose summary is near-identical -- the report cites the real URL with content
+        # that textually matches its own fetched source (so no earlier check fires first), but the
+        # propagation check flags it because the SAME content also exists under an uncited sibling
+        # for the same task_name, suspicious regardless of which one has "more" detail.
+        ("propagated_ungrounded", True, {"findings.md": _FINDINGS_OK,
+          "final_report.md": (f"- el pais avanza de forma sostenida segun cifras oficiales [gov]({_SRC})\n"
+                               "- The Temporal Fusion Transformer improved forecast accuracy by 23% "
+                               "over classical baselines in a 2024 benchmark study of Time Series "
+                               "Models. [source](https://forecastio.ai/other)")},
+         "propagated_ungrounded", "without independent verification", "", [
+             ("https://forecastio.ai/other", "sources/other.md",
+              "Source-URL: https://forecastio.ai/other\n\nThe Temporal Fusion Transformer improved "
+              "forecast accuracy by 23% over classical baselines in a 2024 benchmark study of Time "
+              "Series Models."),
+         ], [
+             {"task_name": "background_heuristics", "source_url": "background_heuristics",
+              "summary": "The Temporal Fusion Transformer improved forecast accuracy by 23% over "
+                         "classical baselines in a 2024 benchmark study of Time Series Models."},
+             {"task_name": "background_heuristics", "source_url": "https://forecastio.ai/other",
+              "summary": "The Temporal Fusion Transformer improved forecast accuracy by 23% over "
+                         "classical baselines in a 2024 benchmark study of Time Series Models."},
+         ]),
     ]
 
     with tempfile.TemporaryDirectory() as tmpdir:
         for _row_name, _delegated, _files, _expected, _phrase, *_rest in matrix:
             _query = _rest[0] if _rest else ""
             _extra_fetches = _rest[1] if len(_rest) > 1 else []
+            _extra_findings = _rest[2] if len(_rest) > 2 else []
 
             def _matrix_row():
                 from tools.fs import _IN_MEMORY_FS
@@ -752,6 +820,8 @@ def main():
                     rs = RunState(tmpdir)
                     rs.set_query(_query)
                     run_state_ctx.set(rs)
+                    for _finding_kwargs in _extra_findings:
+                        rs.add_finding(**_finding_kwargs)
                     msgs = []
                     should_retry, _ = _asyncio.run(run_completion_check(
                         query="q", current_input="q", run_state=rs, notify=msgs.append))
@@ -1288,9 +1358,12 @@ def main():
                 assert "last realistic chance" in injected, (
                     "2nd consecutive missing_artifact must use the escalated framing", injected)
 
-            # Third consecutive occurrence: the early-escalation threshold must now force the
-            # FINAL-verdict path (should_retry == False) instead of granting yet another retry,
-            # even though the configured max_completion_check_attempts is still far away.
+            # Third consecutive occurrence (2026-07-22, force_whole_rebuild): the escalation
+            # threshold now grants exactly ONE extra, differently-framed retry -- a full
+            # "reconsider your whole approach" rebuild -- instead of immediately forcing the
+            # final-verdict path. This is the one behavior change from the old early-exit-only
+            # design (ACM CAIS '26 planning-horizon paper: full-horizon replanning beats
+            # single-step patching).
             with tempfile.TemporaryDirectory() as tmpdir4:
                 rs = RunState(tmpdir4)
                 rs.data["completion_check_attempts"] = [
@@ -1299,11 +1372,34 @@ def main():
                 ]
                 run_state_ctx.set(rs)
                 msgs = []
+                should_retry, new_input = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append))
+                assert should_retry, (
+                    "3rd consecutive missing_artifact must get exactly one whole-approach "
+                    "rebuild retry, not stop immediately", msgs)
+                injected = new_input[-1].contents[0].text
+                assert "reconsider your whole approach" in injected, injected
+                assert rs.data["whole_approach_retry_used_for"] == {"missing_artifact": True}, rs.data
+
+            # Fourth consecutive occurrence: the one whole-approach retry for this problem has
+            # already been used (whole_approach_retry_used_for), so this now falls through to the
+            # pre-existing early-exit behavior unchanged -- bounded to exactly one extra attempt,
+            # never an unbounded loop.
+            with tempfile.TemporaryDirectory() as tmpdir5:
+                rs = RunState(tmpdir5)
+                rs.data["completion_check_attempts"] = [
+                    {"attempt": 0, "problem": "missing_artifact"},
+                    {"attempt": 1, "problem": "missing_artifact"},
+                    {"attempt": 2, "problem": "missing_artifact"},
+                ]
+                rs.data["whole_approach_retry_used_for"] = {"missing_artifact": True}
+                run_state_ctx.set(rs)
+                msgs = []
                 should_retry, _ = _asyncio.run(run_completion_check(
                     query="q", current_input="q", run_state=rs, notify=msgs.append))
                 assert not should_retry, (
-                    "3rd consecutive missing_artifact must escalate straight to the final "
-                    "verdict instead of granting another identical retry", msgs)
+                    "4th consecutive missing_artifact, whole-approach retry already spent, must "
+                    "escalate straight to the final verdict", msgs)
         finally:
             _IN_MEMORY_FS.clear()
             _IN_MEMORY_FS.update(saved_fs)
@@ -1351,8 +1447,9 @@ def main():
                     query="q", current_input="q", run_state=rs, notify=msgs.append))
                 assert should_retry, "2nd consecutive thin_coverage must still retry"
 
-            # 3rd consecutive occurrence: the generalized guard must now force the final-verdict
-            # path, same as missing_artifact's 3rd occurrence above.
+            # 3rd consecutive occurrence (2026-07-22, force_whole_rebuild): the generalized guard
+            # grants exactly one extra whole-approach retry, same as missing_artifact's above --
+            # not an immediate final-verdict escalation.
             with tempfile.TemporaryDirectory() as tmpdir10:
                 rs = _thin_run_state(tmpdir10)
                 rs.data["completion_check_attempts"] = [
@@ -1361,11 +1458,32 @@ def main():
                 ]
                 run_state_ctx.set(rs)
                 msgs = []
+                should_retry, new_input = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append))
+                assert should_retry, (
+                    "3rd consecutive thin_coverage must get exactly one whole-approach rebuild "
+                    "retry, not stop immediately", msgs)
+                injected = new_input[-1].contents[0].text
+                assert "reconsider your whole approach" in injected, injected
+
+            # 4th consecutive occurrence: whole-approach retry already spent for this problem ->
+            # falls through to the pre-existing early-exit behavior, same as missing_artifact.
+            with tempfile.TemporaryDirectory() as tmpdir11:
+                rs = _thin_run_state(tmpdir11)
+                rs.data["completion_check_attempts"] = [
+                    {"attempt": 0, "problem": "thin_coverage"},
+                    {"attempt": 1, "problem": "thin_coverage"},
+                    {"attempt": 2, "problem": "thin_coverage"},
+                ]
+                rs.data["whole_approach_retry_used_for"] = {"thin_coverage": True}
+                run_state_ctx.set(rs)
+                msgs = []
                 should_retry, _ = _asyncio.run(run_completion_check(
                     query="q", current_input="q", run_state=rs, notify=msgs.append))
                 assert not should_retry, (
-                    "3rd consecutive thin_coverage must now escalate straight to the final "
-                    "verdict -- the generalized guard, not just missing_artifact-specific", msgs)
+                    "4th consecutive thin_coverage, whole-approach retry already spent, must "
+                    "escalate straight to the final verdict -- the generalized guard, not just "
+                    "missing_artifact-specific", msgs)
         finally:
             _IN_MEMORY_FS.clear()
             _IN_MEMORY_FS.update(saved_fs)
@@ -2016,6 +2134,220 @@ def main():
                 _config.cfg["settings"]["grounding_check"] = _orig_gc10
 
     contextvars.copy_context().run(_clean_check_read_verification_scenario)
+
+    # --- _dispatch_writer_review_fix think_tool verification (2026-07-22, PIVOT arXiv:2605.11225):
+    # both writer prompts already tell the model to use think_tool before finalizing, but this
+    # project's own history is skeptical of prompt-only nudges on small local models -- same
+    # reads_before/reads_after quota-delta pattern proven above for PeerReviewer, applied to the
+    # WRITER's own think_tool use. NOT a hard gate (see completion.py's own comment for why) --
+    # only surfaced (a) folded into the Fix-pass instructions when PeerReviewer separately flags
+    # real issues, or (b) as a notify()-only note when PeerReviewer says CLEAN. ---
+    def _think_tool_skip_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        from tools.core import tool_quotas_ctx as q_ctx
+        from unittest.mock import AsyncMock
+        from engine.orchestrator import available_sub_agents_ctx
+
+        class _FakeSubAgentConfig:
+            def __init__(self, name):
+                self.name = name
+
+        _orig_ws11 = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "findings.md"}
+        _orig_gc11 = _config.cfg.get("settings", {}).get("grounding_check")
+        _config.cfg["settings"]["grounding_check"] = {"nli_verify": False, "topical_relevance_check": False}
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            available_sub_agents_ctx.set([
+                _FakeSubAgentConfig("FindingsWriter"), _FakeSubAgentConfig("PeerReviewer"),
+            ])
+
+            # (a) Writer never touches think_tool during its Write pass, AND PeerReviewer flags
+            # real issues -> the corrective Fix-pass instructions must mention the skipped step.
+            with tempfile.TemporaryDirectory() as tmpdir_a:
+                _IN_MEMORY_FS.clear()
+                reset_fetched_urls()
+                record_fetched_url(_SRC, filename="sources/page.md")
+                _IN_MEMORY_FS["sources/page.md"] = _SOURCE_TEXT
+                rs = RunState(tmpdir_a)
+                rs.add_finding(_SRC, "a real finding")
+                run_state_ctx.set(rs)
+                msgs = []
+                q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5},
+                           "read_workspace_file": {"used": 1, "limit": 30},
+                           "think_tool": {"used": 0, "limit": 30}})
+
+                async def _side_effect_no_think(name, instructions, role):
+                    if role == "FindingsWriter":
+                        _IN_MEMORY_FS["findings.md"] = _FINDINGS_OK
+                        return "## Result\nWrote findings.md\n---"
+                    q_ctx.get()["read_workspace_file"]["used"] += 1  # a real, honest review read
+                    return "REVIEW: ISSUES FOUND: citation formatting is inconsistent."
+
+                dispatch = AsyncMock(side_effect=_side_effect_no_think)
+                should_retry, new_input = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append,
+                    dispatch_task=dispatch))
+                fix_call = dispatch.call_args_list[2]
+                assert fix_call.args[2] == "FindingsWriter", dispatch.call_args_list
+                assert "skipped its own required think_tool" in fix_call.args[1], fix_call.args[1]
+
+            # (b) Same skip, but PeerReviewer says CLEAN -> not a gate, converges at 2 dispatches,
+            # only a notify() note.
+            with tempfile.TemporaryDirectory() as tmpdir_b:
+                _IN_MEMORY_FS.clear()
+                reset_fetched_urls()
+                record_fetched_url(_SRC, filename="sources/page.md")
+                _IN_MEMORY_FS["sources/page.md"] = _SOURCE_TEXT
+                rs = RunState(tmpdir_b)
+                rs.add_finding(_SRC, "a real finding")
+                run_state_ctx.set(rs)
+                msgs = []
+                q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5},
+                           "read_workspace_file": {"used": 1, "limit": 30},
+                           "think_tool": {"used": 0, "limit": 30}})
+
+                async def _side_effect_clean_no_think(name, instructions, role):
+                    if role == "FindingsWriter":
+                        _IN_MEMORY_FS["findings.md"] = _FINDINGS_OK
+                        return "## Result\nWrote findings.md\n---"
+                    q_ctx.get()["read_workspace_file"]["used"] += 1
+                    return "REVIEW: CLEAN\nThe file looks well-structured."
+
+                dispatch = AsyncMock(side_effect=_side_effect_clean_no_think)
+                should_retry, new_input = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append,
+                    dispatch_task=dispatch))
+                assert dispatch.call_count == 2, (
+                    "a skipped think_tool must not force a retry when PeerReviewer says CLEAN",
+                    dispatch.call_args_list)
+                assert any("skipped its own required think_tool" in m for m in msgs), msgs
+
+            # (c) Control: think_tool's quota DOES increment during the Write pass, issues found ->
+            # the Fix-pass instructions must NOT mention a skip that didn't happen.
+            with tempfile.TemporaryDirectory() as tmpdir_c:
+                _IN_MEMORY_FS.clear()
+                reset_fetched_urls()
+                record_fetched_url(_SRC, filename="sources/page.md")
+                _IN_MEMORY_FS["sources/page.md"] = _SOURCE_TEXT
+                rs = RunState(tmpdir_c)
+                rs.add_finding(_SRC, "a real finding")
+                run_state_ctx.set(rs)
+                msgs = []
+                q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5},
+                           "read_workspace_file": {"used": 1, "limit": 30},
+                           "think_tool": {"used": 0, "limit": 30}})
+
+                async def _side_effect_used_think(name, instructions, role):
+                    if role == "FindingsWriter":
+                        q_ctx.get()["think_tool"]["used"] += 1  # a real think_tool call
+                        _IN_MEMORY_FS["findings.md"] = _FINDINGS_OK
+                        return "## Result\nWrote findings.md\n---"
+                    q_ctx.get()["read_workspace_file"]["used"] += 1
+                    return "REVIEW: ISSUES FOUND: citation formatting is inconsistent."
+
+                dispatch = AsyncMock(side_effect=_side_effect_used_think)
+                should_retry, new_input = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append,
+                    dispatch_task=dispatch))
+                fix_call = dispatch.call_args_list[2]
+                assert "skipped its own required think_tool" not in fix_call.args[1], fix_call.args[1]
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            if _orig_ws11 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws11
+            if _orig_gc11 is None:
+                _config.cfg["settings"].pop("grounding_check", None)
+            else:
+                _config.cfg["settings"]["grounding_check"] = _orig_gc11
+
+    contextvars.copy_context().run(_think_tool_skip_scenario)
+
+    # --- force_whole_rebuild dispatched to Builder (2026-07-22, ACM CAIS '26 planning-horizon
+    # paper): when dispatch_task IS available and the repeated problem is Builder-fixable, the
+    # 3rd consecutive occurrence must dispatch a genuine FULL REBUILD instruction (not the classic
+    # reworded-Planner-nudge text, and not the ordinary targeted-fix instruction) -- confirms the
+    # "more complete" option (full artifact rebuild, not just wording) actually reaches the writer
+    # dispatch, not just the Planner-fallback path exercised above. ---
+    def _force_whole_rebuild_dispatch_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        from tools.core import tool_quotas_ctx as q_ctx
+        from unittest.mock import AsyncMock
+        from engine.orchestrator import available_sub_agents_ctx
+
+        class _FakeSubAgentConfig:
+            def __init__(self, name):
+                self.name = name
+
+        _orig_ws12 = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
+        _orig_gc12 = _config.cfg.get("settings", {}).get("grounding_check")
+        _config.cfg["settings"]["grounding_check"] = {"nli_verify": False, "topical_relevance_check": False}
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            available_sub_agents_ctx.set([
+                _FakeSubAgentConfig("Builder"), _FakeSubAgentConfig("PeerReviewer"),
+            ])
+            _IN_MEMORY_FS.clear()
+            reset_fetched_urls()
+            record_fetched_url(_SRC, filename="sources/page.md")
+            _IN_MEMORY_FS["sources/page.md"] = _SOURCE_TEXT
+            _IN_MEMORY_FS["findings.md"] = "- Real finding with a real cited URL (" + _SRC + ")"
+            q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5},
+                       "read_workspace_file": {"used": 1, "limit": 30},
+                       "write_workspace_file": {"used": 0, "limit": 30},
+                       "think_tool": {"used": 1, "limit": 30}})
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                rs = RunState(tmpdir)
+                rs.data["completion_check_attempts"] = [
+                    {"attempt": 0, "problem": "missing_artifact"},
+                    {"attempt": 1, "problem": "missing_artifact"},
+                ]
+                run_state_ctx.set(rs)
+                msgs = []
+
+                async def _side_effect(name, instructions, role):
+                    if role == "Builder":
+                        _IN_MEMORY_FS["final_report.md"] = f"- x [g]({_SRC})"
+                        return "## Result\nWrote final_report.md\n---"
+                    return "REVIEW: CLEAN\nThe file looks well-structured."
+
+                dispatch = AsyncMock(side_effect=_side_effect)
+                # Not asserting should_retry's final value here -- a successful Builder rebuild +
+                # clean PeerReview chains straight into the next completion-check iteration (see
+                # run_completion_check's own docstring) and may converge to a clean pass
+                # (should_retry False) on its own. What this test actually verifies is that the
+                # DISPATCH itself used the full-rebuild instruction shape, not the targeted-fix one.
+                _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append,
+                    dispatch_task=dispatch))
+                assert dispatch.call_count >= 1, "3rd consecutive occurrence must chain into a Builder dispatch, not stop"
+                builder_call = dispatch.call_args_list[0]
+                assert builder_call.args[2] == "Builder", dispatch.call_args_list
+                builder_instructions = builder_call.args[1]
+                assert "completely from scratch" in builder_instructions, builder_instructions
+                assert "reconsidering your whole approach" in builder_instructions, builder_instructions
+                assert "fixing this specific problem" not in builder_instructions, builder_instructions
+                assert rs.data["whole_approach_retry_used_for"] == {"missing_artifact": True}, rs.data
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            if _orig_ws12 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws12
+            if _orig_gc12 is None:
+                _config.cfg["settings"].pop("grounding_check", None)
+            else:
+                _config.cfg["settings"]["grounding_check"] = _orig_gc12
+
+    contextvars.copy_context().run(_force_whole_rebuild_dispatch_scenario)
 
     # --- _dispatch_writer_review_fix immediate narration salvage (2026-07-18 bake-off finding:
     # qwen2.5:3b-instruct as FindingsWriter narrated a complete findings.md draft as chat text on
