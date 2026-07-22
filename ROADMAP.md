@@ -1783,7 +1783,7 @@ Status as of 2026-07-20.
   3. **Targeted fine-tuning (SFT + GRPO) of an existing small checkpoint — PREP DONE, training not
      started.** NOT training a foundation model from scratch, which would be disproportionate to a
      coordination/instruction-following gap on top of an already-capable base. Scoped in the
-     "Stretch" section's GRPO entry: target `qwen3:4b`, reward function built around its specific
+     "Fine-tuning" section's GRPO entry (now DEFERRED, see that section): target `qwen3:4b`, reward function built around its specific
      documented failure (`thin_coverage` non-convergence). **`finetune/reward.py` and
      `finetune/extract_dataset.py` built and validated against real run logs 2026-07-18** (5 real
      examples extracted so far; public-dataset supplementation researched — see the Stretch entry
@@ -2454,7 +2454,29 @@ summary; this section is the full evidence trail.
     only test that means anything, and neither quant has passed one yet. Not recommended for
     further local benchmarking without a materially different quant or a context/prompt-length
     investigation into why the full system prompt specifically breaks it.
-## Stretch
+## Fine-tuning — DEFERRED indefinitely, paused 2026-07-21 (user decision, not a technical blocker)
+
+**All LLM fine-tuning/GRPO work (this section, formerly "Stretch") is paused until the user
+explicitly decides to resume it — not a priority, not to be picked back up on inference.** Reason
+given directly: a prior fine-tuned checkpoint (the `qwen3:4b` GRPO combined LoRA — see its
+disk-loss note in the vLLM re-test "Planned" entry above, "the GRPO fine-tune's merge/LoRA
+checkpoint is gone from disk") was lost following a suggestion from the assistant the user
+considered a mistake; exact mechanics not re-litigated here, but the standing takeaway is: **no
+fine-tuning round starts, and nothing under `finetune/artifacts/`/LoRA output dirs gets touched
+(moved, cleaned up, "freed for space," etc.), without the user's explicit go-ahead each time** —
+this is now a hard gate on top of the existing "one combined base, never an isolated LoRA" rule
+below. The user's own stated reasoning for pausing entirely (not just being careful): if an LLM
+needs training, it needs to happen across multiple areas at once (matches the combined-round
+methodology already established below), so a single narrow round isn't worth resuming piecemeal
+right now.
+
+2026-07-21 status snapshot at the moment of pausing: `writer_role_response_reward` was wired into
+`finetune/train_combined_grpo.py` as a 3rd reward dimension (composed onto the existing 80
+citation_grounding rows — `wrote_file`/narration-avoidance scored alongside content grounding on
+the same completion, no new data fabricated), reward-composition logic sanity-checked
+standalone (no GPU), but **training was never launched** — caught before start. The
+`thin_coverage` synthetic-data repeated-escalation-scenario gap (see below) remains unaddressed
+too. Both stay here, ready but inert, until the user says go.
 
 - **STANDING METHODOLOGY RULE (2026-07-19, engraved after real cost this month): every new
   fine-tuning objective folds into ONE combined multi-objective GRPO retrain off the same raw base
@@ -2882,8 +2904,8 @@ summary; this section is the full evidence trail.
   agents for trading/ESG/mobile — not a deep-research-specialized project despite the name.
   Rejected: same reasoning as the existing "no DI framework, no plugin system" stance above: its
   tracing/versioning goal is already served by `_run_state.json`, and its optimizer/self-evolution
-  loop is out of scope for a project explicitly avoiding RL infrastructure outside the "Stretch"
-  item above.
+  loop is out of scope for a project explicitly avoiding RL infrastructure outside the
+  "Fine-tuning" section above (itself now deferred indefinitely).
 - **Fabricated/misattributed sources caught during the 2026-07-13 3-model research pass** —
   recorded so a future session doesn't re-trust them without re-checking: a "GAVEL: Evidence-
   Contract Debate with Mechanized Scrutiny" paper with a fake ACL-2026-Findings DOI does not exist

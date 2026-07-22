@@ -1,9 +1,22 @@
 """
-Combined multi-objective GRPO fine-tune of qwen3:4b (base: Qwen/Qwen3-4B) — trains BOTH
-thin_coverage_response_reward and citation_grounding_response_reward in ONE pass, off ONE LoRA,
-from raw base. Replaces the two prior single-dimension rounds
-(train_thin_coverage_grpo.py, train_citation_grounding_grpo.py), which were each trained
-independently off raw Qwen/Qwen3-4B rather than stacked or combined.
+Combined multi-objective GRPO fine-tune of qwen3:4b (base: Qwen/Qwen3-4B) — trains
+thin_coverage_response_reward, citation_grounding_response_reward, AND
+writer_role_response_reward in ONE pass, off ONE LoRA, from raw base. Replaces the two prior
+single-dimension rounds (train_thin_coverage_grpo.py, train_citation_grounding_grpo.py), which
+were each trained independently off raw Qwen/Qwen3-4B rather than stacked or combined.
+
+writer_role_response_reward added 2026-07-21 (see session_status/CURRENT.md, "pending item
+close-out"): its own reward function existed in reward.py and was exercised by
+extract_dataset.py's real-run sanity check (finetune/data/writer_role.jsonl, 62 extracted
+examples), but had never actually been trained into any round. Rather than mint a new synthetic
+prompt set (writer_role.jsonl's rows are fixed historical completions, not GRPO-usable prompts,
+and its own failure mode -- narrating an artifact as chat text instead of calling
+write_workspace_file -- is already the exact same shape citation_grounding's 80 Builder/
+FindingsWriter-role prompts exercise on the same tool), it's composed directly onto those SAME
+rows: each citation_grounding-tagged row is now scored by both rubrics on the one completion it
+produces (0.5 content-grounding + 0.5 "did you actually call the tool"), no new data fabricated.
+thin_coverage rows are untouched -- that objective (re-delegation quality) has no writer-role
+analogue.
 
 Why this exists (2026-07-19 session): the citation-grounding-only LoRA was live-benchmarked
 against the SAME query/orchestrator as the thin_coverage-only LoRA and scored WORSE on grounding
@@ -38,7 +51,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from reward import thin_coverage_response_reward, citation_grounding_response_reward  # noqa: E402
+from reward import thin_coverage_response_reward, citation_grounding_response_reward, writer_role_response_reward  # noqa: E402
 from train_thin_coverage_grpo import DELEGATE_TASKS_TOOL  # noqa: E402
 from train_citation_grounding_grpo import WRITE_WORKSPACE_FILE_TOOL  # noqa: E402
 
@@ -121,11 +134,17 @@ def combined_reward_fn(completions, task_type, prior_task_instructions, real_fet
         if ttype == "thin_coverage":
             rewards.append(thin_coverage_response_reward(prior, tool_call, text))
         elif ttype == "citation_grounding":
-            if not tool_call or tool_call.get("name") != "write_workspace_file":
-                rewards.append(0.0)
+            wrote_file = bool(tool_call and tool_call.get("name") == "write_workspace_file")
+            writer_score = writer_role_response_reward(wrote_file, text)
+            if not wrote_file:
+                # writer_role's own failure gate already covers this completion (0.0) -- no
+                # content to score under citation_grounding without a real write_workspace_file
+                # call, same as before this change.
+                rewards.append(writer_score)
             else:
                 content = (tool_call.get("arguments") or {}).get("content", "")
-                rewards.append(citation_grounding_response_reward(content, fetched))
+                citation_score = citation_grounding_response_reward(content, fetched)
+                rewards.append(0.5 * citation_score + 0.5 * writer_score)
         else:
             raise ValueError(f"unknown task_type: {ttype!r}")
     return rewards
