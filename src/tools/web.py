@@ -465,12 +465,12 @@ def _save_fetched(urls_fetched: list[str], filename: str, data, convert_to_md: b
         # content — this is what the real grounding check cross-references, independent of what
         # the model later claims.
         for u in urls_fetched:
-            record_fetched_url(u, filename, stub=stub)
+            record_fetched_url(u, filename, stub=stub, title=metadata.get("title") if metadata else None)
         return f"Fetched URL successfully to '{filename}' on disk.{stub_warning}"
     else:
         _IN_MEMORY_FS[path] = chunk
         for u in urls_fetched:
-            record_fetched_url(u, filename, stub=stub)
+            record_fetched_url(u, filename, stub=stub, title=metadata.get("title") if metadata else None)
         return f"Fetched URL successfully to '{filename}' in memory.{stub_warning}"
 
 

@@ -12,6 +12,7 @@ from engine.orchestrator import (
 )
 from engine.completion import (
     _CUTOFF_ONLY_SUMMARY_RE, _reorder_findings_for_position_bias, _find_propagated_bad_content,
+    _is_citable_finding, _build_findings_source_material,
 )
 from utils.grounding import find_non_url_citations, fully_ungrounded, partially_ungrounded, find_uncited_claim_lines, extract_cited_urls
 from utils.run_state import record_fetched_url, reset_fetched_urls
@@ -128,6 +129,58 @@ def main():
                      "Minimum Wage Disbursement Rules published in 2024."},
     ]
     assert _find_propagated_bad_content(control_findings, ["colombia_holidays"]) == []
+
+    # --- _is_citable_finding excludes relevance-flagged findings (2026-07-21, live-caught): a
+    # finding confirmed off-topic by orchestrator.py's scope-relevance check carries a real http
+    # URL and a non-cutoff summary, so it used to pass as an ordinary citable entry even though
+    # it has zero real value for the query -- live case was a Colombia-holidays task that fetched
+    # a New Zealand page. Scoped to the RELEVANCE marker only, not VERIFICATION (a narrower
+    # citation-mismatch flag that may still coexist with real, usable content). ---
+    relevance_flagged = {
+        "task_name": "colombia_holidays", "source_url": "https://publicholiday.co.nz/",
+        "summary": ("I was unable to complete the research because I exceeded the web-search "
+                    "quota. The only page fetched was a New Zealand holiday calendar.\n\n"
+                    "[SYSTEM RELEVANCE WARNING: none of the sources fetched for this task "
+                    "actually mention Colombia, despite the task instructions requiring it.]"),
+    }
+    assert _is_citable_finding(relevance_flagged) is False
+    real_finding = {
+        "task_name": "background", "source_url": "https://arxiv.org/abs/1234.5678",
+        "summary": "N-BEATS improved forecast accuracy by 23% in a 2024 benchmark.",
+    }
+    assert _is_citable_finding(real_finding) is True
+    # A VERIFICATION warning (citation-mismatch, not off-topic) must NOT be excluded -- real
+    # content may still coexist with a narrower citation flag.
+    verification_flagged = {
+        "task_name": "background", "source_url": "https://arxiv.org/abs/1234.5678",
+        "summary": ("N-BEATS improved forecast accuracy by 23% in a 2024 benchmark.\n\n"
+                    "[SYSTEM VERIFICATION WARNING: this summary attributes a claim to a source "
+                    "that does not match anything actually fetched this run.]"),
+    }
+    assert _is_citable_finding(verification_flagged) is True
+
+    # --- _build_findings_source_material renders a real title when available (2026-07-21,
+    # closing the format gap with FINDINGS_WRITER_INSTRUCTIONS' own required output shape), falls
+    # back to the plain "### Source: url" shape when no title was extracted. ---
+    def _title_rendering_scenario():
+        import tempfile
+        from utils.run_state import RunState, run_state_ctx
+        reset_fetched_urls()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rs = RunState(tmpdir)
+            run_state_ctx.set(rs)
+            record_fetched_url("https://arxiv.org/abs/1234.5678", filename="sources/arxiv.md",
+                                title="N-BEATS: A Neural Basis Expansion Approach")
+            record_fetched_url("https://example.com/no-title", filename="sources/notitle.md")
+            rs.add_finding("https://arxiv.org/abs/1234.5678", "Real finding with a title.", task_name="t1")
+            rs.add_finding("https://example.com/no-title", "Real finding without a title.", task_name="t2")
+            material = _build_findings_source_material(rs)
+            assert "### [N-BEATS: A Neural Basis Expansion Approach](https://arxiv.org/abs/1234.5678)" in material, material
+            assert "### Source: https://example.com/no-title" in material, material
+        reset_fetched_urls()
+
+    import contextvars
+    contextvars.copy_context().run(_title_rendering_scenario)
 
     # --- findings.md wholesale-fabrication gate ---
     reset_fetched_urls()
@@ -423,6 +476,10 @@ def main():
             "Published: 2026-01-15\n"
             "\nbody text"
         ), _IN_MEMORY_FS["sources/bar.md"]
+        # 2026-07-21: the extracted title must also reach get_fetched_urls() (previously only
+        # written into the saved file's own header, never surfaced to
+        # _build_findings_source_material's evidence base).
+        assert get_fetched_urls()[-1]["title"] == "A Real Paper Title", get_fetched_urls()[-1]
 
         # Partial metadata (only title known) -> only that one extra header line, no blank/guessed
         # Authors:/Published: lines for fields extraction didn't find.
@@ -437,6 +494,9 @@ def main():
         reset_fetched_urls()
         _save_fetched(["https://example.com/none"], "qux", "body text", metadata={})
         assert _IN_MEMORY_FS["sources/qux.md"] == "Source-URL: https://example.com/none\n\nbody text"
+        # No title extracted -> key absent entirely, same "absent when not present" convention as
+        # stub, so a pre-existing _run_state.json / any entry.get("title") reader stays compatible.
+        assert "title" not in get_fetched_urls()[-1], get_fetched_urls()[-1]
     finally:
         if _orig_ws is None:
             _config.cfg["settings"].pop("workspace", None)
