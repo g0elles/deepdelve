@@ -2,7 +2,7 @@ import contextvars
 import functools
 import asyncio
 
-from utils.run_state import task_fetched_urls_ctx, task_id_ctx
+from utils.run_state import task_id_ctx
 
 # --- TOOL QUOTA SYSTEM ---
 # Protects local LLM workflows from infinite retry loops (e.g., repeatedly failing to parse a URL)
