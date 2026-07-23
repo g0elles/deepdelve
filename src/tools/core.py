@@ -72,6 +72,36 @@ def check_quota(tool_name: str) -> str | None:
         entry["used"] += 1
     return None
 
+# Structural gate for FindingsWriter's Write/Fix dispatch (2026-07-22): a prompt-only reorder of
+# FINDINGS_WRITER_INSTRUCTIONS asking the model to write findings.md from the compiled evidence
+# base BEFORE reading raw source files did NOT change behavior in live re-test -- gpt-oss:20b's
+# first tool call was still read_workspace_file, against a shared read_workspace_file quota
+# already exhausted by the run's earlier search phase, producing a 1-entry findings.md again.
+# Mirrors this project's standing pattern of backing an unreliable prompt-only nudge with a
+# structural check (check_quota itself; _dispatch_writer_review_fix's reads_before/reads_after
+# CLEAN-review distrust) instead of trusting compliance alone. None (not armed) for every role
+# except an active FindingsWriter dispatch -- Builder's own instructions correctly require
+# reading findings.md FIRST, so Builder must never be gated by this.
+writer_gate_ctx = contextvars.ContextVar('writer_gate_ctx', default=None)
+
+def check_writer_gate(tool_name: str) -> str | None:
+    """Blocks read_workspace_file/grep_workspace_file until the active gate's write_workspace_file
+    call has happened. No-op (returns None) unless a caller armed the gate via writer_gate_ctx.set
+    for this specific dispatch."""
+    gate = writer_gate_ctx.get()
+    if not gate or gate.get("write_done"):
+        return None
+    if tool_name in ("read_workspace_file", "grep_workspace_file"):
+        return (
+            "Error: write your first complete findings.md from the evidence base in your task "
+            "instructions BEFORE reading any source file directly -- call write_workspace_file "
+            "now. Raw source files are only for enrichment AFTER that first write."
+        )
+    if tool_name == "write_workspace_file":
+        gate["write_done"] = True
+    return None
+
+
 def refund_quota(tool_name: str) -> None:
     """Give back one quota unit when a tool call failed for environmental reasons (provider
     throttling/outage) rather than model misuse — the budget exists to stop model loops, not to
@@ -95,6 +125,7 @@ def with_quota(func):
         @functools.wraps(func)
         async def async_wrapper(*args, **kwargs):
             if err := check_quota(func.__name__): return err
+            if err := check_writer_gate(func.__name__): return err
             try:
                 return await func(*args, **kwargs)
             except Exception:
@@ -104,6 +135,7 @@ def with_quota(func):
         @functools.wraps(func)
         def sync_wrapper(*args, **kwargs):
             if err := check_quota(func.__name__): return err
+            if err := check_writer_gate(func.__name__): return err
             try:
                 return func(*args, **kwargs)
             except Exception:

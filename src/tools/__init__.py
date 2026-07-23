@@ -1,4 +1,4 @@
-from tools.core import tool_quotas_ctx, with_quota, QuotaAbortException
+from tools.core import tool_quotas_ctx, with_quota, QuotaAbortException, writer_gate_ctx
 from tools.fs import (
     get_workspace_files,
     get_workspace_file_content,
@@ -38,6 +38,7 @@ __all__ = [
     "tool_quotas_ctx",
     "with_quota",
     "QuotaAbortException",
+    "writer_gate_ctx",
     "WORKSPACE_TOOLS",
     # Individual tools (import these in app.py for selective per-agent tool assignment)
     "read_workspace_file",
