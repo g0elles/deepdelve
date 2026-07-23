@@ -319,6 +319,144 @@ def check_missing_artifact(ctx: Ctx) -> Optional[Verdict]:
     )
 
 
+def check_untracked_delegation(ctx: Ctx) -> Optional[Verdict]:
+    """Distinct from check_not_delegated (which catches ZERO delegation): the Planner dispatches a
+    task via delegate_tasks BEFORE ever writing it into _todos.md -- PLANNER_INSTRUCTIONS step 2
+    says to write todos "before dispatching any of them," but nothing enforced that order.
+    Confirmed live 2026-07-22: a 'background' task was dispatched (burning 14 web_search calls
+    chasing a source that didn't exist) with no corresponding write_todos entry ever written; the
+    Planner then wrote a real, todo-tracked plan that re-covered the same ground under
+    'background_heuristics' -- pure wasted duplication of the run's shared web_search quota.
+
+    Model-independent structural signal, same philosophy as check_thin_coverage: a top-level
+    (depth==1) dispatched task_name that never appears anywhere in the CURRENT _todos.md content.
+    Gated on write_todos having been called at least once THIS run -- PLANNER_INSTRUCTIONS step 1
+    explicitly sanctions skipping write_todos entirely for a simple single-task query, and this
+    must never flag that intended fast path. Excludes engine-driven deepening-round tasks
+    (task_name always prefixed "Follow-up: ", see _select_deepening_tasks) -- the Planner never
+    chooses those names itself, so they were never meant to be in its own todos.
+
+    Placed LAST among the pre-grounding checks (after missing_findings/missing_artifact): this is
+    a process-efficiency nudge, not a correctness gate -- a run with a more urgent problem should
+    fix that first, this can wait a cycle.
+
+    Fires AT MOST ONCE per run, deliberately NOT escalating/repeating like every other check here
+    (live-confirmed regression, 2026-07-22): a run that kept renaming and redispatching the same
+    angle across retries (a SEPARATE, real problem in its own right) produced a new untracked
+    variant on every single attempt, so this check kept firing, kept consuming the retry budget,
+    and the run ended "Retry budget exhausted... could NOT be fully verified" over a hygiene
+    nudge — even though final_report.md itself may have been perfectly fine. Wasted delegate_tasks
+    quota is real but low-severity; it must never be strong enough to block a run's completion the
+    way a genuine correctness gate (missing_artifact, not_grounded, ...) is meant to."""
+    todos_used = (ctx.quotas or {}).get("write_todos", {}).get("used", 0)
+    if todos_used == 0:
+        return None
+    prior_attempts = ctx.run_state.data.get("completion_check_attempts", [])
+    if any(a.get("problem") == "untracked_delegation" for a in prior_attempts):
+        return None
+    todos_text = (get_workspace_file_content("_todos.md") or "").lower()
+    if not todos_text:
+        return None
+    top_level_names = {
+        f.get("task_name") for f in ctx.run_state.data.get("findings", [])
+        if f.get("depth") == 1 and f.get("task_name") and not f["task_name"].startswith("Follow-up: ")
+    }
+    # Word-boundary, NOT plain substring: "background" is a plain substring of the unrelated
+    # "background_heuristics" (confirmed live -- that's the EXACT pair this check exists to catch),
+    # and a naive `in` test would call it "tracked" on that coincidence alone. "_" counts as a
+    # \w character, so \b sees no boundary inside "background_heuristics" and correctly treats it
+    # as one distinct token, not a match for the shorter name.
+    untracked = sorted(
+        n for n in top_level_names
+        if n and not re.search(r'\b' + re.escape(n.lower()) + r'\b', todos_text)
+    )
+    if not untracked:
+        return None
+
+    untracked_list = ", ".join(f"'{n}'" for n in untracked[:5])
+    directive = (
+        f"You dispatched {untracked_list} via delegate_tasks, but {'it' if len(untracked) == 1 else 'they'} "
+        f"never appear in your own _todos.md -- you delegated before writing your plan, not after. "
+        f"If a later slot already covers the same ground, do NOT dispatch yet another duplicate task "
+        f"for it; just note in your plan that this angle is already covered. This is a one-time "
+        f"reminder for future runs -- it will NOT block this run from finishing."
+    )
+    return Verdict(
+        "untracked_delegation",
+        f"Delegated task(s) {untracked_list} were never added to the written plan — likely duplicate/wasted effort. Pushing agent to stop redispatching untracked angles.",
+        f"SYSTEM WARNING: {ctx.last_chance_prefix}{directive}",
+    )
+
+
+def check_report_underuses_findings(ctx: Ctx) -> Optional[Verdict]:
+    """Builder's own version of check_thin_coverage's diagnosis, one stage downstream: a report
+    can be perfectly GROUNDED (every citation it does make traces to a real fetch) while still
+    silently abandoning most of findings.md's real, distinct sources -- the exact evidence-
+    abandonment pattern this project spent 2026-07-22 fixing for FindingsWriter (writer_gate_ctx,
+    _collapse_multi_url_task_findings), confirmed live to recur one layer downstream: a run with a
+    genuinely diverse, 15-entry findings.md (heuristic-algorithm papers AND Colombian cultural
+    sources, covering both facets the query asked for) produced a final_report.md that only ever
+    cited the Colombian cluster -- the entire heuristic-algorithms half, present and citable in
+    findings.md, never appears anywhere in the report. None of the existing GROUNDING_CHECKS catch
+    this: they all verify whether a citation the report DOES make is real, never whether the
+    report used enough of what was actually available.
+
+    Model-independent structural signal, same shape as check_thin_coverage: findings.md's own
+    distinct cited URLs (extract_cited_urls on its raw text -- the same extractor every grounding
+    check already uses, so "cited" here means the exact same thing it means everywhere else in
+    this project) vs. final_report.md's own cited URLs. Fires when a MAJORITY of findings.md's
+    real sources never made it into the report (ratio below threshold, default 0.5) AND there are
+    enough of them for that ratio to mean something (min_sources, default 3) -- a findings.md with
+    only 1-2 real sources being used at ratio 1.0 or 0.5 is expected, not evidence of abandonment."""
+    cov_cfg = config.cfg.get("settings", {}).get("report_coverage_check", {})
+    if not cov_cfg.get("enabled", True):
+        return None
+    if "findings.md" not in ctx.files or ctx.content is None:
+        return None
+    from utils.grounding import extract_cited_urls
+    findings_urls = set(extract_cited_urls(get_workspace_file_content("findings.md") or ""))
+    min_sources = cov_cfg.get("min_sources", 3)
+    if len(findings_urls) < min_sources:
+        return None
+    report_urls = set(extract_cited_urls(ctx.content))
+    unused = sorted(findings_urls - report_urls)
+    if not unused:
+        return None
+    ratio = (len(findings_urls) - len(unused)) / len(findings_urls)
+    threshold = cov_cfg.get("threshold", 0.5)
+    if ratio >= threshold:
+        return None
+
+    prior_same = 0
+    for a in reversed(ctx.run_state.data.get("completion_check_attempts", [])):
+        if a.get("problem") == "report_underuses_findings":
+            prior_same += 1
+        else:
+            break
+
+    unused_list = ", ".join(unused[:5])
+    if prior_same == 0:
+        directive = (
+            f"'{ctx.req_artifact}' only cites {len(findings_urls) - len(unused)} of "
+            f"{len(findings_urls)} real sources actually present in findings.md — the rest "
+            f"({unused_list}) are real, fetched, and available but never appear anywhere in the "
+            f"report. Rewrite it to actually incorporate the neglected sources too, not just "
+            f"whichever cluster was easiest to write about first — if findings.md covers multiple "
+            f"distinct angles, the report must reflect all of them, not just one."
+        )
+    else:
+        directive = (
+            f"'{ctx.req_artifact}' STILL neglects real sources from findings.md after a prior "
+            f"warning ({unused_list}). Do not just lightly edit the existing draft — actually add "
+            f"sections covering these neglected sources."
+        )
+    return Verdict(
+        "report_underuses_findings",
+        f"'{ctx.req_artifact}' cites only {len(findings_urls) - len(unused)}/{len(findings_urls)} of findings.md's real sources ({unused_list} never cited). Pushing agent to incorporate the rest.",
+        f"SYSTEM WARNING: {ctx.last_chance_prefix}{directive}",
+    )
+
+
 def _redelegate_directive(ctx: Ctx) -> str:
     """Structural signal for a real, confirmed failure mode: a model makes ONE
     delegate_tasks call early on (satisfying "you must delegate"), then — after a
@@ -622,6 +760,7 @@ COMPLETION_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
     check_findings_ungrounded,
     check_missing_findings,
     check_missing_artifact,
+    check_untracked_delegation,
 ]
 GROUNDING_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
     check_claim_unsupported,
@@ -635,6 +774,11 @@ GROUNDING_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
     check_excluded_topic,
     check_cross_source_contradiction,
     check_propagated_ungrounded_content,
+    # Breadth, not accuracy -- deliberately placed AFTER every citation-ACCURACY check above (no
+    # point demanding more citations while the ones that already exist are still wrong) but BEFORE
+    # the generic catch-all, so a report that both under-cites AND has one bad citation gets the
+    # bad-citation problem fixed first.
+    check_report_underuses_findings,
     check_not_grounded,  # generic catch-all: fires on ANY grounding problem — keep it LAST
 ]
 
@@ -654,7 +798,8 @@ _QUARANTINE_PROBLEMS = ("not_grounded", "claim_unsupported", "non_url_citation",
 _BUILDER_FIXABLE_PROBLEMS = ("missing_artifact", "not_grounded", "claim_unsupported",
                              "non_url_citation", "regulation_unsupported", "stub_source",
                              "nli_unsupported", "topical_mismatch", "uncited_claims",
-                             "excluded_topic_present", "cross_source_contradiction")
+                             "excluded_topic_present", "cross_source_contradiction",
+                             "report_underuses_findings")
 
 # Findings-authoring problems, fixable by a fresh-context FindingsWriter (+ PeerReviewer check)
 # from this run's REAL structured results (see _build_findings_source_material) — the Planner
@@ -919,8 +1064,8 @@ async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artif
     # have re-read, but re-including write_instructions here is correct for both roles and keeps
     # this function writer-role-agnostic.
     think_tool_note = (
-        f" Your last draft also skipped its own required think_tool reasoning step before "
-        f"writing — use think_tool this time to actually check each claim before finalizing."
+        " Your last draft also skipped its own required think_tool reasoning step before "
+        "writing — use think_tool this time to actually check each claim before finalizing."
         if think_tool_skipped else ""
     )
     fix_instructions = (

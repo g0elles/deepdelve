@@ -5,10 +5,60 @@ import asyncio
 import threading
 from bs4 import BeautifulSoup
 from agent_framework import tool
-from tools.core import with_quota
+from tools.core import with_quota, tool_quotas_ctx
 from tools.fs import _get_safe_path, _get_workspace_type, _IN_MEMORY_FS
-from utils.run_state import record_fetched_url
+from utils.run_state import record_fetched_url, task_id_ctx
 from utils.browser_fetch import fetch_via_headless_browser
+
+# Low-novelty search streak backstop (2026-07-22): a real live run showed one WebSearcher task
+# fire 14 web_search calls, each a slightly-reworded near-duplicate, chasing a single source that
+# satisfied two independent facets of its own (conflated) task instructions at once -- fetching
+# only 3 URLs the entire time. The existing <Anti-Looping> prompt rule ("don't search the exact
+# same topic again") never caught this because every query was WORDED differently, a semantic
+# near-duplicate the rule can't see.
+#
+# FIRST VERSION of this fix (same day) reset the streak on any successful fetch, on the theory
+# that "no new fetch in N searches" meant no progress. Live-disconfirmed immediately: web_search
+# AUTO-FETCHES its top result on nearly every call by design (see its own docstring), so that
+# reset fired almost every single time regardless of whether the query was a genuine near-
+# duplicate -- across a real run with 15 near-duplicate queries before the first real fetch, the
+# streak never even reached the threshold. Replaced with the actual signal that matters: how many
+# genuinely NEW search terms (not stopwords, len>=4) does this query add over every term already
+# seen THIS task? A model rephrasing the same request keeps circling the same term set even
+# though the literal query string differs every time -- confirmed against that same live
+# transcript, novelty drops below the 0.35 floor by call #10 given its actual queries.
+_SEARCH_STREAK_WARN_AT = 5
+_SEARCH_NOVELTY_MIN = 0.35
+
+def _query_terms(query: str) -> set:
+    words = re.findall(r"[a-zà-ÿ0-9]{4,}", (query or "").lower())
+    return {w for w in words if w not in _DIVERSITY_STOPWORDS}
+
+
+def _note_search_streak(query: str) -> str:
+    pool = tool_quotas_ctx.get()
+    task_id = task_id_ctx.get()
+    if pool is None or task_id is None:
+        return ""
+    state = pool.setdefault("_search_streak_by_task", {})
+    entry = state.setdefault(task_id, {"low_novelty_streak": 0, "seen_terms": set()})
+    terms = _query_terms(query)
+    novelty = len(terms - entry["seen_terms"]) / len(terms) if terms else 1.0
+    entry["seen_terms"] |= terms
+    if novelty < _SEARCH_NOVELTY_MIN:
+        entry["low_novelty_streak"] += 1
+    else:
+        entry["low_novelty_streak"] = 0
+    if entry["low_novelty_streak"] == _SEARCH_STREAK_WARN_AT:
+        return (
+            f"\n\n[SYSTEM NUDGE: your last {_SEARCH_STREAK_WARN_AT} web_search queries introduced "
+            f"almost no new search terms -- you appear to be rephrasing the same request rather "
+            f"than covering new ground. If your task covers multiple independent facets, finding a "
+            f"strong source for only SOME of them is fine and expected -- stop rephrasing and accept "
+            f"your best result now instead of continuing to search for one source that satisfies "
+            f"every facet at once.]"
+        )
+    return ""
 
 
 def _run_with_daemon_timeout(func, timeout: float):
@@ -661,6 +711,8 @@ async def web_search(
     if quota_error:
         return quota_error
 
+    streak_note = _note_search_streak(query)
+
     import config as app_config
     search_mode = app_config.cfg.get("settings", {}).get("search_mode", "light")
     if search_mode == "heavy":
@@ -823,7 +875,7 @@ async def web_search(
             block += f"\n**Note:** {r['auto_fetch_status']}"
         result_texts.append(block + "\n")
 
-    return f"🔍 Found {len(result_texts)} result(s) for '{query}':\n\n{chr(10).join(result_texts)}{auto_fetch_note}{_scope_warning(query)}{list_note}"
+    return f"🔍 Found {len(result_texts)} result(s) for '{query}':\n\n{chr(10).join(result_texts)}{auto_fetch_note}{_scope_warning(query)}{list_note}{streak_note}"
 
 
 async def verify_url_live(url: str, timeout: float = 5.0) -> bool:

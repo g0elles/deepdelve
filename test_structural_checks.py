@@ -955,6 +955,108 @@ def main():
 
             contextvars.copy_context().run(_matrix_row)
 
+    # --- check_untracked_delegation (2026-07-22): the Planner dispatching delegate_tasks BEFORE
+    # write_todos for that slot -- confirmed live, a 'background' task burned 14 web_search calls
+    # with no matching _todos.md entry, then got redispatched properly as 'background_heuristics'.
+    # Distinct from check_not_delegated (zero delegation) and check_thin_coverage (breadth failed);
+    # this fires on a task that WAS delegated and DID succeed, just never got tracked in the plan. ---
+    def _untracked_delegation_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        from tools.core import tool_quotas_ctx as q_ctx
+        _orig_ws4 = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            _IN_MEMORY_FS.clear()
+            reset_fetched_urls()
+            record_fetched_url(_SRC, filename="sources/page.md")
+            _IN_MEMORY_FS["sources/page.md"] = _SOURCE_TEXT
+            _IN_MEMORY_FS["findings.md"] = _FINDINGS_OK
+            _IN_MEMORY_FS["final_report.md"] = f"- el pais avanza de forma sostenida segun cifras oficiales [gov]({_SRC})"
+
+            # (a) write_todos WAS used, the dispatched task_name never appears in _todos.md -> fires.
+            _IN_MEMORY_FS["_todos.md"] = "- [x] background_heuristics\n- [ ] verification"
+            q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5}, "write_todos": {"used": 1, "limit": 5}})
+            with tempfile.TemporaryDirectory() as tmpdir_a:
+                rs = RunState(tmpdir_a)
+                rs.add_finding(_SRC, "some background summary", task_name="background", depth=1)
+                run_state_ctx.set(rs)
+                msgs = []
+                should_retry, _ = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append))
+                recorded = rs.data["completion_check_attempts"][-1]["problem"]
+                assert recorded == "untracked_delegation", (recorded, msgs)
+                assert should_retry
+                assert "were never added to the written plan" in msgs[-1], msgs
+
+                # (a2) Live-confirmed regression, 2026-07-22: a SECOND pass with the EXACT SAME
+                # untracked condition still true must NOT fire again -- this is a one-time hygiene
+                # nudge, not a blocking correctness gate, and must never be able to exhaust a run's
+                # entire retry budget over wasted delegate_tasks quota alone (that's exactly what
+                # happened live before this fix: 4 consecutive fires, "Retry budget exhausted...
+                # could NOT be fully verified" on an otherwise-fine report).
+                msgs2 = []
+                should_retry2, _ = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs2.append))
+                recorded2 = rs.data["completion_check_attempts"][-1]["problem"]
+                assert recorded2 != "untracked_delegation", (
+                    "must fire at most once per run, never repeat/escalate", recorded2, msgs2)
+
+            # (b) write_todos never used (sanctioned simple-query fast path) -> must NEVER fire,
+            # even though the same task_name is absent from an empty/nonexistent _todos.md.
+            _IN_MEMORY_FS.pop("_todos.md", None)
+            q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5}})
+            with tempfile.TemporaryDirectory() as tmpdir_b:
+                rs = RunState(tmpdir_b)
+                rs.add_finding(_SRC, "some background summary", task_name="background", depth=1)
+                run_state_ctx.set(rs)
+                msgs = []
+                should_retry, _ = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append))
+                recorded = rs.data["completion_check_attempts"][-1]["problem"]
+                assert recorded != "untracked_delegation", (
+                    "simple-query fast path (write_todos never called) must never be flagged", recorded, msgs)
+
+            # (c) properly tracked -> clean pass, never fires.
+            _IN_MEMORY_FS["_todos.md"] = "- [x] background\n- [ ] verification"
+            q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5}, "write_todos": {"used": 1, "limit": 5}})
+            with tempfile.TemporaryDirectory() as tmpdir_c:
+                rs = RunState(tmpdir_c)
+                rs.add_finding(_SRC, "some background summary", task_name="background", depth=1)
+                run_state_ctx.set(rs)
+                msgs = []
+                should_retry, _ = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append))
+                recorded = rs.data["completion_check_attempts"][-1]["problem"]
+                assert recorded != "untracked_delegation", (
+                    "a task_name that DOES appear in _todos.md must never be flagged", recorded, msgs)
+
+            # (d) engine-driven deepening task ("Follow-up: ...") never in _todos.md by design ->
+            # must never be flagged -- the Planner never chose that name itself.
+            _IN_MEMORY_FS["_todos.md"] = "- [x] background_heuristics\n- [ ] verification"
+            q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5}, "write_todos": {"used": 1, "limit": 5}})
+            with tempfile.TemporaryDirectory() as tmpdir_d:
+                rs = RunState(tmpdir_d)
+                rs.add_finding(_SRC, "some background summary", task_name="background_heuristics", depth=1)
+                rs.add_finding(_SRC, "a follow-up lead", task_name="Follow-up: explore X", depth=1)
+                run_state_ctx.set(rs)
+                msgs = []
+                should_retry, _ = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append))
+                recorded = rs.data["completion_check_attempts"][-1]["problem"]
+                assert recorded != "untracked_delegation", (
+                    "an engine-dispatched 'Follow-up: ...' deepening task must never be flagged", recorded, msgs)
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            if _orig_ws4 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws4
+
+    contextvars.copy_context().run(_untracked_delegation_scenario)
+
     # --- find_cross_source_contradictions: citation-only lines must never be treated as claims.
     # Live-confirmed false positive (2026-07-14, real Iceland-population TUI run): an agency name
     # ("Statistics Iceland") appearing ONLY inside a `- Source: [Title - Statistics Iceland](url)`
@@ -1417,6 +1519,110 @@ def main():
                 _config.cfg["settings"]["workspace"] = _orig_ws10
 
     contextvars.copy_context().run(_thin_coverage_wiring_scenario)
+
+    # --- check_report_underuses_findings (2026-07-22): Builder's own version of check_thin_
+    # coverage, one stage downstream. Live-confirmed the SAME evidence-abandonment pattern this
+    # project fixed for FindingsWriter earlier the same day recurs at Builder: a genuinely diverse
+    # 15-entry findings.md (heuristic-algorithm papers AND Colombian cultural sources) produced a
+    # final_report.md that only ever cited the Colombian cluster -- the heuristic-algorithms half,
+    # present and citable in findings.md, never appeared in the report, and no existing grounding
+    # check catches it (they all verify citations the report DOES make, never whether it used
+    # enough of what was actually available). ---
+    def _report_underuses_findings_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        from tools.core import tool_quotas_ctx as q_ctx
+
+        _orig_ws11 = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
+        _orig_gc11 = _config.cfg.get("settings", {}).get("grounding_check")
+        _config.cfg["settings"]["grounding_check"] = {"nli_verify": False, "topical_relevance_check": False}
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            _IN_MEMORY_FS.clear()
+            reset_fetched_urls()
+            q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5}})
+            urls = [f"https://source{i}.example.co/page" for i in range(1, 6)]
+            for i, u in enumerate(urls, 1):
+                record_fetched_url(u, filename=f"sources/s{i}.md")
+                _IN_MEMORY_FS[f"sources/s{i}.md"] = f"Source-URL: {u}\n\ndato numero {i} sobre el tema."
+            findings_md = "\n\n".join(f"### [Fuente {i}]({u})\n- dato numero {i} sobre el tema." for i, u in enumerate(urls, 1))
+
+            # (a) findings.md has 5 real distinct sources, report cites only 2 (ratio 0.4 < 0.5
+            # threshold, 5 >= min_sources 3) -> fires, names the 3 neglected ones.
+            with tempfile.TemporaryDirectory() as tmpdir_a:
+                rs = RunState(tmpdir_a)
+                run_state_ctx.set(rs)
+                _IN_MEMORY_FS["findings.md"] = findings_md
+                _IN_MEMORY_FS["final_report.md"] = (
+                    f"- dato numero 1 sobre el tema. [Fuente 1]({urls[0]})\n"
+                    f"- dato numero 2 sobre el tema. [Fuente 2]({urls[1]})"
+                )
+                msgs = []
+                should_retry, _ = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append))
+                recorded = rs.data["completion_check_attempts"][-1]["problem"]
+                assert recorded == "report_underuses_findings", (recorded, msgs)
+                assert should_retry
+                assert urls[2] in msgs[-1] and urls[3] in msgs[-1] and urls[4] in msgs[-1], msgs
+
+            # (b) below min_sources (only 2 real findings.md sources) -> never fires, even at a
+            # worse ratio (1 of 2 cited).
+            with tempfile.TemporaryDirectory() as tmpdir_b:
+                rs = RunState(tmpdir_b)
+                run_state_ctx.set(rs)
+                _IN_MEMORY_FS["findings.md"] = "\n\n".join(
+                    f"### [Fuente {i}]({u})\n- dato numero {i} sobre el tema." for i, u in enumerate(urls[:2], 1))
+                _IN_MEMORY_FS["final_report.md"] = f"- dato numero 1 sobre el tema. [Fuente 1]({urls[0]})"
+                msgs = []
+                should_retry, _ = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append))
+                recorded = rs.data["completion_check_attempts"][-1]["problem"]
+                assert recorded != "report_underuses_findings", (
+                    "too few real sources in findings.md for the ratio to mean anything", recorded, msgs)
+
+            # (c) ratio exactly AT threshold (2 of 4 cited, 0.5) -> must NOT fire, only below it.
+            with tempfile.TemporaryDirectory() as tmpdir_c:
+                rs = RunState(tmpdir_c)
+                run_state_ctx.set(rs)
+                _IN_MEMORY_FS["findings.md"] = "\n\n".join(
+                    f"### [Fuente {i}]({u})\n- dato numero {i} sobre el tema." for i, u in enumerate(urls[:4], 1))
+                _IN_MEMORY_FS["final_report.md"] = (
+                    f"- dato numero 1 sobre el tema. [Fuente 1]({urls[0]})\n"
+                    f"- dato numero 2 sobre el tema. [Fuente 2]({urls[1]})"
+                )
+                msgs = []
+                should_retry, _ = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append))
+                recorded = rs.data["completion_check_attempts"][-1]["problem"]
+                assert recorded != "report_underuses_findings", (
+                    "ratio exactly AT threshold (0.5) must not fire -- only below it", recorded, msgs)
+
+            # (d) every real source cited -> clean, never fires.
+            with tempfile.TemporaryDirectory() as tmpdir_d:
+                rs = RunState(tmpdir_d)
+                run_state_ctx.set(rs)
+                _IN_MEMORY_FS["findings.md"] = findings_md
+                _IN_MEMORY_FS["final_report.md"] = "\n".join(
+                    f"- dato numero {i} sobre el tema. [Fuente {i}]({u})" for i, u in enumerate(urls, 1))
+                msgs = []
+                should_retry, _ = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append))
+                recorded = rs.data["completion_check_attempts"][-1]["problem"]
+                assert recorded != "report_underuses_findings", (recorded, msgs)
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            if _orig_ws11 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws11
+            if _orig_gc11 is None:
+                _config.cfg["settings"].pop("grounding_check", None)
+            else:
+                _config.cfg["settings"]["grounding_check"] = _orig_gc11
+
+    contextvars.copy_context().run(_report_underuses_findings_scenario)
 
     # --- missing_artifact escalation (live case 2026-07-12: 24 real fetched URLs + a populated
     # findings.md, but the model still got this nudge 5x verbatim and never once attempted
@@ -3663,8 +3869,8 @@ def main():
                 "not once per URL", material)
             for url in ("https://example.com/a", "https://example.com/b", "https://example.com/c"):
                 assert url in material, (
-                    f"every real URL from the collapsed group must still be named so "
-                    f"FindingsWriter can cite each one, not just the first", url, material)
+                    "every real URL from the collapsed group must still be named so "
+                    "FindingsWriter can cite each one, not just the first", url, material)
             assert "a distinct single-source finding" in material, material
 
     contextvars.copy_context().run(_findings_multi_url_collapse_scenario)
@@ -3743,6 +3949,43 @@ def main():
         assert "a finding" in read_workspace_file("findings.md")
 
     contextvars.copy_context().run(_writer_gate_scenario)
+
+    # --- low-novelty search-streak backstop (2026-07-22): a real live run showed one WebSearcher
+    # task fire 14 near-duplicate web_search calls (each worded differently, so the existing
+    # exact-repeat <Anti-Looping> rule never caught it), fetching only 3 URLs the whole time.
+    # FIRST VERSION of this check reset on any successful fetch -- live-disconfirmed immediately
+    # (web_search auto-fetches its top result on nearly every call, so that reset fired almost
+    # every time regardless of query repetition, and the streak never reached threshold across a
+    # real 15-query run). Rebuilt around actual query novelty instead. ---
+    def _search_streak_scenario():
+        from tools.core import tool_quotas_ctx as q_ctx
+        from utils.run_state import task_id_ctx
+        from tools.web import _note_search_streak, _SEARCH_STREAK_WARN_AT
+
+        q_ctx.set({})
+        task_id_ctx.set("task-a")
+        # Same shape as the real live transcript: near-duplicate rephrasings of one request.
+        near_dup_queries = [
+            "heuristic algorithms deep learning sales forecasting holidays payday events",  # seeds the term set, novelty always 1.0 here
+            "heuristic approach deep learning sales forecasting",
+            "heuristic rules sales forecasting deep learning",
+            "holiday effect sales forecasting deep learning",
+            "payday effect sales forecast deep learning",
+            "sales forecast deep learning approach effect",
+        ]
+        assert len(near_dup_queries) == _SEARCH_STREAK_WARN_AT + 1
+        notes = [_note_search_streak(q) for q in near_dup_queries]
+        assert all(n == "" for n in notes[:-1]), notes
+        assert notes[-1] and "web_search" in notes[-1] and "rephrasing" in notes[-1], notes
+
+        # A genuinely novel query (new terms, no overlap with anything seen) resets the streak.
+        assert _note_search_streak("giraffe migration patterns antarctica penguins") == ""
+
+        # Different task_id -> independent counter, one task's streak never bleeds into another's.
+        task_id_ctx.set("task-b")
+        assert _note_search_streak("heuristic algorithms deep learning sales forecasting") == ""
+
+    contextvars.copy_context().run(_search_streak_scenario)
 
     # --- _build_findings_source_material must cap total size against context_budget_chars instead
     # of handing an unbounded string to a fresh dispatch for the model backend to silently truncate

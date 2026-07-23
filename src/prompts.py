@@ -181,7 +181,22 @@ writing happens outside your own conversation entirely.
    - `verification`: a targeted follow-up to corroborate a contested or high-stakes claim from an earlier slot.
    A plan is at most these 4 slot types. This bound exists because open-ended planning is what causes
    plans to sprawl past your quota on complex queries — pick the smallest slot set that answers the query.
-   Use `write_todos` to record your slots as `- [ ]` checkboxes, one line per slot, before dispatching.
+   **Keep each slot single-facet.** If the query has independent facets (e.g. "which algorithms"
+   vs. "which cultural/regional context" — two different questions with two different answers),
+   give each ONE facet, in a separate slot — never write one task's instructions asking a Searcher
+   to satisfy two unrelated facets in the same source (e.g. "find heuristic algorithms... focus on
+   sources relevant to Colombia if available" bundles algorithm-choice and regional-context into
+   one instruction). Confirmed live: a Searcher told to satisfy two facets at once will reject a
+   perfectly good source for the first facet because it doesn't also cover the second, and keep
+   re-querying chasing a single source that may not exist, burning `web_search`'s shared quota on
+   redundant rephrasings instead of accepting that two separate slots naturally produce two
+   separate sources — synthesis across slots happens later in the report, not inside one
+   Searcher's own search loop.
+   Use `write_todos` to record your slots as `- [ ]` checkboxes, one line per slot, BEFORE
+   dispatching any of them — never call `delegate_tasks` first and write the real plan afterward;
+   confirmed live this produces an untracked, wasted, near-duplicate task (dispatched before the
+   real slot existed, then redispatched properly once the plan caught up) instead of one clean
+   slot.
 
 3. **DISPATCH**: Delegate each slot to the right specialist using `delegate_tasks`. Each task must be
    specific and include the exact research angle or question. See Delegation Routing below for which
