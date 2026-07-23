@@ -16,7 +16,7 @@ from typing import Callable, NamedTuple, Optional
 
 import config
 from agent_framework import Message
-from tools import tool_quotas_ctx, get_workspace_files, get_workspace_file_content
+from tools import tool_quotas_ctx, get_workspace_files, get_workspace_file_content, writer_gate_ctx
 from utils.run_state import get_fetched_urls, get_search_health
 from utils.grounding import (
     fully_ungrounded, partially_ungrounded, real_grounding_problem, split_into_heading_sections,
@@ -818,7 +818,18 @@ async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artif
     # object for the life of this dispatch.
     pool = tool_quotas_ctx.get()
     think_before = pool.get("think_tool", {}).get("used") if pool else None
-    write_result = await dispatch_task(f"{writer_role}Fix_attempt{attempt + 1}", write_instructions, writer_role)
+
+    # Structural gate (2026-07-22): FindingsWriter only -- see writer_gate_ctx's own docstring in
+    # tools/core.py. Builder is deliberately never gated; its instructions correctly require
+    # reading findings.md FIRST. Fresh per dispatch (write_done always starts False) and reset in
+    # a finally so a gate never leaks into a sibling dispatch (PeerReviewer's read below, or a
+    # later run) if this one raises.
+    gate_token = writer_gate_ctx.set({"write_done": False}) if writer_role == "FindingsWriter" else None
+    try:
+        write_result = await dispatch_task(f"{writer_role}Fix_attempt{attempt + 1}", write_instructions, writer_role)
+    finally:
+        if gate_token is not None:
+            writer_gate_ctx.reset(gate_token)
     think_after = pool.get("think_tool", {}).get("used") if pool else None
     think_tool_skipped = think_before is not None and think_after == think_before
 
@@ -919,7 +930,12 @@ async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artif
         f"--- YOUR ORIGINAL TASK INSTRUCTIONS AND SOURCE MATERIAL (unchanged) ---\n{write_instructions}"
         f"{think_tool_note}"
     )
-    await dispatch_task(f"{writer_role}Fix_attempt{attempt + 1}_reviewed", fix_instructions, writer_role)
+    gate_token = writer_gate_ctx.set({"write_done": False}) if writer_role == "FindingsWriter" else None
+    try:
+        await dispatch_task(f"{writer_role}Fix_attempt{attempt + 1}_reviewed", fix_instructions, writer_role)
+    finally:
+        if gate_token is not None:
+            writer_gate_ctx.reset(gate_token)
 
 
 # Matches orchestrator.py's task_deadline cutoff marker text exactly (both variants: mid-turn
@@ -972,6 +988,34 @@ def _dedupe_findings(findings: list) -> list:
         seen.add(key)
         deduped.append(f)
     return deduped
+
+
+def _collapse_multi_url_task_findings(citable: list) -> list:
+    """A Searcher task that fetches N URLs in one turn (orchestrator.py's `_run_single_task`) calls
+    `add_finding` once per URL, but attaches the SAME task-level synthesis text to every one --
+    not a per-URL summary. Rendered as N separate findings, this looks like N times the real
+    distinct content: confirmed live 2026-07-22 (`i_want_documentation_on_heuristic_algoritms_for_de_
+    20260722_204635`), 3 of 12 real research tasks accounted for 16 of 25 "citable findings" purely
+    because they fetched the most URLs, each one a near-verbatim repeat of that task's one summary.
+    This both pads what FindingsWriter has to read with redundant text AND lets whichever task
+    fetched the most URLs dominate `_reorder_findings_for_position_bias`'s front/back edges by raw
+    fetch count rather than by having more real distinct information -- the opposite of what that
+    reorder exists to protect against. Collapses same-(task_name, summary) findings into one group
+    carrying every URL, so the body text is kept once and the reorder/FindingsWriter's attention are
+    spent on genuinely distinct content once each. Does NOT touch `run_state.data["findings"]` or
+    any other consumer of the raw list (coverage(), the RAG cache, _find_propagated_bad_content) --
+    purely a rendering-time grouping for _build_findings_source_material's own entries."""
+    grouped: dict = {}
+    order = []
+    for f in citable:
+        key = (f.get("task_name"), f.get("summary"))
+        group = grouped.get(key)
+        if group is None:
+            group = {"task_name": f.get("task_name"), "summary": f.get("summary"), "findings": []}
+            grouped[key] = group
+            order.append(key)
+        group["findings"].append(f)
+    return [grouped[k] for k in order]
 
 
 def _uncited_task_names(deduped: list) -> list:
@@ -1088,24 +1132,38 @@ def _build_findings_source_material(run_state: "RunState") -> str:  # noqa: F821
     # the dispatch fetched something but was cut off before synthesizing it. There is nothing
     # real to cite here even though the URL is genuine, so it goes in uncited_task_names instead
     # of being rendered as if it were real content.
+    def _heading_for(src: str) -> str:
+        meta = url_to_meta.get(src.rstrip("/"), {})
+        fn = meta.get("filename")
+        title = meta.get("title")
+        # A real title (tools/web.py::_extract_html_metadata, threaded through
+        # record_fetched_url as of 2026-07-21) lets this heading match
+        # FINDINGS_WRITER_INSTRUCTIONS' own required output format exactly -- turning most
+        # entries into a copy/light-edit task instead of invent-a-title-then-write for every
+        # one of them. Falls back to the plain "### Source: url" shape when no title was
+        # extracted (non-HTML fetches, or extraction failed) -- never a hard requirement.
+        heading = f"### [{title}]({src})" if title else f"### Source: {src}"
+        return heading + (f" (saved as {fn})" if fn else "")
+
+    citable = [f for f in deduped if _is_citable_finding(f)]
     entries = []
-    for f in deduped:
-        if _is_citable_finding(f):
-            src = f.get("source_url") or ""
-            meta = url_to_meta.get(src.rstrip("/"), {})
-            fn = meta.get("filename")
-            title = meta.get("title")
-            # A real title (tools/web.py::_extract_html_metadata, threaded through
-            # record_fetched_url as of 2026-07-21) lets this heading match
-            # FINDINGS_WRITER_INSTRUCTIONS' own required output format exactly -- turning most
-            # entries into a copy/light-edit task instead of invent-a-title-then-write for every
-            # one of them. Falls back to the plain "### Source: url" shape when no title was
-            # extracted (non-HTML fetches, or extraction failed) -- never a hard requirement.
-            heading = f"### [{title}]({src})" if title else f"### Source: {src}"
-            entries.append((
-                f.get("task_name") or src,
-                heading + (f" (saved as {fn})" if fn else "") + f"\n{f.get('summary', '')}"
-            ))
+    for group in _collapse_multi_url_task_findings(citable):
+        group_urls = [g.get("source_url") or "" for g in group["findings"]]
+        first_heading = _heading_for(group_urls[0])
+        block = f"{first_heading}\n{group['summary']}"
+        if len(group_urls) > 1:
+            # See _collapse_multi_url_task_findings's own docstring: these URLs shared the exact
+            # same task-level synthesis text, so it's kept ONCE above instead of repeated per URL --
+            # but findings.md's own required format is still one entry per URL (FINDINGS_WRITER_
+            # INSTRUCTIONS: "never per task"), so every additional real URL is still named here,
+            # just without a second copy of the body text.
+            more = "\n".join(f"- {_heading_for(u)}" for u in group_urls[1:])
+            block += (
+                f"\n\n(This same research pass also covered these additional real, citable "
+                f"sources -- write a SEPARATE findings.md entry for each below too, using the "
+                f"summary above unless a source-specific detail differs:\n{more})"
+            )
+        entries.append((group["task_name"] or group_urls[0], block))
     uncited_task_names = _uncited_task_names(deduped)
 
     # Positional-bias reorder (2026-07-22, see _reorder_findings_for_position_bias's own

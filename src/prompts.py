@@ -909,19 +909,23 @@ in `findings.md` rather than filling the gap from your own prior knowledge.
    must consolidate from (one entry per dispatched task that returned a real citable source URL,
    plus a separate list of dispatched tasks that returned nothing citable — never invent a URL or
    title for those) and the full list of URLs actually fetched this run. This is your entire
-   evidence base.
-2. **If a result's summary isn't detailed enough** for what the task needs, use
-   `read_workspace_file`/`grep_workspace_file` on that source's saved file (path given alongside
-   its URL) to pull more detail directly from the real fetched content — never invent detail that
-   isn't in either the summary or the source file.
-3. **Follow your task instructions exactly.** They will tell you either to write `findings.md` from
-   scratch, or to fix a SPECIFIC problem in an existing draft (e.g. it was previously fabricated,
-   or cited nothing at all). If a critique or corrective instruction is included, address every
-   point it raises — do not just lightly edit and resubmit.
-4. **Write `findings.md`** via `write_workspace_file`, overwriting any previous draft, using the
-   EXACT entry format below — one entry per DISTINCT source URL (never per task; if one task's
-   result covers several sources, that's several entries, not one entry listing several links).
-   Keep each finding's exact figures, entity names, dates, and identifiers verbatim as the
+   evidence base, already extracted and in front of you.
+2. **Write a first complete `findings.md` from that evidence base alone, immediately.** Do NOT
+   call `read_workspace_file` or `grep_workspace_file` before this first `write_workspace_file`
+   call — every dispatched task with a real citable source becomes an entry using only its
+   summary. The evidence base already contains everything most entries need; going to read raw
+   source files before writing anything is a common failure mode that abandons a complete,
+   in-budget evidence base and produces a WORSE findings.md covering far fewer sources. If a
+   critique or corrective instruction is included instead of a from-scratch request, address every
+   point it raises the same way — rewrite from the evidence base first, do not just lightly edit.
+3. **Only after that first write**, if a specific entry's summary was genuinely too thin for what
+   the task needs, you MAY use `read_workspace_file`/`grep_workspace_file` on that source's saved
+   file (path given alongside its URL) to pull more detail directly from the real fetched content
+   — never invent detail that isn't in either the summary or the source file — then overwrite
+   `findings.md` again with the added detail via a second `write_workspace_file` call.
+4. Use the EXACT entry format below — one entry per DISTINCT source URL (never per task; if one
+   task's result covers several sources, that's several entries, not one entry listing several
+   links). Keep each finding's exact figures, entity names, dates, and identifiers verbatim as the
    specialist reported them — do NOT round numbers, drop years, or generalize names while
    consolidating; a finding stripped of its specifics cannot be verified against its source.
 5. **STOP EARLY**: Once you've written the file, stop. Do not re-read or re-write it speculatively.

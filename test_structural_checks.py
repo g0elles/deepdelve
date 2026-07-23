@@ -3638,6 +3638,37 @@ def main():
 
     contextvars.copy_context().run(_findings_dedup_scenario)
 
+    # --- _collapse_multi_url_task_findings (2026-07-22): a Searcher task that fetches N URLs in
+    # one turn calls add_finding once per URL but with the SAME task-level summary attached every
+    # time (orchestrator.py's _run_single_task) -- different source_url, identical body text, so
+    # _findings_dedup_scenario's exact (source_url, summary) dedup above does NOT collapse these.
+    # Confirmed live: one 3-task run had 16 of 25 "citable findings" made of just 3 near-identical
+    # blobs, diluting the evidence base and letting whichever task fetched the most URLs dominate
+    # _reorder_findings_for_position_bias's front/back edges by fetch count alone. The body text
+    # must now be kept ONCE per (task_name, summary) group, with every additional real URL still
+    # named (never silently dropped) so FindingsWriter can still write a separate entry for each. ---
+    def _findings_multi_url_collapse_scenario():
+        from engine.completion import _build_findings_source_material
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rs = RunState(tmpdir)
+            shared_summary = "**Consolidated Findings** – same synthesis text for every URL fetched this turn."
+            rs.add_finding("https://example.com/a", shared_summary, task_name="multi_fetch_task", depth=1)
+            rs.add_finding("https://example.com/b", shared_summary, task_name="multi_fetch_task", depth=1)
+            rs.add_finding("https://example.com/c", shared_summary, task_name="multi_fetch_task", depth=1)
+            rs.add_finding(_SRC, "a distinct single-source finding", task_name="other_task", depth=1)
+            material = _build_findings_source_material(rs)
+            assert material.count("**Consolidated Findings**") == 1, (
+                "same-task, same-summary findings sharing N URLs must render the body ONCE, "
+                "not once per URL", material)
+            for url in ("https://example.com/a", "https://example.com/b", "https://example.com/c"):
+                assert url in material, (
+                    f"every real URL from the collapsed group must still be named so "
+                    f"FindingsWriter can cite each one, not just the first", url, material)
+            assert "a distinct single-source finding" in material, material
+
+    contextvars.copy_context().run(_findings_multi_url_collapse_scenario)
+
     # --- _build_findings_source_material must show each finding's REAL saved filename alongside
     # its URL (2026-07-19, user-proposed extension of the same-day delegate_tasks filename fix) —
     # FINDINGS_WRITER_INSTRUCTIONS' own Workflow step 2 already claimed "path is given alongside
@@ -3682,6 +3713,36 @@ def main():
                 "the model must be explicitly told not to fabricate a source for it", material)
 
     contextvars.copy_context().run(_findings_uncited_fallback_scenario)
+
+    # --- writer_gate_ctx structural gate (2026-07-22): a prompt-only reorder of
+    # FINDINGS_WRITER_INSTRUCTIONS asking the model to write from the evidence base before reading
+    # raw source files did NOT change live behavior (gpt-oss:20b's first call was still
+    # read_workspace_file) -- this is the backing structural check. Armed, read/grep are blocked
+    # until the first write_workspace_file call; unarmed (None, e.g. Builder's dispatch), both work
+    # exactly as before -- must never regress Builder's own required read-findings.md-first flow. ---
+    def _writer_gate_scenario():
+        from tools import writer_gate_ctx
+        from tools.fs import read_workspace_file, write_workspace_file, grep_workspace_file
+
+        token = writer_gate_ctx.set({"write_done": False})
+        try:
+            blocked = read_workspace_file("anything.md")
+            assert blocked.startswith("Error:") and "write_workspace_file" in blocked, blocked
+            blocked_grep = grep_workspace_file("anything.md", "x")
+            assert blocked_grep.startswith("Error:"), blocked_grep
+
+            result = write_workspace_file("findings.md", "### [T](https://x.com)\n- a finding")
+            assert "Wrote" in result, result
+
+            unblocked = read_workspace_file("findings.md")
+            assert "a finding" in unblocked, unblocked
+        finally:
+            writer_gate_ctx.reset(token)
+
+        # Gate not armed (default None, e.g. Builder's dispatch) -- unaffected.
+        assert "a finding" in read_workspace_file("findings.md")
+
+    contextvars.copy_context().run(_writer_gate_scenario)
 
     # --- _build_findings_source_material must cap total size against context_budget_chars instead
     # of handing an unbounded string to a fresh dispatch for the model backend to silently truncate
