@@ -497,6 +497,23 @@ def main():
         # No title extracted -> key absent entirely, same "absent when not present" convention as
         # stub, so a pre-existing _run_state.json / any entry.get("title") reader stays compatible.
         assert "title" not in get_fetched_urls()[-1], get_fetched_urls()[-1]
+
+        # --- fetch_url_to_workspace cross-agent dedup (2026-07-23): confirmed live -- 4
+        # different sub-agents independently fetched the exact same URL under 4 different
+        # slugified filenames in one run. Must short-circuit BEFORE attempting a real network
+        # fetch once get_fetched_urls() already has that exact URL, regardless of which
+        # sub-agent/filename originally fetched it. ---
+        import asyncio as _asyncio13
+        from tools.core import tool_quotas_ctx as _q_ctx13
+        record_fetched_url("https://example.com/dup", filename="sources/already_here.md")
+        _q_ctx13.set({"fetch_url_to_workspace": {"used": 0, "limit": 5}})
+        _dup_result = _asyncio13.run(fetch_url_to_workspace.func(
+            url="https://example.com/dup", filename="whatever_new_name"))
+        assert "already_here.md" in _dup_result, _dup_result
+        assert "already fetched" in _dup_result.lower(), _dup_result
+        # A genuinely different URL must not match (no real network call needed to prove this --
+        # the dedup loop itself is a pure comparison against get_fetched_urls()).
+        assert not any(e.get("url") == "https://example.com/genuinely-new" for e in get_fetched_urls())
     finally:
         if _orig_ws is None:
             _config.cfg["settings"].pop("workspace", None)

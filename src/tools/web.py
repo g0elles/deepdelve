@@ -609,6 +609,25 @@ def _slugify_for_filename(url: str, query: str) -> str:
 async def fetch_url_to_workspace(url: str | list, filename: str = "", convert_to_md: bool = True) -> str:
     """Fetch external web content and save it directly to the workspace. If convert_to_md is True, parses to Markdown. url takes ONE URL per call. filename is optional — a name is auto-generated from the URL if you omit it."""
     url, list_note = _first_of_list_arg(url, "url", "fetch_url_to_workspace")
+
+    # Cross-agent dedup (2026-07-23): confirmed live -- 4 different sub-agents each
+    # independently searched, found, and fetched the SAME timeanddate.com page under 4 different
+    # slugified filenames, same for a Wikipedia page fetched 3 times. web_search's own auto-fetch
+    # path already dedups WITHIN one search call's own result batch, but nothing stopped a
+    # DIFFERENT sub-agent, later in the same run, from re-fetching a URL another sub-agent already
+    # pulled via a direct call here. get_fetched_urls() is the same run-wide registry every other
+    # already-fetched check in this project already trusts (RunState.coverage(), the grounding
+    # checks) -- exact string match is enough since _slugify_for_filename's own sha1(url) already
+    # produces IDENTICAL digests for these real duplicates, confirming the URLs really were
+    # byte-identical, not just similar.
+    from utils.run_state import get_fetched_urls
+    for entry in get_fetched_urls():
+        if entry.get("url") == url:
+            return (
+                f"Already fetched this run — see workspace file '{entry.get('filename')}'. "
+                f"Read/grep that file directly instead of fetching this URL again."
+            )
+
     # filename used to be a required argument with no default -- confirmed live 2026-07-12: the
     # model omitted it entirely in 5 separate calls across today's benchmark runs, and since a
     # missing required field is rejected by schema validation BEFORE the function body ever runs,
