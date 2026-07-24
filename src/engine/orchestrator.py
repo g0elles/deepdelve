@@ -306,6 +306,25 @@ def _get_compaction_strategy():
         max_output_tokens=max_output,
     )
 
+
+def _compaction_strategy_for_role(agent_id: str | None):
+    """FindingsWriter's ENTIRE evidence base is front-loaded into one first-turn user message
+    (see completion.py's _build_findings_source_material) -- there is no prior turn history yet
+    for generic oldest-group truncation to sacrifice first. Confirmed live 2026-07-24: once that
+    one message crosses agent_framework's ContextWindowCompactionStrategy truncation threshold,
+    TruncationStrategy (whole-message-group granularity, never partial) has nothing else to
+    evict and deletes the entire evidence base in one shot -- FindingsWriter then either writes
+    an empty findings.md or truthfully reports "no evidence provided", because post-compaction
+    that's literally what it received. FindingsWriter already has its own dedicated,
+    content-aware budget for exactly this (context_budget_chars, never drops everything at
+    once) -- stacking generic compaction on top only fights it. Every other role's first message
+    is short (e.g. Builder re-reads findings.md via a later tool call, not a front-loaded dump),
+    so compaction stays on for them."""
+    if agent_id == "FindingsWriter":
+        return None
+    return _get_compaction_strategy()
+
+
 def stream_content_chars(update) -> int:
     """Approximate context growth from one stream update: text, tool-call arguments, and tool
     results all re-enter the model's context on subsequent turns of the same agent run. Char
@@ -785,7 +804,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                         instructions=sub_instr,
                         tools=sub_tools + mcp_tools,
                         default_options=_get_default_options(),
-                        compaction_strategy=_get_compaction_strategy(),
+                        compaction_strategy=_compaction_strategy_for_role(agent_id),
                     )
                     final_text = ""
                     current_input = instructions

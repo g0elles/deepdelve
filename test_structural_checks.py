@@ -442,6 +442,22 @@ def main():
 
     _compaction_strategy_scenario()
 
+    # --- _compaction_strategy_for_role (2026-07-24): FindingsWriter's whole evidence base is one
+    # front-loaded first-turn message -- generic truncation has nothing else to evict once that
+    # crosses threshold and deletes it outright (confirmed live: empty findings.md / false "no
+    # evidence" claims). Must be excluded from compaction regardless of config; every other role
+    # keeps normal compaction. ---
+    def _compaction_strategy_for_role_scenario():
+        from engine.orchestrator import _compaction_strategy_for_role
+        from agent_framework import ContextWindowCompactionStrategy
+
+        assert _compaction_strategy_for_role("FindingsWriter") is None
+        assert isinstance(_compaction_strategy_for_role("Builder"), ContextWindowCompactionStrategy)
+        assert isinstance(_compaction_strategy_for_role("WebSearcher"), ContextWindowCompactionStrategy)
+        assert isinstance(_compaction_strategy_for_role(None), ContextWindowCompactionStrategy)
+
+    _compaction_strategy_for_role_scenario()
+
     # --- malformed-tool-call recovery predicate (live case: gpt-oss bad escape -> Ollama 500) ---
     from engine.orchestrator import malformed_tool_call_nudge
     assert malformed_tool_call_nudge(Exception(
@@ -692,6 +708,11 @@ def main():
                 assert "https://real.example.com/a" in text
                 assert "verification" in text          # _todos.md injected
                 assert "Findings so far" in text       # findings.md injected
+                # Stage-aware directive (2026-07-24 loop fix): findings.md already exists in the
+                # workspace, so the resumed Planner must be told the prior run already finished
+                # its research phase, not just handed "delegate for the gaps" with no context.
+                assert "ALREADY finished its research phase" in text
+                assert "plus a draft final report" not in text  # final_report.md doesn't exist yet
 
             contextvars.copy_context().run(_resume_scenario)
         finally:
@@ -699,6 +720,29 @@ def main():
                 _config.cfg["settings"].pop("workspace", None)
             else:
                 _config.cfg["settings"]["workspace"] = _orig_ws2
+
+    # --- _scale_resume_quota_pool (2026-07-24 loop fix): a resumed run previously got a FULL
+    # fresh research-volume quota on top of whatever the interrupted run already spent -- confirmed
+    # live to let a resumed Planner re-delegate the same angle 40+ times without ever running low
+    # enough on budget to be forced toward finishing. ---
+    from engine.tui import _scale_resume_quota_pool
+    _pool = {
+        "delegate_tasks": {"used": 0, "limit": 15},
+        "web_search": {"used": 0, "limit": 15},
+        "fetch_url_to_workspace": {"used": 0, "limit": 15},
+        "think_tool": {"used": 0, "limit": 30},  # untouched -- not a research-volume quota
+    }
+    _scale_resume_quota_pool(_pool)
+    assert _pool["delegate_tasks"]["limit"] == 7, _pool   # int(15 * 0.5) == 7
+    assert _pool["web_search"]["limit"] == 7, _pool
+    assert _pool["fetch_url_to_workspace"]["limit"] == 7, _pool
+    assert _pool["think_tool"]["limit"] == 30, _pool       # untouched
+    # Floor: a small `quick`-depth quota must not get scaled down to near-zero.
+    _small_pool = {"delegate_tasks": {"used": 0, "limit": 4}}
+    _scale_resume_quota_pool(_small_pool)
+    assert _small_pool["delegate_tasks"]["limit"] == 3, _small_pool  # floor, not int(4*0.5)==2
+    # Missing key (quota disabled for it) must be skipped silently, not raise.
+    _scale_resume_quota_pool({"web_search": {"used": 0, "limit": 10}})
 
     # --- /resume-run TUI wiring: --resume-run existed in the headless CLI for a full session
     # before the TUI had any equivalent at all (caught live, 2026-07-12) ---
@@ -713,6 +757,7 @@ def main():
                     "query": "Research X",
                     "fetched_urls": [{"url": "https://real.example.com/a", "filename": "sources/a.md", "timestamp": 1.0}],
                     "findings": [{"source_url": "https://real.example.com/a", "summary": "s"}],
+                    "findings_written_citable_count": 5,
                 }, f)
 
             _orig_ws9 = _config.cfg.get("settings", {}).get("workspace")
@@ -734,6 +779,12 @@ def main():
                         "resuming_run": app._resuming_run,  # must be True DURING the call
                         "conv_fetched": list(app._conv_fetched or []),
                         "conv_run_state_query": app._conv_run_state.data.get("query") if app._conv_run_state else None,
+                        # check_stale_findings's write-time marker MUST survive resume -- confirmed
+                        # live 2026-07-24 that omitting it from this carryover list silently resets
+                        # it to None on every resume, permanently disabling that check for any
+                        # resumed run (headless --resume-run had the exact same bug, fixed in
+                        # run_cli's own copy of this key list).
+                        "conv_run_state_marker": app._conv_run_state.data.get("findings_written_citable_count") if app._conv_run_state else None,
                     })
                 app.run_agent = _fake_run_agent
 
@@ -752,6 +803,7 @@ def main():
                         {"url": "https://real.example.com/a", "filename": "sources/a.md", "timestamp": 1.0}
                     ]
                     assert call["conv_run_state_query"] == "Research X"
+                    assert call["conv_run_state_marker"] == 5, call
                     # Reset back to False once run_agent returns (the `finally` in _resume_run).
                     assert app._resuming_run is False
             finally:
@@ -762,6 +814,17 @@ def main():
 
     from engine.tui import BasicTuiAgent
     _asyncio_tui.run(_resume_run_tui_scenario())
+
+    # run_cli's OWN copy of the same resume-carryover key list (a separate code path from the TUI's
+    # _resume_run, not covered by the scenario above -- run_cli itself isn't easily unit-testable
+    # in isolation) must independently include the marker too, or headless --resume-run alone
+    # regresses even with the TUI fixed. Confirmed live 2026-07-24: both copies had the bug
+    # independently; both must carry the fix.
+    import inspect as _inspect
+    import engine.tui as _tui_mod_check
+    _run_cli_src = _inspect.getsource(_tui_mod_check.run_cli)
+    assert _run_cli_src.count('"findings_written_citable_count"') == 1, (
+        "run_cli's resume-carryover key list must include findings_written_citable_count")
 
     # --- B5: session log write throttling (2026-07-12) — _write_log serializes and rewrites the
     # WHOLE _session_events list every call; log_stream_content used to call it after EVERY
@@ -861,6 +924,15 @@ def main():
          "findings_ungrounded", "unverified_entry_sources"),
         ("missing_findings", True, {"final_report.md": f"- x [g]({_SRC})"},
          "missing_findings", "was never written — the two-pass discipline was skipped"),
+        # check_stale_findings (2026-07-24): findings.md exists and is grounded (no other check
+        # ahead of it fires), but findings_written_citable_count (set at the moment findings.md
+        # was actually written) is behind the one real, citable finding recorded since -- the
+        # exact gap that let a stale findings.md through undetected on a real --resume-run.
+        ("stale_findings", True, {"findings.md": _FINDINGS_OK},
+         "stale_findings", "delegated since it was last written", "", [],
+         [{"task_name": "nueva_tarea", "source_url": "https://gov.example.co/new-page",
+           "summary": "Nuevo hallazgo real disponible tras la primera escritura."}],
+         {"findings_written_citable_count": 0}),
         ("missing_artifact", True, {"findings.md": _FINDINGS_OK},
          "missing_artifact", "is missing from the workspace"),
         ("claim_unsupported", True, {"findings.md": _FINDINGS_OK,
@@ -951,6 +1023,7 @@ def main():
             _query = _rest[0] if _rest else ""
             _extra_fetches = _rest[1] if len(_rest) > 1 else []
             _extra_findings = _rest[2] if len(_rest) > 2 else []
+            _extra_run_state_data = _rest[3] if len(_rest) > 3 else {}
 
             def _matrix_row():
                 from tools.fs import _IN_MEMORY_FS
@@ -982,6 +1055,7 @@ def main():
                     q_ctx.set({"delegate_tasks": {"used": 1 if _delegated else 0, "limit": 5}})
                     rs = RunState(tmpdir)
                     rs.set_query(_query)
+                    rs.data.update(_extra_run_state_data)
                     run_state_ctx.set(rs)
                     for _finding_kwargs in _extra_findings:
                         rs.add_finding(**_finding_kwargs)

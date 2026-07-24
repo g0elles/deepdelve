@@ -154,6 +154,14 @@ settings:
     min_tasks: 2           # need at least this many covered tasks to compare
     min_total_sources: 4   # need at least this many real sources total -- guards against flagging
                             # a small/simple query where every task naturally has 1-2 sources
+  # check_stale_findings (2026-07-24): findings.md is only ever existence-checked once written --
+  # nothing previously caught the Planner delegating MORE research after that first write, so a
+  # findings.md that's genuinely gone stale (real findings recorded but never included) was never
+  # refreshed before the final report got built from it. Fires only when the number of real,
+  # distinct, citable findings has grown since findings.md's own last write -- never on intentional
+  # budget truncation within a single write (that's already surfaced to the model separately).
+  stale_findings_check:
+    enabled: true
   # Engine-driven iterative deepening (2026-07-19, ROADMAP item 10, dzhng/deep-research pattern):
   # when a thin_coverage retry fires AND a Searcher's own real "FOLLOW-UP DIRECTIONS:" section
   # named a real lead, the ENGINE dispatches those directions directly as new tasks (geometric

@@ -1261,6 +1261,12 @@ class BasicTuiAgent(App):
 
         # Initialize tool quotas from config (fresh pool per turn, including follow-ups)
         quota_token = tool_quotas_ctx.set(build_quota_pool())
+        # TUI/CLI parity (2026-07-24): headless --resume-run's own fresh-quota-pool problem
+        # applies here too -- run_agent always builds a full fresh pool per turn, so /resume-run
+        # (self._resuming_run, set by _resume_run just before this call) needs the same scale-down
+        # as run_cli's resume branch. See _scale_resume_quota_pool's own docstring.
+        if getattr(self, "_resuming_run", False):
+            _scale_resume_quota_pool(tool_quotas_ctx.get())
         from utils.run_state import fetched_urls_ctx
         if is_followup and self._conv_fetched is not None:
             # Workers each get their own contextvars copy — carry the conversation's fetched-URL
@@ -1718,8 +1724,14 @@ class BasicTuiAgent(App):
         self._active_run_dir = run_dir_name
         self._conv_fetched = list(prior_state.get("fetched_urls") or [])
         rs = RunState(_current_run_dir(run_dir_name))
+        # findings_written_citable_count (2026-07-24, check_stale_findings's own write-time
+        # marker) MUST be carried over here -- confirmed live: without it, every --resume-run
+        # silently resets the marker to None, so check_stale_findings can never fire on ANY
+        # resumed run regardless of how much more research gets delegated afterward. Exactly the
+        # kind of blast-radius miss this project's own CLAUDE.md warns about: a new run_state.data
+        # key needs checking against every place that already has a fixed carryover allowlist.
         for key in ("query", "findings", "fetched_urls", "completion_check_attempts",
-                    "search_health", "started_at", "plan"):
+                    "search_health", "started_at", "plan", "findings_written_citable_count"):
             if key in prior_state:
                 rs.data[key] = prior_state[key]
         rs.data["resumed_at"] = time.time()
@@ -1832,17 +1844,39 @@ def build_resume_input(query: str, prior_state: dict) -> str:
     already established. Injected engine-side because the Planner deliberately has no
     read_workspace_file tool and a fresh run starts with an empty context — without this it can
     see that findings.md exists but never what's in it. Requires session_dir_ctx to already point
-    at the resumed run's folder."""
-    from tools.fs import get_workspace_file_content
+    at the resumed run's folder.
+
+    Stage-aware directive (2026-07-24, live regression): a resumed Planner given only "delegate
+    new research only for the gaps" with no sense of how far the interrupted run had already
+    gotten will happily invent open-ended "verification" work forever -- confirmed live,
+    `--resume-run` on a simple factual query (boiling point of water): the original run had
+    already reached the report-writing stage (findings.md written, Builder dispatched) before
+    being interrupted, but the resumed Planner had no way to know that and instead re-delegated
+    the same research angle 40+ times across 16+ minutes without ever trying to stop. Telling it
+    explicitly which stage the interrupted run had already reached removes the ambiguity that
+    invited that behavior."""
+    from tools.fs import get_workspace_file_content, get_workspace_files
     fetched = prior_state.get("fetched_urls") or []
     url_lines = "\n".join(f"- {u.get('url')} (saved as {u.get('filename')})" for u in fetched[:40])
     todos_txt = (get_workspace_file_content("_todos.md") or "").strip()
     findings_txt = (get_workspace_file_content("findings.md") or "").strip()
+    files = get_workspace_files()
+    stage_note = ""
+    if "findings.md" in files:
+        stage_note = (
+            " The previous run had ALREADY finished its research phase and produced findings.md"
+            + (" plus a draft final report" if "final_report.md" in files else "")
+            + " — it judged its existing research sufficient to move on. Do NOT re-open broad "
+              "research or re-verify what's already there just because you have budget left. "
+              "Only delegate_tasks for a SPECIFIC fact that is genuinely still missing; if "
+              "nothing is missing, stop delegating immediately so the automatic writer roles can "
+              "finish."
+        )
     parts = [
         "RESUMED RUN: a previous research run on this exact task was interrupted partway "
         "through. Its workspace is intact — do NOT restart from scratch and do NOT re-fetch "
         "sources listed below. Continue from where it stopped: delegate new research only for "
-        "the gaps, then complete findings.md and the final report as normal.",
+        f"the gaps, then complete findings.md and the final report as normal.{stage_note}",
         f"ORIGINAL TASK:\n{query}",
     ]
     if todos_txt:
@@ -1873,6 +1907,30 @@ _DEPTH_PRESETS = {
     "deep": {"quotas": {"delegate_tasks": 25, "web_search": 30, "fetch_url_to_workspace": 30},
              "search_mode": "heavy", "max_completion_check_attempts": 4, "max_deepening_rounds": 2},
 }
+
+
+# Research-volume quota keys _DEPTH_PRESETS already treats as "the ones that govern how much new
+# research happens" -- reused here for the same reason (2026-07-24 resume-loop fix, see
+# _scale_resume_quota_pool).
+_RESUME_SCALED_QUOTA_KEYS = ("delegate_tasks", "web_search", "fetch_url_to_workspace")
+
+
+def _scale_resume_quota_pool(pool: dict, scale: float = 0.5, floor: int = 3) -> None:
+    """A resumed run previously got a FULL fresh quota pool on top of whatever the interrupted
+    run already used (see run_cli's own prior ponytail comment: "quotas exist to stop model
+    loops, not to meter cross-run budgets ... revisit if that ever proves too generous") --
+    confirmed live 2026-07-24 that it does: a resumed Planner re-delegated the same research
+    angle 40+ times over 16+ minutes on a simple factual query, never once running low enough on
+    budget to be forced toward finishing. Exact cross-process usage carryover would need
+    persisting per-tool `used` counts in _run_state.json, a real persistence-layer addition for a
+    problem that doesn't need that precision -- halving the research-volume quotas (with a floor
+    so a `quick`-depth resume doesn't get scaled to near-zero) is the proportionate fix: a resumed
+    run is meant to finish up, not repeat a full fresh research budget."""
+    for key in _RESUME_SCALED_QUOTA_KEYS:
+        entry = pool.get(key)
+        if not entry:
+            continue
+        entry["limit"] = max(floor, int(entry["limit"] * scale))
 
 
 def apply_depth_preset(cfg: dict, depth: str) -> None:
@@ -2066,6 +2124,12 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
         # count as fetched, otherwise every prior citation would be flagged as fabricated.
         from utils.run_state import fetched_urls_ctx
         fetched_urls_ctx.set(list(prior_state.get("fetched_urls") or []))
+        # See _scale_resume_quota_pool's own docstring: a resumed run is meant to finish up, not
+        # repeat a full fresh research budget on top of whatever the interrupted run already
+        # spent.
+        resume_pool = tool_quotas_ctx.get()
+        if resume_pool is not None:
+            _scale_resume_quota_pool(resume_pool)
     # Deferred until here (not right at function start) so a --prompt-file run's folder name is
     # slugified from the actual resolved prompt text, not generated before it's known.
     elif config.cfg.get("settings", {}).get("workspace", {}).get("session_isolation", False):
@@ -2140,8 +2204,13 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
             # "query" is included even though set_query() follows immediately: a crash between
             # this merge and set_query must never save a query-less state file over the original
             # (exactly that happened on this feature's first live smoke test).
+            # findings_written_citable_count (2026-07-24, check_stale_findings's own write-time
+            # marker) MUST be carried over here too -- see the TUI's _resume_run copy of this same
+            # list for the full explanation. Confirmed live: without it here, headless
+            # --resume-run also silently resets the marker, so a resumed run's own new research
+            # never triggers a findings.md refresh before Builder runs.
             for key in ("query", "findings", "fetched_urls", "completion_check_attempts",
-                        "search_health", "started_at", "plan"):
+                        "search_health", "started_at", "plan", "findings_written_citable_count"):
                 if key in prior_state:
                     run_state.data[key] = prior_state[key]
             run_state.data["resumed_at"] = time.time()

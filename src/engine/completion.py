@@ -350,6 +350,77 @@ def check_missing_findings(ctx: Ctx) -> Optional[Verdict]:
     )
 
 
+def check_stale_findings(ctx: Ctx) -> Optional[Verdict]:
+    """check_missing_findings's complement: that check is existence-only
+    (`if "findings.md" in ctx.files: return None`), so once findings.md is written ONCE it can
+    never be flagged again no matter how much MORE research the Planner delegates afterward.
+    Confirmed live 2026-07-24 (`--resume-run` on
+    `what_is_the_boiling_point_of_water_at_sea_level_an_20260724_141403`): the original run wrote
+    a real 9-entry findings.md, then the resumed Planner kept delegating more research on its own
+    initiative -- run_state's citable finding count grew well past what was on disk at write time,
+    findings.md's mtime never changed, and nothing in COMPLETION_CHECKS/GROUNDING_CHECKS would
+    ever have caught it: check_findings_ungrounded only re-validates the EXISTING content's own
+    citations, never whether newer research is simply absent from it. Builder would then have
+    built the final report from a stale substrate, silently dropping every finding gathered after
+    the first write -- the same evidence-abandonment shape as check_report_underuses_findings, one
+    stage further upstream.
+
+    Deliberately a COUNT-based staleness marker (`findings_written_citable_count` on run_state,
+    set by run_completion_check right after every successful FindingsWriter dispatch), NOT a
+    set-difference against findings.md's own cited URLs the way check_report_underuses_findings
+    works one stage downstream -- that comparison would also fire on _build_findings_source_material's
+    own INTENTIONAL budget truncation (large evidence bases omit some findings by design, already
+    surfaced to the model via its own omitted_note, not a bug), and this check would have no way to
+    tell "genuinely never included" apart from "correctly deferred for budget reasons". Comparing
+    against a count captured at write time sidesteps that entirely: it only fires when MORE real,
+    distinct, citable findings exist now than existed at the moment findings.md was last
+    (re)written, which is true staleness regardless of what budget truncation did within that
+    earlier write. Uses the same _is_citable_finding/_dedupe_findings definitions
+    _build_findings_source_material itself uses, so "citable" means the same thing everywhere in
+    this module."""
+    if not config.cfg.get("settings", {}).get("stale_findings_check", {}).get("enabled", True):
+        return None
+    if "findings.md" not in ctx.files:
+        return None  # check_missing_findings's job
+    written_count = ctx.run_state.data.get("findings_written_citable_count")
+    if written_count is None:
+        return None  # findings.md predates this marker (e.g. hand-authored) -- nothing to compare
+    current_count = len(_dedupe_findings(
+        [f for f in ctx.run_state.data.get("findings", []) if _is_citable_finding(f)]
+    ))
+    new_count = current_count - written_count
+    if new_count <= 0:
+        return None
+
+    prior_same = 0
+    for a in reversed(ctx.run_state.data.get("completion_check_attempts", [])):
+        if a.get("problem") == "stale_findings":
+            prior_same += 1
+        else:
+            break
+
+    if prior_same == 0:
+        directive = (
+            f"You have delegated {new_count} more real, citable finding(s) since 'findings.md' "
+            f"was last written -- it is now out of date and missing that newer research. A "
+            f"dedicated FindingsWriter role will refresh it automatically from ALL of your "
+            f"current results once you stop delegating; do not write the final report from the "
+            f"stale version."
+        )
+    else:
+        directive = (
+            f"'findings.md' is STILL missing {new_count} newer finding(s) after a prior warning. "
+            f"If you have finished delegating, stop calling tools entirely so the automatic "
+            f"FindingsWriter refresh can run."
+        )
+
+    return Verdict(
+        "stale_findings",
+        f"`findings.md` is stale -- {new_count} real finding(s) delegated since it was last written are missing from it. Pushing agent to refresh it before the final report.",
+        f"SYSTEM WARNING: {ctx.last_chance_prefix}{directive}",
+    )
+
+
 def check_missing_artifact(ctx: Ctx) -> Optional[Verdict]:
     """A model that already has real delegated research results in its own context but still
     hasn't written the artifact tends to respond to a generic nudge by re-delegating again
@@ -863,6 +934,7 @@ COMPLETION_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
     check_thin_coverage,
     check_findings_ungrounded,
     check_missing_findings,
+    check_stale_findings,
     check_missing_artifact,
     # Both require findings.md AND the final artifact to already exist (own docstrings explain
     # why -- two live regressions, 2026-07-23) -- placed after both existence checks above so
@@ -920,7 +992,7 @@ _BUILDER_FIXABLE_PROBLEMS = ("missing_artifact", "not_grounded", "claim_unsuppor
 # dispatch_task is None), both problems fall back to the classic inject-into-Planner path so an
 # older/custom SubAgentConfig setup that hasn't added FindingsWriter doesn't just silently stop
 # working.
-_FINDINGS_WRITER_FIXABLE_PROBLEMS = ("missing_findings", "findings_ungrounded")
+_FINDINGS_WRITER_FIXABLE_PROBLEMS = ("missing_findings", "findings_ungrounded", "stale_findings")
 
 
 def _quarantine_artifact(req_artifact: str, attempt: int) -> None:
@@ -1866,6 +1938,14 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                                     "from the real research results below — never from your own "
                                     "prior knowledge."
                                 )
+                            elif problem == "stale_findings":
+                                write_directive = (
+                                    "More real research has been delegated since findings.md was "
+                                    "last written -- it is now out of date. Rebuild it completely "
+                                    "from ALL of the current real research results below (this "
+                                    "includes everything from before, plus what's new), not just "
+                                    "the newest additions."
+                                )
                             else:
                                 write_directive = "findings.md has never been written yet. Write it now from the real research results below."
                             findings_writer_instructions = (
@@ -1873,6 +1953,14 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                                 f"Write the file now via write_workspace_file."
                             )
                             await _dispatch_writer_review_fix(dispatch_task, "FindingsWriter", "findings.md", findings_writer_instructions, attempt, notify)
+                            # Staleness marker (check_stale_findings): record how many real,
+                            # distinct, citable findings existed AT THIS WRITE, so a LATER
+                            # completion check can tell whether more have been delegated since --
+                            # see that check's own docstring for why a count comparison, not a
+                            # findings.md-vs-report URL diff, is the right shape here.
+                            run_state.data["findings_written_citable_count"] = len(_dedupe_findings(
+                                [f for f in run_state.data.get("findings", []) if _is_citable_finding(f)]
+                            ))
                             run_state.save()
                             # Chained, not returned — see docstring. Loops straight into the next
                             # completion-check iteration instead of handing a turn back to the Planner.
