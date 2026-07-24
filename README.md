@@ -2,7 +2,7 @@
 
 A locally-run, multi-agent deep research assistant built on the **Microsoft Agent Framework** and the **Textual** TUI library, targeting local OpenAI-compatible model servers (defaults to **Ollama**, `http://localhost:11434/v1`).
 
-A from-scratch rebuild of an earlier prototype, not an incremental patch. The prototype worked end-to-end but was unreliable beyond simple lookups. See [`ROADMAP.md`](ROADMAP.md) for what's done, what's open, and the history of bugs found and fixed.
+A from-scratch rebuild of an earlier prototype, not an incremental patch. The prototype worked end-to-end but was unreliable beyond simple lookups. See [`ROADMAP.md`](ROADMAP.md) for what's done, what's open, and the history of bugs found and fixed. See [`ARCHITECTURE.md`](ARCHITECTURE.md) for how the completion-check/writer-dispatch engine underneath this agent topology actually works — the ordered verdict pipeline, the cross-referenced tuples a new problem type needs to touch, and the resume/persisted-state surface. Read it before changing `src/engine/completion.py` or anything resume-related; it exists specifically because several real bugs came from exactly the kind of hidden cross-file coupling it maps out.
 
 ## Architecture
 
