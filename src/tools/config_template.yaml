@@ -194,6 +194,16 @@ settings:
   # tasks everywhere and to the Planner in headless mode; the TUI Planner is exempt (a user can
   # /stop), same policy as max_run_minutes. 50000 ≈ safe margin under a 16K-token num_ctx.
   context_budget_chars: 50000
+  # Session compaction for the Planner's own conversation (2026-07-23; only load-bearing when
+  # enable_conversational_memory is true). context_budget_chars above only guards a single
+  # agent-stream's OUTPUT; nothing capped the accumulated session INPUT across many turns of a
+  # long, retry-heavy run until this. 0/absent disables compaction entirely, same opt-out
+  # convention as context_budget_chars. 16384 matches this project's current model's real
+  # num_ctx (same number context_budget_chars is calibrated against); max_output_tokens 4096
+  # leaves a ~12K-token input budget, consistent with context_budget_chars: 50000 above rather
+  # than an independently-invented number.
+  max_context_window_tokens: 16384
+  max_output_tokens: 4096
   # When true, the Planner's write_todos call requires human approval before it commits (TUI mode
   # shows the plan content in an interactive approve/deny widget; headless/--prompt mode falls back
   # to the existing --auto-approve flag). Lets you review/reject the research plan before quota is

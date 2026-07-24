@@ -406,6 +406,42 @@ def main():
 
     _batch_reservation_scenario()
 
+    # --- _get_compaction_strategy (2026-07-23): enable_conversational_memory defaults the
+    # Planner's AgentSession to accumulate the ENTIRE message history for a run's whole duration
+    # with zero compaction -- neither as_agent() call site in orchestrator.py ever passed
+    # compaction_strategy despite agent_framework shipping a ready-to-use
+    # ContextWindowCompactionStrategy for exactly this. Same 0-is-off convention as
+    # get_context_budget(). ---
+    def _compaction_strategy_scenario():
+        from engine.orchestrator import _get_compaction_strategy
+        from agent_framework import ContextWindowCompactionStrategy
+        import config as _config
+
+        _orig = _config.cfg.get("settings", {}).get("max_context_window_tokens")
+        try:
+            _config.cfg.setdefault("settings", {})["max_context_window_tokens"] = 0
+            assert _get_compaction_strategy() is None, "0 must disable compaction (opt-out)"
+
+            _config.cfg["settings"].pop("max_context_window_tokens", None)
+            strat_default = _get_compaction_strategy()
+            assert isinstance(strat_default, ContextWindowCompactionStrategy), strat_default
+            assert strat_default.max_context_window_tokens == 16384, (
+                "default must match this project's current model's real num_ctx", strat_default)
+
+            _config.cfg["settings"]["max_context_window_tokens"] = 32768
+            _config.cfg["settings"]["max_output_tokens"] = 8192
+            strat_custom = _get_compaction_strategy()
+            assert strat_custom.max_context_window_tokens == 32768, strat_custom
+            assert strat_custom.max_output_tokens == 8192, strat_custom
+        finally:
+            if _orig is None:
+                _config.cfg["settings"].pop("max_context_window_tokens", None)
+            else:
+                _config.cfg["settings"]["max_context_window_tokens"] = _orig
+            _config.cfg["settings"].pop("max_output_tokens", None)
+
+    _compaction_strategy_scenario()
+
     # --- malformed-tool-call recovery predicate (live case: gpt-oss bad escape -> Ollama 500) ---
     from engine.orchestrator import malformed_tool_call_nudge
     assert malformed_tool_call_nudge(Exception(
@@ -4140,6 +4176,94 @@ def main():
 
     contextvars.copy_context().run(_findings_uncited_fallback_scenario)
 
+    # --- _build_findings_source_material: TRUE total (findings_block + both notes + boilerplate
+    # + fetched_block) must never exceed context_budget_chars (2026-07-23, live regression: a
+    # real run's findings_block correctly capped at 48,308 chars under a 50,000 budget, but
+    # fetched_block (10,368 chars, unbudgeted) got appended afterward anyway for a true total of
+    # 58,676 -- FindingsWriter then produced empty output 4 times in a row, plausibly out of
+    # context budget to actually write anything after ingesting the oversized prompt). Many
+    # findings AND many fetched URLs, deliberately sized so both sections individually would fit
+    # under a naive per-section cap but NOT together. ---
+    def _findings_budget_sharing_scenario():
+        from engine.completion import _build_findings_source_material
+
+        _orig_cb = _config.cfg.get("settings", {}).get("context_budget_chars")
+        _config.cfg.setdefault("settings", {})["context_budget_chars"] = 2000
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                rs = RunState(tmpdir)
+                # 30 findings entries, ~80 chars of summary each -> ~2400+ chars before headings.
+                for i in range(30):
+                    rs.add_finding(f"https://example.co/{i}", "x" * 80, task_name=f"task_{i}", depth=1)
+                # 30 fetched URLs -- present in fetched_urls even for findings not added above,
+                # simulating a run where more was fetched than ended up citable.
+                rs.data["fetched_urls"] = [
+                    {"url": f"https://example.co/extra/{i}", "filename": f"sources/extra_{i}.md"}
+                    for i in range(30)
+                ]
+                material = _build_findings_source_material(rs)
+                assert len(material) <= 2000, (
+                    "TRUE total must respect context_budget_chars -- this is the exact "
+                    "2026-07-23 live regression", len(material))
+        finally:
+            if _orig_cb is None:
+                _config.cfg["settings"].pop("context_budget_chars", None)
+            else:
+                _config.cfg["settings"]["context_budget_chars"] = _orig_cb
+
+    contextvars.copy_context().run(_findings_budget_sharing_scenario)
+
+    # --- _build_findings_source_material: fetched_block alone must never be allowed to consume
+    # the ENTIRE budget and zero out every finding -- degenerate case, many more fetched URLs
+    # than findings entries. Never observed live, but the fix's own fetched_cap guard (half the
+    # budget) exists specifically to prevent this; pin it directly. ---
+    def _findings_budget_degenerate_scenario():
+        from engine.completion import _build_findings_source_material
+
+        _orig_cb = _config.cfg.get("settings", {}).get("context_budget_chars")
+        _config.cfg.setdefault("settings", {})["context_budget_chars"] = 1000
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                rs = RunState(tmpdir)
+                rs.add_finding(_SRC, "a real finding that must survive", task_name="t1", depth=1)
+                # 200 fetched URLs -- alone, at ~50 chars/line, comfortably exceeds a 1000-char budget.
+                rs.data["fetched_urls"] = [
+                    {"url": f"https://example.co/many/{i}", "filename": f"sources/m{i}.md"}
+                    for i in range(200)
+                ]
+                material = _build_findings_source_material(rs)
+                assert "a real finding that must survive" in material, (
+                    "fetched_block overflow must never zero out every finding", material)
+                assert len(material) <= 1000 + 200, (  # small slack for the omitted-count note text
+                    "true total must still respect budget in the degenerate case", len(material))
+        finally:
+            if _orig_cb is None:
+                _config.cfg["settings"].pop("context_budget_chars", None)
+            else:
+                _config.cfg["settings"]["context_budget_chars"] = _orig_cb
+
+    contextvars.copy_context().run(_findings_budget_degenerate_scenario)
+
+    # --- _build_findings_source_material: uncited_task_names/omitted_task_names must be
+    # deduplicated before rendering -- the SAME task_name redispatched across multiple retries
+    # must appear once in the note, not once per occurrence (2026-07-23 live regression: a real
+    # run's uncited_note listed 'background' 10 times, pure wasted budget and misleading noise —
+    # looked like 10 distinct failed tasks, was 1 task redispatched 10 times). ---
+    def _findings_note_dedup_scenario():
+        from engine.completion import _build_findings_source_material
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rs = RunState(tmpdir)
+            rs.add_finding(_SRC, "a real citable finding", task_name="real_task", depth=1)
+            for _ in range(10):
+                rs.add_finding("background", "narration, no real source", task_name="background", depth=1)
+            material = _build_findings_source_material(rs)
+            assert material.count("'background'") == 1, (
+                "the same uncited task_name repeated across retries must be named ONCE in the "
+                "note, not once per occurrence", material)
+
+    contextvars.copy_context().run(_findings_note_dedup_scenario)
+
     # --- writer_gate_ctx structural gate (2026-07-22): a prompt-only reorder of
     # FINDINGS_WRITER_INSTRUCTIONS asking the model to write from the evidence base before reading
     # raw source files did NOT change live behavior (gpt-oss:20b's first call was still
@@ -4218,7 +4342,14 @@ def main():
         from engine.completion import _build_findings_source_material
         _orig_budget = _config.cfg.get("settings", {}).get("context_budget_chars")
         try:
-            _config.cfg.setdefault("settings", {})["context_budget_chars"] = 300
+            # 300 (this test's original value) no longer leaves room for even one entry once
+            # the 2026-07-23 fix's fixed overhead (intro/outro boilerplate + the omitted_note
+            # size reserve) is honestly accounted for -- that overhead was ALWAYS real, the
+            # original test just never had to pay it (the pre-fix code left intro/outro
+            # completely unbounded, so this test's small budget only ever constrained
+            # findings_block in isolation, never the true total). 1000 keeps the same "only the
+            # first entry survives" demonstration this test is actually for.
+            _config.cfg.setdefault("settings", {})["context_budget_chars"] = 1000
             with tempfile.TemporaryDirectory() as tmpdir:
                 rs = RunState(tmpdir)
                 rs.add_finding("https://a.example.com", "x" * 150, task_name="first_task", depth=1)

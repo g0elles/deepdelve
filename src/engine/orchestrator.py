@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 from agent_framework.openai import OpenAIChatCompletionClient
-from agent_framework import tool, AgentSession, Message
+from agent_framework import tool, AgentSession, Message, ContextWindowCompactionStrategy
 from tools import with_quota, think_tool, QuotaAbortException, tool_quotas_ctx
 from utils.run_state import run_state_ctx, task_fetched_urls_ctx, scope_entities_ctx, task_id_ctx, _next_task_id
 from prompts import (
@@ -282,6 +282,29 @@ def _get_default_options():
             "chat_template_kwargs": {"enable_thinking": config.cfg["settings"].get("enable_thinking", False)}
         }
     return options
+
+
+def _get_compaction_strategy():
+    """settings.max_context_window_tokens/max_output_tokens -- 2026-07-23, confirmed live gap:
+    settings.enable_conversational_memory defaults the Planner's AgentSession
+    (agent.create_session() below) to accumulate the ENTIRE message history for a run's whole
+    duration, and neither as_agent() call site in this file ever passed compaction_strategy, so
+    it stayed None everywhere despite agent_framework shipping a ready-to-use
+    ContextWindowCompactionStrategy for exactly this. Same 0-is-off convention as
+    get_context_budget() -- max_context_window_tokens absent/0 disables compaction entirely,
+    same opt-out shape used throughout this project rather than a separate enabled flag.
+    Default 16384 matches this project's current model's real num_ctx (see config_template.yaml's
+    own context_budget_chars comment, calibrated against the same number); default
+    max_output_tokens 4096 leaves a ~12K-token input budget, consistent with the existing
+    context_budget_chars: 50000 calibration rather than an independently-invented number."""
+    max_ctx = config.cfg.get("settings", {}).get("max_context_window_tokens", 16384) or 0
+    if not max_ctx:
+        return None
+    max_output = config.cfg.get("settings", {}).get("max_output_tokens", 4096)
+    return ContextWindowCompactionStrategy(
+        max_context_window_tokens=max_ctx,
+        max_output_tokens=max_output,
+    )
 
 def stream_content_chars(update) -> int:
     """Approximate context growth from one stream update: text, tool-call arguments, and tool
@@ -761,7 +784,8 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                         name=_sanitize_name(agent_name),
                         instructions=sub_instr,
                         tools=sub_tools + mcp_tools,
-                        default_options=_get_default_options()
+                        default_options=_get_default_options(),
+                        compaction_strategy=_get_compaction_strategy(),
                     )
                     final_text = ""
                     current_input = instructions
@@ -1427,7 +1451,8 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
             **_get_quota_format_vars()
         ),
         tools=tools_list,
-        default_options=_get_default_options()
+        default_options=_get_default_options(),
+        compaction_strategy=_get_compaction_strategy(),
     )
 
     session = None
