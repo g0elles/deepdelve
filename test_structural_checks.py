@@ -1499,9 +1499,10 @@ def main():
                 recorded = rs.data["completion_check_attempts"][-1]["problem"]
                 assert recorded != "thin_coverage", (recorded, msgs)
 
-            # (c) 1/2 covered, but min_tasks default is 2 so this DOES have enough signal to fire
-            # -- confirms the threshold math itself (1/2 == 0.5, NOT below threshold 0.5 -> must
-            # NOT fire, since the check is "below threshold", not "at or below").
+            # (c) 1/2 covered -> ratio exactly AT threshold (0.5) MUST fire (2026-07-23 fix:
+            # at-or-below, not strictly-below -- see check_thin_coverage's own docstring for the
+            # live incident this reversed test case is guarding against: a 2-task query with one
+            # dead task used to sail through silently at exactly this ratio).
             with tempfile.TemporaryDirectory() as tmpdir_c:
                 rs = RunState(tmpdir_c)
                 rs.add_finding("https://a.example.co/x", "summary", task_name="Background", depth=1)
@@ -1511,8 +1512,24 @@ def main():
                 should_retry, _ = _asyncio.run(run_completion_check(
                     query="q", current_input="q", run_state=rs, notify=msgs.append))
                 recorded = rs.data["completion_check_attempts"][-1]["problem"]
+                assert recorded == "thin_coverage", (
+                    "ratio exactly AT threshold (0.5) must fire -- this is the live-confirmed "
+                    "2026-07-23 regression", recorded, msgs)
+
+            # (d) 2/3 covered -> ratio (0.667) clearly ABOVE threshold must still NOT fire --
+            # confirms the fix didn't overshoot into firing on any imbalance at all.
+            with tempfile.TemporaryDirectory() as tmpdir_d:
+                rs = RunState(tmpdir_d)
+                rs.add_finding("https://a.example.co/x", "summary", task_name="Background", depth=1)
+                rs.add_finding("https://b.example.co/x", "summary", task_name="Culture", depth=1)
+                rs.add_finding("Comparison A", "found nothing usable", task_name="Comparison A", depth=1)
+                run_state_ctx.set(rs)
+                msgs = []
+                _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append))
+                recorded = rs.data["completion_check_attempts"][-1]["problem"]
                 assert recorded != "thin_coverage", (
-                    "ratio exactly AT threshold (0.5) must not fire -- only below it", recorded, msgs)
+                    "ratio (0.667) above threshold must not fire", recorded, msgs)
         finally:
             _IN_MEMORY_FS.clear()
             _IN_MEMORY_FS.update(saved_fs)

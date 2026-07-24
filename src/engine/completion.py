@@ -94,21 +94,33 @@ def check_thin_coverage(ctx: Ctx) -> Optional[Verdict]:
     docstring for why this is built entirely from already-reliable, model-independent structural
     data (per-task fetch attribution, delegation depth) rather than a new Planner-authored schema.
 
-    Conservative by construction, same philosophy as every other check here: fires only when a
-    MAJORITY of top-level tasks came back with no real source (ratio below threshold, default
+    Conservative by construction, same philosophy as every other check here: fires when AT LEAST
+    HALF of top-level tasks came back with no real source (ratio AT OR BELOW threshold, default
     0.5) AND there are enough of them for that ratio to mean something (min_tasks, default 2) — a
     single-task query (the common case for a simple factual lookup) that succeeded is 1.0
     regardless of "breadth" and never trips this; a single-task query that failed is caught by
     missing_findings/missing_artifact already, not this. Escalates like every other repeat-prone
     check here on a second consecutive occurrence — a nudge that already failed to move the ratio
-    isn't worth repeating verbatim."""
+    isn't worth repeating verbatim.
+
+    At-or-below, NOT strictly-below (2026-07-23 fix; was strictly-below at ship time). Confirmed
+    live: the most common non-trivial shape this check has to guard is exactly 2 top-level tasks
+    (a query with 2 distinct facets) -- when one of the two comes back with zero sources, the
+    ratio is EXACTLY 0.5, which the old strictly-below comparison let straight through. Real
+    consequence, not theoretical: a run planned only 'background' (heuristic algorithms) and
+    'colombian_culture' as its 2 tasks, 'background' got zero real sources, ratio landed exactly
+    on the old threshold, this check stayed silent, and the final report ended up 100% about
+    Colombian payroll with zero mention of the query's other half -- the run still reported
+    'verified, no unresolved issues' the whole time. "Half your explicit tasks produced nothing"
+    is already a real failure on its own terms; there's no principled reason 0.5 exactly should
+    be treated as acceptable when 0.49 isn't."""
     cov_cfg = config.cfg.get("settings", {}).get("coverage_check", {})
     if not cov_cfg.get("enabled", True):
         return None
     threshold = cov_cfg.get("threshold", 0.5)
     min_tasks = cov_cfg.get("min_tasks", 2)
     coverage = ctx.run_state.coverage()
-    if coverage["total"] < min_tasks or coverage["ratio"] >= threshold:
+    if coverage["total"] < min_tasks or coverage["ratio"] > threshold:
         return None
 
     prior_same = 0
