@@ -1315,13 +1315,15 @@ def main():
             # must never look like a coverage FAILURE, that's missing_findings/not_delegated's job.
             rs = RunState(tmpdir)
             cov = rs.coverage()
-            assert cov == {"total": 0, "covered": 0, "ratio": 1.0, "uncovered_task_names": []}, cov
+            assert cov == {"total": 0, "covered": 0, "ratio": 1.0, "uncovered_task_names": [],
+                            "per_task_counts": {}}, cov
 
             # A single top-level task with a real fetched URL -> fully covered.
             rs2 = RunState(tmpdir)
             rs2.add_finding("https://a.example.co/x", "summary", task_name="Background", depth=1)
             cov2 = rs2.coverage()
-            assert cov2 == {"total": 1, "covered": 1, "ratio": 1.0, "uncovered_task_names": []}, cov2
+            assert cov2 == {"total": 1, "covered": 1, "ratio": 1.0, "uncovered_task_names": [],
+                             "per_task_counts": {"Background": 1}}, cov2
 
             # Nested Analyzer-tier (depth=2) findings with no URL of their own must NOT count
             # against coverage -- that's expected, not a gap (see coverage()'s own docstring).
@@ -1329,7 +1331,8 @@ def main():
             rs3.add_finding("https://a.example.co/x", "summary", task_name="Background", depth=1)
             rs3.add_finding("Background", "analyzer summary, no new URL", task_name="Analyze x", depth=2)
             cov3 = rs3.coverage()
-            assert cov3 == {"total": 1, "covered": 1, "ratio": 1.0, "uncovered_task_names": []}, cov3
+            assert cov3 == {"total": 1, "covered": 1, "ratio": 1.0, "uncovered_task_names": [],
+                             "per_task_counts": {"Background": 1}}, cov3
 
             # Three top-level tasks, only one with a real URL -> thin (ratio 1/3).
             rs4 = RunState(tmpdir)
@@ -1340,6 +1343,7 @@ def main():
             assert cov4["total"] == 3 and cov4["covered"] == 1, cov4
             assert abs(cov4["ratio"] - 1 / 3) < 1e-9, cov4
             assert set(cov4["uncovered_task_names"]) == {"Comparison A", "Comparison B"}, cov4
+            assert cov4["per_task_counts"] == {"Background": 1, "Comparison A": 0, "Comparison B": 0}, cov4
 
     _coverage_scenario()
 
@@ -1519,6 +1523,118 @@ def main():
                 _config.cfg["settings"]["workspace"] = _orig_ws10
 
     contextvars.copy_context().run(_thin_coverage_wiring_scenario)
+
+    # --- check_uneven_task_investment wiring (thin_coverage's blind spot: a task with 1 thin
+    # source still counts as "covered" there; this instead compares real-source COUNTS across
+    # covered tasks) ---
+    def _uneven_task_investment_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        from tools.core import tool_quotas_ctx as q_ctx
+        from utils.run_state import RunState
+
+        _orig_ws11 = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            _IN_MEMORY_FS.clear()
+            reset_fetched_urls()
+            q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5}})
+
+            # (a) both tasks covered (thin_coverage's ratio is 1.0, would never fire), but one has
+            # 1 source vs the other's 5 -> 1/5 = 0.2, below the 0.3 default threshold -> fires,
+            # names the starved task specifically.
+            with tempfile.TemporaryDirectory() as tmpdir_a:
+                rs = RunState(tmpdir_a)
+                rs.add_finding("https://a.example.co/x", "summary", task_name="Heuristics", depth=1)
+                for i in range(5):
+                    rs.add_finding(f"https://b.example.co/{i}", "summary", task_name="Culture", depth=1)
+                run_state_ctx.set(rs)
+                msgs = []
+                should_retry, new_input = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append))
+                recorded = rs.data["completion_check_attempts"][-1]["problem"]
+                assert recorded == "uneven_task_investment", (recorded, msgs)
+                assert should_retry
+                assert "Heuristics" in msgs[-1], msgs
+
+            # (b) balanced coverage (3 vs 4, ratio 0.75) -> does not fire.
+            with tempfile.TemporaryDirectory() as tmpdir_b:
+                rs = RunState(tmpdir_b)
+                for i in range(3):
+                    rs.add_finding(f"https://a.example.co/{i}", "summary", task_name="A", depth=1)
+                for i in range(4):
+                    rs.add_finding(f"https://b.example.co/{i}", "summary", task_name="B", depth=1)
+                run_state_ctx.set(rs)
+                msgs = []
+                _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append))
+                recorded = rs.data["completion_check_attempts"][-1]["problem"]
+                assert recorded != "uneven_task_investment", (recorded, msgs)
+
+            # (c) only 1 covered task -> min_tasks gate blocks it regardless of imbalance.
+            with tempfile.TemporaryDirectory() as tmpdir_c:
+                rs = RunState(tmpdir_c)
+                for i in range(5):
+                    rs.add_finding(f"https://a.example.co/{i}", "summary", task_name="A", depth=1)
+                run_state_ctx.set(rs)
+                msgs = []
+                _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append))
+                recorded = rs.data["completion_check_attempts"][-1]["problem"]
+                assert recorded != "uneven_task_investment", (recorded, msgs)
+
+            # (d) ratio alone WOULD fire (1/5 = 0.2 < 0.3) but total volume (6) is below an
+            # explicitly-lowered min_total_sources gate (10) -- isolates the absolute-volume gate
+            # from the ratio gate, since the two can't be isolated with default thresholds alone
+            # (a ratio under 0.3 with a count-of-1 starved task always sums to >= min_total_sources
+            # at its default of 4).
+            _orig_cfg = _config.cfg["settings"].get("uneven_coverage_check")
+            _config.cfg["settings"]["uneven_coverage_check"] = {"min_total_sources": 10}
+            try:
+                with tempfile.TemporaryDirectory() as tmpdir_d:
+                    rs = RunState(tmpdir_d)
+                    rs.add_finding("https://a.example.co/x", "summary", task_name="Heuristics", depth=1)
+                    for i in range(5):
+                        rs.add_finding(f"https://b.example.co/{i}", "summary", task_name="Culture", depth=1)
+                    run_state_ctx.set(rs)
+                    msgs = []
+                    _asyncio.run(run_completion_check(
+                        query="q", current_input="q", run_state=rs, notify=msgs.append))
+                    recorded = rs.data["completion_check_attempts"][-1]["problem"]
+                    assert recorded != "uneven_task_investment", (
+                        "total sources (6) below min_total_sources (10) must block firing "
+                        "even though the ratio alone would qualify", recorded, msgs)
+            finally:
+                if _orig_cfg is None:
+                    _config.cfg["settings"].pop("uneven_coverage_check", None)
+                else:
+                    _config.cfg["settings"]["uneven_coverage_check"] = _orig_cfg
+
+            # (e) ratio exactly AT threshold (3/10 = 0.3) must not fire -- only below it, same
+            # "below, not at-or-below" convention as check_thin_coverage's own boundary test.
+            with tempfile.TemporaryDirectory() as tmpdir_e:
+                rs = RunState(tmpdir_e)
+                for i in range(3):
+                    rs.add_finding(f"https://a.example.co/{i}", "summary", task_name="Heuristics", depth=1)
+                for i in range(10):
+                    rs.add_finding(f"https://b.example.co/{i}", "summary", task_name="Culture", depth=1)
+                run_state_ctx.set(rs)
+                msgs = []
+                _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append))
+                recorded = rs.data["completion_check_attempts"][-1]["problem"]
+                assert recorded != "uneven_task_investment", (
+                    "ratio exactly AT threshold (0.3) must not fire -- only below it", recorded, msgs)
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            if _orig_ws11 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws11
+
+    contextvars.copy_context().run(_uneven_task_investment_scenario)
 
     # --- check_report_underuses_findings (2026-07-22): Builder's own version of check_thin_
     # coverage, one stage downstream. Live-confirmed the SAME evidence-abandonment pattern this

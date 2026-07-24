@@ -142,6 +142,75 @@ def check_thin_coverage(ctx: Ctx) -> Optional[Verdict]:
     )
 
 
+def check_uneven_task_investment(ctx: Ctx) -> Optional[Verdict]:
+    """check_thin_coverage's blind spot: a task that got AT LEAST ONE real source counts as fully
+    "covered" there, regardless of whether that's 1 thin source or 6 rich ones. Confirmed live
+    2026-07-23 (Ollama+gpt-oss, `i_want_documentation_on_heuristic_algoritms_for_de_20260723_185759`):
+    the Planner split a query into 5 correctly-scoped single-facet tasks (no rabbit-holing, the
+    single-facet-per-slot fix held) -- `background`/`top_5` (the "heuristic algorithms" half)
+    were dispatched once, produced 1 usable source (a generic Wikipedia definition), and were
+    never redispatched, while the other 3 tasks (Colombia culture/paydays/festivals) were
+    redispatched repeatedly and ended with 6 rich sources between them. Both `background` and
+    `top_5` counted as "covered" so thin_coverage never fired, and the resulting report silently
+    answered only half the query with no acknowledged gap. This check catches that specific
+    pattern: a covered-but-starved task sitting next to a richly-covered sibling.
+
+    Deliberately only considers COVERED tasks (per_task_counts > 0) -- an uncovered task is
+    thin_coverage's job, not this one; double-flagging the same underlying gap two different ways
+    would just be redundant noise. Needs min_tasks covered tasks to compare (can't measure
+    "uneven" with fewer than 2 data points) AND min_total_sources summed across covered tasks
+    (default 4) -- guards against flagging a small, simple query where every task naturally has
+    1-2 sources and any ratio between them looks "extreme" by construction; the absolute-volume
+    gate is what tells a genuinely thin small query apart from real investment imbalance."""
+    cov_cfg = config.cfg.get("settings", {}).get("uneven_coverage_check", {})
+    if not cov_cfg.get("enabled", True):
+        return None
+    coverage = ctx.run_state.coverage()
+    counts = {name: n for name, n in coverage["per_task_counts"].items() if n > 0}
+    min_tasks = cov_cfg.get("min_tasks", 2)
+    if len(counts) < min_tasks:
+        return None
+    min_total_sources = cov_cfg.get("min_total_sources", 4)
+    if sum(counts.values()) < min_total_sources:
+        return None
+    richest = max(counts.values())
+    threshold = cov_cfg.get("threshold", 0.3)
+    starved = sorted(name for name, n in counts.items() if n / richest < threshold)
+    if not starved:
+        return None
+
+    prior_same = 0
+    for a in reversed(ctx.run_state.data.get("completion_check_attempts", [])):
+        if a.get("problem") == "uneven_task_investment":
+            prior_same += 1
+        else:
+            break
+
+    starved_list = ", ".join(f"'{n}'" for n in starved[:5])
+    counts_summary = ", ".join(f"'{n}': {c}" for n, c in sorted(counts.items(), key=lambda kv: -kv[1]))
+    if prior_same == 0:
+        directive = (
+            f"Some of your delegated tasks got MUCH less real research than others: {counts_summary} "
+            f"(real sources per task). {starved_list} only found a thin/shallow source while other "
+            f"tasks found several — do NOT let the well-researched tasks crowd this one out of the "
+            f"final report. delegate_tasks again for {starved_list}, phrased differently or narrower "
+            f"than the first attempt, before finishing."
+        )
+    else:
+        directive = (
+            f"{starved_list} is STILL thin relative to your other tasks after a prior warning "
+            f"({counts_summary}). If you have genuinely tried and cannot find more, say so "
+            f"explicitly in the report as an acknowledged gap rather than silently omitting that "
+            f"part of the query."
+        )
+
+    return Verdict(
+        "uneven_task_investment",
+        f"Task(s) {starved_list} got far less research than their siblings ({counts_summary}). Pushing agent to reinforce the gap or acknowledge it.",
+        f"SYSTEM WARNING: {ctx.last_chance_prefix}{directive}",
+    )
+
+
 def check_findings_ungrounded(ctx: Ctx) -> Optional[Verdict]:
     """findings.md (Pass 1) was previously never grounding-checked at all — only
     final_report.md was. Confirmed live: a Planner that abandons real delegation partway
@@ -758,6 +827,7 @@ def check_not_grounded(ctx: Ctx) -> Optional[Verdict]:
 COMPLETION_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
     check_not_delegated,
     check_thin_coverage,
+    check_uneven_task_investment,
     check_findings_ungrounded,
     check_missing_findings,
     check_missing_artifact,

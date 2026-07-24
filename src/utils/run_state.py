@@ -220,26 +220,32 @@ class RunState:
         following new structured-output conventions; see PLANNER_INSTRUCTIONS' own `_todos.md`
         checklist convention, which has zero code-level validation behind it).
 
-        Returns {total, covered, ratio, uncovered_task_names} over DISTINCT depth==1 task names
-        only — a nested Analyzer sub-call is expected to reuse already-fetched content and have no
-        new URL of its own, so counting it would make coverage look artificially low every time
-        the Planner's own top-level tasks correctly delegate deeper analysis. `ratio` is 1.0 (not
-        an error) when there are zero depth==1 findings at all — check_thin_coverage's own
-        minimum-task-count gate is what decides whether a ratio is even meaningful to act on, not
-        this method."""
+        Returns {total, covered, ratio, uncovered_task_names, per_task_counts} over DISTINCT
+        depth==1 task names only — a nested Analyzer sub-call is expected to reuse already-fetched
+        content and have no new URL of its own, so counting it would make coverage look
+        artificially low every time the Planner's own top-level tasks correctly delegate deeper
+        analysis. `ratio` is 1.0 (not an error) when there are zero depth==1 findings at all —
+        check_thin_coverage's own minimum-task-count gate is what decides whether a ratio is even
+        meaningful to act on, not this method. `per_task_counts` (2026-07-23,
+        check_uneven_task_investment): per-task count of real (http-prefixed) sources -- the same
+        filter already used to build `uncovered` below, just tallied instead of discarded, so a
+        task that's technically "covered" (>=1 real source) but starved relative to its siblings
+        can still be told apart from one that's genuinely well-researched."""
         top_level = [f for f in self.data.get("findings", []) if f.get("depth") == 1 and f.get("task_name")]
         by_task: dict = {}
         for f in top_level:
             by_task.setdefault(f["task_name"], []).append(f)
         total = len(by_task)
         if total == 0:
-            return {"total": 0, "covered": 0, "ratio": 1.0, "uncovered_task_names": []}
-        uncovered = [
-            name for name, task_findings in by_task.items()
-            if not any((tf.get("source_url") or "").startswith("http") for tf in task_findings)
-        ]
+            return {"total": 0, "covered": 0, "ratio": 1.0, "uncovered_task_names": [], "per_task_counts": {}}
+        per_task_counts = {
+            name: sum(1 for tf in task_findings if (tf.get("source_url") or "").startswith("http"))
+            for name, task_findings in by_task.items()
+        }
+        uncovered = [name for name, count in per_task_counts.items() if count == 0]
         covered = total - len(uncovered)
-        return {"total": total, "covered": covered, "ratio": covered / total, "uncovered_task_names": uncovered}
+        return {"total": total, "covered": covered, "ratio": covered / total,
+                "uncovered_task_names": uncovered, "per_task_counts": per_task_counts}
 
     def record_attempt(self, attempt_number: int, problem: Optional[str], fetched_url_count: int,
                         detail: Optional[str] = None) -> None:
