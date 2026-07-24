@@ -1727,6 +1727,50 @@ async def _dispatch_deepening_round(dispatch_task, run_state: "RunState", notify
     return True
 
 
+def _consecutive_occurrences(run_state: "RunState", problem: str) -> int:  # noqa: F821
+    """How many of the run's most recent completion-check attempts, counting backward from the
+    end, recorded this exact problem consecutively. Shared by run_completion_check's own
+    escalation counter (force_whole_rebuild) and _yield_to_starved_check below, so both stay in
+    sync on one definition of "stuck on the same problem" instead of drifting."""
+    count = 0
+    for a in reversed(run_state.data.get("completion_check_attempts", [])):
+        if a.get("problem") == problem:
+            count += 1
+        else:
+            break
+    return count
+
+
+_STARVATION_SKIP_THRESHOLD = 2
+
+
+def _yield_to_starved_check(verdict: Optional[Verdict], ctx: Ctx, starved_check) -> Optional[Verdict]:
+    """First-verdict-wins normally, but a low-priority hygiene check placed deliberately last in
+    its own list (check_untracked_delegation in COMPLETION_CHECKS, check_report_underuses_findings
+    in GROUNDING_CHECKS — both explicitly documented as lower-priority-than-correctness, "wait a
+    cycle" checks, never meant to compete with a real problem) can end up NEVER getting a turn at
+    all on a long run where some OTHER problem keeps recurring every single attempt. Confirmed live
+    2026-07-24: an 8-attempt run cycled through stale_findings/uneven_task_investment/
+    missing_artifact repeatedly and check_untracked_delegation never fired once — "wait a cycle"
+    became "wait forever" in practice, not by design.
+
+    Once the CURRENT winning problem has already fired _STARVATION_SKIP_THRESHOLD times in a row
+    with no progress, give the starved check one direct extra shot instead of blindly re-selecting
+    the same stuck problem again. Safe to call speculatively: both starved checks are pure reads of
+    already-available state (confirmed — neither mutates run_state.data, unlike e.g. check_no_urls's
+    own escalation counter), so invoking one here has no side effect to worry about. Falls back to
+    the original verdict if the starved check has nothing to report, so a genuinely single-problem
+    run is never worse off than before this existed."""
+    if verdict is None:
+        return None
+    if _consecutive_occurrences(ctx.run_state, verdict.problem) < _STARVATION_SKIP_THRESHOLD:
+        return verdict
+    alt = starved_check(ctx)
+    if alt is not None and alt.problem != verdict.problem:
+        return alt
+    return verdict
+
+
 async def run_completion_check(query: str, current_input, run_state: "RunState", notify, last_assistant_text: str = "", dispatch_task=None, budget_deadline: float | None = None):  # noqa: F821 — utils.run_state.RunState, annotation only
     """Runs the 3-tier completion check (delegated? artifact exists? really grounded?) plus the
     structural fixes: per-attempt quota top-up, artifact quarantine, run-state persistence, and
@@ -1810,12 +1854,14 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
             # only actually retrying does. Otherwise a success on the final allowed
             # attempt is never recognized as a success (it just falls through silently).
             verdict = next((v for check in COMPLETION_CHECKS if (v := check(ctx)) is not None), None)
+            verdict = _yield_to_starved_check(verdict, ctx, check_untracked_delegation)
             # grounding_check.enabled is the section's master switch — before this guard it was a
             # documented no-op (config_template.yaml shipped it, nothing read it; 2026-07-12 audit,
             # G2). The pre-grounding checks above are structural, not grounding, and still run.
             if verdict is None and config.cfg.get("settings", {}).get("grounding_check", {}).get("enabled", True):
                 ctx.grounding_problem = await real_grounding_problem(ctx.content or "")
                 verdict = next((v for check in GROUNDING_CHECKS if (v := check(ctx)) is not None), None)
+                verdict = _yield_to_starved_check(verdict, ctx, check_report_underuses_findings)
             problem = verdict.problem if verdict else None
 
             run_state.sync_fetched_urls()

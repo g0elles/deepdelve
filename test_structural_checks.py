@@ -1233,6 +1233,53 @@ def main():
 
     contextvars.copy_context().run(_untracked_delegation_scenario)
 
+    # --- _yield_to_starved_check (2026-07-24): check_untracked_delegation/
+    # check_report_underuses_findings are deliberately placed LAST in their own check lists (lower
+    # priority than real correctness problems) -- confirmed live this can starve them for an
+    # entire run's retry budget when some OTHER problem keeps recurring every attempt, "wait a
+    # cycle" becoming "wait forever" in practice. Tested directly against the helper's own
+    # inputs/outputs rather than needing to construct two simultaneously-triggering real checks. ---
+    from engine.completion import _yield_to_starved_check, _consecutive_occurrences, Ctx, Verdict
+
+    def _starvation_guard_scenario():
+        with tempfile.TemporaryDirectory() as tmpdir5:
+            rs = RunState(tmpdir5)
+            rs.set_query("q")
+            ctx = Ctx(req_artifact="final_report.md", attempt=0, max_attempts=8, delegated=True,
+                      files=[], content=None, quotas={}, run_state=rs)
+            stuck = Verdict("uneven_task_investment", "w", "i")
+            starved = Verdict("untracked_delegation", "w2", "i2")
+
+            # Not stuck yet (0 consecutive occurrences) -> unchanged, starved check never even
+            # consulted (confirmed via a callable that would raise if invoked).
+            def _must_not_be_called(_ctx):
+                raise AssertionError("starved check must not be probed before the threshold")
+            assert _yield_to_starved_check(stuck, ctx, _must_not_be_called) is stuck
+
+            # Stuck 2x consecutive -> starved check gets a direct turn and wins.
+            rs.data["completion_check_attempts"] = [
+                {"problem": "uneven_task_investment"}, {"problem": "uneven_task_investment"},
+            ]
+            assert _consecutive_occurrences(rs, "uneven_task_investment") == 2
+            result = _yield_to_starved_check(stuck, ctx, lambda c: starved)
+            assert result is starved, result
+
+            # Stuck, but the starved check genuinely has nothing to report -> falls back to the
+            # original (a genuinely single-problem run is never worse off than before this existed).
+            assert _yield_to_starved_check(stuck, ctx, lambda c: None) is stuck
+
+            # A non-matching prior attempt breaks the consecutive streak -> not stuck, unchanged.
+            rs.data["completion_check_attempts"] = [
+                {"problem": "missing_artifact"}, {"problem": "uneven_task_investment"},
+            ]
+            assert _consecutive_occurrences(rs, "uneven_task_investment") == 1
+            assert _yield_to_starved_check(stuck, ctx, _must_not_be_called) is stuck
+
+            # verdict is None (nothing wrong at all) -> no-op, never probes the starved check.
+            assert _yield_to_starved_check(None, ctx, _must_not_be_called) is None
+
+    _starvation_guard_scenario()
+
     # --- find_cross_source_contradictions: citation-only lines must never be treated as claims.
     # Live-confirmed false positive (2026-07-14, real Iceland-population TUI run): an agency name
     # ("Statistics Iceland") appearing ONLY inside a `- Source: [Title - Statistics Iceland](url)`
