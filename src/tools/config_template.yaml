@@ -144,6 +144,16 @@ settings:
     enabled: true
     threshold: 0.5    # fire when covered/total top-level tasks falls below this
     min_tasks: 2       # never fire with fewer top-level tasks than this -- not enough signal
+  # check_uneven_task_investment (2026-07-23): coverage_check's blind spot -- a task with just 1
+  # thin source still counts as "covered" there. This instead compares real-source COUNTS across
+  # covered tasks, catching a task starved relative to its siblings even though it's technically
+  # covered (e.g. Colombia-culture tasks getting 6 sources while the deep-learning task got 1).
+  uneven_coverage_check:
+    enabled: true
+    threshold: 0.3        # fire when a covered task's count is below this fraction of the richest task's
+    min_tasks: 2           # need at least this many covered tasks to compare
+    min_total_sources: 4   # need at least this many real sources total -- guards against flagging
+                            # a small/simple query where every task naturally has 1-2 sources
   # Engine-driven iterative deepening (2026-07-19, ROADMAP item 10, dzhng/deep-research pattern):
   # when a thin_coverage retry fires AND a Searcher's own real "FOLLOW-UP DIRECTIONS:" section
   # named a real lead, the ENGINE dispatches those directions directly as new tasks (geometric
