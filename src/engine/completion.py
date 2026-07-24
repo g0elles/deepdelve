@@ -1446,13 +1446,99 @@ def _build_findings_source_material(run_state: "RunState") -> str:  # noqa: F821
     # until the budget is spent, and tell the model exactly which task names were omitted so it can
     # acknowledge the gap rather than silently drop it (same "acknowledge, don't omit" pattern
     # check_thin_coverage's own escalation wording already uses).
-    budget = get_context_budget()
+    # fetched_block built BEFORE the findings budget loop (2026-07-23 fix, live regression):
+    # it used to be appended to the return value AFTER findings_block's own budget check, with
+    # zero accounting of its own -- confirmed live, tonight's run: findings_block correctly
+    # capped at 48,308 chars under a 50,000 budget, but fetched_block (10,368 chars for this
+    # run's 65 fetched URLs) got tacked on afterward anyway, for a true total of 58,676 --
+    # 8,676 chars over the intended ceiling, on top of the model's own reasoning/output needs
+    # within the same context window. Now computed first so its real cost can be reserved from
+    # the SAME shared total budget before findings_block is capped, so the promise "everything
+    # returned fits within budget" is actually kept, not just true for one of the two sections.
+    # Fixed boilerplate around the two dynamic sections -- named here and reused verbatim in the
+    # return statement below (not just measured then duplicated) so the two can never drift out
+    # of sync with each other. Its own length must also come out of the shared budget: an
+    # earlier version of this fix reserved fetched_block's cost but not this, and still landed
+    # 499 chars over a 50,000 budget on tonight's real data -- close, but the promise is "the
+    # TRUE total fits," not "the two dynamic sections add up correctly."
+    _intro = (
+        "REAL RESEARCH RESULTS FROM THIS RUN, one entry per dispatched Searcher/Analyzer task "
+        "that returned a real citable source "
+        "(this is your ENTIRE evidence base — you have no other memory of this run):\n\n"
+    )
+    _outro_label = (
+        "\n\nALL URLS ACTUALLY FETCHED THIS RUN, for cross-reference — each file's full content is "
+        "readable under its saved filename via read_workspace_file/grep_workspace_file if a "
+        "summary above isn't detailed enough:\n"
+    )
+    # uncited_note computed here, BEFORE the budget math -- unlike omitted_note (which depends on
+    # which findings entries the budget loop below ends up dropping, a genuine chicken-and-egg
+    # problem), uncited_task_names is already fully known at this point, so its real rendered
+    # cost can be reserved exactly rather than estimated.
+    uncited_note = ""
+    if uncited_task_names:
+        # Order-preserving dedup -- a task redispatched across multiple retries (e.g. the same
+        # task_name appearing many times) must only be named once here, not once per occurrence
+        # (confirmed live, tonight's run: 'background' listed 10 times, pure wasted budget
+        # characters and misleading noise -- looked like 10 distinct failed tasks, was 1).
+        uncited_unique = list(dict.fromkeys(uncited_task_names))
+        uncited_list = ", ".join(f"'{n}'" for n in uncited_unique[:20])
+        uncited_note = (
+            f"\n\n({len(uncited_unique)} dispatched task(s) produced no real fetched or "
+            f"reference URL, so they have nothing citable: {uncited_list}. These are NOT source "
+            f"entries above and must never be turned into one — do not invent a URL or title for "
+            f"them. If they matter, note that this research was attempted but produced no "
+            f"citable source, rather than fabricating one.)"
+        )
+    # budget_enabled is checked from here on, not `budget` itself -- budget legitimately reaches
+    # 0 in the degenerate case (boilerplate/fetched_block alone consuming the whole allowance),
+    # and `if budget:` on 0 would be falsy, wrongly falling into the "capping disabled" branch
+    # right when capping to (near-)nothing is exactly what's needed.
+    _raw_budget = get_context_budget()
+    budget_enabled = bool(_raw_budget)
+
+    # omitted_note's real cost can't be known yet (circular: it lists whichever findings entries
+    # the budget loop below decides to drop) -- reserved as a generous estimate instead. 900
+    # chars comfortably covers the template text plus 20 quoted task names at a generous ~35
+    # chars each under a realistic budget; if the real note ends up smaller, that's unused slack,
+    # never an overrun. Capped to a QUARTER of the raw budget, not a flat constant, so an
+    # unrealistically tiny budget can't let this reserve alone exceed the whole thing and zero
+    # out every section below it -- the reserve should degrade gracefully, never dominate.
+    _omitted_note_reserve = min(900, _raw_budget // 4) if budget_enabled else 900
+
+    boilerplate_len = len(_intro) + len(_outro_label) + len(uncited_note) + _omitted_note_reserve
+
+    fetched_lines = [f"- {u.get('url')} (saved as {u.get('filename')})" for u in urls]
+    budget = max(_raw_budget - boilerplate_len, 0)
+    omitted_fetched_count = 0
+    if budget_enabled:
+        # Guard the degenerate case: enough fetched URLs that this section alone approaches or
+        # exceeds the total budget, which would otherwise zero out findings_budget below and
+        # silently drop EVERY finding just to make room for a URL list. Never let one section's
+        # overflow starve the other to zero -- cap this section at half the total budget,
+        # keeping whole lines only, same "note what's omitted" philosophy as findings_block.
+        fetched_cap = budget // 2
+        kept_lines = []
+        used = 0
+        for line in fetched_lines:
+            if used + len(line) > fetched_cap:
+                omitted_fetched_count += 1
+                continue
+            kept_lines.append(line)
+            used += len(line) + 1  # +1 for the "\n" join separator
+        fetched_block = "\n".join(kept_lines) or "(no URLs fetched yet)"
+    else:
+        fetched_block = "\n".join(fetched_lines) or "(no URLs fetched yet)"
+    if omitted_fetched_count:
+        fetched_block += f"\n... and {omitted_fetched_count} more URL(s), omitted here to stay within budget."
+
     omitted_task_names = []
-    if budget:
+    if budget_enabled:
+        findings_budget = max(budget - len(fetched_block), 0)
         kept = []
         used = 0
         for task_name, block in entries:
-            if used + len(block) > budget:
+            if used + len(block) > findings_budget:
                 omitted_task_names.append(task_name)
                 continue
             kept.append(block)
@@ -1461,38 +1547,21 @@ def _build_findings_source_material(run_state: "RunState") -> str:  # noqa: F821
     else:
         findings_block = "\n\n".join(block for _, block in entries) or "(no findings recorded yet)"
 
-    fetched_block = "\n".join(
-        f"- {u.get('url')} (saved as {u.get('filename')})" for u in urls
-    ) or "(no URLs fetched yet)"
     omitted_note = ""
     if omitted_task_names:
-        omitted_list = ", ".join(f"'{n}'" for n in omitted_task_names[:20])
+        # Order-preserving dedup -- a task redispatched across multiple retries (e.g. the same
+        # task_name appearing many times) must only be named once here, not once per occurrence
+        # (confirmed live, tonight's run: 'background' listed 10 times, pure wasted budget
+        # characters and misleading noise -- looked like 10 distinct failed tasks, was 1).
+        omitted_unique = list(dict.fromkeys(omitted_task_names))
+        omitted_list = ", ".join(f"'{n}'" for n in omitted_unique[:20])
         omitted_note = (
-            f"\n\n({len(omitted_task_names)} more finding(s) exist for this run but were omitted "
+            f"\n\n({len(omitted_unique)} more finding(s) exist for this run but were omitted "
             f"here to stay within the model's context budget: {omitted_list}. Do NOT silently "
             f"drop these — if they matter for the report, note that this research exists but its "
             f"detail wasn't available to you, rather than pretending it doesn't exist.)"
         )
-    uncited_note = ""
-    if uncited_task_names:
-        uncited_list = ", ".join(f"'{n}'" for n in uncited_task_names[:20])
-        uncited_note = (
-            f"\n\n({len(uncited_task_names)} dispatched task(s) produced no real fetched or "
-            f"reference URL, so they have nothing citable: {uncited_list}. These are NOT source "
-            f"entries above and must never be turned into one — do not invent a URL or title for "
-            f"them. If they matter, note that this research was attempted but produced no "
-            f"citable source, rather than fabricating one.)"
-        )
-    return (
-        "REAL RESEARCH RESULTS FROM THIS RUN, one entry per dispatched Searcher/Analyzer task "
-        "that returned a real citable source "
-        "(this is your ENTIRE evidence base — you have no other memory of this run):\n\n"
-        f"{findings_block}{omitted_note}{uncited_note}\n\n"
-        "ALL URLS ACTUALLY FETCHED THIS RUN, for cross-reference — each file's full content is "
-        "readable under its saved filename via read_workspace_file/grep_workspace_file if a "
-        "summary above isn't detailed enough:\n"
-        f"{fetched_block}"
-    )
+    return f"{_intro}{findings_block}{omitted_note}{uncited_note}{_outro_label}{fetched_block}"
 
 
 def _select_deepening_tasks(run_state: "RunState") -> list:  # noqa: F821 — utils.run_state.RunState, annotation only
