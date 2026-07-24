@@ -1534,6 +1534,11 @@ def main():
 
         _orig_ws11 = _config.cfg.get("settings", {}).get("workspace")
         _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
+        # Grounding-check disabled: irrelevant to this check's own logic, and simpler than
+        # crafting a findings.md/final_report.md fixture that also passes every earlier
+        # grounding gate just to reach this one.
+        _orig_gc11 = _config.cfg.get("settings", {}).get("grounding_check")
+        _config.cfg["settings"]["grounding_check"] = {"enabled": False}
         saved_fs = dict(_IN_MEMORY_FS)
         try:
             _IN_MEMORY_FS.clear()
@@ -1542,10 +1547,12 @@ def main():
 
             # (a) both tasks covered (thin_coverage's ratio is 1.0, would never fire), but one has
             # 1 source vs the other's 5 -> 1/5 = 0.2, below the 0.3 default threshold -> fires,
-            # names the starved task specifically. findings.md must already exist (see (f) below
-            # for why -- this check reads live RunState tracking, not the file).
+            # names the starved task specifically. findings.md AND final_report.md must already
+            # exist (see (f)/(g) below for why -- this check reads live RunState tracking, not
+            # either file, and needs both artifacts already written before it's meaningful).
             with tempfile.TemporaryDirectory() as tmpdir_a:
                 _IN_MEMORY_FS["findings.md"] = "placeholder"
+                _IN_MEMORY_FS["final_report.md"] = "placeholder"
                 rs = RunState(tmpdir_a)
                 rs.add_finding("https://a.example.co/x", "summary", task_name="Heuristics", depth=1)
                 for i in range(5):
@@ -1562,6 +1569,7 @@ def main():
             # (b) balanced coverage (3 vs 4, ratio 0.75) -> does not fire.
             with tempfile.TemporaryDirectory() as tmpdir_b:
                 _IN_MEMORY_FS["findings.md"] = "placeholder"
+                _IN_MEMORY_FS["final_report.md"] = "placeholder"
                 rs = RunState(tmpdir_b)
                 for i in range(3):
                     rs.add_finding(f"https://a.example.co/{i}", "summary", task_name="A", depth=1)
@@ -1577,6 +1585,7 @@ def main():
             # (c) only 1 covered task -> min_tasks gate blocks it regardless of imbalance.
             with tempfile.TemporaryDirectory() as tmpdir_c:
                 _IN_MEMORY_FS["findings.md"] = "placeholder"
+                _IN_MEMORY_FS["final_report.md"] = "placeholder"
                 rs = RunState(tmpdir_c)
                 for i in range(5):
                     rs.add_finding(f"https://a.example.co/{i}", "summary", task_name="A", depth=1)
@@ -1597,6 +1606,7 @@ def main():
             try:
                 with tempfile.TemporaryDirectory() as tmpdir_d:
                     _IN_MEMORY_FS["findings.md"] = "placeholder"
+                    _IN_MEMORY_FS["final_report.md"] = "placeholder"
                     rs = RunState(tmpdir_d)
                     rs.add_finding("https://a.example.co/x", "summary", task_name="Heuristics", depth=1)
                     for i in range(5):
@@ -1619,6 +1629,7 @@ def main():
             # "below, not at-or-below" convention as check_thin_coverage's own boundary test.
             with tempfile.TemporaryDirectory() as tmpdir_e:
                 _IN_MEMORY_FS["findings.md"] = "placeholder"
+                _IN_MEMORY_FS["final_report.md"] = "placeholder"
                 rs = RunState(tmpdir_e)
                 for i in range(3):
                     rs.add_finding(f"https://a.example.co/{i}", "summary", task_name="Heuristics", depth=1)
@@ -1632,9 +1643,9 @@ def main():
                 assert recorded != "uneven_task_investment", (
                     "ratio exactly AT threshold (0.3) must not fire -- only below it", recorded, msgs)
 
-            # (f) REGRESSION TEST (live-confirmed 2026-07-23): same severe imbalance as (a), but
-            # findings.md does NOT exist yet -> must NOT fire, even though the ratio/volume math
-            # alone would qualify. Without this gate, this check sits ahead of
+            # (f) REGRESSION TEST 1 (live-confirmed 2026-07-23): same severe imbalance as (a), but
+            # neither findings.md NOR final_report.md exist yet -> must NOT fire, even though the
+            # ratio/volume math alone would qualify. Without this gate, this check sits ahead of
             # check_missing_findings in COMPLETION_CHECKS and can win "first verdict wins" every
             # attempt purely on live RunState tracking, permanently starving check_missing_findings
             # of a turn -- confirmed live: a real run fired this check 4 consecutive times and
@@ -1642,6 +1653,7 @@ def main():
             # earlier-firing check) must get the verdict instead.
             with tempfile.TemporaryDirectory() as tmpdir_f:
                 _IN_MEMORY_FS.pop("findings.md", None)
+                _IN_MEMORY_FS.pop("final_report.md", None)
                 rs = RunState(tmpdir_f)
                 rs.add_finding("https://a.example.co/x", "summary", task_name="Heuristics", depth=1)
                 for i in range(5):
@@ -1653,8 +1665,32 @@ def main():
                 recorded = rs.data["completion_check_attempts"][-1]["problem"]
                 assert recorded != "uneven_task_investment", (
                     "must never fire before findings.md exists, regardless of how severe the "
-                    "live-tracked imbalance is -- this is the exact 2026-07-23 regression",
+                    "live-tracked imbalance is -- this is the exact 2026-07-23 regression #1",
                     recorded, msgs)
+
+            # (g) REGRESSION TEST 2 (live-confirmed 2026-07-23, SAME session, right after (f) was
+            # fixed): findings.md exists now but final_report.md does NOT yet -> must still NOT
+            # fire. Gating on findings.md alone (the first fix) left this check ahead of
+            # check_missing_artifact in COMPLETION_CHECKS -- confirmed live: the very next run
+            # after fixing (f) wrote findings.md successfully, then fired this check 4 consecutive
+            # times and STILL ended with final_report.md never written, because it kept winning
+            # "first verdict wins" over check_missing_artifact. check_missing_artifact must get
+            # the verdict instead until the Builder actually gets dispatched at least once.
+            with tempfile.TemporaryDirectory() as tmpdir_g:
+                _IN_MEMORY_FS["findings.md"] = "placeholder"
+                _IN_MEMORY_FS.pop("final_report.md", None)
+                rs = RunState(tmpdir_g)
+                rs.add_finding("https://a.example.co/x", "summary", task_name="Heuristics", depth=1)
+                for i in range(5):
+                    rs.add_finding(f"https://b.example.co/{i}", "summary", task_name="Culture", depth=1)
+                run_state_ctx.set(rs)
+                msgs = []
+                _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append))
+                recorded = rs.data["completion_check_attempts"][-1]["problem"]
+                assert recorded != "uneven_task_investment", (
+                    "must never fire before final_report.md exists, even once findings.md does "
+                    "-- this is the exact 2026-07-23 regression #2", recorded, msgs)
         finally:
             _IN_MEMORY_FS.clear()
             _IN_MEMORY_FS.update(saved_fs)
@@ -1663,6 +1699,10 @@ def main():
                 _config.cfg["settings"].pop("workspace", None)
             else:
                 _config.cfg["settings"]["workspace"] = _orig_ws11
+            if _orig_gc11 is None:
+                _config.cfg["settings"].pop("grounding_check", None)
+            else:
+                _config.cfg["settings"]["grounding_check"] = _orig_gc11
 
     contextvars.copy_context().run(_uneven_task_investment_scenario)
 
