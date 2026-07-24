@@ -11,6 +11,7 @@ import asyncio
 import math
 import os
 import re
+import time
 from dataclasses import dataclass
 from typing import Callable, NamedTuple, Optional
 
@@ -1459,7 +1460,7 @@ async def _dispatch_deepening_round(dispatch_task, run_state: "RunState", notify
     return True
 
 
-async def run_completion_check(query: str, current_input, run_state: "RunState", notify, last_assistant_text: str = "", dispatch_task=None):  # noqa: F821 — utils.run_state.RunState, annotation only
+async def run_completion_check(query: str, current_input, run_state: "RunState", notify, last_assistant_text: str = "", dispatch_task=None, budget_deadline: float | None = None):  # noqa: F821 — utils.run_state.RunState, annotation only
     """Runs the 3-tier completion check (delegated? artifact exists? really grounded?) plus the
     structural fixes: per-attempt quota top-up, artifact quarantine, run-state persistence, and
     (as a last resort) salvaging a narrated-but-never-written report instead of losing it.
@@ -1473,6 +1474,20 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
     sub-agents don't include the needed pair — "Builder"+"PeerReviewer" or
     "FindingsWriter"+"PeerReviewer"), that class of problem falls back to the classic
     inject-into-Planner behavior unconditionally.
+
+    `budget_deadline` (time.monotonic()-based, optional): the SAME wall-clock ceiling
+    settings.max_run_minutes gives the Planner's own stream (tui.py's budget_deadline) — passed
+    down here because a Write->Review->Fix chain can loop through MANY attempts inside this one
+    call without ever returning to the caller (see the docstring paragraph above), so a caller
+    that only re-checks max_run_minutes BETWEEN calls to this function never gets a chance to
+    catch a chain that blows the whole budget in a single call. Confirmed live 2026-07-23 (gpt-oss
+    on vLLM, ~21.5 tok/s under --enforce-eager): a run sat mid-attempt past its configured
+    max_run_minutes with no cutoff, because attempt 4's Write->Review->Fix chain simply hadn't
+    returned yet when the outer between-calls check would have fired. Checked once per loop
+    iteration below, same "attempt = max_attempts" short-circuit already used for the
+    consecutive-same-problem escalation case, so it reuses the existing salvage/quarantine
+    final-verdict path instead of a new bespoke cutoff. None (the default) preserves the TUI's
+    existing unbounded behavior unchanged.
 
     Returns (should_retry: bool, new_current_input). Caller is responsible for looping while
     should_retry is True, same as before.
@@ -1507,6 +1522,10 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
     try:
         while True:
             attempt = run_state.attempt
+            if budget_deadline is not None and attempt < max_attempts and time.monotonic() > budget_deadline:
+                notify(f"**System (final):** max_run_minutes exceeded mid-retry-chain — stopping "
+                       f"further Write/Review/Fix dispatches and finishing with whatever exists.")
+                attempt = max_attempts
             quotas = tool_quotas_ctx.get()
             files = get_workspace_files()
             ctx = Ctx(

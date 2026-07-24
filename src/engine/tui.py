@@ -2365,6 +2365,7 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
                     query=prompt, current_input=current_input, run_state=run_state, notify=_cli_notify,
                     last_assistant_text=turn_text,
                     dispatch_task=dispatch_task,
+                    budget_deadline=budget_deadline,
                 )
                 if should_continue:
                     has_requests = True
