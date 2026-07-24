@@ -163,24 +163,29 @@ def check_uneven_task_investment(ctx: Ctx) -> Optional[Verdict]:
     1-2 sources and any ratio between them looks "extreme" by construction; the absolute-volume
     gate is what tells a genuinely thin small query apart from real investment imbalance.
 
-    REQUIRES findings.md to already exist (2026-07-23, live regression found same day this check
-    shipped): this check reads ctx.run_state.coverage(), which is populated live during research
-    and completely independent of whether findings.md was ever actually WRITTEN. Without this
-    gate, it sits ahead of check_missing_findings in COMPLETION_CHECKS and can win "first verdict
-    wins" every single attempt purely on live research-tracking data, permanently starving
-    check_missing_findings of a turn -- confirmed live: a run fired this check 4 consecutive
-    times and ended with findings.md NEVER written at all, worse than doing nothing. Exact same
-    regression class as check_untracked_delegation's earlier fix this session ("a hygiene nudge
-    must never be able to block completion the way a real correctness gate does") -- here the
-    fix is requiring the artifact this check cares about (findings.md) to already exist, same
-    gate check_report_underuses_findings already uses one stage downstream, rather than a
-    once-per-run cap (the escalate-after-3-consecutive/force_whole_rebuild machinery already caps
-    how many attempts get burned; the actual bug was firing before there was anything to write
-    the report FROM, not an unbounded retry count)."""
+    REQUIRES BOTH findings.md AND ctx.req_artifact (final_report.md) to already exist
+    (2026-07-23, two live regressions found the same day this check shipped, one after the
+    other). This check reads ctx.run_state.coverage(), populated live during research
+    independent of whether either file was ever actually WRITTEN. First regression: gating on
+    findings.md alone still left this check ahead of check_missing_artifact in
+    COMPLETION_CHECKS -- once findings.md existed but final_report.md didn't yet, it kept
+    winning "first verdict wins" over check_missing_artifact, so the Builder never got
+    dispatched at all. Confirmed live TWICE: one run ended with findings.md never written (fixed
+    by the findings.md gate), the very next run then ended with findings.md written but
+    final_report.md STILL never written (this second gate). Exact same regression class as
+    check_untracked_delegation's earlier fix this session ("a hygiene nudge must never be able
+    to block completion the way a real correctness gate does") -- the fix both times is
+    requiring the artifacts this check cares about to already exist, same two-stage gate
+    check_missing_findings/check_missing_artifact themselves enforce, positioning this
+    conceptually alongside check_report_underuses_findings (which needs the same two artifacts)
+    rather than check_thin_coverage (which deliberately runs before either exists). The
+    escalate-after-3-consecutive/force_whole_rebuild machinery already caps how many attempts
+    get burned once this check is actually allowed to fire; both bugs were about firing too
+    EARLY, never about an unbounded retry count."""
     cov_cfg = config.cfg.get("settings", {}).get("uneven_coverage_check", {})
     if not cov_cfg.get("enabled", True):
         return None
-    if "findings.md" not in ctx.files:
+    if "findings.md" not in ctx.files or ctx.req_artifact not in ctx.files:
         return None
     coverage = ctx.run_state.coverage()
     counts = {name: n for name, n in coverage["per_task_counts"].items() if n > 0}
@@ -844,10 +849,14 @@ def check_not_grounded(ctx: Ctx) -> Optional[Verdict]:
 COMPLETION_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
     check_not_delegated,
     check_thin_coverage,
-    check_uneven_task_investment,
     check_findings_ungrounded,
     check_missing_findings,
     check_missing_artifact,
+    # Both require findings.md AND the final artifact to already exist (own docstrings explain
+    # why -- two live regressions, 2026-07-23) -- placed after both existence checks above so
+    # the list's own ordering documents that requirement, even though each check's internal
+    # gate already enforces it regardless of position.
+    check_uneven_task_investment,
     check_untracked_delegation,
 ]
 GROUNDING_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
