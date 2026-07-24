@@ -161,9 +161,26 @@ def check_uneven_task_investment(ctx: Ctx) -> Optional[Verdict]:
     "uneven" with fewer than 2 data points) AND min_total_sources summed across covered tasks
     (default 4) -- guards against flagging a small, simple query where every task naturally has
     1-2 sources and any ratio between them looks "extreme" by construction; the absolute-volume
-    gate is what tells a genuinely thin small query apart from real investment imbalance."""
+    gate is what tells a genuinely thin small query apart from real investment imbalance.
+
+    REQUIRES findings.md to already exist (2026-07-23, live regression found same day this check
+    shipped): this check reads ctx.run_state.coverage(), which is populated live during research
+    and completely independent of whether findings.md was ever actually WRITTEN. Without this
+    gate, it sits ahead of check_missing_findings in COMPLETION_CHECKS and can win "first verdict
+    wins" every single attempt purely on live research-tracking data, permanently starving
+    check_missing_findings of a turn -- confirmed live: a run fired this check 4 consecutive
+    times and ended with findings.md NEVER written at all, worse than doing nothing. Exact same
+    regression class as check_untracked_delegation's earlier fix this session ("a hygiene nudge
+    must never be able to block completion the way a real correctness gate does") -- here the
+    fix is requiring the artifact this check cares about (findings.md) to already exist, same
+    gate check_report_underuses_findings already uses one stage downstream, rather than a
+    once-per-run cap (the escalate-after-3-consecutive/force_whole_rebuild machinery already caps
+    how many attempts get burned; the actual bug was firing before there was anything to write
+    the report FROM, not an unbounded retry count)."""
     cov_cfg = config.cfg.get("settings", {}).get("uneven_coverage_check", {})
     if not cov_cfg.get("enabled", True):
+        return None
+    if "findings.md" not in ctx.files:
         return None
     coverage = ctx.run_state.coverage()
     counts = {name: n for name, n in coverage["per_task_counts"].items() if n > 0}
@@ -1593,8 +1610,8 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
         while True:
             attempt = run_state.attempt
             if budget_deadline is not None and attempt < max_attempts and time.monotonic() > budget_deadline:
-                notify(f"**System (final):** max_run_minutes exceeded mid-retry-chain — stopping "
-                       f"further Write/Review/Fix dispatches and finishing with whatever exists.")
+                notify("**System (final):** max_run_minutes exceeded mid-retry-chain — stopping "
+                       "further Write/Review/Fix dispatches and finishing with whatever exists.")
                 attempt = max_attempts
             quotas = tool_quotas_ctx.get()
             files = get_workspace_files()
