@@ -395,6 +395,70 @@ def find_unsupported_regulation_ids(text: str) -> list[str]:
     return hits
 
 
+# Quoted spans, straight or curly double quotes. Minimum length excludes short generic phrases
+# ("the sky") that would false-positive on coincidence; a real "this is an exact quote" claim is
+# almost always longer than this in practice.
+_QUOTED_SPAN_RE = re.compile(r'["“]([^"“”]{25,})["”]')
+# A quote spanning omitted material with an ellipsis ("...", "…") is a legitimate quoting
+# convention (two real, non-adjacent spans from the source, joined) -- each segment must be
+# checked separately, not the whole string as one contiguous span, or a genuine elision would
+# false-positive as "paraphrased."
+_ELLIPSIS_RE = re.compile(r'\.\.\.|…')
+
+
+def _normalize_for_quote_match(text: str) -> str:
+    """Lowercase + collapse whitespace + fold curly quotes/apostrophes to straight ones, so a
+    genuine verbatim quote isn't false-flagged over typographic differences between how the
+    source's raw HTML renders punctuation and how the model retyped it."""
+    text = text.replace("’", "'").replace("‘", "'")
+    text = text.replace("“", '"').replace("”", '"')
+    return re.sub(r'\s+', ' ', text.strip().lower())
+
+
+def find_paraphrased_quotes(text: str) -> list[str]:
+    """A quoted span (implying "this is the source's own exact words") that does not actually
+    appear verbatim anywhere in the source cited on the same line -- a paraphrase dressed up as a
+    direct quote. Distinct from claim_grounding_problem's term-overlap check (which asks whether a
+    claim is SUPPORTED at all, fuzzy by design) and from find_unsupported_regulation_ids (a
+    specific-identifier variant of the same "real citation, fabricated/altered specific detail"
+    shape) -- this checks textual EXACTNESS of something the report itself claims is exact by
+    putting it in quotation marks. Confirmed live 2026-07-24: a report quoted
+    "Sunset colors arise from selective removal of blue/violet as sunlight travels a longer path…
+    leaving red/orange visible" and attributed it to a real, fetched Wikipedia source -- the
+    underlying CLAIM was true and traceable to a real passage in that source, so no other
+    grounding check catches it, but that exact wording never appears there; it's an invented
+    "quote" of a genuine fact, not a fabricated citation or an unsupported claim.
+
+    Line-scoped like find_unsupported_regulation_ids (this project's report format keeps a claim
+    and its citation on one line). Ellipsis-split: each segment either side of "..."/"…" is
+    checked independently against the source, so a genuine two-sentence elision (a real quoting
+    convention, confirmed live: a correctly-quoted Wikipedia passage in the same run legitimately
+    joined two non-adjacent real sentences this way) isn't false-flagged just because the joined
+    whole isn't one contiguous source substring."""
+    fetched = _fetched_url_files()
+    ref_map = parse_academic_references(text or "")
+    hits = []
+    for line in (text or "").splitlines():
+        quotes = list(_QUOTED_SPAN_RE.finditer(line))
+        if not quotes:
+            continue
+        files = _line_cited_files(line, fetched, ref_map)
+        if not files:
+            continue
+        content = "\n".join(_source_body(get_workspace_file_content(f) or "") for f in files)
+        if len(content.strip()) < 50:
+            continue
+        norm_content = _normalize_for_quote_match(content)
+        for m in quotes:
+            quote = m.group(1).strip()
+            segments = [s.strip() for s in _ELLIPSIS_RE.split(quote) if len(s.strip()) >= 15]
+            if not segments:
+                continue
+            if any(_normalize_for_quote_match(seg) not in norm_content for seg in segments):
+                hits.append(quote[:120])
+    return hits
+
+
 # Figure-bearing tokens only (amounts, decimals, years, percentages, counted quantities) — the
 # quantitative-claim vector specifically, not proper nouns, which appear in harmless narrative
 # far too often to gate on.
@@ -1007,6 +1071,11 @@ async def real_grounding_problem(content: str) -> str | None:
         bad_regs = find_unsupported_regulation_ids(content)
         if bad_regs:
             return f"regulation_unsupported:{'; '.join(bad_regs[:3])}"
+
+    if gc_cfg.get("quote_fidelity_check", True):
+        bad_quotes = find_paraphrased_quotes(content)
+        if bad_quotes:
+            return f"quote_paraphrased:{'; '.join(bad_quotes[:3])}"
 
     if gc_cfg.get("content_level_check", True):
         problem = claim_grounding_problem(content)

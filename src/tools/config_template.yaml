@@ -297,6 +297,15 @@ settings:
     # passed (real fetch) and the zero-overlap content check passed (shared generic terms), so
     # only this check catches it (see utils/grounding.py::find_unsupported_regulation_ids).
     regulation_id_check: true
+    # Text inside quotation marks (implying "the source's own exact words") that doesn't actually
+    # appear verbatim in the cited source -- a paraphrase dressed up as a direct quote. Confirmed
+    # live (2026-07-24): the underlying claim was true and traceable to a real passage in the
+    # source, so content_level_check's term-overlap check passed -- this catches textual
+    # EXACTNESS specifically, which nothing else here checks (see
+    # utils/grounding.py::find_paraphrased_quotes). Ellipsis-joined quotes (a real quoting
+    # convention for omitted material) are checked segment-by-segment, not as one contiguous
+    # string, so a genuine elision isn't false-flagged.
+    quote_fidelity_check: true
     # A cited URL whose fetch returned only a soft-404/paywall shell (HTTP 200 but no real
     # article content — detected at fetch time by tools/web.py::_stub_reason and recorded as
     # stub in _run_state.json's fetched_urls). Confirmed live (run 14): a model-invented URL

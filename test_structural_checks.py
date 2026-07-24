@@ -826,6 +826,48 @@ def main():
     assert _run_cli_src.count('"findings_written_citable_count"') == 1, (
         "run_cli's resume-carryover key list must include findings_written_citable_count")
 
+    # --- TUI QoE: widget maximize (2026-07-24) — ROADMAP.md flagged this as "likely already
+    # works via Textual's default focus/ALLOW_MAXIMIZE mechanism (same category as the already-
+    # confirmed Ctrl+C copy), needs live confirmation, not new code." Confirmed directly against
+    # this project's own ToolCallWidget (a Collapsible wrapping two focusable RichLogs) rather
+    # than trusting the framework docs alone: RichLog's can_focus=True makes it maximizable by
+    # default (Widget.allow_maximize falls back to can_focus when ALLOW_MAXIMIZE is unset), and
+    # Screen.action_maximize() maximizes whatever's currently focused — reachable via the command
+    # palette (Ctrl+P → "Maximize"), which this app never disables (no ENABLE_COMMAND_PALETTE
+    # override anywhere in this file). No code change needed; this pins that it keeps working. ---
+    from engine.tui import ToolCallWidget
+    from textual.containers import VerticalScroll
+
+    async def _widget_maximize_scenario():
+        class _FakeBuilder3:
+            name = "Planner"
+            instructions = "test"
+            tools = []
+            sub_agents = []
+
+        app = BasicTuiAgent(_FakeBuilder3())
+        async with app.run_test() as pilot:
+            widget = ToolCallWidget("web_search", "call_1")
+            await app.query_one("#chat-container", VerticalScroll).mount(widget)
+            await pilot.pause()
+            widget.result_log.focus()
+            await pilot.pause()
+            assert app.screen.focused is widget.result_log, app.screen.focused
+            assert widget.result_log.allow_maximize, "RichLog must be maximizable by default"
+            app.screen.action_maximize()
+            await pilot.pause()
+            # Collapsible explicitly sets ALLOW_MAXIMIZE=True, and Screen.maximize()'s default
+            # container=True walks UP to the outermost maximizable ancestor -- so maximizing a
+            # focused RichLog inside a ToolCallWidget (a Collapsible) maximizes the whole card
+            # (both Arguments and Result panels), not just the one focused log. That's the
+            # correct, more useful behavior, not a bug in this project's widget structure.
+            assert app.screen.maximized is widget, app.screen.maximized
+            app.screen.action_minimize()
+            await pilot.pause()
+            assert app.screen.maximized is None, app.screen.maximized
+
+    _asyncio_tui.run(_widget_maximize_scenario())
+
     # --- B5: session log write throttling (2026-07-12) — _write_log serializes and rewrites the
     # WHOLE _session_events list every call; log_stream_content used to call it after EVERY
     # streamed event, so an N-event run paid O(N) per write summed over N writes = O(n²) total
@@ -944,6 +986,13 @@ def main():
         ("regulation_unsupported", True, {"findings.md": _FINDINGS_OK,
           "final_report.md": f"| Ley 1906 de 2021 | [gov]({_SRC}) |"},
          "regulation_unsupported", "never mentions that regulation's number"),
+        # Live case 2026-07-24: a report quoted a plausible-sounding sentence and attributed it to
+        # a real, fetched source -- the underlying claim can be true and traceable while the exact
+        # wording still never appears there, which content_level_check's term-overlap check alone
+        # cannot catch (see utils/grounding.py::find_paraphrased_quotes).
+        ("quote_paraphrased", True, {"findings.md": _FINDINGS_OK,
+          "final_report.md": f'- dato "esto es una cita inventada que jamas aparece en la fuente real" [gov]({_SRC})'},
+         "quote_paraphrased", "doesn't match its cited source's actual text"),
         ("non_url_citation", True, {"findings.md": _FINDINGS_OK,
           "final_report.md": f"- dato uno [gov]({_SRC})\n- **Fuente:** Ministerio de Salud, informe interno"},
          "non_url_citation", "isn't a real URL"),
@@ -3242,6 +3291,69 @@ def main():
                 _config.cfg["settings"]["workspace"] = _orig_ws4
 
     contextvars.copy_context().run(_regulation_scenario)
+
+    # --- quote-fidelity check (live case 2026-07-24: a report quoted a plausible-sounding
+    # sentence attributed to a real fetched source whose actual text says something factually
+    # equivalent but differently worded — content_level_check's term-overlap check passed since
+    # the underlying claim was true, so only exact-text matching catches this) ---
+    from utils.grounding import find_paraphrased_quotes
+
+    def _quote_fidelity_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        _orig_ws10 = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory"}
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            _IN_MEMORY_FS.clear()
+            reset_fetched_urls()
+            record_fetched_url("https://en.wikipedia.example.org/rayleigh", filename="sources/wiki.md")
+            _IN_MEMORY_FS["sources/wiki.md"] = (
+                "Source-URL: https://en.wikipedia.example.org/rayleigh\n\n"
+                "Rayleigh scattering results from the electric polarizability of the particles. "
+                "The oscillating electric field of a light wave acts on the charges within a "
+                "particle, causing them to move at the same frequency. The particle, therefore, "
+                "becomes a small radiating dipole whose radiation we see as scattered light. "
+                "Due to Rayleigh scattering, red and orange colors are more visible during sunset "
+                "because the blue and violet light has been scattered out of the direct path."
+            )
+            # Fabricated "quote": factually adjacent to the real sunset sentence but not its
+            # actual wording -> flagged.
+            bad = find_paraphrased_quotes(
+                '- "Sunset colors arise from selective removal of blue/violet as sunlight '
+                'travels a longer path… leaving red/orange visible." '
+                '[wiki](https://en.wikipedia.example.org/rayleigh)'
+            )
+            assert bad and "Sunset colors arise" in bad[0], bad
+            # Genuine verbatim quote -> silent.
+            assert find_paraphrased_quotes(
+                '- "Rayleigh scattering results from the electric polarizability of the '
+                'particles." [wiki](https://en.wikipedia.example.org/rayleigh)'
+            ) == []
+            # Legitimate ellipsis-joined quote: two REAL, non-adjacent sentences from the same
+            # source, joined by "…" -- each segment matches on its own, so this must NOT be
+            # flagged even though the whole isn't one contiguous source substring.
+            assert find_paraphrased_quotes(
+                '- "Rayleigh scattering results from the electric polarizability of the '
+                'particles… The particle, therefore, becomes a small radiating dipole whose '
+                'radiation we see as scattered light." '
+                '[wiki](https://en.wikipedia.example.org/rayleigh)'
+            ) == []
+            # Short quoted span (<25 chars) -> below the noise-avoidance threshold, silent.
+            assert find_paraphrased_quotes(
+                '- "invented words" [wiki](https://en.wikipedia.example.org/rayleigh)') == []
+            # No citation on the line at all -> not this check's job, silent.
+            assert find_paraphrased_quotes(
+                '- "This exact string is not in any real source at all here" (no link)') == []
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            if _orig_ws10 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws10
+
+    contextvars.copy_context().run(_quote_fidelity_scenario)
 
     # --- academic-style (Author, Year) citation dialect (eval/sales_forecasting_benchmark.md,
     # ROADMAP.md "academic output mode") — same grounding guarantees as the default

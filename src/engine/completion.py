@@ -721,6 +721,23 @@ def check_regulation_unsupported(ctx: Ctx) -> Optional[Verdict]:
     )
 
 
+def check_quote_paraphrased(ctx: Ctx) -> Optional[Verdict]:
+    """A quoted span (implying "this is the source's own exact words") that's actually a
+    paraphrase — see utils/grounding.py::find_paraphrased_quotes for the live case that motivated
+    this (2026-07-24): a report quoted a plausible-sounding "sunset colors" sentence and attributed
+    it to a real, fetched source whose actual text says something factually equivalent but
+    differently worded. The underlying claim was true and traceable, so no other grounding check
+    catches it — this is specifically about textual exactness of something presented as exact."""
+    gp = ctx.grounding_problem
+    if not (gp and gp.startswith("quote_paraphrased")):
+        return None
+    return Verdict(
+        "quote_paraphrased",
+        f"`{ctx.req_artifact}` presents at least one quotation mark-enclosed span as if verbatim, but it doesn't match its cited source's actual text ({gp}). Pushing agent to fix.",
+        f"SYSTEM WARNING: '{ctx.req_artifact}' puts text in quotation marks (implying an exact quote) that does not actually appear, word-for-word, in its cited source ({gp}). Putting words in quotes is a claim of exactness, not just support — either copy the source's ACTUAL wording exactly, or remove the quotation marks and state the point as your own paraphrase (still citing the source, just not pretending it's their exact words). The previous draft has been moved aside.{_redelegate_directive(ctx)}",
+    )
+
+
 def check_non_url_citation(ctx: Ctx) -> Optional[Verdict]:
     """Distinct from "no_urls": the report DOES have real hyperlinked citations
     elsewhere (that's why it reached this check instead of check_no_urls above), but at
@@ -948,6 +965,7 @@ GROUNDING_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
     check_no_urls,
     check_stub_source,
     check_regulation_unsupported,
+    check_quote_paraphrased,
     check_non_url_citation,
     check_nli_unsupported,
     check_topical_mismatch,
@@ -968,8 +986,8 @@ GROUNDING_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
 # run_completion_check derives its quarantine branch from this tuple (findings_ungrounded
 # quarantines findings.md instead of the artifact) — one list, no second copy to forget.
 _QUARANTINE_PROBLEMS = ("not_grounded", "claim_unsupported", "non_url_citation",
-                        "regulation_unsupported", "stub_source", "nli_unsupported",
-                        "topical_mismatch", "findings_ungrounded")
+                        "regulation_unsupported", "quote_paraphrased", "stub_source",
+                        "nli_unsupported", "topical_mismatch", "findings_ungrounded")
 
 # Problems fixable by rewriting `req_artifact` from the SAME findings.md, no new research needed —
 # dispatched to a fresh-context Builder (+ PeerReviewer check) by run_completion_check's
@@ -977,8 +995,8 @@ _QUARANTINE_PROBLEMS = ("not_grounded", "claim_unsupported", "non_url_citation",
 # (not_delegated) genuinely needs more/different research, which only the Planner can decide and
 # delegate, so that one still falls through to the classic inject-into-Planner path below.
 _BUILDER_FIXABLE_PROBLEMS = ("missing_artifact", "not_grounded", "claim_unsupported",
-                             "non_url_citation", "regulation_unsupported", "stub_source",
-                             "nli_unsupported", "topical_mismatch", "uncited_claims",
+                             "non_url_citation", "regulation_unsupported", "quote_paraphrased",
+                             "stub_source", "nli_unsupported", "topical_mismatch", "uncited_claims",
                              "excluded_topic_present", "cross_source_contradiction",
                              "report_underuses_findings")
 

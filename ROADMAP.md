@@ -1617,6 +1617,48 @@ tried, twice, not merely proposed):
     plus a VERIFICATION-warning control case; `record_fetched_url`'s title storage with/without a
     title; `_build_findings_source_material`'s title-vs-fallback rendering). Full suite green.
 
+- **FindingsWriter evidence-abandonment ROOT CAUSE — CLOSED 2026-07-22, moved here from Pending
+  2026-07-24 (documentation-sync gap: the fix shipped the day after the entry above, but Pending
+  was never updated to reflect it).** The two contributing-factor fixes above held at their own
+  layer but didn't change the headline behavior (Live re-test #4: FindingsWriter still hand-read
+  raw source files first, 2/44 real findings made it into `findings.md`). Two further changes,
+  same session (`f1562f7`, "Fix FindingsWriter evidence-abandonment: structural write-first gate +
+  dedupe multi-URL fan-out"), actually closed it:
+  1. **`writer_gate_ctx`** (`src/tools/core.py`, new contextvar + `check_writer_gate`, wired into
+     `with_quota`'s sync/async wrappers): blocks `read_workspace_file`/`grep_workspace_file` until
+     the armed gate's `write_workspace_file` call has happened. Armed only for FindingsWriter (never
+     Builder, whose own instructions correctly require reading `findings.md` first), in both the
+     Write and corrective Fix dispatches inside `_dispatch_writer_review_fix`
+     (`src/engine/completion.py`). A prompt-only reorder of `FINDINGS_WRITER_INSTRUCTIONS`' workflow
+     was tried FIRST and live-disconfirmed (model still called `read_workspace_file` first) before
+     escalating to this structural gate — the gate is what actually held.
+  2. **`_collapse_multi_url_task_findings`** (`completion.py`): found while investigating why even a
+     gate-forced first write stayed thin (2/29) — `orchestrator.py::_run_single_task`'s
+     `add_finding` call fires once per fetched URL but attaches the SAME task-level summary every
+     time, so a task fetching N URLs produced N near-identical "findings," inflating the raw count
+     and letting whichever task fetched most URLs dominate `_reorder_findings_for_position_bias`'s
+     favorable edges by fetch count alone. Groups citable findings by `(task_name, summary)` before
+     rendering — body text kept once per group, every real URL still individually named for
+     citation (preserves the one-entry-per-URL contract).
+  - **Live-confirmed closed, 3rd smoke-test run
+    (`i_want_documentation_on_heuristic_algoritms_for_de_20260722_213120`)**: evidence base
+    collapsed to 5 real distinct clusters (from a raw 15 citable findings); `findings.md` wrote
+    **all 5 of 5**, first FindingsWriter dispatch called `write_workspace_file` directly with zero
+    blocked reads (gate never even needed to fire). Only 2 completion-check retries total (vs. 4
+    and 6 in the two prior live-tested runs) — fastest, cleanest convergence of the three.
+    `final_report.md` ended up thin but HONEST (3 of 5 sources genuinely had nothing usable, and
+    Builder said so instead of fabricating filler). Full detail and the two prior comparison runs:
+    `session_status/2026-07-22.md`.
+  - **Two smaller items surfaced during this investigation, NOT covered by this fix, tracked
+    separately**: (a) one Searcher sub-agent fired ~14 near-duplicate `web_search` calls on one
+    angle without diversifying into a sibling angle its own task line implied — this looks like the
+    same shape as the query-diversity/rabbit-holing issue independently fixed the same week via
+    `PLANNER_INSTRUCTIONS`' single-facet-per-slot guidance (see `session_status/CURRENT.md`'s
+    "Closed this session, believed done" section) but was never explicitly cross-confirmed against
+    THIS specific run; (b) a cosmetic mojibake filename in one `findings.md` heading, not
+    investigated (see `session_status/CURRENT.md`, diagnosed as the model degenerating into token
+    repetition on a genuinely empty source, not a code bug).
+
 - **Shared-quota starvation, angles (a) and (c) — IMPLEMENTED and live-verified 2026-07-21**,
   found via a live benchmark run (the standing sales-forecasting/heuristic-algorithms query, right
   after this session's 4 synthesis fixes shipped) that failed outright: `Report: NOT WRITTEN`,
@@ -2595,58 +2637,13 @@ tried, twice, not merely proposed):
 ## Pending
 
 
-- **FindingsWriter drops most real findings even when it writes the file correctly — TWO
-  contributing factors found and fixed, ROOT BEHAVIORAL CAUSE still open after 2 independent live
-  re-tests, actively being hunted.** Originally flagged from History (heterogeneous-tiering
-  investigation, 2026-07-18) as an untested hypothesis; independently reproduced live 2026-07-21
-  (Completed's quota-starvation entry, "Live re-test #3"): `_run_state.json` recorded 33 real
-  findings, `findings.md` was written correctly (no `AUTO-RECOVERED` banner) but contained exactly
-  1 of them, and the final report was fully grounded but entirely off-topic (a University of
-  Rochester class project, no Colombia/heuristic-algorithm content) despite real matching sources
-  sitting unused.
-  - **Root-caused by reading the actual session transcript directly** (`~/.deepdelve/sessions/`,
-    not guessed): the assembled evidence base was complete and within budget (30 real findings,
-    44,897 chars — confirmed by replaying `_build_findings_source_material` against the real run's
-    `_run_state.json`, nothing omitted). The model's own recorded reasoning: *"we don't see them
-    here"* — it abandoned the structured evidence base entirely and went to re-read raw source
-    files by hand instead (guessing filenames, including one that doesn't exist), writing
-    `findings.md` from only the one file it happened to be looking at when it stopped.
-  - **Two concrete, literature-backed contributing factors found and FIXED** (`src/engine/
-    completion.py`, `src/utils/run_state.py`, `src/tools/web.py` — see Completed for full detail):
-    (1) a finding confirmed off-topic by the scope-relevance check
-    (`[SYSTEM RELEVANCE WARNING...]`) was still rendered as an ordinary citable entry,
-    indistinguishable from genuinely useful findings — now excluded via `_is_citable_finding`;
-    (2) the evidence base rendered `### Source: {url}` with no title, while
-    `FINDINGS_WRITER_INSTRUCTIONS` requires the model's OWN output to be `### [Title](url)` — a
-    real, avoidable format mismatch forcing the model to invent a title for every entry before it
-    could start. A real title IS already extracted at fetch time
-    (`tools/web.py::_extract_html_metadata`) but was never threaded through to
-    `run_state.data["fetched_urls"]` — now is.
-  - **Live re-test #4 confirmed BOTH fixes work correctly at their own layer, but the root
-    behavior is unchanged.** Directly verified against the real run: the 1 relevance-flagged
-    finding this run (`colombia_cultural_references_v2`) was correctly excluded; 29/33 fetched
-    URLs got a real title, 36/40 assembled entries used the correct `### [Title](url)` format.
-    **But the session transcript shows FindingsWriter's very FIRST action on this run was, again,
-    calling `read_workspace_file` directly on raw source files** (ResearchGate PSO paper, Springer
-    paper) — it never engaged with the compiled evidence block at all, exactly like before either
-    fix landed. `findings.md` ended up with 2 of 44 real findings (both generic Wikipedia
-    definitional content — "what is a heuristic," "what is a metaheuristic" — no domain
-    comparison, no Colombia content), after 7 completion-check rounds (`findings_ungrounded` fired
-    3x, triggering the whole-approach-rebuild escalation from earlier this session).
-  - **Conclusion, two independent live runs now agree**: the model's habit of exploring raw files
-    by hand instead of trusting the compiled evidence list is independent of that list's noise
-    level or format — fixing both didn't change the headline behavior. This makes the earlier-
-    deprioritized "reorder `FINDINGS_WRITER_INSTRUCTIONS`' workflow to require writing from the
-    compiled evidence FIRST, before any raw file re-reading" idea the best-supported next
-    candidate, not a request for more research. A secondary finding worth tracking separately:
-    titled entries are longer, so the assembled material can now exceed `context_budget_chars`
-    sooner than before (51,217 chars this run, over the 50,000 default) — not the main driver of
-    this specific failure (the model never got far enough to hit it), but worth revisiting once
-    the primary behavior is fixed.
-  - **Not yet scoped**: the workflow-reorder fix itself, and whether it alone is enough or needs
-    pairing with a real structural gate (e.g., disallow `read_workspace_file` before at least one
-    `write_workspace_file` attempt). Also still not built: the chunked map-reduce dispatch option
-    (LLM×MapReduce-style, arXiv:2410.09342) named earlier as a bigger, deferred alternative.
+- **FindingsWriter drops most real findings even when it writes the file correctly — CLOSED,
+  moved to Completed 2026-07-24** (see Completed's "FindingsWriter evidence-abandonment ROOT
+  CAUSE — CLOSED 2026-07-22" entry for the full fix and live-confirmed 5/5 coverage result; this
+  Pending entry was simply never updated when the fix shipped the day after the last negative
+  re-test). The one still-genuinely-open piece from that investigation: the chunked map-reduce
+  dispatch option (LLM×MapReduce-style, arXiv:2410.09342) named as a bigger, deferred alternative
+  if the gate/dedupe fix ever proves insufficient again — not built, not currently needed.
 
 - **`run_cli`/`BasicTuiAgent` run-lifecycle duplication in `src/engine/tui.py` — still open,
   reconfirmed by the whole-repo Ponytail audit 2026-07-21, tracked under a new name to avoid

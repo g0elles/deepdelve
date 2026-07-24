@@ -1602,6 +1602,12 @@ class BasicTuiAgent(App):
                 from tools.fs import session_dir_ctx
                 session_dir_ctx.reset(session_token)
             self._is_agent_running = False
+            # TUI QoE (ROADMAP.md "TUI QoE improvements"): notify() previously had zero non-
+            # clipboard call sites despite that backlog item explicitly naming "a run finished
+            # while scrolled away" as the gap. Scoped to the single top-level run ending, not a
+            # toast per sub-agent completion -- a real run this session dispatched 40+ sub-agents,
+            # and a toast per one of those would be spam, not a QoE improvement.
+            self.app.notify("Run finished.")
 
     def _render_cmd_list(self) -> None:
         panel = self.query_one("#command-list", OptionList)
