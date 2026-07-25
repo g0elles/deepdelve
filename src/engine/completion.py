@@ -1151,7 +1151,8 @@ async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artif
     failure so the caller can fall back to the classic inject-into-Planner path for this cycle
     rather than silently doing nothing.
 
-    Capped at 3 dispatches total (Write, Review, optional Fix) — no unbounded nesting."""
+    Capped at 4 dispatches total (Write, one immediate Write-retry only if the first produced
+    nothing usable, Review, optional Fix) — no unbounded nesting."""
     # Snapshot think_tool's usage BEFORE the write dispatch (2026-07-22, PIVOT arXiv:2605.11225,
     # RESEARCH.md §1): both BUILDER_INSTRUCTIONS and FINDINGS_WRITER_INSTRUCTIONS already tell the
     # writer to use think_tool before finalizing ("<Show Your Thinking>"), but a prompt-only nudge
@@ -1206,23 +1207,61 @@ async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artif
             # Confirmed live 2026-07-24 (gpt-oss, 3 separate occurrences in one run): a writer
             # dispatch can return a genuinely EMPTY response -- zero tool calls, zero narrated
             # text, nothing for _salvage_narrated_report to work with either (it also declines
-            # short text under 200 chars, e.g. a narrated one-line status update). This used to
-            # fall through to dispatching PeerReviewer anyway, against an artifact that flatly
-            # doesn't exist -- PeerReviewer then has no filename to review, and confirmed live it
-            # degrades into guessing wrong paths (burned its entire read_workspace_file quota on
-            # nonexistent filenames before giving up, in the exact run that surfaced this).
-            # Raising here treats "the write produced nothing usable at all" as the dispatch
-            # failure it actually is, per this function's own documented contract -- the caller's
-            # normal retry loop gets a fresh attempt next time instead of an entire PeerReviewer
-            # dispatch being wasted on a file that was never written. Uses
-            # get_workspace_file_content (backend-agnostic: disk or in-memory), NOT the
-            # os.path.exists check above, which is disk-only and always false for the in-memory
-            # workspace backend regardless of real content -- that's fine for the salvage
-            # decision (harmless extra attempt), but would falsely raise here on every in-memory
-            # write that already succeeded.
-            raise RuntimeError(
-                f"{writer_role} dispatch produced no '{req_artifact}' and nothing narrated to salvage"
+            # short text under 200 chars, e.g. a narrated one-line status update).
+            #
+            # One immediate retry before giving up: an empty response is plausibly a transient
+            # flake, not a persistent one -- confirmed live all 3 empty responses that motivated
+            # this fix were isolated, never two in a row for the same completion-check attempt. A
+            # fresh dispatch (same instructions, same fresh context) has a real chance of
+            # succeeding outright, which is strictly better than immediately giving up: the
+            # alternative (raising right away) still costs a full completion-check attempt AND a
+            # round-trip through the Planner (which has no write_workspace_file tool and can only
+            # re-arrive at "dispatch FindingsWriter again" next cycle anyway) to reach the same
+            # place this retry can reach directly, one dispatch later.
+            notify(
+                f"**System ({attempt + 1}):** {writer_role} returned nothing usable for "
+                f"`{req_artifact}` — retrying once immediately before giving up."
             )
+            retry_gate_token = writer_gate_ctx.set({"write_done": False}) if writer_role == "FindingsWriter" else None
+            try:
+                write_result = await dispatch_task(
+                    f"{writer_role}Fix_attempt{attempt + 1}_retry", write_instructions, writer_role)
+            finally:
+                if retry_gate_token is not None:
+                    writer_gate_ctx.reset(retry_gate_token)
+            # Re-check against the SAME think_before baseline (not re-snapshotted) so this
+            # reflects "was think_tool used in EITHER the original or the retry attempt" -- the
+            # question that actually matters once a retry has happened, since think_tool_skipped
+            # feeds later wording (the is_clean notify note, the Fix pass's think_tool_note).
+            think_after = pool.get("think_tool", {}).get("used") if pool else None
+            think_tool_skipped = think_before is not None and think_after == think_before
+            if get_workspace_file_content(req_artifact) is None:
+                retry_text = write_result if isinstance(write_result, str) else str(write_result)
+                if _salvage_narrated_report(req_artifact, retry_text):
+                    notify(
+                        f"**System ({attempt + 1}):** {writer_role} narrated `{req_artifact}` as "
+                        f"chat text instead of calling `write_workspace_file` — auto-recovered its "
+                        f"own content as the artifact (flagged unverified) instead of retrying blind."
+                    )
+                else:
+                    # Still nothing after a genuine retry -- this used to fall through to
+                    # dispatching PeerReviewer anyway, against an artifact that flatly doesn't
+                    # exist. PeerReviewer then has no filename to review, and confirmed live it
+                    # degrades into guessing wrong paths (burned its entire read_workspace_file
+                    # quota on nonexistent filenames before giving up, in the exact run that
+                    # surfaced this). Raising here treats "the write produced nothing usable
+                    # twice" as the dispatch failure it actually is, per this function's own
+                    # documented contract -- the caller's normal retry loop gets a fresh attempt
+                    # next time instead of an entire PeerReviewer dispatch being wasted on a file
+                    # that was never written. Uses get_workspace_file_content (backend-agnostic:
+                    # disk or in-memory), NOT the os.path.exists check above (disk-only, always
+                    # false for the in-memory workspace backend regardless of real content --
+                    # fine for the salvage decision above, an existing harmless quirk, but would
+                    # falsely raise here on every in-memory write that already succeeded).
+                    raise RuntimeError(
+                        f"{writer_role} dispatch produced no '{req_artifact}' twice in a row "
+                        f"(including one immediate retry) and nothing narrated to salvage either time"
+                    )
 
     # Snapshot read_workspace_file's usage count BEFORE dispatching PeerReviewer, so a fabricated
     # "REVIEW: CLEAN" that never actually opened the file can be caught below (see is_clean gate).

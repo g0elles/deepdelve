@@ -2515,13 +2515,14 @@ def main():
                     "a malformed/missing REVIEW: sentinel must be treated conservatively as "
                     "ISSUES FOUND, not silently accepted", dispatch.call_args_list)
 
-            # (c2) Write dispatch returns a genuinely EMPTY response (2026-07-24 live case: gpt-oss,
-            # 3 separate occurrences in one run) -> _salvage_narrated_report finds nothing to
-            # rescue (too short), the artifact still doesn't exist, and this must now raise
-            # BEFORE dispatching PeerReviewer at all -- confirmed live that dispatching
-            # PeerReviewer against a nonexistent artifact makes it degrade into guessing wrong
-            # filenames and burn its entire read_workspace_file quota on nothing. Exactly 1
-            # dispatch (Builder only), falls back to the classic inject-into-Planner nudge.
+            # (c2) Write dispatch returns a genuinely EMPTY response TWICE in a row (2026-07-24
+            # live case: gpt-oss, 3 separate occurrences in one run) -> one immediate retry is
+            # attempted first (same instructions, fresh dispatch), and only once THAT also
+            # produces nothing does this raise BEFORE ever dispatching PeerReviewer -- confirmed
+            # live that dispatching PeerReviewer against a nonexistent artifact makes it degrade
+            # into guessing wrong filenames and burn its entire read_workspace_file quota on
+            # nothing. Exactly 2 dispatches (Builder, Builder retry), falls back to the classic
+            # inject-into-Planner nudge.
             with tempfile.TemporaryDirectory() as tmpdir_c2:
                 _IN_MEMORY_FS.pop("final_report.md", None)
                 rs = RunState(tmpdir_c2)
@@ -2529,18 +2530,48 @@ def main():
                 msgs = []
 
                 async def _side_effect_c2(name, instructions, role):
-                    return ""  # genuinely empty response, no tool call, nothing narrated
+                    return ""  # genuinely empty response, no tool call, nothing narrated, twice
 
                 dispatch = AsyncMock(side_effect=_side_effect_c2)
                 orig_input = "q"
                 should_retry, new_input = _asyncio.run(run_completion_check(
                     query="q", current_input=orig_input, run_state=rs, notify=msgs.append,
                     dispatch_task=dispatch))
-                assert dispatch.call_count == 1, (
-                    "an empty Write response must raise BEFORE PeerReviewer is ever dispatched",
-                    dispatch.call_args_list)
+                assert dispatch.call_count == 2, (
+                    "an empty Write response must retry once immediately, then raise BEFORE "
+                    "PeerReviewer is ever dispatched", dispatch.call_args_list)
+                assert dispatch.call_args_list[1].args[0].endswith("_retry"), dispatch.call_args_list
                 assert should_retry, msgs
                 assert any("Builder dispatch failed" in m for m in msgs), msgs
+
+            # (c3) Write dispatch returns empty ONCE, then the immediate retry genuinely writes --
+            # the retry must be given a real chance to succeed outright, converging normally
+            # (PeerReviewer dispatched against a real artifact this time) instead of raising just
+            # because the FIRST attempt was empty.
+            with tempfile.TemporaryDirectory() as tmpdir_c3:
+                _IN_MEMORY_FS.pop("final_report.md", None)
+                rs = RunState(tmpdir_c3)
+                run_state_ctx.set(rs)
+                msgs = []
+                write_calls = []
+
+                async def _side_effect_c3(name, instructions, role):
+                    if role == "PeerReviewer":
+                        return "REVIEW: CLEAN\nNo issues found."
+                    write_calls.append(name)
+                    if len(write_calls) == 1:
+                        return ""  # first Write attempt: empty
+                    _IN_MEMORY_FS["final_report.md"] = _CLEAN_REPORT
+                    return "## Result\nWrote report\n---"
+
+                dispatch = AsyncMock(side_effect=_side_effect_c3)
+                should_retry, new_input = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append,
+                    dispatch_task=dispatch))
+                assert not should_retry, (
+                    "a Write dispatch that succeeds on its immediate retry must converge "
+                    "normally, not be treated as a failure", msgs)
+                assert dispatch.call_count == 3, dispatch.call_args_list  # Write, retry-Write, PeerReviewer
 
             # (d) Builder/PeerReviewer not both registered -> falls back to classic
             # inject-into-Planner behavior, dispatch_task never called.
