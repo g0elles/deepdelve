@@ -1066,6 +1066,55 @@ finished — see Pending for what's still open):
   - **Next step**: retest `qwen3:8b` fresh now that the bug is fixed — this candidate is the most
     informative next run precisely because it's the one that surfaced the bug.
 
+- **`qwen3:8b` vLLM retest, 2026-07-24 — DISQUALIFIED, run twice, identical failure signature both
+  times.** The fabrication bug that killed the 2026-07-21 attempt was already fixed (`0852cc4`);
+  this session re-downloaded `Qwen/Qwen3-8B` (bf16, ~16GB) and served it via
+  `~/.venvs/vllm` (vLLM 0.25.1+rocm723) with `--quantization fp8` (dynamic on-the-fly weight
+  quantization — the bf16 checkpoint alone needs ~14.9GB against 15.9GB total VRAM, no room for
+  KV cache; fp8 halves weight memory to ~8.8GB, confirmed working via the ROCm-native
+  `ROCmFP8ScaledMMLinearKernel`, leaving ~4GB for a 16,384-token KV cache).
+  - **Model Evaluation Standard point 1 confirmed via direct curl BEFORE benchmarking, not
+    assumed**: `enable_thinking: false` (passed as a TOP-LEVEL `chat_template_kwargs` field over
+    raw HTTP, not nested under an `extra_body` wrapper — that's an OpenAI Python SDK convention
+    that doesn't apply to a raw request and silently gets ignored, a real mistake caught and
+    corrected mid-session) gives a clean `content: "56"` with zero `<think>` leakage and
+    `reasoning: null`. A separate direct tool-call curl test confirmed clean, correctly-shaped
+    `tool_calls` output with the `hermes` parser. Both checks pass.
+  - **Full single-model benchmark run TWICE** against the exact same two-facet stress-test query
+    used for this session's gpt-oss confirmation ("top 5 heuristic algorithms for retail sales
+    forecasting" + "Colombia holiday consumer spending culture"). **Both runs: `final_report.md`
+    was never written, `Retry budget exhausted (thin_coverage)`.** Both runs hit the IDENTICAL
+    completion-check attempt sequence (`thin_coverage` ×2 → `untracked_delegation` → `thin_coverage`
+    ×4) — a remarkably consistent, reproducible failure signature, not a fluke. Root behavior in
+    both: once `thin_coverage` fires, the Planner repeats the SAME narrated summary text verbatim
+    across multiple consecutive completion-check attempts instead of genuinely delegating more
+    research or stopping to let a writer role take over — the exact same non-convergence pattern
+    already documented for `qwen3:4b` and this candidate's own original (Ollama, think-polluted)
+    verdict, now confirmed on a clean backend with verified nothink mode and correct tool-calling,
+    closing off the "maybe it was Ollama's serving bug" possibility this candidate previously had.
+  - **Separate, real finding along the way**: in both runs, the model repeatedly called the
+    MCP-provided `brave_web_search` tool with an invalid `goggles` parameter (a real, optional
+    Brave Search re-ranking feature — the model invented a URL-shaped value for it, e.g.
+    `["https://www.colombia.com"]`, which the Brave API rejects with a 422), hitting this
+    project's "maximum consecutive function call errors" cap 3+ times per run. Not a hallucinated
+    tool name (as first suspected) — `brave_web_search` is a real, correctly-configured MCP tool
+    (`@brave/brave-search-mcp-server`, scoped to `WebSearcher`); the model just doesn't reliably
+    infer "leave this optional parameter unset" the way `gpt-oss` does. **Fixed same session**:
+    `WEB_SEARCHER_INSTRUCTIONS` (`src/prompts.py`) now explicitly states `goggles` is optional and
+    warns against inventing a value for it — a low-risk prompt-level mitigation that should help
+    any model using this tool, not just this candidate. Not yet re-tested against `qwen3:8b`
+    specifically (the candidate is disqualified regardless, so no further live-testing planned for
+    it) or any other model.
+  - **Verdict meets the Model Evaluation Standard's point 4** (a discard claim needs more than one
+    run): two clean vLLM runs here, corroborated by two further independent occurrences of the
+    identical non-convergence signature under different conditions (the original Ollama-era
+    `qwen3:8b` verdict, and `qwen3:4b` separately) — four total occurrences of the same failure
+    class across different backends/models.
+  - **Cleanup**: vLLM server shut down cleanly (SIGTERM, confirmed zero orphan `EngineCore`
+    process, VRAM returned to ~1.3GB baseline). Checkpoint deleted (~16GB freed,
+    `LLvm Models/hub/models--Qwen--Qwen3-8B`). `~/.deepdelve/config.yaml` restored to
+    `http://localhost:11434/v1` / `deepdelve-gpt-oss:latest`.
+
 - **MiniCPM5-1B evaluated as both a paired specialist AND a full single-model replacement,
   2026-07-20/21 — DISQUALIFIED in both forms, fully closed, see the single-model entry near the
   end of this bullet for the final, clean, decisive result.**
@@ -2680,8 +2729,9 @@ tried, twice, not merely proposed):
   vLLM, MiniCPM3-4B INCONCLUSIVE on a real infra hang, MiniCPM4-MCP not yet viable) are all fully
   concluded — see `History`'s "Model bake-off & backend investigation log" for the complete
   evidence trail. **Still genuinely open**:
-  - `qwen3:8b` retest — the fabrication bug that killed its last run is now fixed (commit
-    `0852cc4`); this is the most informative next run since it's the one that surfaced the bug.
+  - `qwen3:8b` retest — DONE 2026-07-24, DISQUALIFIED, same failure class as before, now
+    confirmed clean of every prior excuse. Full detail in the "qwen3:8b vLLM retest" History
+    entry below; see Completed/History for the run-by-run trace.
   - `qwen3.6`/`Gemma 4 12B`/`llama3.2:3b` and the rest of the 11-candidate plan — not yet attempted.
   - The Mistral family (`mistral-nemo:12b`, `devstral:24b`, `mistral:7b-instruct-v0.3`) stays
     blocked until a DeepDelve-side fix makes `_get_default_options()`'s `chat_template_kwargs`

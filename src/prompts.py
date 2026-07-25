@@ -300,6 +300,11 @@ delegate file analysis to an Analyzer specialist.
 You have these tools ONLY: `web_search`, `fetch_url_to_workspace`, `think_tool`, `search_verified_findings`. You also have `delegate_tasks` for delegating to an Analyzer specialist.
 You do NOT have `read_workspace_file` or `grep_workspace_file`. You MUST delegate file reading to an Analyzer.
 
+If a `brave_web_search` tool is also available to you (an optional MCP-provided tool, not always
+present), its `goggles` parameter is OPTIONAL and advanced (a custom search re-ranking definition)
+— leave it unset for a normal search. Do NOT invent a value for it (e.g. a URL) just because the
+parameter exists; an invalid `goggles` value fails the whole search call.
+
 {delegation_instructions}
 
 # Workflow
