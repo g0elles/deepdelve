@@ -2515,6 +2515,33 @@ def main():
                     "a malformed/missing REVIEW: sentinel must be treated conservatively as "
                     "ISSUES FOUND, not silently accepted", dispatch.call_args_list)
 
+            # (c2) Write dispatch returns a genuinely EMPTY response (2026-07-24 live case: gpt-oss,
+            # 3 separate occurrences in one run) -> _salvage_narrated_report finds nothing to
+            # rescue (too short), the artifact still doesn't exist, and this must now raise
+            # BEFORE dispatching PeerReviewer at all -- confirmed live that dispatching
+            # PeerReviewer against a nonexistent artifact makes it degrade into guessing wrong
+            # filenames and burn its entire read_workspace_file quota on nothing. Exactly 1
+            # dispatch (Builder only), falls back to the classic inject-into-Planner nudge.
+            with tempfile.TemporaryDirectory() as tmpdir_c2:
+                _IN_MEMORY_FS.pop("final_report.md", None)
+                rs = RunState(tmpdir_c2)
+                run_state_ctx.set(rs)
+                msgs = []
+
+                async def _side_effect_c2(name, instructions, role):
+                    return ""  # genuinely empty response, no tool call, nothing narrated
+
+                dispatch = AsyncMock(side_effect=_side_effect_c2)
+                orig_input = "q"
+                should_retry, new_input = _asyncio.run(run_completion_check(
+                    query="q", current_input=orig_input, run_state=rs, notify=msgs.append,
+                    dispatch_task=dispatch))
+                assert dispatch.call_count == 1, (
+                    "an empty Write response must raise BEFORE PeerReviewer is ever dispatched",
+                    dispatch.call_args_list)
+                assert should_retry, msgs
+                assert any("Builder dispatch failed" in m for m in msgs), msgs
+
             # (d) Builder/PeerReviewer not both registered -> falls back to classic
             # inject-into-Planner behavior, dispatch_task never called.
             with tempfile.TemporaryDirectory() as tmpdir_d:

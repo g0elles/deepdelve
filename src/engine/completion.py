@@ -1202,6 +1202,27 @@ async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artif
                 f"instead of calling `write_workspace_file` — auto-recovered its own content as the "
                 f"artifact (flagged unverified) instead of retrying blind."
             )
+        elif get_workspace_file_content(req_artifact) is None:
+            # Confirmed live 2026-07-24 (gpt-oss, 3 separate occurrences in one run): a writer
+            # dispatch can return a genuinely EMPTY response -- zero tool calls, zero narrated
+            # text, nothing for _salvage_narrated_report to work with either (it also declines
+            # short text under 200 chars, e.g. a narrated one-line status update). This used to
+            # fall through to dispatching PeerReviewer anyway, against an artifact that flatly
+            # doesn't exist -- PeerReviewer then has no filename to review, and confirmed live it
+            # degrades into guessing wrong paths (burned its entire read_workspace_file quota on
+            # nonexistent filenames before giving up, in the exact run that surfaced this).
+            # Raising here treats "the write produced nothing usable at all" as the dispatch
+            # failure it actually is, per this function's own documented contract -- the caller's
+            # normal retry loop gets a fresh attempt next time instead of an entire PeerReviewer
+            # dispatch being wasted on a file that was never written. Uses
+            # get_workspace_file_content (backend-agnostic: disk or in-memory), NOT the
+            # os.path.exists check above, which is disk-only and always false for the in-memory
+            # workspace backend regardless of real content -- that's fine for the salvage
+            # decision (harmless extra attempt), but would falsely raise here on every in-memory
+            # write that already succeeded.
+            raise RuntimeError(
+                f"{writer_role} dispatch produced no '{req_artifact}' and nothing narrated to salvage"
+            )
 
     # Snapshot read_workspace_file's usage count BEFORE dispatching PeerReviewer, so a fabricated
     # "REVIEW: CLEAN" that never actually opened the file can be caught below (see is_clean gate).
