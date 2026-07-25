@@ -1115,6 +1115,72 @@ finished — see Pending for what's still open):
     `LLvm Models/hub/models--Qwen--Qwen3-8B`). `~/.deepdelve/config.yaml` restored to
     `http://localhost:11434/v1` / `deepdelve-gpt-oss:latest`.
 
+- **`InternScience/Agents-A1-4B`, 2026-07-24 — DISQUALIFIED, run twice (one `--depth quick`, one
+  `--depth standard`), same citation-fabrication signature both times.** A ~4-5B `Qwen3_5-` based
+  multimodal/agentic model, tested via Ollama after vLLM was abandoned for it (see below).
+  - **vLLM abandoned first — a reproducible, fixed-size backend bug, not a config problem.** Three
+    launch attempts (`--max-model-len` 65536, 32768, and 16384 — the last also with `--enforce-eager`
+    and `--max-num-batched-tokens 2048` to rule out CUDA-graph capture and chunked-prefill batch
+    size) all failed identically at engine-init with `torch.OutOfMemoryError: ... Tried to allocate
+    256.00 GiB`. The exact same 256.00 GiB figure at three different context/batch configs rules out
+    KV-cache sizing (which would scale with `--max-model-len`) as the cause — most likely a
+    fixed-size dummy input in this model's multimodal vision-encoder profiling pass hitting a
+    ROCm-specific bug in vLLM 0.25.1. Same failure class as gpt-oss-on-vLLM's earlier permanent
+    abandonment (see the 2026-07-23 section above): a serving-backend/architecture incompatibility,
+    not something fixable by flag-tuning. Not investigated further (would need a vLLM issue search
+    or newer version) — deprioritized per explicit user instruction to fall back to Ollama if vLLM
+    kept causing problems. Cleanup: SIGTERM each time, confirmed zero orphan processes, VRAM back to
+    baseline; checkpoint deleted (8.5GB).
+  - **Switched to Ollama — official GGUF published directly by InternScience** (not a third-party
+    quant): `InternScience/Agents-A1-4B-Q8_0-GGUF` (~5.2GB, includes an mmproj vision file), pulled
+    via `ollama pull hf.co/InternScience/Agents-A1-4B-Q8_0-GGUF:Q8_0`.
+  - **Model Evaluation Standard point 1, confirmed via direct curl against the real
+    `/v1/chat/completions` endpoint** (not just Ollama's native `/api/chat`): plain completion clean
+    (`content: "56"`); tool-calling clean (correctly-shaped `tool_calls`, empty `content`).
+    **Nothink mode NOT honored** — neither `chat_template_kwargs.enable_thinking: false` nor
+    Ollama's own `think: false` suppressed reasoning; the model always emits a full step-by-step
+    reasoning chain (~200-500 tokens) regardless of the request. Unlike the old Qwen3
+    think-mode-passthrough bug, this did NOT pollute `.content` — reasoning stayed correctly isolated
+    in its own `.reasoning` field the whole time, so this is a latency/token-cost caveat, not a
+    correctness break. Caveat this verdict with a † marker for that reason.
+  - **Context maximized per explicit user instruction ("set it up with the max context we can")**:
+    tested 131072 (fits, 11.6/15.9GB), then the model's native max 262144 (fits but razor-thin,
+    16.0/15.92GiB, under 1GB free — too risky for real generation-time activation spikes), settled
+    on **200000** (13.95/15.9GB, ~3.1GB free headroom). Derived tag `deepdelve-agents-a1-4b`
+    created (`PARAMETER num_ctx 200000`, same pattern as every other candidate).
+  - **Full benchmark run TWICE against the quantum-entanglement baseline query** ("What is quantum
+    entanglement and how is it used in quantum computing?", the same straightforward query used to
+    confirm gpt-oss's clean baseline earlier this session). Run 1 (`--depth quick`) hit `--depth
+    quick`'s tight `max_completion_check_attempts: 2` cap before a fair shot was given — confounded,
+    not a clean verdict on its own, but its single completion-check attempt already showed the
+    fabrication pattern below (`unverified_entry_sources:https://en.wikipedia.org/wiki/Bell`). Run 2
+    (`--depth standard`, full 8-attempt budget) is the clean, decisive result:
+    `what_is_quantum_entanglement_and_how_is_it_used_in_20260724_230427`, 2656s, 13 sources fetched,
+    0/12 web-search failures (research itself works fine, tool-calling is reliable in practice, not
+    just in the isolated smoke test).
+  - **Root cause: `FindingsWriter` repeatedly fabricates citations to real-sounding but unfetched
+    Wikipedia URLs from its own training knowledge, and `PeerReviewer` approves the rewrite anyway.**
+    Completion-check attempts 3 and 4 both failed with the IDENTICAL `unverified_entry_sources`
+    problem, citing the exact same URLs (`en.wikipedia.org/wiki/Bell` ×2, `en.wikipedia.org/wiki/Shor`)
+    both times — the model regenerates the same fabricated citation across independent rewrite
+    dispatches. `ReviewFix_attempt3` and `_attempt4` both logged "PeerReviewer found no issues" on
+    the SAME ungrounded content — PeerReviewer isn't catching this specific failure mode; only the
+    separate grounding check (`real_grounding_problem`'s `unverified_entry_sources`) does. The run
+    correctly terminated via this project's own consecutive-same-problem escalation (2 identical
+    failures in a row → stop wasting budget) rather than burning through all 8 attempts blindly —
+    working as designed, not a bug.
+  - **Meets the Model Evaluation Standard's point 4** (a discard claim needs more than one run): two
+    independent runs (quick-depth and standard-depth), both citing the exact same fabricated Bell
+    Wikipedia URL — not a single-run fluke.
+  - **Distinct failure mode from the other disqualified candidates** — not the `thin_coverage`
+    Planner non-convergence pattern seen in `qwen3:4b`/`qwen3:8b`; closer to the fine-tuned
+    `qwen3:4b` GRPO candidate's citation-fabrication failure mode (README's model table), but here
+    it resists correction across multiple write-review-fix cycles even with PeerReviewer's approval,
+    where the fine-tune's version was a partial, improving-but-not-fully-closed gap.
+  - `~/.deepdelve/config.yaml` left pointed at `deepdelve-agents-a1-4b:latest` pending the next
+    session's decision on whether to keep testing or revert to the gpt-oss baseline (backup:
+    `config.yaml.bak_pre_agentsA1_4b_ollama_20260724`).
+
 - **MiniCPM5-1B evaluated as both a paired specialist AND a full single-model replacement,
   2026-07-20/21 — DISQUALIFIED in both forms, fully closed, see the single-model entry near the
   end of this bullet for the final, clean, decisive result.**
