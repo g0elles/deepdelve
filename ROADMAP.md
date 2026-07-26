@@ -181,6 +181,15 @@ flagged evidence out before the generator sees it rather than annotate-and-hope.
   this session — both real, well-scoped future directions, written up in Pending below rather than
   folded into this fix's diff.
 
+**Live-confirmed same day, on a fresh run** (CRISPR-Cas9 mechanisms + 1929 Wall Street Crash,
+`--depth standard`): attempt 1 flagged a fabricated `blinkist.com` citation via
+`findings_ungrounded` — and, unlike the pre-fix `insidetx.com` run (a 7-attempt loop on the exact
+same bug), it never recurred in either `findings.md` or `final_report.md` (confirmed by direct
+grep: zero occurrences in both). FindingsWriter converged normally on the next attempt instead of
+looping. The run's eventual outcome (`report_underuses_findings`, then `max_run_minutes` mid-retry)
+was a separate, pre-existing, correctly-handled failure mode — the check fired accurately, the run
+just ran out of wall-clock budget incorporating more sources — not a regression or a new bug.
+
 ### Findings from live testing (informational, not yet acted on)
 
 
