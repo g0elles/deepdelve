@@ -1492,3 +1492,154 @@ Deployment Trade-offs" — Sharma (Northeastern), Mehta (USC), arXiv:2510.03847
    **Verdict for all three: reviewed and not adopted** — real, credible systems solving a
    different, heavier problem than the one `rag_cache` was deliberately scoped narrow to solve.
    Recorded here so a future session doesn't re-propose the same three repos without this context.
+
+## 9. Is DeepDelve's verification architecture novel, or documented prior art? (2026-07-26)
+
+**Why this exists**: §7 already asked and answered a narrower, more defensive question ("is
+DeepDelve's verification layer more elaborate than 5 specific comparable projects") and landed on a
+carefully bounded claim. This section asks the sharper question directly: has *anyone* — industry
+project or academic paper — already built the specific combination of things DeepDelve's
+verification layer does, motivated by the same problem (local, sub-30B models doing open-ended
+research synthesis, with no test-suite-style oracle available)? Prompted by the user noticing that
+most public agent projects converge on `SKILL.md`-style prompt/playbook files rather than a real
+structural verification pipeline, and wanting to know whether DeepDelve has drifted into a genuinely
+under-documented approach worth writing up as methodology, or is quietly reinventing something that
+already has a name. Researched via a dedicated web-research pass (WebSearch/WebFetch against primary
+sources — repo READMEs, papers, Anthropic's own engineering writeup — not search-snippet skimming).
+
+**DeepDelve's architecture, restated precisely for this comparison** (current as of this session,
+`src/engine/completion.py`/`src/engine/orchestrator.py`):
+- A priority-ordered pipeline of dozens of independent, pure-function structural checks
+  (`COMPLETION_CHECKS` then `GROUNDING_CHECKS`), each targeting ONE specific, previously
+  live-observed local-model failure mode against ground-truth run state, not an LLM judge — plus a
+  starvation guard so a low-priority check gets a turn if a higher-priority one keeps re-firing
+  without progress.
+- A "Write → Review → Fix" dispatch loop: writer roles (FindingsWriter/Builder) draft in a FRESH
+  context with zero shared history with the Planner; a separate PeerReviewer (also fresh context)
+  reviews; a corrective pass runs if flagged.
+- Deterministic, non-LLM salvage/fallback paths for known LLM failure shapes (e.g. assembling
+  `findings.md` directly from already-verified structured data when a writer returns nothing usable
+  twice in a row).
+- Small non-generative specialist models replacing LLM judgment wherever possible: a frozen
+  sentence-embedding + logistic-regression classifier for hallucinated agent-ID routing, an NLI
+  model for grounding, a reranker for retrieval.
+- A verdict-matrix regression test pinning every check's exact recorded problem name + a
+  distinctive phrase from its corrective message — testing the verification LOGIC itself, not just
+  agent output, specifically because two checks' branches once silently merged (an `elif` bug) and
+  only this caught it.
+
+### What already exists elsewhere (each piece has real, found prior art)
+
+- **Deterministic verification layers over agent output exist, but concentrated in domains with a
+  natural pass/fail oracle.** A Claude Code hook-based tool ("Vector"/"Checkout," via a ZenML LLMOps
+  case study, [zenml.io/llmops-database/deterministic-verification-layer-for-ai-coding-agents](https://www.zenml.io/llmops-database/deterministic-verification-layer-for-ai-coding-agents))
+  verifies coding-agent output against predefined test criteria and retries on failure — the
+  closest real match to "treat agent output like a CI/linter gate" found anywhere. But code has
+  tests as a natural oracle; open-ended research synthesis doesn't, which is exactly why DeepDelve
+  had to build bespoke checks (fetched-URL cross-referencing, task-drop detection, PeerReviewer
+  lying-about-having-verified detection) instead of reusing a test suite.
+- **NLI-based citation/grounding verification is a real, published technique**, not a DeepDelve
+  invention: VeriCite ("Towards Reliable Citations in RAG via Rigorous Verification," SIGIR-AP 2025,
+  [dl.acm.org/doi/10.1145/3767695.3769505](https://dl.acm.org/doi/10.1145/3767695.3769505)) retains
+  only citation-claim pairs above an NLI entailment threshold — worth comparing DeepDelve's own NLI
+  grounding-check threshold against VeriCite's published (θ=0.8) calibration methodology.
+- **VERIMAP** ("Verification-Aware Planning for Multi-Agent Systems," EACL 2026,
+  [arxiv.org/abs/2510.17109](https://arxiv.org/abs/2510.17109)) is the closest academic analog to a
+  structural check pipeline: a planner encodes Python + natural-language verification functions per
+  subtask, executed by a separate Verifier module before a Coordinator proceeds. Task-general (not
+  research/citation-specific), doesn't include DeepDelve's small-classifier-replaces-judgment angle
+  or the fresh-context Write→Review→Fix loop, but its DAG-shaped "one explicit verification function
+  per subtask" framing is worth adopting to formalize DeepDelve's own problem-routing tuples more
+  legibly.
+- **Independent-context critic > same-context self-critique is an established, literature-backed
+  distinction**, not just intuition: Reflexion (Shinn et al., NeurIPS 2023,
+  [openreview.net/pdf?id=vAElhFcKW6](https://openreview.net/pdf?id=vAElhFcKW6)) and Self-Refine —
+  the standard "self-correction" pattern most frameworks default to — use SAME-context self-critique
+  (one model, one context, playing generator/critic/refiner). Current literature explicitly states
+  "a growing body of evidence indicates that intrinsic self-correction without external signals
+  remains fundamentally unreliable — motivating the use of an independent critic rather than
+  self-evaluation" ([zylos.ai/research/2026-05-12-agent-self-correction-reflexion-to-prm](https://zylos.ai/research/2026-05-12-agent-self-correction-reflexion-to-prm)).
+  DeepDelve's fresh-context PeerReviewer (no shared history with the Planner, specifically to avoid
+  re-conditioning on a prior wrong draft and to bound context growth) sits on the literature-backed
+  correct side of this distinction — a legitimate citation to justify the design choice in any
+  future writeup, not a novel insight in itself.
+- **Small frozen classifiers replacing LLM judgment for a decision is precedented** (RouteLLM-style
+  logistic-regression-over-embeddings routing between models) — found only as a secondary-source
+  reference, not independently verified against RouteLLM's own primary source, and for model
+  ROUTING specifically, not DeepDelve's exact use (catching a hallucinated agent-ID before dispatch).
+- **A separated, dedicated citation-verification pipeline stage is precedented in a major published
+  system**: Anthropic's own "How we built our multi-agent research system"
+  ([anthropic.com/engineering/multi-agent-research-system](https://www.anthropic.com/engineering/multi-agent-research-system))
+  uses a dedicated CitationAgent as a late-pipeline step — but it stays LLM-based throughout (no
+  deterministic non-LLM fallback), and the system's own reliability strategy otherwise leans on
+  generic "retry logic and regular checkpoints" plus LLM-as-judge evaluation, not a taxonomy of
+  dozens of named failure-mode checks.
+
+### What was checked and found to NOT have this (comparative survey, primary sources read)
+
+- **GPT Researcher** (assafelovic/gpt-researcher): quality control is "breadth over depth" (scrape
+  20+ sources, pick the most frequent claim) — no dedicated critic agent, no structural validation,
+  no non-LLM fallback documented.
+- **Stanford STORM**: "verification" is really diversity-of-perspective during research (simulated
+  multi-perspective conversations), not post-hoc structural checking of the output. No fresh-context
+  reviewer/fix loop, no non-LLM checks.
+- **dzhng/deep-research**: intentionally under 500 LOC, breadth/depth iterative refinement, no
+  verification layer beyond re-querying.
+- **Tongyi-DeepResearch**: reliability addressed almost entirely through training (GRPO RL,
+  agentic pre-training on synthetic trajectories) rather than an inference-time structural
+  verification layer — "verification" in its own materials refers to validating training policies
+  in a simulated environment, a training-time concept, not a runtime completion-check pipeline.
+- CrewAI/AutoGen/CAMEL/LangGraph agentic-RAG were checked only via search snippets, not primary
+  docs — treat "no structural layer there either" as plausible but genuinely unconfirmed, not a
+  sourced claim. A future writeup needs to verify these directly before making comparative claims.
+  Perplexity's and OpenAI's own "deep research" system writeups were not investigated at all this
+  pass.
+
+### Claude Skills (`SKILL.md`) — confirmed to be solving a different problem, not a lesser version of this one
+
+Skills package procedural/institutional knowledge ("how to do X our way") to supplement training-data
+gaps — not a reliability or verification mechanism
+([claude.com/skills](https://claude.com/skills)). Independent commentary found explicitly frames
+Skills as having their own reliability problems distinct from what they promise: activation failure
+(the model may not trigger the skill at all) and execution failure ("individual steps inside it,
+especially late-stage verification, lose the same competition [for attention]" — Medium, ["Claude
+Skills Have Two Reliability Problems, Not
+One"](https://medium.com/@marc.bara.iniesta/claude-skills-have-two-reliability-problems-not-one-299401842ca8)).
+This directly confirms the user's original observation: Skills are playbook/prompt documents betting
+on the model reading and following instructions correctly under load — the exact category of fix
+this project's own history (`ARCHITECTURE.md`, `ROADMAP.md`'s repeated "prompt-only fix didn't hold"
+entries) has independently found doesn't hold for local models, approached from a completely
+different angle and confirmed by outside sources rather than this project's own experience alone.
+
+### What no source found combines
+
+Dozens of independently-named, priority-ordered structural checks, each targeting one specific
+empirically-catalogued (not generically-taxonomized) local-model failure mode + a starvation guard
+for that priority queue + a verdict-matrix regression test pinning the verification LOGIC itself (not
+just agent output) + all of it consistently motivated by local sub-30B-model unreliability
+specifically (every framework/paper found assumes a frontier-class generator, a different reliability
+regime entirely) — no single source, industry or academic, was found combining all of these.
+
+### Calibrated verdict
+
+Same posture §7 already established and reinforced here with sharper evidence: **not novel at the
+level of individual components** (deterministic checks, independent critics, NLI grounding,
+classifier-based routing, and a separated citation-verification stage all independently predate
+DeepDelve, each with a real citable source above) — but the **specific combination, granularity, and
+depth** (dozens of named checks + starvation guard + a regression test over the verification logic
+itself + doing all of it specifically for the local-model regime where no other project or paper
+found seems to be operating) has no found precedent. The honest framing for any future writeup:
+"a disciplined, unusually deep combination of known techniques applied to an underserved regime,"
+not "invented verification for LLM agents from scratch" — same overclaim-avoidance discipline §7
+already modeled, now applied to a broader and better-evidenced question.
+
+**Worth adopting**, flagged by this pass:
+- VERIMAP's DAG-based verification-function-per-subtask framing, to formalize the completion-check
+  pipeline's problem-routing tuples more legibly.
+- VeriCite's published entailment-threshold methodology, to compare against (and possibly re-justify)
+  the NLI grounding check's own threshold.
+- The Reflexion/independent-critic literature as a real citation for the PeerReviewer design choice.
+
+**Explicit gaps, not yet closed**: CrewAI/AutoGen/CAMEL/LangGraph primary docs unread (snippets
+only); Perplexity's and OpenAI's own deep-research writeups entirely unchecked. Close these before
+any comparative claim against those specific systems ships in a publishable writeup.
