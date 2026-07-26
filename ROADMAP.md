@@ -88,6 +88,58 @@ concluded verdict, which is the actual complaint. Going forward, a candidate is 
 
 ## History
 
+### 2026-07-26: Planner redelegation-loop fix + two new production bugs found by live testing
+
+Addressed 3 of the "still open" items from the 2026-07-24 session (excluded: the deferred
+Ternary-Bonsai-27B/Vulkan fork work). All committed on `main`:
+
+- **`999a254`** — Root-caused why the Planner renames the same research angle across retries
+  instead of redispatching under the same `task_name` (e.g. `background_heuristic_algorithms` →
+  `_refined` → `_final`; recurred as 43 calls for one angle under `--resume-run`). Cause:
+  `check_thin_coverage`/`check_uneven_task_investment`'s own directives said "redelegate ...
+  phrased differently," which a model conflates with inventing a new `task_name` — nothing
+  anywhere said otherwise. Fixed the directive wording, and added a non-blocking
+  `difflib`-based similarity nudge in `delegate_tasks` (`_looks_like_renamed_task`,
+  `src/engine/orchestrator.py`) that flags a likely rename against the run's own prior dispatches.
+  Live-confirmed firing 9/20 then 4/6 real `delegate_tasks` calls across two separate live runs —
+  reduces but doesn't eliminate renaming (a prompt nudge alone can't guarantee compliance).
+  Also live-confirmed (same runs) that `check_untracked_delegation`'s once-per-run cap (shipped
+  2026-07-24) holds under real pressure, and that `check_report_underuses_findings` fires live for
+  the first time ever (previously unit-tested only).
+- **`1ed5de7`** — A live smoke test hit a more severe case of the empty-response problem than the
+  2026-07-24 fix assumed: FindingsWriter produced nothing usable on BOTH the original dispatch AND
+  its immediate retry, six consecutive completion-check attempts in one run, exhausting the budget
+  with `findings.md` never written despite 61 real findings existing the whole time. Added a
+  deterministic (non-LLM) salvage path: `_dispatch_writer_review_fix` now accepts a
+  `deterministic_fallback`, wired only from the FindingsWriter call site as
+  `_build_findings_source_material`'s own real evidence text — written directly as `findings.md`
+  when both attempts fail, instead of losing the cycle. Found and fixed a second, unrelated bug
+  while verifying this against the real failing run's actual data (not synthetic tests):
+  `extract_cited_urls` (`src/utils/grounding.py`) didn't stop at a trailing backtick, so the common
+  `` `URL` `` inline-code citation style broke every fetched-URL match — would have defeated the
+  new fallback on the exact content it exists to rescue.
+- **`554cfc2`** — Caught by actually reading a live run's `final_report.md` content (not just
+  confirming completion checks fired mechanically, per the standing project practice): a balanced
+  2-facet query (green tea + Roman Empire, both genuinely "covered" per `RunState.coverage()`)
+  produced a `final_report.md` that was 100% about one facet — the other vanished entirely at the
+  FindingsWriter consolidation stage, and NOTHING caught it (`check_thin_coverage` saw balanced
+  research volume; `check_report_underuses_findings` compares the report against `findings.md`,
+  which had already lost the data). New `check_findings_underuses_evidence`
+  (`src/engine/completion.py`, right after `check_stale_findings`) compares `findings.md`'s cited
+  URLs against `RunState`'s real per-task research record and fires when a covered task has ZERO of
+  its real URLs represented. Replayed directly against the real failing run's data to confirm it
+  would have caught the omission. Not yet observed firing organically on a fresh live run.
+- **`34cb72c`** — Added a 6th GRPO reward-function dimension,
+  `findings_underuses_evidence_response_reward` (`finetune/reward.py`), mirroring the check above,
+  for if/when fine-tuning resumes. Inert prep only (self-tested, not wired into
+  `train_combined_grpo.py`'s training loop, no training launched) — that would need per-task URL
+  grouping threaded through the synthetic training-data generation pipeline too, a separate,
+  bigger change.
+
+**Standing lesson reinforced this session**: confirming a completion-check fired via
+`_run_state.json` proves the mechanism ran, not that the report is actually good — read the real
+artifact content too before calling a run's outcome confirmed.
+
 ### Findings from live testing (informational, not yet acted on)
 
 
