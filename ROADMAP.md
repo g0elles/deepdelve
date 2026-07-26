@@ -190,6 +190,35 @@ looping. The run's eventual outcome (`report_underuses_findings`, then `max_run_
 was a separate, pre-existing, correctly-handled failure mode — the check fired accurately, the run
 just ran out of wall-clock budget incorporating more sources — not a regression or a new bug.
 
+**Later the same day** — went through the two research-flagged Pending ideas above. The
+VERIMAP-style per-subtask verification-function reframing stays deferred as a real future
+architectural direction (unchanged, still in Pending). The NLI-based evidence filtering item
+turned out to be based on an incorrect assumption, caught by re-reading the actual dispatch code
+instead of trusting the earlier note: `_run_single_task` (`src/engine/orchestrator.py`) already
+runs `real_grounding_problem` — the FULL grounding pipeline, including NLI contradiction detection
+via `nli_unsupported_problem` — for Tier-2 Searcher dispatches. The real, narrower gap was that
+Tier-3 Analyzer-leaf dispatches (DocumentAnalyzer/DataAnalyzer) never got this at all — only a
+narrow reconstructed-URL check added 2026-07-19 for one specific bug, with no stub detection, no
+quote-fidelity, no content-level check, no NLI. Analyzer findings (reading and summarizing a
+single fetched document — exactly the shape most likely to misreport a figure or misattribute a
+stat) had materially weaker grounding coverage than Searcher findings, for no principled reason.
+
+**Fixed**: added the same `real_grounding_problem(final_text)` call already proven via the
+Searcher-tier check to the Analyzer-leaf branch too (`src/engine/orchestrator.py`), alongside
+(not replacing) the existing reconstructed-URL check — the two catch genuinely different things
+(reconstructed-URL catches "cited a different-but-real URL, not the one you were given";
+`real_grounding_problem` catches "URL matches, but the claim doesn't say what the source says").
+Both append to the same `verification_warnings` accumulator using the identical
+`[SYSTEM VERIFICATION WARNING` marker, which `_is_citable_finding` already excludes structurally
+(this session's earlier fix) — no changes needed to the exclusion mechanism itself. Zero new
+machinery: `real_grounding_problem`/`nli_unsupported_problem`/the lazy CPU-only NLI singleton all
+already existed and were already proven in production via the Searcher-tier check. Ladder rung 2
+(reuse, don't rebuild) — the original Pending note's "needs new claim/source-window extraction"
+premise was simply wrong. Tests pass (no new unit test added, consistent with the reconstructed-URL
+check's own precedent of relying on live verification for dispatch-loop wiring plus
+`real_grounding_problem`'s own already-thorough existing test coverage for the logic itself), ruff
+clean.
+
 ### Findings from live testing (informational, not yet acted on)
 
 
@@ -3050,23 +3079,6 @@ tried, twice, not merely proposed):
     prioritization first.
 
 
-- **Structural NLI-based evidence filtering at findings-assembly time** (researched 2026-07-26,
-  `RESEARCH.md` §9/§10, not yet scoped into a phase). `_build_findings_source_material`
-  (`src/engine/completion.py`) now structurally excludes URL-mismatch-flagged findings from
-  FindingsWriter's evidence (see "Completed"/History, `_is_citable_finding`) — the same
-  "filter flagged evidence out before the generator sees it" principle CRAG/Self-RAG use
-  (arXiv:2401.15884, arXiv:2310.11511), applied so far only to citation-URL mismatches. VeriCite
-  (arXiv:2510.17853's sibling entailment-threshold work, referenced in `RESEARCH.md` §9) suggests
-  the same principle could extend to NLI-contradicted claims, not just mismatched URLs — but
-  DeepDelve's existing `nli_unsupported_problem` (`src/utils/grounding.py`) is built around a
-  REPORT string (`_grounded_claim_pairs`, per-line prose parsing), not individual findings'
-  `summary` text, so there is no existing claim/source-window extraction path for a per-finding
-  version. Real, separate work: building that extraction against `run_state.data["findings"]`
-  before this can be attempted. Not a like-for-like adoption of VeriCite's own threshold value
-  either — DeepDelve's check deliberately flags on contradiction only, never on low-but-nonzero
-  entailment, to avoid over-flagging legitimate paraphrase (already live-validated design, see
-  `nli_unsupported_problem`'s own docstring) — any per-finding version should keep that same
-  contradiction-only philosophy, not import VeriCite's continuous threshold wholesale.
 
 - **VERIMAP-style per-subtask verification functions** (researched 2026-07-26, `RESEARCH.md` §9,
   not yet scoped into a phase). VERIMAP (EACL 2026, arXiv:2510.17109) has a planner encode an

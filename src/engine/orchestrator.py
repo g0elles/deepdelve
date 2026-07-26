@@ -1094,6 +1094,28 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                                 f"findings.md.]"
                             )
 
+                    # A correct citation URL doesn't mean the CLAIM is right -- an Analyzer reads
+                    # one document and can still misreport a figure, misattribute a stat, or
+                    # otherwise contradict what its own source actually says. Check A above already
+                    # runs the full real_grounding_problem pipeline (stub detection, quote-fidelity,
+                    # content-level term-overlap, and NLI contradiction detection) for the Searcher
+                    # tier -- this branch had none of that, only the reconstructed-URL check above,
+                    # since it was added later (2026-07-19) narrowly scoped to the one bug that
+                    # motivated it. 2026-07-26 ROADMAP/RESEARCH.md review (VeriCite comparison)
+                    # surfaced this as a real, unprincipled coverage gap between the two tiers, not
+                    # a missing feature needing new claim-extraction machinery -- real_grounding_problem
+                    # already exists, is already proven via Check A, and works unchanged against an
+                    # Analyzer's own final_text the same way it does a Searcher's.
+                    from utils.grounding import real_grounding_problem
+                    problem = await real_grounding_problem(final_text)
+                    if problem and problem != "no_urls":
+                        verification_warnings += (
+                            f"\n\n[SYSTEM VERIFICATION WARNING: this summary attributes a claim to "
+                            f"a source that does not match anything actually fetched this run, or to "
+                            f"something that isn't a real URL at all ({problem}). Do not treat the "
+                            f"associated claim as sourced when writing findings.md.]"
+                        )
+
                 final_text += verification_warnings
 
                 # Populate the structured findings store (previously dead code — RunState.add_finding
