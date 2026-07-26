@@ -154,6 +154,12 @@ settings:
     min_tasks: 2           # need at least this many covered tasks to compare
     min_total_sources: 4   # need at least this many real sources total -- guards against flagging
                             # a small/simple query where every task naturally has 1-2 sources
+  # check_task_verification_flagged (2026-07-26, VERIMAP-inspired, RESEARCH.md Sec.9): a
+  # structural per-task verification ledger (_update_task_verification, engine/completion.py) --
+  # fires when a delegated task's EVERY finding was excluded by _is_citable_finding (fabricated,
+  # off-topic, or contradicted), naming that specific task rather than nudging the whole run.
+  task_verification_check:
+    enabled: true
   # check_stale_findings (2026-07-24): findings.md is only ever existence-checked once written --
   # nothing previously caught the Planner delegating MORE research after that first write, so a
   # findings.md that's genuinely gone stale (real findings recorded but never included) was never

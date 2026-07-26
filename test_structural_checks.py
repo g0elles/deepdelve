@@ -783,6 +783,7 @@ def main():
                     "fetched_urls": [{"url": "https://real.example.com/a", "filename": "sources/a.md", "timestamp": 1.0}],
                     "findings": [{"source_url": "https://real.example.com/a", "summary": "s"}],
                     "findings_written_citable_count": 5,
+                    "task_verification": {"some_task": {"status": "flagged", "reason": "x", "checked_at": 1.0}},
                 }, f)
 
             _orig_ws9 = _config.cfg.get("settings", {}).get("workspace")
@@ -810,6 +811,10 @@ def main():
                         # resumed run (headless --resume-run had the exact same bug, fixed in
                         # run_cli's own copy of this key list).
                         "conv_run_state_marker": app._conv_run_state.data.get("findings_written_citable_count") if app._conv_run_state else None,
+                        # task_verification (2026-07-26, VERIMAP-inspired ledger) must survive
+                        # resume the same way -- same "new run_state.data key, same carryover
+                        # allowlist trap" blast radius ARCHITECTURE.md warns about.
+                        "conv_run_state_task_verification": app._conv_run_state.data.get("task_verification") if app._conv_run_state else None,
                     })
                 app.run_agent = _fake_run_agent
 
@@ -829,6 +834,9 @@ def main():
                     ]
                     assert call["conv_run_state_query"] == "Research X"
                     assert call["conv_run_state_marker"] == 5, call
+                    assert call["conv_run_state_task_verification"] == {
+                        "some_task": {"status": "flagged", "reason": "x", "checked_at": 1.0}
+                    }, call
                     # Reset back to False once run_agent returns (the `finally` in _resume_run).
                     assert app._resuming_run is False
             finally:
@@ -850,6 +858,8 @@ def main():
     _run_cli_src = _inspect.getsource(_tui_mod_check.run_cli)
     assert _run_cli_src.count('"findings_written_citable_count"') == 1, (
         "run_cli's resume-carryover key list must include findings_written_citable_count")
+    assert _run_cli_src.count('"task_verification"') == 1, (
+        "run_cli's resume-carryover key list must include task_verification")
 
     # --- TUI QoE: widget maximize (2026-07-24) — ROADMAP.md flagged this as "likely already
     # works via Textual's default focus/ALLOW_MAXIMIZE mechanism (same category as the already-
@@ -978,6 +988,22 @@ def main():
         # (row, delegated, workspace files, expected recorded problem, distinctive nudge phrase)
         ("not_delegated", False, {"final_report.md": f"- x [g]({_SRC})"},
          "not_delegated", "No `delegate_tasks` call was ever made"),
+        # check_task_verification_flagged (2026-07-26, VERIMAP-inspired): fires before findings.md
+        # even needs to exist -- reads the per-task ledger _update_task_verification maintains from
+        # run_state.data["findings"] alone. 'task_kept' has a real citable finding (verified);
+        # 'task_flagged' has only a finding excluded by _is_citable_finding (fabricated citation).
+        ("task_verification_flagged", True, {}, "task_verification_flagged",
+         "have only fabricated/unusable sources",
+         "", [], [
+             {"task_name": "task_kept", "source_url": "https://gov.example.co/real-page",
+              "summary": "real content, no warning marker.", "depth": 1},
+             {"task_name": "task_flagged", "source_url": "https://gov.example.co/bad-page",
+              "summary": ("N-BEATS improved forecast accuracy by 23%.\n\n"
+                           "[SYSTEM VERIFICATION WARNING: this summary cites a URL that does not "
+                           "match anything actually fetched this run "
+                           "(claim_unsupported:https://gov.example.co/bad-page).]"),
+              "depth": 1},
+         ]),
         ("findings_ungrounded", True, {"findings.md": "- todo de memoria, sin fuente alguna"},
          "findings_ungrounded", "fails the grounding check"),
         # Live case 2026-07-19: findings.md 40% fabricated (6/15 entries) passed the wholesale
@@ -2057,6 +2083,72 @@ def main():
                     _config.cfg["settings"]["workspace"] = _orig_ws
 
     contextvars.copy_context().run(_findings_underuses_evidence_scenario)
+
+    # --- _update_task_verification / check_task_verification_flagged (2026-07-26, VERIMAP-inspired,
+    # RESEARCH.md Sec.9): a structural per-task verification ledger -- fires when a task's EVERY
+    # finding was excluded by _is_citable_finding (fabricated/off-topic/contradicted), distinct
+    # from check_thin_coverage (zero findings at all) and check_uneven_task_investment (uneven
+    # COUNTS across covered tasks). ---
+    def _task_verification_scenario():
+        from engine.completion import _update_task_verification, check_task_verification_flagged, Ctx
+        from utils.run_state import RunState
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rs = RunState(tmpdir)
+            # task_kept: one real citable finding -> "verified".
+            rs.add_finding("https://a.example.co/x", "real content", task_name="task_kept", depth=1)
+            # task_flagged: only a verification-warning-flagged finding -> "flagged".
+            rs.add_finding(
+                "https://b.example.co/y",
+                "N-BEATS improved forecast accuracy by 23%.\n\n"
+                "[SYSTEM VERIFICATION WARNING: this summary cites a URL that does not match "
+                "anything actually fetched this run (claim_unsupported:https://b.example.co/y).]",
+                task_name="task_flagged", depth=1,
+            )
+            # Nested (depth>1) finding must be ignored, same convention as coverage()/
+            # check_findings_underuses_evidence.
+            rs.add_finding("https://a.example.co/nested", "s", task_name="task_kept", depth=2)
+
+            _update_task_verification(rs)
+            ledger = rs.data["task_verification"]
+            assert ledger["task_kept"]["status"] == "verified", ledger["task_kept"]
+            assert ledger["task_flagged"]["status"] == "flagged", ledger["task_flagged"]
+            assert "SYSTEM VERIFICATION WARNING" in ledger["task_flagged"]["reason"], ledger["task_flagged"]
+            # A task with no findings at all is NOT persisted -- still pending, not a problem.
+            assert "task_never_dispatched" not in ledger
+
+            # A task that later produces a real citable finding flips back to "verified" -- the
+            # ledger is fully recomputed each call, never incrementally patched.
+            rs.add_finding("https://b.example.co/z", "real content this time", task_name="task_flagged", depth=1)
+            _update_task_verification(rs)
+            assert rs.data["task_verification"]["task_flagged"]["status"] == "verified"
+
+            # check_task_verification_flagged wiring: re-flag task_flagged and confirm the check
+            # fires, names it, and leaves task_kept alone.
+            rs2 = RunState(tmpdir)
+            rs2.add_finding("https://a.example.co/x", "real content", task_name="task_kept", depth=1)
+            rs2.add_finding(
+                "https://b.example.co/y",
+                "[SYSTEM RELEVANCE WARNING: none of the sources fetched for this task actually "
+                "mention the required entity.]",
+                task_name="task_flagged", depth=1,
+            )
+            _update_task_verification(rs2)
+            ctx = Ctx(req_artifact="final_report.md", attempt=0, max_attempts=8, delegated=True,
+                      files=[], content=None, quotas=None, run_state=rs2)
+            verdict = check_task_verification_flagged(ctx)
+            assert verdict is not None and verdict.problem == "task_verification_flagged", verdict
+            assert "task_flagged" in verdict.warning and "task_kept" not in verdict.warning, verdict.warning
+
+            # No flagged tasks at all -> no verdict.
+            rs3 = RunState(tmpdir)
+            rs3.add_finding("https://a.example.co/x", "real content", task_name="task_kept", depth=1)
+            _update_task_verification(rs3)
+            ctx3 = Ctx(req_artifact="final_report.md", attempt=0, max_attempts=8, delegated=True,
+                       files=[], content=None, quotas=None, run_state=rs3)
+            assert check_task_verification_flagged(ctx3) is None
+
+    contextvars.copy_context().run(_task_verification_scenario)
 
     # --- check_report_underuses_findings (2026-07-22): Builder's own version of check_thin_
     # coverage, one stage downstream. Live-confirmed the SAME evidence-abandonment pattern this

@@ -219,6 +219,54 @@ check's own precedent of relying on live verification for dispatch-loop wiring p
 `real_grounding_problem`'s own already-thorough existing test coverage for the logic itself), ruff
 clean.
 
+**Live-confirmed same day** on a fresh run (Pfizer/Moderna vaccine efficacy statistics + Irish
+Potato Famine causes, `--depth standard`): two Analyzer-tier findings got flagged with problem
+types (`claim_unsupported`, `stub_source`) that were structurally impossible before this change —
+the old Analyzer-leaf check could only ever produce a reconstructed-URL message. Confirms the new
+`real_grounding_problem` call is genuinely executing for Analyzer dispatches now, not just present
+in the diff. `nli_unsupported` specifically did not fire this run (an earlier pipeline stage caught
+the problem first, since `real_grounding_problem` short-circuits on the first hit) — the wiring is
+confirmed correct, NLI itself being the deciding factor is still an open, narrower confirmation gap.
+
+**VERIMAP Phase 1 — a structural per-task verification ledger, same day, after scoping in a
+dedicated plan.** `RESEARCH.md` §9 flagged VERIMAP (EACL 2026, arXiv:2510.17109) — a planner
+encodes an explicit verification function per subtask, executed by a separate Verifier before a
+Coordinator proceeds. Confirmed via exploration that DeepDelve's 23-check pipeline produces exactly
+ONE `Verdict` per attempt for the WHOLE run — no per-task pass/fail record existed anywhere, and
+several bugs fixed this session (the starvation guard, `check_uneven_task_investment`,
+`check_findings_underuses_evidence`) are all individually-patched symptoms of that same missing
+dimension. **Design tension identified and resolved before building anything**: VERIMAP's own
+mechanism has the PLANNER author each verification function — directly conflicting with
+`RunState.coverage()`'s own documented principle that DeepDelve avoids handing local models new
+structured conventions to follow, precisely because they've repeatedly proven unreliable at it.
+Reconciled by having the ENGINE compute the ledger structurally from already-existing ground truth
+(`_is_citable_finding`) instead — keeping VERIMAP's real contribution (a task has its own checkable
+verification state) while dropping the part of its mechanism that doesn't fit DeepDelve's own
+hard-won lesson.
+
+- New `run_state.data["task_verification"]` ledger, keyed by `task_name`
+  (`{"status": "verified"|"flagged", "reason", "checked_at"}`), recomputed fresh every completion-
+  check attempt by `_update_task_verification` (`src/engine/completion.py`) from `findings` +
+  `_is_citable_finding` — purely additive, no new Planner-facing field, no new prompt convention.
+  A task with no findings yet is left out of the ledger entirely (still pending, not a problem).
+- New `check_task_verification_flagged` (`COMPLETION_CHECKS`, right after `check_thin_coverage`) —
+  the first genuinely task-scoped check in the pipeline: fires when a task's EVERY finding was
+  excluded by `_is_citable_finding`, naming that SPECIFIC task in its directive rather than nudging
+  the whole run generically. Distinct from `check_thin_coverage` (zero findings at all) and
+  `check_uneven_task_investment` (uneven counts across covered tasks) — this catches "produced
+  findings, but every one turned out fabricated/off-topic/contradicted."
+  `settings.task_verification_check` (`config_template.yaml`), default enabled.
+- `ARCHITECTURE.md`'s resume-carryover allowlist updated in both `src/engine/tui.py` locations
+  (`_resume_run` and `run_cli`), per its own checklist for a new persisted `RunState.data` key.
+- Explicitly deferred (Phase 2, see Pending): actually independent per-task redispatch that
+  bypasses the Planner's own turn — this session's ledger still only produces one whole-run
+  `Verdict` per attempt, same shape as every other check; the deeper dispatch-loop rework is real,
+  separate scoping work, worth doing only after seeing how often "flagged" recurs on real runs.
+
+Tests: new `_update_task_verification`/`check_task_verification_flagged` scenario, new verdict-
+matrix row, resume-carryover extended for both TUI and `run_cli` copies (mirroring
+`findings_written_citable_count`'s own precedent exactly). Tests pass, ruff clean.
+
 ### Findings from live testing (informational, not yet acted on)
 
 
@@ -3080,20 +3128,18 @@ tried, twice, not merely proposed):
 
 
 
-- **VERIMAP-style per-subtask verification functions** (researched 2026-07-26, `RESEARCH.md` §9,
-  not yet scoped into a phase). VERIMAP (EACL 2026, arXiv:2510.17109) has a planner encode an
-  explicit Python + natural-language verification function PER SUBTASK, executed by a separate
-  Verifier module before a Coordinator proceeds — DAG-shaped, one declared verification obligation
-  per delegated unit of work. DeepDelve's current shape is structurally different:
-  `COMPLETION_CHECKS`/`GROUNDING_CHECKS` (`src/engine/completion.py`) are a flat, global,
-  priority-ordered list run against the WHOLE run's state every attempt, not a verification
-  function declared per individual `delegate_tasks` call. Reframing around VERIMAP's model — the
-  Planner declaring what "done and verified" means for EACH task it delegates, rather than relying
-  entirely on global post-hoc checks — is a genuine, real architectural direction, but a large one:
-  it would touch how `delegate_tasks` tasks are specified (`src/engine/orchestrator.py`), how
-  `RunState` tracks per-task verification obligations, and potentially the whole completion-check
-  dispatch shape described in `ARCHITECTURE.md` §1. Worth a dedicated scoping session of its own
-  before any code is written — not something to fold into an unrelated fix's diff.
+- **VERIMAP Phase 2 — actually independent per-task retry dispatch** (scoped 2026-07-26, see
+  History for Phase 1 which shipped same day). Phase 1 gave DeepDelve a real per-task verification
+  ledger (`_update_task_verification`/`check_task_verification_flagged`, `src/engine/completion.py`)
+  but it still only ever produces ONE whole-run `Verdict` per completion-check attempt, same as
+  every other check — a flagged task's directive names it specifically, but redelegating it still
+  routes back through the Planner's own turn, same as any other nudge. The deeper VERIMAP win —
+  redispatching ONLY the flagged task directly, bypassing the Planner's own turn entirely (similar
+  in spirit to how `_dispatch_writer_review_fix` already bypasses the Planner for artifact fixes) —
+  needs `run_completion_check`'s dispatch loop reworked, not just an additive ledger. Explicitly
+  deferred: worth seeing real `task_verification` data from a few live runs first (does "flagged"
+  actually recur often enough to justify a dispatch-loop rework, or does the Phase-1 directive
+  already resolve it in practice) before designing Phase 2 on top of it.
 
 ### Candidates from the 2026-07-12 reference-repo review (see README References)
 

@@ -1737,7 +1737,8 @@ class BasicTuiAgent(App):
         # kind of blast-radius miss this project's own CLAUDE.md warns about: a new run_state.data
         # key needs checking against every place that already has a fixed carryover allowlist.
         for key in ("query", "findings", "fetched_urls", "completion_check_attempts",
-                    "search_health", "started_at", "plan", "findings_written_citable_count"):
+                    "search_health", "started_at", "plan", "findings_written_citable_count",
+                    "task_verification"):
             if key in prior_state:
                 rs.data[key] = prior_state[key]
         rs.data["resumed_at"] = time.time()
@@ -2216,7 +2217,8 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
             # --resume-run also silently resets the marker, so a resumed run's own new research
             # never triggers a findings.md refresh before Builder runs.
             for key in ("query", "findings", "fetched_urls", "completion_check_attempts",
-                        "search_health", "started_at", "plan", "findings_written_citable_count"):
+                        "search_health", "started_at", "plan", "findings_written_citable_count",
+                        "task_verification"):
                 if key in prior_state:
                     run_state.data[key] = prior_state[key]
             run_state.data["resumed_at"] = time.time()

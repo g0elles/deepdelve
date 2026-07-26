@@ -157,6 +157,58 @@ def check_thin_coverage(ctx: Ctx) -> Optional[Verdict]:
     )
 
 
+def check_task_verification_flagged(ctx: Ctx) -> Optional[Verdict]:
+    """The first genuinely task-scoped check in this pipeline (2026-07-26, VERIMAP-inspired, see
+    _update_task_verification's own docstring for the full design rationale). Reads the ledger
+    that function maintains on ctx.run_state.data["task_verification"] and fires when ANY task's
+    every finding got excluded by _is_citable_finding -- distinct from check_thin_coverage (which
+    only sees "zero real sources", i.e. a task that never produced anything at all) and from
+    check_uneven_task_investment (which compares real-source COUNTS across covered tasks): this
+    catches a task that produced findings, all of which turned out fabricated/off-topic/
+    contradicted -- structurally indistinguishable from "genuinely uncovered" to every other check
+    in this module, but a different failure with a different fix (redo with a different approach,
+    not "delegate more"). Still one Verdict per attempt, same as every other check here (Phase 2 of
+    the design -- actually independent per-task redispatch bypassing the Planner's own turn -- is
+    explicitly deferred, see ROADMAP.md Pending) -- but the directive names the SPECIFIC flagged
+    task(s) rather than nudging the whole run generically."""
+    cfg = config.cfg.get("settings", {}).get("task_verification_check", {})
+    if not cfg.get("enabled", True):
+        return None
+    ledger = ctx.run_state.data.get("task_verification", {})
+    flagged = sorted(name for name, entry in ledger.items() if entry.get("status") == "flagged")
+    if not flagged:
+        return None
+
+    prior_same = 0
+    for a in reversed(ctx.run_state.data.get("completion_check_attempts", [])):
+        if a.get("problem") == "task_verification_flagged":
+            prior_same += 1
+        else:
+            break
+
+    flagged_list = ", ".join(f"'{n}'" for n in flagged[:5])
+    subject = "this task" if len(flagged) == 1 else "these tasks"
+    if prior_same == 0:
+        directive = (
+            f"Task(s) {flagged_list} produced ONLY fabricated, off-topic, or unverifiable sources — "
+            f"every result for {subject} was excluded from the real evidence base. The other "
+            f"delegated tasks are fine, do not redo them. delegate_tasks again for {flagged_list}, "
+            f"with a different search approach or a narrower query, before finishing."
+        )
+    else:
+        directive = (
+            f"{flagged_list} STILL has no real usable source after a prior warning. If you have "
+            f"genuinely tried and cannot find one, say so explicitly in the report as an "
+            f"acknowledged gap for {flagged_list}, rather than silently omitting it."
+        )
+
+    return Verdict(
+        "task_verification_flagged",
+        f"Task(s) {flagged_list} have only fabricated/unusable sources (task-level verification ledger). Pushing agent to redo them specifically.",
+        f"SYSTEM WARNING: {ctx.last_chance_prefix}{directive}",
+    )
+
+
 def check_uneven_task_investment(ctx: Ctx) -> Optional[Verdict]:
     """check_thin_coverage's blind spot: a task that got AT LEAST ONE real source counts as fully
     "covered" there, regardless of whether that's 1 thin source or 6 rich ones. Confirmed live
@@ -1046,6 +1098,7 @@ def check_not_grounded(ctx: Ctx) -> Optional[Verdict]:
 COMPLETION_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
     check_not_delegated,
     check_thin_coverage,
+    check_task_verification_flagged,
     check_findings_ungrounded,
     check_missing_findings,
     check_stale_findings,
@@ -1540,6 +1593,56 @@ def _is_citable_finding(f: dict) -> bool:
     if not (src.startswith("http") and not _CUTOFF_ONLY_SUMMARY_RE.match(summary)):
         return False
     return "[SYSTEM RELEVANCE WARNING" not in summary and "[SYSTEM VERIFICATION WARNING" not in summary
+
+
+_WARNING_MARKER_RE = re.compile(r"\[SYSTEM (?:VERIFICATION|RELEVANCE) WARNING:.{0,160}")
+
+
+def _update_task_verification(run_state: "RunState") -> None:  # noqa: F821 — utils.run_state.RunState, annotation only
+    """VERIMAP-inspired (arXiv:2510.17109, RESEARCH.md Sec.9) per-task verification ledger,
+    2026-07-26 -- DeepDelve's existing checks (check_thin_coverage, check_uneven_task_investment,
+    check_findings_underuses_evidence) all derive task-level facts from RunState.coverage()/
+    findings but only ever produce ONE whole-run Verdict per attempt; there was no per-task
+    pass/fail record anywhere a task could be checked (or eventually retried) independently of
+    the rest of the run. This is that ledger -- purely structural, recomputed fresh every
+    completion-check attempt from already-existing ground truth (_is_citable_finding), never
+    something the Planner authors. Deliberately NOT VERIMAP's own mechanism (the paper has the
+    PLANNER author each subtask's own verification function) -- RunState.coverage()'s own
+    docstring already explains why DeepDelve avoids handing local models a new structured
+    convention to follow ("small local models have repeatedly proven unreliable at following new
+    structured-output conventions"); this keeps VERIMAP's actual contribution (a task has its own
+    checkable verification state) while computing that state the same "derive from ground truth"
+    way every other check in this module already does.
+
+    Only ever writes an entry for a task that has at least one depth==1 finding -- a task with
+    none yet is still pending, not a problem (check_thin_coverage/check_missing_findings's job),
+    so it's left out of the ledger rather than persisted as a third "unverified" status that
+    nothing would ever read. "flagged" means EVERY finding this task produced was excluded by
+    _is_citable_finding (fabricated/off-topic/contradicted) -- not "some", which would just be
+    check_uneven_task_investment's territory again; this is specifically "nothing usable came
+    of this task at all." A task that later produces even one real citable finding on a retry
+    flips back to "verified" the next time this runs, since the whole ledger is recomputed, not
+    incrementally patched."""
+    findings = run_state.data.get("findings", [])
+    top_level = [f for f in findings if f.get("depth") == 1 and f.get("task_name")]
+    by_task: dict = {}
+    for f in top_level:
+        by_task.setdefault(f["task_name"], []).append(f)
+    ledger = run_state.data.setdefault("task_verification", {})
+    for name, task_findings in by_task.items():
+        if any(_is_citable_finding(f) for f in task_findings):
+            ledger[name] = {"status": "verified", "reason": None, "checked_at": time.time()}
+            continue
+        reasons = []
+        for f in task_findings:
+            m = _WARNING_MARKER_RE.search(f.get("summary") or "")
+            if m and m.group(0) not in reasons:
+                reasons.append(m.group(0))
+        ledger[name] = {
+            "status": "flagged",
+            "reason": "; ".join(reasons) if reasons else "no real citable source",
+            "checked_at": time.time(),
+        }
 
 
 def _dedupe_findings(findings: list) -> list:
@@ -2062,6 +2165,7 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                 attempt = max_attempts
             quotas = tool_quotas_ctx.get()
             files = get_workspace_files()
+            _update_task_verification(run_state)
             ctx = Ctx(
                 req_artifact=req_artifact,
                 attempt=attempt,
