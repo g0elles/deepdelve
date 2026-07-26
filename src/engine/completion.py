@@ -1065,7 +1065,22 @@ def _restore_quarantined_draft(req_artifact: str, problem: str) -> bool:
         return False
 
 
-def _salvage_narrated_report(req_artifact: str, last_assistant_text: str) -> bool:
+_NARRATED_SALVAGE_BANNER = (
+    "> **AUTO-RECOVERED DRAFT** — the model narrated this content as chat text instead of "
+    "calling `write_workspace_file`, across the full retry budget. This has NOT passed the "
+    "grounding check and its claims are UNVERIFIED. Review before trusting it.\n\n"
+)
+
+_DETERMINISTIC_SALVAGE_BANNER = (
+    "> **AUTO-RECOVERED DRAFT** — FindingsWriter produced no usable output twice in a row "
+    "(including one immediate retry). This is assembled directly and deterministically from this "
+    "run's real research data (`RunState.findings`) — it was never written or reviewed by a "
+    "model, so it is unorganized/unedited, but every entry traces to a source this run actually "
+    "fetched.\n\n"
+)
+
+
+def _salvage_narrated_report(req_artifact: str, last_assistant_text: str, banner: str = _NARRATED_SALVAGE_BANNER) -> bool:
     """Structural fallback for a real, recurring pattern (documented in the reference project too,
     surviving multiple rounds of prompt-only fixes there): the model narrates a complete,
     well-formatted report as chat text instead of ever calling write_workspace_file, across the
@@ -1075,7 +1090,13 @@ def _salvage_narrated_report(req_artifact: str, last_assistant_text: str) -> boo
     Two callers: `_dispatch_writer_review_fix` (immediately after each Write dispatch, so a
     narrating model gets salvaged on attempt 1 instead of burning the whole retry budget first —
     added 2026-07-18) and `run_completion_check`'s final-verdict path (the original, last-resort
-    use, for the classic inject-into-Planner flow when no writer-role dispatch is configured)."""
+    use, for the classic inject-into-Planner flow when no writer-role dispatch is configured).
+
+    `banner` is overridable (2026-07-26) so `_dispatch_writer_review_fix`'s deterministic-content
+    salvage path (see its own docstring) can reuse this exact write logic with an accurate banner
+    instead of the misleading default text, which specifically claims the model narrated
+    something — not true when the content being salvaged is `_build_findings_source_material`'s
+    own deterministic evidence text, never model-authored at all."""
     if not last_assistant_text or len(last_assistant_text.strip()) < 200:
         return False
     try:
@@ -1086,12 +1107,7 @@ def _salvage_narrated_report(req_artifact: str, last_assistant_text: str) -> boo
         parent_dir = os.path.dirname(path)
         if parent_dir:
             os.makedirs(parent_dir, exist_ok=True)
-        salvage = (
-            "> **AUTO-RECOVERED DRAFT** — the model narrated this content as chat text instead of "
-            "calling `write_workspace_file`, across the full retry budget. This has NOT passed the "
-            "grounding check and its claims are UNVERIFIED. Review before trusting it.\n\n"
-            + last_assistant_text.strip()
-        )
+        salvage = banner + last_assistant_text.strip()
         with open(path, "w", encoding="utf-8") as f:
             f.write(salvage)
         return True
@@ -1146,7 +1162,8 @@ def _ensure_reader_quota_headroom(pool: dict) -> None:
 
 
 async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artifact: str,
-                                       write_instructions: str, attempt: int, notify) -> None:
+                                       write_instructions: str, attempt: int, notify,
+                                       deterministic_fallback: Optional[str] = None) -> None:
     """Write -> Review -> Fix, all fresh-context sub-agent dispatches, none of which touch the
     Planner's own conversation. Shared by both writer roles that exist for exactly this reason —
     Builder (writes/fixes final_report.md from findings.md) and FindingsWriter (writes/fixes
@@ -1158,7 +1175,23 @@ async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artif
     rather than silently doing nothing.
 
     Capped at 4 dispatches total (Write, one immediate Write-retry only if the first produced
-    nothing usable, Review, optional Fix) — no unbounded nesting."""
+    nothing usable, Review, optional Fix) — no unbounded nesting.
+
+    `deterministic_fallback` (2026-07-26): only ever passed by the FindingsWriter call site, as
+    `_build_findings_source_material(run_state)`'s own raw output. Confirmed live
+    (`explain_the_health_benefits_of_green_tea_and_separ_20260726_103135`, gpt-oss/Ollama): the
+    prior isolated-empty-response assumption (see the immediate-retry fix's own comment a few
+    lines below, "confirmed live all 3 empty responses ... were isolated, never two in a row")
+    does NOT always hold — that same run hit SIX consecutive completion-check attempts (3-8)
+    where FindingsWriter produced nothing usable on BOTH the original dispatch and its immediate
+    retry, every single time, burning the entire remaining budget with `findings.md` never
+    written even though 61 real findings existed the whole time. Unlike a final_report.md
+    narration salvage (which needs the model to have said SOMETHING), this evidence text is
+    already assembled deterministically and independently of the model producing anything —
+    `_build_findings_source_material`'s own entries already use the exact heading format
+    `findings.md` requires (`_heading_for`, see its docstring), so it's usable as `findings.md`
+    content directly, not just as writer input. Builder never gets this treatment: its own draft
+    can't be synthesized without the model, there is no equivalent non-LLM fallback for it."""
     # Snapshot think_tool's usage BEFORE the write dispatch (2026-07-22, PIVOT arXiv:2605.11225,
     # RESEARCH.md §1): both BUILDER_INSTRUCTIONS and FINDINGS_WRITER_INSTRUCTIONS already tell the
     # writer to use think_tool before finalizing ("<Show Your Thinking>"), but a prompt-only nudge
@@ -1248,6 +1281,20 @@ async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artif
                         f"**System ({attempt + 1}):** {writer_role} narrated `{req_artifact}` as "
                         f"chat text instead of calling `write_workspace_file` — auto-recovered its "
                         f"own content as the artifact (flagged unverified) instead of retrying blind."
+                    )
+                elif deterministic_fallback and _salvage_narrated_report(
+                        req_artifact, deterministic_fallback, banner=_DETERMINISTIC_SALVAGE_BANNER):
+                    # Confirmed live 2026-07-26: the "isolated, never two in a row" assumption the
+                    # immediate-retry fix above was built on does not always hold -- see this
+                    # function's own docstring for the run that motivated this branch. Unlike the
+                    # narrated-text salvage above, this content never came from the model at all --
+                    # it's assembled deterministically from run_state's own real findings, so it's
+                    # available even when the model produces nothing whatsoever, twice in a row.
+                    notify(
+                        f"**System ({attempt + 1}):** {writer_role} produced nothing usable twice "
+                        f"in a row (including one immediate retry) — auto-recovered `{req_artifact}` "
+                        f"directly from this run's real research data instead of losing the cycle "
+                        f"entirely."
                     )
                 else:
                     # Still nothing after a genuine retry -- this used to fall through to
@@ -2078,11 +2125,15 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                                 )
                             else:
                                 write_directive = "findings.md has never been written yet. Write it now from the real research results below."
+                            findings_source_material = _build_findings_source_material(run_state)
                             findings_writer_instructions = (
-                                f"{write_directive}\n\n{_build_findings_source_material(run_state)}\n\n"
+                                f"{write_directive}\n\n{findings_source_material}\n\n"
                                 f"Write the file now via write_workspace_file."
                             )
-                            await _dispatch_writer_review_fix(dispatch_task, "FindingsWriter", "findings.md", findings_writer_instructions, attempt, notify)
+                            await _dispatch_writer_review_fix(
+                                dispatch_task, "FindingsWriter", "findings.md", findings_writer_instructions,
+                                attempt, notify, deterministic_fallback=findings_source_material,
+                            )
                             # Staleness marker (check_stale_findings): record how many real,
                             # distinct, citable findings existed AT THIS WRITE, so a LATER
                             # completion check can tell whether more have been delegated since --

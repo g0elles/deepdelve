@@ -3261,6 +3261,54 @@ def main():
 
         contextvars.copy_context().run(_no_salvage_when_real_write_happened_scenario)
 
+    # --- _dispatch_writer_review_fix deterministic-content salvage (2026-07-26 live case:
+    # gpt-oss/Ollama, explain_the_health_benefits_of_green_tea_and_separ_20260726_103135 --
+    # FindingsWriter returned nothing usable, both original AND immediate retry, on SIX
+    # consecutive completion-check attempts, contradicting the "isolated, never two in a row"
+    # assumption the c2/c3 immediate-retry fix above was built on. Unlike the narration salvage,
+    # this content never comes from the model -- it's `_build_findings_source_material`'s own
+    # deterministic evidence text, passed in by the caller only for the FindingsWriter role. ---
+    with tempfile.TemporaryDirectory() as tmpdir:
+        def _deterministic_fallback_salvage_scenario():
+            from unittest.mock import AsyncMock
+
+            _orig_ws13 = _config.cfg.get("settings", {}).get("workspace")
+            _config.cfg["settings"]["workspace"] = {"type": "disk", "dir": tmpdir}
+            try:
+                msgs = []
+                real_evidence = "### [Real Source](https://example.com/x) (saved as sources/x.md)\n" + (
+                    "A real finding sentence. " * 20)
+
+                async def _side_effect_always_empty(name, instructions, role):
+                    if role == "FindingsWriter":
+                        return ""  # genuinely empty, both the original AND the retry
+                    return "REVIEW: CLEAN"
+
+                dispatch = AsyncMock(side_effect=_side_effect_always_empty)
+                _asyncio.run(_dispatch_writer_review_fix(
+                    dispatch, "FindingsWriter", "findings.md", "write it now", 0, msgs.append,
+                    deterministic_fallback=real_evidence))
+
+                path = os.path.join(tmpdir, "findings.md")
+                assert os.path.exists(path), (
+                    "an empty response twice in a row with a deterministic fallback available "
+                    "must still produce findings.md, not raise", msgs)
+                content = open(path, encoding="utf-8").read()
+                assert "A real finding sentence." in content, content
+                assert "FindingsWriter produced no usable output twice" in content, (
+                    "must use the deterministic banner, not the narrated-text one", content)
+                assert "narrated this content as chat text" not in content, content
+                assert any("auto-recovered" in m for m in msgs), msgs
+                # Write, retry-Write, PeerReviewer -- converges instead of raising.
+                assert dispatch.call_count == 3, dispatch.call_args_list
+            finally:
+                if _orig_ws13 is None:
+                    _config.cfg["settings"].pop("workspace", None)
+                else:
+                    _config.cfg["settings"]["workspace"] = _orig_ws13
+
+        contextvars.copy_context().run(_deterministic_fallback_salvage_scenario)
+
     # --- Builder write_workspace_file quota headroom (ROADMAP "Pending": a Build->Review->Fix
     # cycle can burn up to 2 write_workspace_file calls — Builder's initial rewrite plus one
     # corrective Fix pass — against the same shared pool the Planner's own findings.md writes draw
@@ -3676,6 +3724,17 @@ def main():
     # the correct balanced ')' must be handled together, in the right order.
     assert extract_cited_urls(f"- **[Heuristic]({_paren_url})**") == [_paren_url], (
         "bold citation style combined with a URL's own balanced parens must still resolve correctly")
+
+    # --- trailing backtick stripped (live case 2026-07-26: a real Searcher/Analyzer summary style
+    # is "**Source URL**\n`URL`" -- inline-code markdown -- and the old regex/rstrip set didn't
+    # stop at '`', so the trailing backtick was captured as part of the URL. Confirmed live: this
+    # false-flagged _build_findings_source_material's own real evidence text as
+    # unverified_entry_sources purely from the mismatch, which would have defeated the new
+    # deterministic-fallback salvage (engine/completion.py) on the exact real content it exists to
+    # rescue. ---
+    assert extract_cited_urls("**Source URL**  \n`https://example.com/page`") == [
+        "https://example.com/page"
+    ], "trailing backtick from inline-code citation style must not survive extraction"
 
     # --- stub-fetch detection (live case run 14: a model-invented URL answered by a 200
     # soft-404 — 5KB of subscription chrome — was recorded as a real fetch and passed the

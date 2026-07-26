@@ -53,7 +53,14 @@ def extract_cited_urls(text: str) -> list[str]:
     # any ')' (including the markdown link's own closing paren), and _strip_trailing_punct below
     # removes only an UNBALANCED trailing ')' — i.e. one with no matching '(' earlier in the same
     # URL — which correctly strips markdown syntax while preserving a URL's own balanced parens.
-    urls = re.findall(r'https?://[^\s\]\}"\'>【】]+', text or "")
+    # '`' added 2026-07-26: a real Searcher/Analyzer summary style is "**Source URL**\n`URL`"
+    # (inline-code markdown), and the backtick wasn't in the stop set, so the trailing '`' got
+    # captured as part of the URL itself -- confirmed live, `_build_findings_source_material`'s
+    # own real evidence text (used verbatim as findings.md content by the new deterministic-
+    # fallback salvage, see engine/completion.py's `_dispatch_writer_review_fix`) false-flagged as
+    # `unverified_entry_sources` purely because of the trailing backtick, not a real citation
+    # mismatch.
+    urls = re.findall(r'https?://[^\s\]\}"\'>【】`]+', text or "")
     return [_strip_trailing_punct(u) for u in urls]
 
 
@@ -64,7 +71,10 @@ def _strip_trailing_punct(url: str) -> str:
     # every Builder-written citation carried a trailing '**' that could never match a real fetched
     # URL — a false not_grounded on every single report using this style. Stripped BEFORE the
     # paren check specifically so a bold-wrapped URL still exposes its real trailing ')' to it.
-    url = url.rstrip('.,;:\'"]}】*')
+    # '`' added 2026-07-26 alongside the regex fix above (belt-and-suspenders: the regex now stops
+    # at a backtick, but a URL with an EMBEDDED backtick from other markdown mangling should still
+    # have it stripped here too).
+    url = url.rstrip('.,;:\'"]}】*`')
     while url.endswith(')') and url.count(')') > url.count('('):
         url = url[:-1]
     return url
