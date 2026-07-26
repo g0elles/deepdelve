@@ -1500,9 +1500,10 @@ _CUTOFF_ONLY_SUMMARY_RE = re.compile(
 
 def _is_citable_finding(f: dict) -> bool:
     """A real, http(s) source_url whose summary isn't a pure sub_agent_timeout_minutes cutoff
-    marker, AND isn't confirmed off-topic by the scope-relevance check. Shared predicate
-    (2026-07-22) so _build_findings_source_material, _uncited_task_names, and
-    _find_propagated_bad_content all agree on one definition.
+    marker, AND isn't confirmed off-topic by the scope-relevance check, AND isn't flagged by the
+    citation-mismatch verification check. Shared predicate (2026-07-22) so
+    _build_findings_source_material, _uncited_task_names, and _find_propagated_bad_content all
+    agree on one definition.
 
     The relevance-flag condition (found live 2026-07-21): orchestrator.py's topical-relevance
     check appends a "[SYSTEM RELEVANCE WARNING: none of the sources fetched for this task
@@ -1514,15 +1515,31 @@ def _is_citable_finding(f: dict) -> bool:
     (confirmed via literature, not just this one incident: RAG noise-robustness research shows
     irrelevant retrieved content measurably degrades generation; DeepResearch-Slice, arXiv:
     2601.03261, names "distracted by spurious passages" as a root cause of exactly this pattern).
-    Scoped to RELEVANCE warnings only, not the two VERIFICATION-warning variants (citation-mismatch
-    flags) -- a relevance-flagged finding is confirmed off-topic for the required scope with zero
-    value regardless of its other content, whereas a verification warning flags a narrower
-    citation mismatch that may still coexist with other real, usable content in the same finding."""
+
+    The verification-flag condition (2026-07-26, REVERSING a 2026-07-22 design decision): this
+    used to scope the exclusion to RELEVANCE warnings only, reasoning "a verification warning
+    flags a narrower citation mismatch that may still coexist with other real, usable content."
+    Confirmed live, twice, that this bet doesn't hold: a finding carrying a "[SYSTEM VERIFICATION
+    WARNING: this summary cites 'X', which does not match the source URL you were actually given
+    to analyze...]" marker stayed in FindingsWriter's evidence, and FindingsWriter kept citing the
+    flagged bad URL anyway -- 2026-07-24 (calendarr.com) and 2026-07-26 (insidetx.com, 7
+    independent dispatch attempts in one run, see RESEARCH.md Sec.10 for the full incident +
+    literature review). Researched before reversing this, not guessed: embedded negative
+    instructions are documented as fragile by mechanism, not just anecdote -- naming the forbidden
+    content inside a "do not cite X" warning can itself prime reproduction of X (the "ironic
+    rebound" effect, arXiv:2511.12381), and negation-following is separately documented as
+    unreliable in small models (arXiv:2601.21433). CRAG (arXiv:2401.15884) and Self-RAG
+    (arXiv:2310.11511) -- read directly, not inferred -- both structurally filter flagged evidence
+    OUT before the generator ever sees it, rather than annotate it in place and hope. This project
+    already treats the same warning more strictly elsewhere for a similar reason: _should_cache_finding
+    (orchestrator.py) already refuses to cache anything carrying a VERIFICATION warning ("a cache
+    entry must never be less verified than a same-run finding") -- this function was the odd one
+    out relative to that existing, stricter precedent."""
     src = f.get("source_url") or ""
     summary = f.get("summary") or ""
     if not (src.startswith("http") and not _CUTOFF_ONLY_SUMMARY_RE.match(summary)):
         return False
-    return "[SYSTEM RELEVANCE WARNING" not in summary
+    return "[SYSTEM RELEVANCE WARNING" not in summary and "[SYSTEM VERIFICATION WARNING" not in summary
 
 
 def _dedupe_findings(findings: list) -> list:

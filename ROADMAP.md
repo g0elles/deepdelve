@@ -140,6 +140,47 @@ Ternary-Bonsai-27B/Vulkan fork work). All committed on `main`:
 `_run_state.json` proves the mechanism ran, not that the report is actually good — read the real
 artifact content too before calling a run's outcome confirmed.
 
+**Later the same day** — a fresh live smoke test (2008 financial crisis + mRNA vaccines,
+`--depth standard`) confirmed the deterministic FindingsWriter salvage (`1ed5de7` above) firing
+organically for the first time, live, outside any replay/unit test. But the run still failed
+overall (`findings_ungrounded`, no report written) for a separate, real reason: FindingsWriter
+repeatedly cited a fabricated near-duplicate `insidetx.com` URL across 7 independent dispatches,
+despite the grounding pipeline already embedding a `[SYSTEM VERIFICATION WARNING: ...]` directly
+into that finding's own `summary` text at generation time — the exact same shape already logged
+2026-07-24 with a `calendarr.com` URL, now confirmed to recur with a different domain. Researched
+properly before fixing (`RESEARCH.md` §10): embedded negative-instruction warnings are documented
+as fragile by mechanism (naming forbidden content can prime its reproduction — the "ironic
+rebound" effect, arXiv:2511.12381; negation-following degrades in small models, arXiv:2601.21433),
+and CRAG/Self-RAG (primary papers, arXiv:2401.15884/arXiv:2310.11511) both structurally filter
+flagged evidence out before the generator sees it rather than annotate-and-hope.
+
+- **`_is_citable_finding`** (`src/engine/completion.py`) — the shared predicate feeding
+  `_build_findings_source_material`, `_uncited_task_names`, and `_find_propagated_bad_content` —
+  now excludes findings carrying a `[SYSTEM VERIFICATION WARNING` marker, exactly mirroring its
+  existing `[SYSTEM RELEVANCE WARNING` exclusion (2026-07-21). This deliberately REVERSES a
+  2026-07-22 design decision that explicitly chose NOT to exclude verification-flagged findings,
+  reasoning they "may still coexist with other real, usable content" — a bet the live recurrence
+  above shows doesn't hold. Since `run_completion_check` computes
+  `_build_findings_source_material(run_state)` exactly once and reuses the identical string as
+  both the FindingsWriter dispatch instructions AND the deterministic-salvage fallback (`1ed5de7`
+  above), this one change fixes both the recurring-fabrication problem AND the "salvage inherits
+  poisoned evidence" problem simultaneously — no separate patch needed for either path.
+  `_should_cache_finding` (`src/engine/orchestrator.py`, the RAG-cache write gate) already treated
+  this warning as disqualifying, so `_is_citable_finding` was the odd one out relative to existing
+  project precedent, not inventing a new policy. Verdict-matrix-adjacent unit test flipped
+  (`test_structural_checks.py`) and replayed directly against the real 2026-07-26 failing run's
+  actual `_run_state.json`: confirmed the fabricated `insidetx.com` citations no longer appear in
+  the reassembled evidence post-fix. Tests pass, ruff clean. Explicitly did NOT build a
+  cross-attempt confirmed-bad-URL blocklist (CiteGuard-style, `RESEARCH.md` §10's secondary
+  recommendation) — the two live incidents fabricate different URLs each retry, not byte-identical
+  repeats, so the exclusion fix above already covers both flagged problems without the added
+  persisted-state/resume-carryover machinery a blocklist would need; kept as the fallback if this
+  fix proves insufficient on a future run.
+- Two further research-flagged ideas (VeriCite-style NLI-based evidence filtering at
+  assembly-time, VERIMAP-style per-subtask verification functions) were deliberately NOT built
+  this session — both real, well-scoped future directions, written up in Pending below rather than
+  folded into this fix's diff.
+
 ### Findings from live testing (informational, not yet acted on)
 
 
@@ -2999,6 +3040,39 @@ tried, twice, not merely proposed):
     concrete subset of the remaining framework-capability survey items, which need real
     prioritization first.
 
+
+- **Structural NLI-based evidence filtering at findings-assembly time** (researched 2026-07-26,
+  `RESEARCH.md` §9/§10, not yet scoped into a phase). `_build_findings_source_material`
+  (`src/engine/completion.py`) now structurally excludes URL-mismatch-flagged findings from
+  FindingsWriter's evidence (see "Completed"/History, `_is_citable_finding`) — the same
+  "filter flagged evidence out before the generator sees it" principle CRAG/Self-RAG use
+  (arXiv:2401.15884, arXiv:2310.11511), applied so far only to citation-URL mismatches. VeriCite
+  (arXiv:2510.17853's sibling entailment-threshold work, referenced in `RESEARCH.md` §9) suggests
+  the same principle could extend to NLI-contradicted claims, not just mismatched URLs — but
+  DeepDelve's existing `nli_unsupported_problem` (`src/utils/grounding.py`) is built around a
+  REPORT string (`_grounded_claim_pairs`, per-line prose parsing), not individual findings'
+  `summary` text, so there is no existing claim/source-window extraction path for a per-finding
+  version. Real, separate work: building that extraction against `run_state.data["findings"]`
+  before this can be attempted. Not a like-for-like adoption of VeriCite's own threshold value
+  either — DeepDelve's check deliberately flags on contradiction only, never on low-but-nonzero
+  entailment, to avoid over-flagging legitimate paraphrase (already live-validated design, see
+  `nli_unsupported_problem`'s own docstring) — any per-finding version should keep that same
+  contradiction-only philosophy, not import VeriCite's continuous threshold wholesale.
+
+- **VERIMAP-style per-subtask verification functions** (researched 2026-07-26, `RESEARCH.md` §9,
+  not yet scoped into a phase). VERIMAP (EACL 2026, arXiv:2510.17109) has a planner encode an
+  explicit Python + natural-language verification function PER SUBTASK, executed by a separate
+  Verifier module before a Coordinator proceeds — DAG-shaped, one declared verification obligation
+  per delegated unit of work. DeepDelve's current shape is structurally different:
+  `COMPLETION_CHECKS`/`GROUNDING_CHECKS` (`src/engine/completion.py`) are a flat, global,
+  priority-ordered list run against the WHOLE run's state every attempt, not a verification
+  function declared per individual `delegate_tasks` call. Reframing around VERIMAP's model — the
+  Planner declaring what "done and verified" means for EACH task it delegates, rather than relying
+  entirely on global post-hoc checks — is a genuine, real architectural direction, but a large one:
+  it would touch how `delegate_tasks` tasks are specified (`src/engine/orchestrator.py`), how
+  `RunState` tracks per-task verification obligations, and potentially the whole completion-check
+  dispatch shape described in `ARCHITECTURE.md` §1. Worth a dedicated scoping session of its own
+  before any code is written — not something to fold into an unrelated fix's diff.
 
 ### Candidates from the 2026-07-12 reference-repo review (see README References)
 

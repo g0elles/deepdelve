@@ -152,12 +152,11 @@ def main():
     ]
     assert _find_propagated_bad_content(control_findings, ["colombia_holidays"]) == []
 
-    # --- _is_citable_finding excludes relevance-flagged findings (2026-07-21, live-caught): a
-    # finding confirmed off-topic by orchestrator.py's scope-relevance check carries a real http
-    # URL and a non-cutoff summary, so it used to pass as an ordinary citable entry even though
-    # it has zero real value for the query -- live case was a Colombia-holidays task that fetched
-    # a New Zealand page. Scoped to the RELEVANCE marker only, not VERIFICATION (a narrower
-    # citation-mismatch flag that may still coexist with real, usable content). ---
+    # --- _is_citable_finding excludes relevance-flagged AND verification-flagged findings ---
+    # RELEVANCE (2026-07-21, live-caught): a finding confirmed off-topic by orchestrator.py's
+    # scope-relevance check carries a real http URL and a non-cutoff summary, so it used to pass
+    # as an ordinary citable entry even though it has zero real value for the query -- live case
+    # was a Colombia-holidays task that fetched a New Zealand page.
     relevance_flagged = {
         "task_name": "colombia_holidays", "source_url": "https://publicholiday.co.nz/",
         "summary": ("I was unable to complete the research because I exceeded the web-search "
@@ -171,15 +170,19 @@ def main():
         "summary": "N-BEATS improved forecast accuracy by 23% in a 2024 benchmark.",
     }
     assert _is_citable_finding(real_finding) is True
-    # A VERIFICATION warning (citation-mismatch, not off-topic) must NOT be excluded -- real
-    # content may still coexist with a narrower citation flag.
+    # VERIFICATION (2026-07-26, REVERSING a 2026-07-22 decision -- see _is_citable_finding's own
+    # docstring for the full reasoning): confirmed live TWICE (calendarr.com 2026-07-24,
+    # insidetx.com 2026-07-26, RESEARCH.md Sec.10) that leaving a citation-mismatch-flagged finding
+    # in the evidence and trusting FindingsWriter to heed its own embedded warning does not hold --
+    # it kept citing the flagged bad URL anyway across 7 independent dispatches in one run. Must
+    # now be excluded exactly like a RELEVANCE-flagged finding.
     verification_flagged = {
         "task_name": "background", "source_url": "https://arxiv.org/abs/1234.5678",
         "summary": ("N-BEATS improved forecast accuracy by 23% in a 2024 benchmark.\n\n"
                     "[SYSTEM VERIFICATION WARNING: this summary attributes a claim to a source "
                     "that does not match anything actually fetched this run.]"),
     }
-    assert _is_citable_finding(verification_flagged) is True
+    assert _is_citable_finding(verification_flagged) is False
 
     # --- _build_findings_source_material renders a real title when available (2026-07-21,
     # closing the format gap with FINDINGS_WRITER_INSTRUCTIONS' own required output shape), falls
