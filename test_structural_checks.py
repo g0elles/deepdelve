@@ -997,6 +997,19 @@ def main():
          [{"task_name": "nueva_tarea", "source_url": "https://gov.example.co/new-page",
            "summary": "Nuevo hallazgo real disponible tras la primera escritura."}],
          {"findings_written_citable_count": 0}),
+        # check_findings_underuses_evidence (2026-07-26): findings.md exists and cites a real
+        # source (_SRC, from 'task_kept') -- passes check_missing_findings and check_stale_findings
+        # cleanly -- but a SECOND real, delegated top-level task ('task_dropped') has a real fetched
+        # source that never appears anywhere in findings.md. Live case: a balanced 2-facet run
+        # (green tea + Roman Empire, both genuinely "covered") produced a findings.md covering only
+        # one topic, with nothing catching the other topic's total disappearance.
+        ("findings_underuses_evidence", True, {"findings.md": _FINDINGS_OK},
+         "findings_underuses_evidence", "despite real research results existing for them",
+         "", [], [
+             {"task_name": "task_kept", "source_url": _SRC, "summary": "hallado real.", "depth": 1},
+             {"task_name": "task_dropped", "source_url": "https://gov.example.co/dropped-page",
+              "summary": "Otro hallazgo real que nunca llego a findings.md.", "depth": 1},
+         ]),
         ("missing_artifact", True, {"findings.md": _FINDINGS_OK},
          "missing_artifact", "is missing from the workspace"),
         ("claim_unsupported", True, {"findings.md": _FINDINGS_OK,
@@ -1813,7 +1826,10 @@ def main():
             # exist (see (f)/(g) below for why -- this check reads live RunState tracking, not
             # either file, and needs both artifacts already written before it's meaningful).
             with tempfile.TemporaryDirectory() as tmpdir_a:
-                _IN_MEMORY_FS["findings.md"] = "placeholder"
+                # Cites both tasks (2026-07-26: check_findings_underuses_evidence now sits ahead
+                # of this check in COMPLETION_CHECKS and would otherwise correctly fire first on a
+                # bare "placeholder" findings.md that cites neither task's real URL).
+                _IN_MEMORY_FS["findings.md"] = "- [Heuristics](https://a.example.co/x)\n- [Culture](https://b.example.co/0)"
                 _IN_MEMORY_FS["final_report.md"] = "placeholder"
                 rs = RunState(tmpdir_a)
                 rs.add_finding("https://a.example.co/x", "summary", task_name="Heuristics", depth=1)
@@ -1830,7 +1846,7 @@ def main():
 
             # (b) balanced coverage (3 vs 4, ratio 0.75) -> does not fire.
             with tempfile.TemporaryDirectory() as tmpdir_b:
-                _IN_MEMORY_FS["findings.md"] = "placeholder"
+                _IN_MEMORY_FS["findings.md"] = "- [A](https://a.example.co/0)\n- [B](https://b.example.co/0)"
                 _IN_MEMORY_FS["final_report.md"] = "placeholder"
                 rs = RunState(tmpdir_b)
                 for i in range(3):
@@ -1846,7 +1862,7 @@ def main():
 
             # (c) only 1 covered task -> min_tasks gate blocks it regardless of imbalance.
             with tempfile.TemporaryDirectory() as tmpdir_c:
-                _IN_MEMORY_FS["findings.md"] = "placeholder"
+                _IN_MEMORY_FS["findings.md"] = "- [A](https://a.example.co/0)"
                 _IN_MEMORY_FS["final_report.md"] = "placeholder"
                 rs = RunState(tmpdir_c)
                 for i in range(5):
@@ -1867,7 +1883,7 @@ def main():
             _config.cfg["settings"]["uneven_coverage_check"] = {"min_total_sources": 10}
             try:
                 with tempfile.TemporaryDirectory() as tmpdir_d:
-                    _IN_MEMORY_FS["findings.md"] = "placeholder"
+                    _IN_MEMORY_FS["findings.md"] = "- [Heuristics](https://a.example.co/x)\n- [Culture](https://b.example.co/0)"
                     _IN_MEMORY_FS["final_report.md"] = "placeholder"
                     rs = RunState(tmpdir_d)
                     rs.add_finding("https://a.example.co/x", "summary", task_name="Heuristics", depth=1)
@@ -1890,7 +1906,7 @@ def main():
             # (e) ratio exactly AT threshold (3/10 = 0.3) must not fire -- only below it, same
             # "below, not at-or-below" convention as check_thin_coverage's own boundary test.
             with tempfile.TemporaryDirectory() as tmpdir_e:
-                _IN_MEMORY_FS["findings.md"] = "placeholder"
+                _IN_MEMORY_FS["findings.md"] = "- [Heuristics](https://a.example.co/0)\n- [Culture](https://b.example.co/0)"
                 _IN_MEMORY_FS["final_report.md"] = "placeholder"
                 rs = RunState(tmpdir_e)
                 for i in range(3):
@@ -1939,7 +1955,7 @@ def main():
             # "first verdict wins" over check_missing_artifact. check_missing_artifact must get
             # the verdict instead until the Builder actually gets dispatched at least once.
             with tempfile.TemporaryDirectory() as tmpdir_g:
-                _IN_MEMORY_FS["findings.md"] = "placeholder"
+                _IN_MEMORY_FS["findings.md"] = "- [Heuristics](https://a.example.co/x)\n- [Culture](https://b.example.co/0)"
                 _IN_MEMORY_FS.pop("final_report.md", None)
                 rs = RunState(tmpdir_g)
                 rs.add_finding("https://a.example.co/x", "summary", task_name="Heuristics", depth=1)
@@ -1953,6 +1969,10 @@ def main():
                 assert recorded != "uneven_task_investment", (
                     "must never fire before final_report.md exists, even once findings.md does "
                     "-- this is the exact 2026-07-23 regression #2", recorded, msgs)
+                assert recorded == "missing_artifact", (
+                    "check_missing_artifact must get the verdict here, not "
+                    "check_findings_underuses_evidence (findings.md already cites both tasks)",
+                    recorded, msgs)
         finally:
             _IN_MEMORY_FS.clear()
             _IN_MEMORY_FS.update(saved_fs)
@@ -1967,6 +1987,73 @@ def main():
                 _config.cfg["settings"]["grounding_check"] = _orig_gc11
 
     contextvars.copy_context().run(_uneven_task_investment_scenario)
+
+    # --- check_findings_underuses_evidence (2026-07-26 live case: a balanced 2-facet run, green
+    # tea + Roman Empire, both genuinely "covered" per coverage() -- FindingsWriter still wrote a
+    # findings.md covering only one topic, and nothing caught the other topic's total omission).
+    # Direct calls against the check function itself, not the full run_completion_check pipeline,
+    # since the min_tasks gate and "at least one URL present" logic is self-contained. ---
+    def _findings_underuses_evidence_scenario():
+        from engine.completion import check_findings_underuses_evidence, Ctx
+        from utils.run_state import RunState
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rs = RunState(tmpdir)
+            rs.add_finding("https://a.example.co/x", "s", task_name="green_tea", depth=1)
+            rs.add_finding("https://b.example.co/y", "s", task_name="roman_empire", depth=1)
+            # Nested (depth>1) Analyzer findings must be ignored -- only top-level task coverage
+            # matters here, same convention as RunState.coverage() itself.
+            rs.add_finding("https://a.example.co/nested", "s", task_name="green_tea", depth=2)
+
+            def _ctx(findings_content):
+                return Ctx(req_artifact="final_report.md", attempt=0, max_attempts=8,
+                           delegated=True, files=["findings.md"], content=None,
+                           quotas=None, run_state=rs)
+
+            # (a) findings.md cites ONLY green_tea's URL -> roman_empire is entirely dropped, fires.
+            verdict = check_findings_underuses_evidence(_ctx(None))
+            # get_workspace_file_content reads the real workspace, not ctx.content -- set it up.
+            from tools.fs import _IN_MEMORY_FS
+            _orig_ws = _config.cfg.get("settings", {}).get("workspace")
+            _config.cfg["settings"]["workspace"] = {"type": "memory"}
+            saved_fs = dict(_IN_MEMORY_FS)
+            try:
+                _IN_MEMORY_FS.clear()
+                _IN_MEMORY_FS["findings.md"] = "- [Green Tea](https://a.example.co/x)\n- more green tea content."
+                verdict = check_findings_underuses_evidence(_ctx(None))
+                assert verdict is not None and verdict.problem == "findings_underuses_evidence", verdict
+                assert "roman_empire" in verdict.warning, verdict.warning
+
+                # (b) findings.md cites BOTH tasks' real URLs -> no problem, even though citation
+                # counts are uneven (that's check_uneven_task_investment's job, not this one).
+                _IN_MEMORY_FS["findings.md"] = (
+                    "- [Green Tea](https://a.example.co/x)\n- [Roman Empire](https://b.example.co/y)")
+                assert check_findings_underuses_evidence(_ctx(None)) is None
+
+                # (c) only 1 covered top-level task -> min_tasks gate blocks it regardless.
+                rs2 = RunState(tmpdir)
+                rs2.add_finding("https://a.example.co/x", "s", task_name="green_tea", depth=1)
+                _IN_MEMORY_FS["findings.md"] = "no citations at all"
+                ctx_one_task = Ctx(req_artifact="final_report.md", attempt=0, max_attempts=8,
+                                    delegated=True, files=["findings.md"], content=None,
+                                    quotas=None, run_state=rs2)
+                assert check_findings_underuses_evidence(ctx_one_task) is None
+
+                # (d) findings.md missing entirely -> not this check's job (check_missing_findings).
+                _IN_MEMORY_FS.pop("findings.md", None)
+                ctx_no_findings = Ctx(req_artifact="final_report.md", attempt=0, max_attempts=8,
+                                       delegated=True, files=[], content=None,
+                                       quotas=None, run_state=rs)
+                assert check_findings_underuses_evidence(ctx_no_findings) is None
+            finally:
+                _IN_MEMORY_FS.clear()
+                _IN_MEMORY_FS.update(saved_fs)
+                if _orig_ws is None:
+                    _config.cfg["settings"].pop("workspace", None)
+                else:
+                    _config.cfg["settings"]["workspace"] = _orig_ws
+
+    contextvars.copy_context().run(_findings_underuses_evidence_scenario)
 
     # --- check_report_underuses_findings (2026-07-22): Builder's own version of check_thin_
     # coverage, one stage downstream. Live-confirmed the SAME evidence-abandonment pattern this

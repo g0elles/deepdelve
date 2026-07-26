@@ -162,6 +162,15 @@ settings:
   # budget truncation within a single write (that's already surfaced to the model separately).
   stale_findings_check:
     enabled: true
+  # check_findings_underuses_evidence (2026-07-26): findings.md can silently drop an ENTIRE
+  # delegated task's real research while consolidating -- confirmed live, a balanced 2-facet run
+  # (7 sources one topic, 5 the other, both fully "covered" per coverage()) produced a findings.md
+  # covering only one topic, with nothing anywhere (not check_thin_coverage, not
+  # check_report_underuses_findings) catching that the second topic vanished outright. Fires when
+  # a covered top-level task has ZERO of its real fetched URLs cited anywhere in findings.md.
+  findings_evidence_check:
+    enabled: true
+    min_tasks: 2  # need at least this many covered tasks -- can't detect "one topic missing" with just one
   # Engine-driven iterative deepening (2026-07-19, ROADMAP item 10, dzhng/deep-research pattern):
   # when a thin_coverage retry fires AND a Searcher's own real "FOLLOW-UP DIRECTIONS:" section
   # named a real lead, the ENGINE dispatches those directions directly as new tasks (geometric

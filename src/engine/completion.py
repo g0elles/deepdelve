@@ -427,6 +427,97 @@ def check_stale_findings(ctx: Ctx) -> Optional[Verdict]:
     )
 
 
+def check_findings_underuses_evidence(ctx: Ctx) -> Optional[Verdict]:
+    """check_report_underuses_findings' own diagnosis, one stage further upstream: that check
+    compares final_report.md against findings.md, but findings.md itself can already have
+    silently dropped an entire real, delegated research task before Builder ever gets a turn --
+    a gap this project already named as a known risk (2026-07-24, "worth a
+    check_findings_underuses_evidence-shaped check if this recurs... no check currently exists for
+    this specific gap") but left unbuilt, since that session's only observed instance was a single
+    dropped finding (12/13 kept) inside otherwise-successful FindingsWriter output.
+
+    Confirmed live 2026-07-26, a far more severe recurrence:
+    `explain_the_health_benefits_of_green_tea_and_separ_20260726_113029` delegated two clean,
+    balanced top-level tasks (7 real green-tea sources, 5 real Roman-Empire sources --
+    `run_state.coverage()` correctly showed both `covered`, ratio 1.0, so check_thin_coverage/
+    check_uneven_task_investment both correctly stayed silent, there was no research-volume
+    problem). FindingsWriter then wrote a 30-line `findings.md` titled "Green Tea Health
+    Findings" containing ZERO mention of the Roman Empire task -- not thin, not truncated, an
+    entire covered task's real evidence vanished outright. `final_report.md` then correctly
+    built from what findings.md gave it (0 unused findings.md URLs, so check_report_underuses_
+    findings had nothing to catch either) and the run's own final verdict never surfaced this --
+    just `Retry budget exhausted (uncited_claims)`, an unrelated problem. Half the original
+    two-facet query silently disappeared with no check anywhere naming it.
+
+    Deliberately per-TASK, not a flat citation-count ratio (unlike check_report_underuses_
+    findings): a ratio comparison of findings.md's own citations against itself is vacuous --
+    findings.md trivially "uses" 100% of whatever it happens to contain. The only way to see a
+    whole task go missing is to compare against run_state's real, independent research record
+    (the same source check_thin_coverage/check_uneven_task_investment already trust), checking
+    whether each COVERED top-level task has AT LEAST ONE of its real fetched URLs cited anywhere
+    in findings.md -- exactly the binary signal this incident needed. Same
+    "genuinely never included vs. correctly deferred for budget reasons" concern
+    check_stale_findings' own docstring raises for a similar-looking set-difference design does
+    NOT apply here: a task with ZERO of its real URLs surviving isn't a partial/budget-truncated
+    inclusion (_build_findings_source_material keeps whole entries, never truncates one
+    mid-way -- see its own docstring), it's total omission."""
+    cfg = config.cfg.get("settings", {}).get("findings_evidence_check", {})
+    if not cfg.get("enabled", True):
+        return None
+    if "findings.md" not in ctx.files:
+        return None
+    from utils.grounding import extract_cited_urls, _urls_prefix_match
+    findings_urls = {u.rstrip('/') for u in extract_cited_urls(get_workspace_file_content("findings.md") or "")}
+
+    by_task: dict[str, set] = {}
+    for f in ctx.run_state.data.get("findings", []):
+        if f.get("depth") != 1:
+            continue
+        name = f.get("task_name")
+        url = (f.get("source_url") or "").strip()
+        if not name or not url.startswith("http"):
+            continue
+        by_task.setdefault(name, set()).add(url.rstrip('/'))
+
+    min_tasks = cfg.get("min_tasks", 2)
+    if len(by_task) < min_tasks:
+        return None
+    dropped = sorted(
+        name for name, urls in by_task.items()
+        if not any(u in findings_urls or any(_urls_prefix_match(u, f) for f in findings_urls) for u in urls)
+    )
+    if not dropped:
+        return None
+
+    prior_same = 0
+    for a in reversed(ctx.run_state.data.get("completion_check_attempts", [])):
+        if a.get("problem") == "findings_underuses_evidence":
+            prior_same += 1
+        else:
+            break
+
+    dropped_list = ", ".join(f"'{n}'" for n in dropped[:5])
+    if prior_same == 0:
+        directive = (
+            f"'findings.md' has NO entries at all for delegated task(s) {dropped_list}, even "
+            f"though real research results exist for them this run. This looks like an entire "
+            f"research angle was dropped while consolidating, not just thinly covered. Rebuild "
+            f"'findings.md' from ALL current results, making sure every delegated task with real "
+            f"sources gets at least one entry — do not let one topic crowd another out entirely."
+        )
+    else:
+        directive = (
+            f"'findings.md' STILL has no entries for {dropped_list} after a prior warning. Do not "
+            f"just lightly edit the existing draft — add real entries for these tasks' sources too."
+        )
+
+    return Verdict(
+        "findings_underuses_evidence",
+        f"'findings.md' has no entries at all for delegated task(s) {dropped_list}, despite real research results existing for them. Pushing agent to rebuild it with everything included.",
+        f"SYSTEM WARNING: {ctx.last_chance_prefix}{directive}",
+    )
+
+
 def check_missing_artifact(ctx: Ctx) -> Optional[Verdict]:
     """A model that already has real delegated research results in its own context but still
     hasn't written the artifact tends to respond to a generic nudge by re-delegating again
@@ -958,6 +1049,7 @@ COMPLETION_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
     check_findings_ungrounded,
     check_missing_findings,
     check_stale_findings,
+    check_findings_underuses_evidence,
     check_missing_artifact,
     # Both require findings.md AND the final artifact to already exist (own docstrings explain
     # why -- two live regressions, 2026-07-23) -- placed after both existence checks above so
@@ -1016,7 +1108,8 @@ _BUILDER_FIXABLE_PROBLEMS = ("missing_artifact", "not_grounded", "claim_unsuppor
 # dispatch_task is None), both problems fall back to the classic inject-into-Planner path so an
 # older/custom SubAgentConfig setup that hasn't added FindingsWriter doesn't just silently stop
 # working.
-_FINDINGS_WRITER_FIXABLE_PROBLEMS = ("missing_findings", "findings_ungrounded", "stale_findings")
+_FINDINGS_WRITER_FIXABLE_PROBLEMS = ("missing_findings", "findings_ungrounded", "stale_findings",
+                                     "findings_underuses_evidence")
 
 
 def _quarantine_artifact(req_artifact: str, attempt: int) -> None:
@@ -2122,6 +2215,15 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                                     "from ALL of the current real research results below (this "
                                     "includes everything from before, plus what's new), not just "
                                     "the newest additions."
+                                )
+                            elif problem == "findings_underuses_evidence":
+                                write_directive = (
+                                    "The previous findings.md draft entirely dropped at least one "
+                                    "delegated research task -- not thin, MISSING, even though real "
+                                    "results exist for it below. Rebuild findings.md from ALL of the "
+                                    "real research results below, making sure EVERY distinct "
+                                    "delegated task with a real source gets at least one entry -- "
+                                    "do not let one topic crowd another out of the file entirely."
                                 )
                             else:
                                 write_directive = "findings.md has never been written yet. Write it now from the real research results below."
