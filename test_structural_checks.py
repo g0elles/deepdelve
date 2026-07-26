@@ -59,6 +59,22 @@ def main():
         prior,
     ) is None
 
+    # --- specialist per-task delegation cap (2026-07-26 live case: one WebSearcher task
+    # delegated 6+ Analyzer sub-tasks for a trivial single-fact query, burning most of the run's
+    # global delegate_tasks budget) ---
+    from engine.orchestrator import _specialist_delegation_over_cap
+    assert not _specialist_delegation_over_cap(current_count=0, batch_size=3, cap=3), (
+        "a batch that exactly fills the cap must be allowed")
+    assert not _specialist_delegation_over_cap(current_count=1, batch_size=2, cap=3), (
+        "a batch that lands exactly on the cap after prior dispatches must be allowed")
+    assert _specialist_delegation_over_cap(current_count=0, batch_size=4, cap=3), (
+        "a single batch larger than the cap must be rejected")
+    assert _specialist_delegation_over_cap(current_count=2, batch_size=2, cap=3), (
+        "a batch that would push a task past its cap, even if the batch itself is small, must be rejected"
+    )
+    assert not _specialist_delegation_over_cap(current_count=0, batch_size=0, cap=3), (
+        "an empty batch never exceeds any cap")
+
     # --- FOLLOW-UP DIRECTIONS extraction (2026-07-19, engine-driven iterative deepening,
     # ROADMAP item 10) — matches WEB_SEARCHER_INSTRUCTIONS/ACADEMIC_SEARCHER_INSTRUCTIONS'
     # mandated trailing section format. ---

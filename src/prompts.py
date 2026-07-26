@@ -404,6 +404,11 @@ After each web search or fetch, use `think_tool` to evaluate:
 - **search_verified_findings**: {search_verified_findings_quota} maximum calls
 - **delegate_tasks**: {delegate_tasks_quota} maximum calls
 
+**Per-Task Analyzer Cap (hard enforced, not shared with other tasks)**:
+You may delegate at most {specialist_delegation_cap} Analyzer tasks total for THIS research task —
+any delegate_tasks call that would exceed it is rejected outright. Budget your sources accordingly:
+this is small on purpose, so spend it on your best source(s), not every source you find.
+
 **Quota Exhaustion**:
 If a tool returns a quota error, STOP immediately. Return all findings collected so far.
 
@@ -535,6 +540,11 @@ After each search or fetch, use `think_tool` to evaluate:
 - **fetch_url_to_workspace**: {fetch_url_to_workspace_quota} maximum calls
 - **search_verified_findings**: {search_verified_findings_quota} maximum calls
 - **delegate_tasks**: {delegate_tasks_quota} maximum calls
+
+**Per-Task Analyzer Cap (hard enforced, not shared with other tasks)**:
+You may delegate at most {specialist_delegation_cap} Analyzer tasks total for THIS research task —
+any delegate_tasks call that would exceed it is rejected outright. Budget your sources accordingly:
+this is small on purpose, so spend it on your best source(s), not every source you find.
 
 **Quota Exhaustion**:
 If a tool returns a quota error, STOP immediately. Return all findings collected so far, clearly

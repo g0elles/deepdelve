@@ -116,6 +116,14 @@ settings:
       limit: 30
       rules:
         max_matches: 10
+  # Per-task cap (NOT part of the global quotas pool above) on how many Analyzer children ONE
+  # Tier-2 specialist task (WebSearcher/AcademicSearcher) may spawn via its own delegate_tasks
+  # call. Added 2026-07-26: a live smoke test on a trivial single-fact query saw one WebSearcher
+  # task delegate 6+ Analyzer sub-tasks despite its own prompt saying "ONE authoritative source is
+  # sufficient" — a soft "stop early" instruction the local model didn't reliably follow, burning
+  # most of the run's entire global delegate_tasks budget on one facet before the Planner got
+  # another turn. This is a structural backstop, independent of the global quotas above.
+  specialist_delegation_cap: 3
   # How much extra headroom a completion-check retry gets on top of whatever's left in the shared
   # pool, per tool. Fixes the old project's bug where all 3 retries drew from the same
   # already-exhausted budget as the failed first attempt (see README "Completion Checks").

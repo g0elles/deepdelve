@@ -23,6 +23,26 @@ _session = None
 delegation_depth_ctx = contextvars.ContextVar('delegation_depth_ctx', default=0)
 available_sub_agents_ctx = contextvars.ContextVar('available_sub_agents_ctx', default=[])
 
+# Per-task-instance counter of Analyzer children a Tier-2 specialist (WebSearcher/AcademicSearcher)
+# has spawned via its own delegate_tasks call, reset fresh for every _run_single_task dispatch (see
+# its setup block) -- NOT the same thing as the global delegate_tasks quota (tool_quotas_ctx),
+# which is shared cumulatively across every tier and has no per-task ceiling. Added 2026-07-26: a
+# live smoke test on a trivial single-fact query ("what is the Cretaceous-Paleogene boundary") saw
+# ONE WebSearcher task delegate 6+ Analyzer sub-tasks (Wikipedia, Britannica, USGS, EPOD, Web
+# Archive, Fiveable) despite its own prompt saying "ONE authoritative source is sufficient" -- a
+# soft "stop early" instruction the local model didn't reliably follow, burning most of the run's
+# entire global delegate_tasks budget on one facet. See _specialist_delegation_over_cap below.
+# A single-element list, not a plain int -- MUST be mutated in place (list[0] += ...), never
+# reassigned via .set() after the initial per-task set in _run_single_task. Confirmed live
+# 2026-07-26: an int-based version using ctx.set(new_value) on every delegate_tasks call silently
+# never accumulated (8 Analyzer children spawned from one task, zero cap rejections) -- the SDK's
+# tool-execution dispatch runs separate delegate_tasks invocations as separate asyncio Tasks, so a
+# .set() inside one call only mutates that Task's own context copy and never propagates to the
+# next sibling call. Mirrors task_fetched_urls_ctx's own list-based pattern just above, which
+# sidesteps this exact pitfall by mutating a shared, referenced object instead of reassigning the
+# contextvar.
+specialist_delegate_task_count_ctx = contextvars.ContextVar('specialist_delegate_task_count_ctx', default=None)
+
 # Roles dispatched by engine/completion.py's _dispatch_writer_review_fix (Write->Review->Fix loop),
 # not by the Planner's own delegate_tasks. They're called directly from the Planner's top-level
 # context, so they land at delegation_depth_ctx==1 exactly like a genuine research dispatch -- depth
@@ -270,6 +290,14 @@ def _looks_like_renamed_task(task_name: str, instructions: str, prior_tasks: lis
     return None
 
 
+def _specialist_delegation_over_cap(current_count: int, batch_size: int, cap: int) -> bool:
+    """True if a Tier-2 specialist's next delegate_tasks batch would push its own per-task
+    Analyzer-child count over `cap` -- see specialist_delegate_task_count_ctx's header comment for
+    why this exists (a global-quota-only world let one over-researching task consume a whole run's
+    shared delegation budget)."""
+    return current_count + batch_size > cap
+
+
 def _get_quota_format_vars() -> dict:
     """Extract all quotas from config as {tool_name_quota: int} format variables.
 
@@ -281,6 +309,10 @@ def _get_quota_format_vars() -> dict:
     result = {}
     for key, val in quotas.items():
         result[key + "_quota"] = val.get("limit", 0) if isinstance(val, dict) else val
+    # Not part of settings.quotas (a separate, per-task-instance cap, not a global pool entry --
+    # see specialist_delegate_task_count_ctx's header comment) but exposed the same way so
+    # WEB_SEARCHER_INSTRUCTIONS/ACADEMIC_SEARCHER_INSTRUCTIONS can reference it as a real number.
+    result["specialist_delegation_cap"] = config.cfg.get("settings", {}).get("specialist_delegation_cap", 3)
     return result
 
 def _safe_format(template: str, **kwargs) -> str:
@@ -733,6 +765,10 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
             # Stable per-dispatch identity for the quota ring-fence's per-task rescue tracking
             # (tools/core.py::check_quota) — see utils/run_state.py's task_id_ctx header comment.
             task_id_token = task_id_ctx.set(_next_task_id())
+            # Fresh per-task-instance Analyzer-delegation counter (see this contextvar's own header
+            # comment — a mutable single-element list, mutated in place, never reassigned) — this
+            # dispatch may itself be a Tier-2 specialist about to call delegate_tasks.
+            specialist_delegate_count_token = specialist_delegate_task_count_ctx.set([0])
             # Expose this task's scope entities to web_search for the query-level scope warning
             # (see utils/run_state.py's scope_entities_ctx header comment).
             scope_token = scope_entities_ctx.set(_extract_scope_entities(instructions))
@@ -1196,6 +1232,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                 delegation_depth_ctx.reset(depth_token)
                 task_fetched_urls_ctx.reset(task_urls_token)
                 task_id_ctx.reset(task_id_token)
+                specialist_delegate_task_count_ctx.reset(specialist_delegate_count_token)
                 scope_entities_ctx.reset(scope_token)
 
     # -------------------------------------------------------------
@@ -1208,6 +1245,25 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
     @tool(name="delegate_tasks", description="Delegate multiple independent tasks to specialized sub-agents to be executed concurrently. Pass a list of dictionaries, each with 'task_name', 'instructions', and 'agent_id' (see your Delegation Routing block for valid agent_id values).")
     @with_quota
     async def delegate_tasks(tasks: list[dict]) -> str:
+        # Per-task specialist-delegation cap (depth > 0 == a Tier-2 specialist delegating to its
+        # own Analyzer children, never the Planner's own top-level call — see
+        # specialist_delegate_task_count_ctx's header comment). Checked BEFORE the schema
+        # validation below, same reject-not-truncate shape as that validation: the goal is to make
+        # the specialist actually stop and synthesize its findings, not dispatch a partial batch
+        # and think it can keep going.
+        specialist_delegation_counter = None
+        if delegation_depth_ctx.get() > 0:
+            cap = config.cfg.get("settings", {}).get("specialist_delegation_cap", 3)
+            specialist_delegation_counter = specialist_delegate_task_count_ctx.get()
+            current = specialist_delegation_counter[0] if specialist_delegation_counter is not None else 0
+            if _specialist_delegation_over_cap(current, len(tasks), cap):
+                return (
+                    f"Error: delegate_tasks call rejected — this task has already delegated "
+                    f"{current} source(s) for analysis (cap: {cap} per task, no quota was consumed "
+                    f"on this rejected call). Stop searching for more sources: synthesize and return "
+                    f"your consolidated findings now instead of dispatching more Analyzers. Per your "
+                    f"own instructions, one authoritative source is usually sufficient."
+                )
         # -------------------------------------------------------------
         # Validate BEFORE dispatching anything. Found via a real end-to-end test: a model emitted
         # tasks shaped like {"due": 1, "task": "..."} instead of {"task_name", "instructions",
@@ -1398,6 +1454,8 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                 "was consumed on wasted work). Fix the shape and call delegate_tasks again with valid "
                 "tasks:\n" + "\n".join(errors)
             )
+        if specialist_delegation_counter is not None:
+            specialist_delegation_counter[0] += len(tasks)
 
         # Structural enforcement of the user's own exclusion rules — confirmed live three times
         # that the prompt-level rule alone doesn't hold (4 explicitly-excluded sectors researched
