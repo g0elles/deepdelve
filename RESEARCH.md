@@ -1643,3 +1643,70 @@ already modeled, now applied to a broader and better-evidenced question.
 **Explicit gaps, not yet closed**: CrewAI/AutoGen/CAMEL/LangGraph primary docs unread (snippets
 only); Perplexity's and OpenAI's own deep-research writeups entirely unchecked. Close these before
 any comparative claim against those specific systems ships in a publishable writeup.
+
+### 9a. Gap-closing follow-up (2026-07-26, same day) — all 6 gaps closed, verdict strengthened
+
+Dedicated follow-up pass, primary sources read directly for every item (no snippet-only claims):
+
+- **CrewAI** ([docs.crewai.com/en/concepts/tasks](https://docs.crewai.com/en/concepts/tasks),
+  Guardrails). Two flavors: function-based (genuinely deterministic — closest of the six to
+  DeepDelve's structural checks) and LLM-based (`LLMGuardrail`, run by the SAME agent's own LLM).
+  On failure: "the error is sent back to the agent, and the task is retried" — a same-loop retry,
+  not an independent fresh-context critic. No ground-truth comparison, no independent reviewer, no
+  priority-ordered pipeline, no starvation guard, no salvage path, no regression test over guardrail
+  logic. Partial mechanism overlap (determinism exists for the check itself in the function-based
+  case), zero architectural overlap otherwise.
+- **AutoGen/AG2** ([docs.ag2.ai/latest/docs/blog/2024/05/24/Agent](https://docs.ag2.ai/latest/docs/blog/2024/05/24/Agent/)).
+  Generator+Critic pair, but the critic participates in the SAME running conversation transcript,
+  not a genuinely fresh/unshared context — closer to the Reflexion/Self-Refine same-context
+  category §9 already distinguishes DeepDelve from. **Caveat**: the one notebook that would show
+  whether AG2 ever uses real deterministic tool-grounded feedback (code-execution results as ground
+  truth) 404'd on every fetch attempt and could not be verified directly — flagged as unconfirmed,
+  not asserted.
+- **CAMEL-AI** ([docs.camel-ai.org/key_modules/societies](https://docs.camel-ai.org/key_modules/societies),
+  [github.com/camel-ai/camel/wiki/Critic-Agents-and-Tree-Search](https://github.com/camel-ai/camel/wiki/Critic-Agents-and-Tree-Search)).
+  Optional in-loop Critic agent, same role-playing conversation, purely LLM-based feedback. Their
+  own wiki concedes it "may not really solve the fundamental extrapolation problem." No deterministic
+  check anywhere.
+- **LangGraph Corrective RAG** (raw notebook,
+  [langgraph_crag_local.ipynb](https://raw.githubusercontent.com/langchain-ai/langgraph/main/examples/rag/langgraph_crag_local.ipynb)).
+  The most interesting partial match found across all 6: document-relevance grading is an LLM call
+  (LLM-as-judge), but when documents grade as irrelevant, the graph deterministically ROUTES to a
+  real web-search tool instead of retrying the same LLM. The branch is deterministic; the judgment
+  producing it isn't. No independent-context critic (one shared state graph throughout), no
+  structural check, no regression test over the grading logic.
+- **Perplexity** ([research.perplexity.ai/articles/architecting-and-evaluating-an-ai-first-search-api](https://research.perplexity.ai/articles/architecting-and-evaluating-an-ai-first-search-api),
+  [.../rethinking-search-as-code-generation](https://research.perplexity.ai/articles/rethinking-search-as-code-generation)).
+  Real, genuine engineering depth — but entirely about retrieval/ranking (span-level relevance
+  labeling, cross-encoder reranking, code-generation query orchestration), never citation-to-source
+  correctness or claim verification. Explicitly excluded third-party SEO-blog content
+  (ziptie.dev/authoritytech.io-style pages) that dominates search results for this query. Honest
+  finding: **no primary-source evidence either way** on Perplexity's citation-verification
+  mechanism, not a "they don't have one" claim — just not publicly documented in technical depth.
+- **OpenAI Deep Research** (the actual [system card PDF](https://cdn.openai.com/deep-research-system-card.pdf),
+  read via `pdftotext`, searched for citation/verif/hallucinat/ground-truth terms). This is a
+  safety/red-teaming document, not an architecture writeup — citations mentioned exactly once, in
+  passing, with no described mechanism. Hallucination is reported as a training-time RL-grading /
+  benchmark result (PersonQA), not an inference-time verification layer. **No structural mechanism
+  is described in the primary source** — a genuine gap in OpenAI's public disclosure, not evidence
+  the mechanism doesn't exist internally.
+
+**Updated calibrated verdict, replacing §9's own**: the gap-closing pass **strengthens** the
+existing conclusion; nothing found softens it. Every system examined converges on one of two
+shapes DeepDelve was already correctly distinguished from — same-context/same-loop LLM-as-judge
+critique (CrewAI's default LLMGuardrail, AG2's shared-transcript reflection, CAMEL's in-loop
+Critic, LangGraph's CRAG grader), sometimes with one deterministic ROUTING branch bolted on
+(LangGraph's grade→search fallback, CrewAI's function-based guardrails) but never a deterministic
+CHECK itself — or no documented verification mechanism at all (Perplexity: real depth exists, just
+not on this question; OpenAI: scoped to safety, not architecture). None of the six approaches an
+independently-instantiated, zero-shared-history reviewer; none combines a priority-ordered bank of
+dozens of named deterministic checks; none has a regression test pinning verification logic
+itself; every one assumes a frontier-class or well-resourced generator, not the local sub-30B
+regime DeepDelve targets. The honest framing from §9 stands, now with all explicit gaps closed:
+"a disciplined, unusually deep combination of known techniques applied to an underserved regime,"
+not "invented verification for LLM agents from scratch."
+
+**One residual limitation**: AG2's `agentchat_auto_feedback_from_code_execution.ipynb` notebook
+(the one that would show real tool-grounded deterministic feedback, closest analog to DeepDelve's
+own checks) could not be fetched (404 on every attempt) — worth a further-targeted look if an AG2
+comparison specifically becomes load-bearing for a publishable claim. No other gaps remain open.
