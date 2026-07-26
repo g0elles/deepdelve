@@ -1,5 +1,6 @@
 import os
 import asyncio
+import difflib
 import re
 import time
 from dataclasses import dataclass
@@ -248,6 +249,26 @@ def _lacks_concrete_subject(instructions: str) -> bool:
             if re.match(r"[A-Z][a-zA-Z]{2,}", w):
                 return False
     return True
+
+def _looks_like_renamed_task(task_name: str, instructions: str, prior_tasks: list) -> Optional[str]:
+    """Heuristic-only (difflib similarity, not a deterministic error) detector for the Planner
+    renaming the same research angle across retries instead of redispatching under the same
+    task_name (e.g. 'background_heuristic_algorithms' -> '_refined' -> '_final'; confirmed live,
+    one angle redispatched 43 times total under --resume-run this way). Root cause: nothing
+    anywhere tells the model to keep task_name stable, and the coverage/investment nudges'
+    own "phrased differently" wording nudges it toward inventing a new name too. Deliberately
+    NOT wired as a hard delegate_tasks validation error like the other checks in that loop --
+    a fuzzy match is a guess, not a fact, and must never be able to jam a batch of otherwise-valid
+    tasks the way the placeholder/pronoun/cross-task-dependency checks correctly do for real
+    deterministic errors. Returns the matched prior task_name, or None."""
+    for prior in prior_tasks:
+        if prior.get("task_name") == task_name:
+            continue  # same-name reuse is the expected, legitimate case, not a rename
+        ratio = difflib.SequenceMatcher(None, instructions or "", prior.get("instructions") or "").ratio()
+        if ratio > 0.6:
+            return prior.get("task_name")
+    return None
+
 
 def _get_quota_format_vars() -> dict:
     """Extract all quotas from config as {tool_name_quota: int} format variables.
@@ -1363,8 +1384,11 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
         # wholesale rejection makes the model abandon delegation and fabricate instead.
         run_state = run_state_ctx.get()
         excluded_topics = _extract_excluded_topics(run_state.data.get("query", "")) if run_state else set()
+        prior_dispatched = run_state.data.setdefault("dispatched_tasks", []) if run_state else []
         skipped = []
         coroutines = []
+        dispatched_names = []
+        rename_note_by_name = {}
         for t in tasks:
             name = t.get("task_name")
             instr = t.get("instructions")
@@ -1385,6 +1409,17 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                     f"findings.md or the final report, and do not re-delegate it.\n---"
                 )
                 continue
+            renamed_from = _looks_like_renamed_task(name, instr, prior_dispatched)
+            if renamed_from:
+                rename_note_by_name[name] = (
+                    f"Note: this task's instructions look very similar to already-dispatched task "
+                    f"{renamed_from!r} — if this is a retry of that same angle, reuse "
+                    f"task_name={renamed_from!r} instead of a new name, so it's tracked as a "
+                    f"continuation, not a new untracked angle."
+                )
+            if run_state is not None:
+                prior_dispatched.append({"task_name": name, "instructions": instr})
+            dispatched_names.append(name)
             coroutines.append(_run_single_task(name, instr, aid))
 
         if skipped and not coroutines:
@@ -1423,11 +1458,15 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                 await sem.acquire()
 
         final_output = list(skipped)
-        for res in results:
+        for name, res in zip(dispatched_names, results):
             if isinstance(res, Exception):
                 final_output.append(f"## Error\nTask failed with exception: {res}\n---")
             else:
-                final_output.append(str(res))
+                text = str(res)
+                note = rename_note_by_name.get(name)
+                if note:
+                    text = f"{note}\n{text}"
+                final_output.append(text)
 
         return "\n\n".join(final_output)
 

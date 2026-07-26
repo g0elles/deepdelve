@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src
 
 from engine.orchestrator import (
     _extract_excluded_topics, _lacks_concrete_subject, _extract_follow_up_directions,
-    _ring_fenced_deadline,
+    _ring_fenced_deadline, _looks_like_renamed_task,
 )
 from engine.completion import (
     _CUTOFF_ONLY_SUMMARY_RE, _reorder_findings_for_position_bias, _find_propagated_bad_content,
@@ -36,6 +36,28 @@ def main():
     assert not _lacks_concrete_subject("Find studies about coffee and how it affects sleep in Colombia.")
     # Long instructions are never flagged, whatever pronouns they use.
     assert not _lacks_concrete_subject("evaluate it against " + "criteria " * 30)
+
+    # --- renamed-task-on-redispatch detection (2026-07-24 Planner redelegation-loop root cause:
+    # 'background_heuristic_algorithms' -> '_refined' -> '_final', same angle, new name each time) ---
+    prior = [{"task_name": "background_heuristic_algorithms",
+              "instructions": "Research the top 5 heuristic algorithms used for retail sales forecasting."}]
+    assert _looks_like_renamed_task(
+        "background_heuristic_algorithms_refined",
+        "Research the top 5 heuristic algorithms used for retail sales demand forecasting.",
+        prior,
+    ) == "background_heuristic_algorithms"
+    # A genuinely different task on unrelated instructions must not be flagged.
+    assert _looks_like_renamed_task(
+        "colombia_holiday_spending",
+        "Find data on Colombian holiday consumer spending culture.",
+        prior,
+    ) is None
+    # Same task_name reused verbatim is the expected, legitimate retry shape — must not double-nudge.
+    assert _looks_like_renamed_task(
+        "background_heuristic_algorithms",
+        "Research the top 5 heuristic algorithms used for retail sales forecasting, try again.",
+        prior,
+    ) is None
 
     # --- FOLLOW-UP DIRECTIONS extraction (2026-07-19, engine-driven iterative deepening,
     # ROADMAP item 10) — matches WEB_SEARCHER_INSTRUCTIONS/ACADEMIC_SEARCHER_INSTRUCTIONS'

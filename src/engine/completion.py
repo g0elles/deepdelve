@@ -137,7 +137,10 @@ def check_thin_coverage(ctx: Ctx) -> Optional[Verdict]:
             f"actually turned up a real source ({uncovered_list} came back empty). Do NOT write "
             f"the final report around only the tasks that worked — delegate_tasks again for the "
             f"uncovered angles, phrased differently or with a narrower query if the first attempt "
-            f"was too broad or too specific to find anything."
+            f"was too broad or too specific to find anything. Reuse the exact same task_name as "
+            f"before for each angle you redelegate — only change the instructions/query wording, "
+            f"do NOT invent a new task_name; a renamed task_name looks like a brand-new, "
+            f"untracked angle to this system."
         )
     else:
         directive = (
@@ -228,7 +231,10 @@ def check_uneven_task_investment(ctx: Ctx) -> Optional[Verdict]:
             f"(real sources per task). {starved_list} only found a thin/shallow source while other "
             f"tasks found several — do NOT let the well-researched tasks crowd this one out of the "
             f"final report. delegate_tasks again for {starved_list}, phrased differently or narrower "
-            f"than the first attempt, before finishing."
+            f"than the first attempt, before finishing. Reuse the exact same task_name as before for "
+            f"each angle you redelegate — only change the instructions/query wording, do NOT invent "
+            f"a new task_name; a renamed task_name looks like a brand-new, untracked angle to this "
+            f"system."
         )
     else:
         directive = (
