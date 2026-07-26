@@ -19,6 +19,19 @@ _PROPER_NOUN_STOPWORDS = {
 }
 
 
+def _normalize_url(url: str) -> str:
+    """Percent-decode + strip trailing slash, so a citation that got percent-encoded (by the model
+    or by markdown mangling) still matches the same URL as actually fetched (which is stored with
+    raw Unicode chars, e.g. 'Cretaceous–Paleogene...'). Confirmed live 2026-07-26: a real, correctly
+    fetched Wikipedia citation containing an en-dash was written back by the model as
+    '...Cretaceous%E2%80%93Paleogene...' — the exact-string/rstrip('/') comparison used everywhere
+    below treated that as a DIFFERENT, unfetched URL, false-flagging a legitimate finding as
+    hallucinated and excluding it from findings.md entirely (the run's real content got salvage-empty
+    as a result)."""
+    from urllib.parse import unquote
+    return unquote(url).rstrip('/')
+
+
 def _urls_prefix_match(a: str, b: str) -> bool:
     """Prefix-match fallback for URL grounding (handles redirect variants and added query
     strings) — but a bare-origin URL (no path) never prefix-grounds a deep link. Confirmed live
@@ -334,7 +347,7 @@ def _fetched_url_files() -> dict:
     (soft-404/paywall shells flagged by tools/web.py's _stub_reason): a stub can neither support
     a claim nor be meaningfully line-checked — chrome text matching a claim's terms proves
     nothing. Citing a stub is caught upstream by real_grounding_problem's stub gate instead."""
-    return {entry["url"].rstrip('/'): entry["filename"]
+    return {_normalize_url(entry["url"]): entry["filename"]
             for entry in get_fetched_urls() if not entry.get("stub")}
 
 
@@ -345,7 +358,7 @@ def _line_cited_files(line: str, fetched: dict, ref_map: dict) -> list[str]:
     line-scoped checks see academic citations the same way the hard URL gate does."""
     files = []
     for u in extract_cited_urls(line):
-        key = u.rstrip('/')
+        key = _normalize_url(u)
         fn = fetched.get(key) or next(
             (f for orig, f in fetched.items() if _urls_prefix_match(key, orig)), None)
         if fn:
@@ -354,7 +367,7 @@ def _line_cited_files(line: str, fetched: dict, ref_map: dict) -> list[str]:
         rkey = _academic_citation_key(pm.group(0))
         if not rkey or rkey not in ref_map:
             continue
-        url = ref_map[rkey].rstrip('/')
+        url = _normalize_url(ref_map[rkey])
         fn = fetched.get(url) or next(
             (f for orig, f in fetched.items() if _urls_prefix_match(url, orig)), None)
         if fn and fn not in files:
@@ -982,9 +995,9 @@ def fully_ungrounded(content: str) -> str | None:
     cited = extract_cited_urls(content)
     if not cited:
         return "no_urls"
-    fetched = {entry["url"].rstrip('/') for entry in get_fetched_urls()}
+    fetched = {_normalize_url(entry["url"]) for entry in get_fetched_urls()}
     for u in cited:
-        key = u.rstrip('/')
+        key = _normalize_url(u)
         if key in fetched or any(_urls_prefix_match(key, f) for f in fetched):
             return None
     return "all_cited_urls_unverified"
@@ -1018,10 +1031,10 @@ def partially_ungrounded(content: str) -> str | None:
     cited = extract_cited_urls(content)
     if not cited:
         return None  # fully_ungrounded's own no_urls case already covers a wholesale-empty file
-    fetched = {entry["url"].rstrip('/') for entry in get_fetched_urls()}
+    fetched = {_normalize_url(entry["url"]) for entry in get_fetched_urls()}
     bad = [
         u for u in cited
-        if u.rstrip('/') not in fetched and not any(_urls_prefix_match(u.rstrip('/'), f) for f in fetched)
+        if _normalize_url(u) not in fetched and not any(_urls_prefix_match(_normalize_url(u), f) for f in fetched)
     ]
     if not bad:
         return None
@@ -1038,8 +1051,8 @@ async def real_grounding_problem(content: str) -> str | None:
         return "no_urls"
 
     fetched_entries = get_fetched_urls()
-    fetched = {entry["url"].rstrip('/') for entry in fetched_entries}
-    unverified = [u for u in cited if u.rstrip('/') not in fetched and not any(_urls_prefix_match(u.rstrip('/'), f) for f in fetched)]
+    fetched = {_normalize_url(entry["url"]) for entry in fetched_entries}
+    unverified = [u for u in cited if _normalize_url(u) not in fetched and not any(_urls_prefix_match(_normalize_url(u), f) for f in fetched)]
 
     gc_cfg = config.cfg.get("settings", {}).get("grounding_check", {})
 
@@ -1059,15 +1072,15 @@ async def real_grounding_problem(content: str) -> str | None:
     # URL that the domain answered with a 200 subscription shell passed this gate as a "real"
     # fetch. A URL also fetched non-stub elsewhere (retry that got the real page) stays valid.
     if gc_cfg.get("stub_detection", True):
-        non_stub = {e["url"].rstrip('/') for e in fetched_entries if not e.get("stub")}
-        stub_only = {e["url"].rstrip('/') for e in fetched_entries if e.get("stub")} - non_stub
+        non_stub = {_normalize_url(e["url"]) for e in fetched_entries if not e.get("stub")}
+        stub_only = {_normalize_url(e["url"]) for e in fetched_entries if e.get("stub")} - non_stub
         if stub_only:
             stub_cited = [
                 u for u in cited
-                if u.rstrip('/') not in non_stub
-                and not any(_urls_prefix_match(u.rstrip('/'), f) for f in non_stub)
-                and (u.rstrip('/') in stub_only
-                     or any(_urls_prefix_match(u.rstrip('/'), f) for f in stub_only))
+                if _normalize_url(u) not in non_stub
+                and not any(_urls_prefix_match(_normalize_url(u), f) for f in non_stub)
+                and (_normalize_url(u) in stub_only
+                     or any(_urls_prefix_match(_normalize_url(u), f) for f in stub_only))
             ]
             if stub_cited:
                 return f"stub_source:{', '.join(stub_cited[:3])}"

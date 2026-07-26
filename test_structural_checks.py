@@ -3918,6 +3918,30 @@ def main():
         "https://example.com/page"
     ], "trailing backtick from inline-code citation style must not survive extraction"
 
+    # --- percent-encoded citation of a genuinely-fetched non-ASCII URL (live case 2026-07-26,
+    # real production run: "explain the main theories for the extinction of the dinosaurs" --
+    # `fetch_url_to_workspace` records the fetched URL with its raw Unicode en-dash
+    # ('Cretaceous–Paleogene_extinction_event'), but the model wrote the citation back
+    # percent-encoded ('Cretaceous%E2%80%93Paleogene_extinction_event'). The old exact-string/
+    # rstrip('/') comparison in real_grounding_problem treated these as two different URLs,
+    # false-flagged a real, correctly-cited finding as hallucinated, and excluded it from
+    # findings.md via _is_citable_finding -- the run's only two substantive findings both hit
+    # this, and the final report came back with zero citable content: "No extractable findings
+    # were identified in any of these sources." despite 27 real sources fetched.) ---
+    import asyncio as _asyncio_pct
+    from utils.grounding import real_grounding_problem as _real_grounding_problem_pct
+
+    async def _percent_encoded_citation_scenario():
+        reset_fetched_urls()
+        record_fetched_url("https://en.wikipedia.org/wiki/Cretaceous–Paleogene_extinction_event",
+                            "cretaceous_paleogene.md")
+        content = ("- **[Wikipedia – Cretaceous–Paleogene extinction event]"
+                   "(https://en.wikipedia.org/wiki/Cretaceous%E2%80%93Paleogene_extinction_event)**")
+        return await _real_grounding_problem_pct(content)
+
+    assert _asyncio_pct.run(_percent_encoded_citation_scenario()) is None, (
+        "a percent-encoded citation of an actually-fetched non-ASCII URL must not be flagged as unverified")
+
     # --- stub-fetch detection (live case run 14: a model-invented URL answered by a 200
     # soft-404 — 5KB of subscription chrome — was recorded as a real fetch and passed the
     # hard URL gate) ---
