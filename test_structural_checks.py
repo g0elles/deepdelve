@@ -2164,6 +2164,53 @@ def main():
                        files=[], content=None, quotas=None, run_state=rs3)
             assert check_task_verification_flagged(ctx3) is None
 
+            # --- "superseded" (2026-07-26 follow-up, same day: a flagged task got redispatched
+            # under a RENAMED task_name instead of being retried under its own name, and the
+            # renamed sibling succeeded -- check_task_verification_flagged kept nudging the stale
+            # original name forever, burning the entire retry budget with zero report ever
+            # written). A flagged task whose dispatched instructions closely match an already-
+            # verified task's instructions must be downgraded to "superseded", not left "flagged". ---
+            rs4 = RunState(tmpdir)
+            rs4.data["dispatched_tasks"] = [
+                {"task_name": "task_flagged", "instructions": "Research the K-Pg boundary definition and age."},
+                {"task_name": "task_kept", "instructions": "Research the K-Pg boundary definition and age, narrower focus."},
+            ]
+            rs4.add_finding("https://a.example.co/x", "real content", task_name="task_kept", depth=1)
+            rs4.add_finding(
+                "https://b.example.co/y",
+                "[SYSTEM VERIFICATION WARNING: stub_source:https://b.example.co/y]",
+                task_name="task_flagged", depth=1,
+            )
+            _update_task_verification(rs4)
+            assert rs4.data["task_verification"]["task_flagged"]["status"] == "superseded", (
+                rs4.data["task_verification"]["task_flagged"])
+            ctx4 = Ctx(req_artifact="final_report.md", attempt=0, max_attempts=8, delegated=True,
+                       files=[], content=None, quotas=None, run_state=rs4)
+            assert check_task_verification_flagged(ctx4) is None, (
+                "a superseded task must not still be nudged as flagged")
+
+            # Negative case: two genuinely UNRELATED tasks (one flagged, one verified, dissimilar
+            # instructions) must NOT be superseded -- the flagged one stays flagged and still gets
+            # nudged, since it was never actually covered by anything else.
+            rs5 = RunState(tmpdir)
+            rs5.data["dispatched_tasks"] = [
+                {"task_name": "task_flagged", "instructions": "Research the K-Pg boundary definition and age."},
+                {"task_name": "task_kept", "instructions": "Find the current population of Bogota, Colombia."},
+            ]
+            rs5.add_finding("https://a.example.co/x", "real content", task_name="task_kept", depth=1)
+            rs5.add_finding(
+                "https://b.example.co/y",
+                "[SYSTEM VERIFICATION WARNING: stub_source:https://b.example.co/y]",
+                task_name="task_flagged", depth=1,
+            )
+            _update_task_verification(rs5)
+            assert rs5.data["task_verification"]["task_flagged"]["status"] == "flagged", (
+                rs5.data["task_verification"]["task_flagged"])
+            ctx5 = Ctx(req_artifact="final_report.md", attempt=0, max_attempts=8, delegated=True,
+                       files=[], content=None, quotas=None, run_state=rs5)
+            verdict5 = check_task_verification_flagged(ctx5)
+            assert verdict5 is not None and "task_flagged" in verdict5.warning, verdict5
+
     contextvars.copy_context().run(_task_verification_scenario)
 
     # --- check_report_underuses_findings (2026-07-22): Builder's own version of check_thin_

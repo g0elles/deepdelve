@@ -25,6 +25,7 @@ from utils.grounding import (
 )
 from engine.orchestrator import (
     topup_quota_pool, available_sub_agents_ctx, _extract_excluded_topics, get_context_budget,
+    _looks_like_renamed_task,
 )
 
 DEFAULT_MAX_COMPLETION_CHECK_ATTEMPTS = 3
@@ -193,7 +194,8 @@ def check_task_verification_flagged(ctx: Ctx) -> Optional[Verdict]:
             f"Task(s) {flagged_list} produced ONLY fabricated, off-topic, or unverifiable sources — "
             f"every result for {subject} was excluded from the real evidence base. The other "
             f"delegated tasks are fine, do not redo them. delegate_tasks again for {flagged_list}, "
-            f"with a different search approach or a narrower query, before finishing."
+            f"reusing the EXACT same task_name as before — try a different search approach or a "
+            f"narrower query, but do NOT rename the task, before finishing."
         )
     else:
         directive = (
@@ -1622,7 +1624,21 @@ def _update_task_verification(run_state: "RunState") -> None:  # noqa: F821 — 
     check_uneven_task_investment's territory again; this is specifically "nothing usable came
     of this task at all." A task that later produces even one real citable finding on a retry
     flips back to "verified" the next time this runs, since the whole ledger is recomputed, not
-    incrementally patched."""
+    incrementally patched.
+
+    A second pass then downgrades a "flagged" entry to "superseded" if its dispatched instructions
+    (from run_state.data["dispatched_tasks"], see orchestrator.py's delegate_tasks) closely match
+    a currently-"verified" task's instructions -- i.e. the model renamed the angle on retry instead
+    of reusing the task_name, and the RENAMED version already succeeded. Confirmed live 2026-07-26:
+    a flagged "Research X" task got redispatched as "Research X (narrow)"/"Research X (peer-reviewed
+    source)" instead of being retried under its own name; two of those renamed variants ended up
+    verified, but check_task_verification_flagged kept nudging the stale original name specifically
+    (it has no notion of "this angle is already covered under a different name") until the entire
+    completion-check retry budget was spent on a task that was, in substance, already done -- the
+    run ended with ZERO report ever written. "superseded" (not "verified") deliberately preserves
+    that the exact original attempt genuinely failed -- check_task_verification_flagged only reads
+    status == "flagged", so this is enough to exclude it from further nudging without erasing the
+    history."""
     findings = run_state.data.get("findings", [])
     top_level = [f for f in findings if f.get("depth") == 1 and f.get("task_name")]
     by_task: dict = {}
@@ -1643,6 +1659,23 @@ def _update_task_verification(run_state: "RunState") -> None:  # noqa: F821 — 
             "reason": "; ".join(reasons) if reasons else "no real citable source",
             "checked_at": time.time(),
         }
+
+    dispatched = run_state.data.get("dispatched_tasks", [])
+    if dispatched:
+        latest_instructions: dict = {}
+        for d in dispatched:
+            if d.get("task_name"):
+                latest_instructions[d["task_name"]] = d.get("instructions", "")
+        verified_prior = [
+            {"task_name": n, "instructions": latest_instructions[n]}
+            for n, entry in ledger.items()
+            if entry["status"] == "verified" and n in latest_instructions
+        ]
+        for name, entry in ledger.items():
+            if entry["status"] != "flagged" or name not in latest_instructions:
+                continue
+            if _looks_like_renamed_task(name, latest_instructions[name], verified_prior):
+                entry["status"] = "superseded"
 
 
 def _dedupe_findings(findings: list) -> list:
