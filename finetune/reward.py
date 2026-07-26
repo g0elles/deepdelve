@@ -29,6 +29,16 @@ Four scored dimensions, each tied to a real, live-confirmed failure rather than 
                                     the exact primary hard-gate logic real_grounding_problem/
                                     check_not_grounded run in production -- rather than
                                     reimplementing URL matching here.
+  6. findings_underuses_evidence_response_reward -- live case 2026-07-26 (gpt-oss, production, not
+                                    this fine-tune's own bake-off): a balanced 2-facet run (7 real
+                                    sources one topic, 5 the other, both genuinely delegated) still
+                                    produced a findings.md covering ONLY one topic -- an entire
+                                    task's real evidence dropped outright, while every citation it
+                                    DID make was perfectly grounded (citation_grounding_response_
+                                    reward alone scores that 1.0, since it only checks citations
+                                    made, not whether every real source got USED at least once).
+                                    Mirrors engine/completion.py's check_findings_underuses_
+                                    evidence, the completion-check built for this same finding.
 
 Deliberately excludes anything an LLM judge would be needed for (matches this project's own
 established philosophy in utils/run_state.py's coverage() docstring: prefer structural,
@@ -278,6 +288,33 @@ def citation_grounding_response_reward(response_text: str, fetched_urls: list[st
     return 1.0
 
 
+def findings_underuses_evidence_response_reward(response_text: str, per_task_urls: dict) -> float:
+    """1.0 if every task in `per_task_urls` that has at least one real URL is represented by at
+    least one citation in `response_text` (literal or prefix-match, same rule
+    citation_grounding_response_reward/real_grounding_problem use); 0.0 if any such task has ZERO
+    of its real URLs cited anywhere.
+
+    `per_task_urls` should be {task_name: [real fetched urls for that task]} -- the same real,
+    independent per-task research record engine/completion.py's check_findings_underuses_evidence
+    compares against (RunState.data["findings"], depth==1 entries grouped by task_name), never
+    anything the model itself claims.
+
+    Deliberately a SEPARATE dimension from citation_grounding_response_reward, not folded into
+    it: "every citation made is real" (citation_grounding) and "every real source got used at
+    least once" (this) are orthogonal -- a response can max the first while completely failing
+    the second, exactly what happened live (see this module's own docstring, dimension 6). A task
+    with no real URLs at all (delegated but produced nothing citable) is skipped -- nothing to
+    have used, not a failure of this dimension."""
+    cited = {u.rstrip('/') for u in extract_cited_urls(response_text)}
+    for urls in (per_task_urls or {}).values():
+        real_urls = [u.rstrip('/') for u in urls if u]
+        if not real_urls:
+            continue
+        if not any(u in cited or any(_urls_prefix_match(u, c) for c in cited) for u in real_urls):
+            return 0.0
+    return 1.0
+
+
 if __name__ == "__main__":
     # Smallest-thing-that-fails-if-broken self-test, same spirit as test_structural_checks.py —
     # no training framework needed to verify the reward logic itself is sound.
@@ -402,5 +439,25 @@ if __name__ == "__main__":
     assert citation_grounding_response_reward(
         "See https://arxiv.org/pdf/2403.20033?utm_source=x for details.", real_fetched,
     ) == 1.0, "a fetched URL with an added query string must still prefix-match"
+
+    # Real live case 2026-07-26: green tea + Roman Empire, both genuinely delegated/covered.
+    _per_task = {
+        "green_tea_health": ["https://a.example.co/x", "https://a.example.co/y"],
+        "roman_empire_economic_causes": ["https://b.example.co/z"],
+    }
+    assert findings_underuses_evidence_response_reward(
+        "Green tea has antioxidant benefits [source](https://a.example.co/x).", _per_task,
+    ) == 0.0, (
+        "the exact live failure -- one task's citations present, the other task's real URL never "
+        "cited anywhere -- must score 0, even though the citation actually made is grounded"
+    )
+    assert findings_underuses_evidence_response_reward(
+        "Green tea has antioxidant benefits [source](https://a.example.co/x). The Roman Empire's "
+        "currency was debased over time [source](https://b.example.co/z).", _per_task,
+    ) == 1.0, "every task with real evidence represented by at least one citation must score 1.0"
+    assert findings_underuses_evidence_response_reward(
+        "Green tea has antioxidant benefits [source](https://a.example.co/x).",
+        {"green_tea_health": ["https://a.example.co/x"], "dead_end_task": []},
+    ) == 1.0, "a task that produced NO real URLs at all must be skipped, not counted as dropped"
 
     print("All reward-function self-tests passed.")
