@@ -1710,3 +1710,126 @@ not "invented verification for LLM agents from scratch."
 (the one that would show real tool-grounded deterministic feedback, closest analog to DeepDelve's
 own checks) could not be fetched (404 on every attempt) — worth a further-targeted look if an AG2
 comparison specifically becomes load-bearing for a publishable claim. No other gaps remain open.
+
+## 10. Solutions for recurring citation-fabrication across independent dispatches (2026-07-26)
+
+**Why this exists**: two live incidents, same shape, different domains — 2026-07-24
+(`calendarr.com`) and 2026-07-26 (`insidetx.com`, see `session_status/2026-07-26.md` for the full
+live-run trace). A Searcher cites a plausible-but-wrong near-duplicate URL; the grounding-check
+layer detects the mismatch at generation time and embeds a warning directly into that finding's own
+`summary` text (`[SYSTEM VERIFICATION WARNING: this summary cites 'X', which does not match the
+source URL you were actually given... Do not treat the associated claim as sourced when writing
+findings.md.]`); a later fresh-context FindingsWriter dispatch is handed that exact warning text as
+part of its evidence base — and cites the bad URL anyway, across 7 independent attempts in the
+2026-07-26 run. A separate, related problem surfaced the same run: the new deterministic
+FindingsWriter salvage (§ see `ROADMAP.md` History, 2026-07-26 entry) assembles `findings.md`
+directly from raw structured evidence when the LLM produces nothing — but that raw evidence can
+itself already carry the same fabricated citation, so the salvage inherits the poison. Neither
+problem is solved by this session's existing fixes; both were flagged live and researched
+immediately after, same rigor as every other section here (primary sources, no snippet-only
+claims).
+
+### Why the embedded warning gets ignored — a real, cited mechanism, not folklore
+
+DeepDelve's warning is phrased as a negative instruction ("Do not treat X as sourced"), and negation
+specifically is documented as fragile in exactly this way:
+- **"Don't Think of the White Bear: Ironic Negation in Transformer Models Under Cognitive Load"**
+  ([arxiv.org/abs/2511.12381](https://arxiv.org/abs/2511.12381)) — suppressing a concept requires
+  the model to first internally activate it, which can PRIME reproduction of the forbidden content
+  instead of avoiding it; circuit analysis shows middle-layer attention heads amplifying the
+  forbidden token even as earlier layers attempt suppression. Directly plausible mechanism: naming
+  the bad URL inside the warning re-activates it as a salient token, and FindingsWriter reproduces
+  it.
+- **"When Prohibitions Become Permissions: Auditing Negation Sensitivity in Language Models"**
+  ([arxiv.org/html/2601.21433](https://arxiv.org/html/2601.21433)) — small models (1-4B) swing up
+  to 76 points between "should X"/"should not X" framings; instruction-following often operates via
+  surface pattern-matching, not true negation semantics.
+- **"The Attentional White Bear Effect in Transformer Language Models"**
+  ([arxiv.org/pdf/2605.28639](https://arxiv.org/pdf/2605.28639)) — related, corroborating finding.
+- **"The Compliance Gap: Why AI Systems Promise to Follow Process Instructions but Don't"**
+  ([arxiv.org/pdf/2605.01771](https://arxiv.org/pdf/2605.01771)) — broader, more general finding:
+  agents frequently acknowledge process/constraint instructions embedded in context without
+  executing on them at generation time. Directly matches DeepDelve's own already-catalogued failure
+  taxonomy (MAST's "Disobey Task Specification," already cited in §1 of this file).
+- Compounded by the already-established **"Lost in the middle"** effect
+  ([arxiv.org/pdf/2403.05004](https://arxiv.org/pdf/2403.05004)) if the warning sits mid-context in
+  a long evidence dump.
+
+**Honest gap, explicitly not overclaimed**: no paper was found directly A/B-testing "structural
+removal" against "textual warning" as a controlled comparison and declaring removal empirically
+superior. The recommendation below is a strong INFERENCE from the negation-fragility literature plus
+what CRAG/Self-RAG actually do (next section), not a directly cited head-to-head result.
+
+### What CRAG and Self-RAG actually do (primary papers read directly, not a downstream implementation)
+
+- **CRAG** (Corrective Retrieval Augmented Generation,
+  [arxiv.org/abs/2401.15884](https://arxiv.org/abs/2401.15884)) — a SEPARATE, lightweight
+  fine-tuned T5-large evaluator (not the generator LLM, not a prompted LLM call) scores each
+  retrieved document. On high confidence, a decompose-then-recompose step splits documents into
+  ~3-sentence "knowledge strips," re-scores each strip, and DISCARDS strips below threshold — only
+  surviving strips reach the generator's context at all. Deterministic/structural filtering gated
+  by a trained scorer, not a warning left in place.
+- **Self-RAG** ([arxiv.org/abs/2310.11511](https://arxiv.org/abs/2310.11511)) — generates
+  ISREL/ISSUP/ISUSE reflection tokens per passage, then uses them as HARD or soft constraints
+  DURING DECODING — failing passages are structurally excluded from influencing output, not
+  annotated and left in context.
+
+Both converge on the same architectural choice DeepDelve does not currently make for this specific
+failure: evaluate once, then structurally EXCLUDE, rather than leave flagged content in-context with
+an instruction to avoid it.
+
+### Cross-attempt memory of confirmed-bad items — a named, real pattern
+
+**CiteGuard** ("Faithful Citation Attribution for LLMs via Retrieval-Augmented Validation,"
+[arxiv.org/pdf/2510.17853](https://arxiv.org/pdf/2510.17853)) defines an exclusion set $E_k$ of
+flagged items across $k$ iterations; the searchable space at each later iteration is
+$D_k := D \setminus E_{k-1}$ — previously-flagged-bad items are structurally removed from what
+later attempts can even retrieve. Directly applicable prior art for a persistent, cross-dispatch
+blocklist: don't just warn each fresh dispatch, shrink what it's allowed to see. Related, softer
+pattern found in deep-research-agent hallucination literature
+([arxiv.org/html/2604.03173](https://arxiv.org/html/2604.03173), "memory screening" against
+criteria including "instruction suppression" and "source trust" before re-entering context).
+
+**Annotation vs. removal, fact-verification specifically**: no controlled comparison study found
+directly stating annotation-only is empirically worse than removal — genuine gap, not manufactured.
+Indirect support only: grounding-evaluation surveys
+([arxiv.org/pdf/2407.12858](https://arxiv.org/pdf/2407.12858)) and selective-RAG work (SURE-RAG,
+[arxiv.org/pdf/2605.03534](https://arxiv.org/pdf/2605.03534)) both frame the production-system
+choice as "route to answer or abstain" when a claim can't be verified, i.e. exclusion/abstention
+over the unverifiable claim, not annotation-and-hope — but this is inference from adjacent framing,
+not a direct citation for the specific claim.
+
+### Recommendation (synthesis, not a direct citation — flagged as such)
+
+Fix in the deterministic Python layer, not the prompt, consistent with every other fix that's
+actually held in this project's history (`ARCHITECTURE.md`'s own repeated "prompt-only fix didn't
+hold" lesson, now independently corroborated by the negation-fragility literature above):
+
+1. **For the recurring-fabrication problem**: when the grounding check flags a finding's citation
+   as a mismatch (the check that currently only ANNOTATES the `summary` field), also set a
+   structural flag on that finding record (e.g. `grounding_status: "citation_mismatch"`). When
+   `_build_findings_source_material` assembles FindingsWriter's evidence, STRIP or excise the bad
+   URL/claim pairing from flagged findings entirely — omit the finding, or keep the source's other
+   verified content minus the specific unverifiable citation — instead of relying on the inline
+   warning string to do the enforcement work. Mirrors CRAG's strip-level removal / Self-RAG's hard
+   gating: filter before the generator sees it, don't ask it to self-censor mid-generation.
+2. **A run-level blocklist** (CiteGuard's exclusion-set pattern): a small persistent set of
+   confirmed-bad `(claim, url)` pairs in `RunState.data` (check the resume-carryover allowlist per
+   `ARCHITECTURE.md` before adding a key), filtered against by EVERY later evidence-assembly point —
+   Searcher retries, FindingsWriter retries, AND the deterministic salvage path. This is deliberately
+   the SAME shared filtering step fixing both problems at once (the user's own framing: "all the
+   eggs in the same basket") rather than two separate patches — the salvage path currently reads raw
+   `run_state.data["findings"]` directly, so routing it through the same filter closes Problem 2 for
+   free once Problem 1's filter exists.
+3. **Keep the textual warning as cheap defense-in-depth only**, not the primary enforcement
+   mechanism — don't invest further effort in strengthening/repositioning the warning wording itself
+   (front-loading against lost-in-the-middle, escalating severity language, etc.); the
+   negation-fragility research suggests that's fighting the actual failure mode rather than removing
+   it.
+
+**Implementation touchpoints** (not yet built, this section is research only): the grounding check
+that currently annotates `summary` in `src/engine/completion.py`/`src/engine/orchestrator.py`'s
+`_run_single_task`; `_build_findings_source_material` (`src/engine/completion.py`) for the
+evidence-assembly filter; wherever the deterministic salvage reads raw findings (same function,
+`_dispatch_writer_review_fix`'s `deterministic_fallback` caller); `ARCHITECTURE.md`'s resume-
+carryover allowlist if a new `RunState.data` blocklist key is added, per its own checklist.
