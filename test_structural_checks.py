@@ -483,6 +483,43 @@ def main():
 
     _compaction_strategy_scenario()
 
+    # --- _get_default_options / settings.skip_chat_template_kwargs (2026-07-26): vLLM's native
+    # Mistral tokenizer mode unconditionally rejects any request containing chat_template_kwargs
+    # (confirmed at the vLLM source, confirmed intentional via vLLM PR #26358) -- a real
+    # mistral:7b-instruct benchmark run 400'd on its very first request despite passing the
+    # isolated tool-call smoke test cleanly. This setting must fully suppress extra_body when set,
+    # and leave every other model's behavior (including the reasoning_effort addition from earlier
+    # today) completely unchanged when unset/false. ---
+    def _default_options_scenario():
+        from engine.orchestrator import _get_default_options
+        import config as _config
+
+        _orig = _config.cfg.get("settings", {}).get("skip_chat_template_kwargs")
+        try:
+            _config.cfg.setdefault("settings", {})["skip_chat_template_kwargs"] = True
+            opts = _get_default_options()
+            assert "extra_body" not in opts, (
+                "skip_chat_template_kwargs=True must omit extra_body entirely (Mistral tokenizer rejects "
+                "the request outright if the field is present at all, regardless of value)", opts)
+
+            _config.cfg["settings"]["skip_chat_template_kwargs"] = False
+            opts_default = _get_default_options()
+            assert "extra_body" in opts_default, (
+                "skip_chat_template_kwargs=False must not change existing behavior", opts_default)
+            assert "chat_template_kwargs" in opts_default["extra_body"], opts_default
+
+            _config.cfg["settings"].pop("skip_chat_template_kwargs", None)
+            opts_unset = _get_default_options()
+            assert "extra_body" in opts_unset, (
+                "unset (default False) must not change existing behavior", opts_unset)
+        finally:
+            if _orig is None:
+                _config.cfg["settings"].pop("skip_chat_template_kwargs", None)
+            else:
+                _config.cfg["settings"]["skip_chat_template_kwargs"] = _orig
+
+    _default_options_scenario()
+
     # --- _compaction_strategy_for_role (2026-07-24): FindingsWriter's whole evidence base is one
     # front-loaded first-turn message -- generic truncation has nothing else to evict once that
     # crosses threshold and deletes it outright (confirmed live: empty findings.md / false "no

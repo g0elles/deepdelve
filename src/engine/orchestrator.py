@@ -329,6 +329,20 @@ def _safe_format(template: str, **kwargs) -> str:
 
 def _get_default_options():
     options = {"temperature": config.cfg.get("settings", {}).get("temperature", 0.0)}
+    # settings.skip_chat_template_kwargs (2026-07-26): vLLM's native Mistral tokenizer mode
+    # unconditionally rejects any request where chat_template_kwargs is present at all --
+    # confirmed at the source (vllm/tokenizers/mistral.py: "if request.chat_template_kwargs is
+    # not None: raise ValueError(...)") and confirmed INTENTIONAL, not a version-fixable bug, via
+    # vLLM PR #26358 ("Passing a chat template to MistralTokenizer now raises an error instead of
+    # a warning"), because Mistral's own mistral-common tokenizer library doesn't support
+    # overriding its built-in chat template in native Mistral tokenizer mode at all. No
+    # server-side flag avoids this -- the check is purely "is the field present", not its value.
+    # Confirmed live: mistral:7b-instruct's real benchmark run failed its very first request with
+    # this exact 400 despite passing an isolated tool-call smoke test cleanly. No model-family
+    # auto-detection (this project has repeatedly found string-matching model-family guesses
+    # unreliable) -- set this explicitly per config, same philosophy as settings.specialist_model.
+    if config.cfg.get("settings", {}).get("skip_chat_template_kwargs", False):
+        return options
     # OpenAI's official API rejects "chat_template_kwargs"
     if "api.openai.com" not in config.cfg.get("api", {}).get("openai_base_url", ""):
         enable_thinking = config.cfg["settings"].get("enable_thinking", False)

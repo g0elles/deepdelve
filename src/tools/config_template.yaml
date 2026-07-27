@@ -12,6 +12,12 @@ api:
   max_retries: 6
 settings:
   enable_thinking: false
+  # Set true ONLY when api.openai_model (or settings.specialist_model) points at a genuine
+  # Mistral-family checkpoint served via vLLM's native Mistral tokenizer mode -- that tokenizer
+  # unconditionally rejects any request containing chat_template_kwargs (confirmed at the vLLM
+  # source, and confirmed intentional/permanent via vLLM PR #26358, not a bug that a version
+  # bump fixes). Every other model/backend should leave this false (the default).
+  skip_chat_template_kwargs: false
   temperature: 0.2
   # Optional: use a different (typically lighter/faster) model for the leaf specialist roles
   # (WebSearcher/AcademicSearcher/DocumentAnalyzer/DataAnalyzer) than api.openai_model, which stays
