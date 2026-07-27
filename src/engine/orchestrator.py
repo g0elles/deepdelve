@@ -331,9 +331,19 @@ def _get_default_options():
     options = {"temperature": config.cfg.get("settings", {}).get("temperature", 0.0)}
     # OpenAI's official API rejects "chat_template_kwargs"
     if "api.openai.com" not in config.cfg.get("api", {}).get("openai_base_url", ""):
-        options["extra_body"] = {
-            "chat_template_kwargs": {"enable_thinking": config.cfg["settings"].get("enable_thinking", False)}
-        }
+        enable_thinking = config.cfg["settings"].get("enable_thinking", False)
+        extra_body = {"chat_template_kwargs": {"enable_thinking": enable_thinking}}
+        if not enable_thinking:
+            # Some models ignore chat_template_kwargs.enable_thinking entirely over Ollama's
+            # OpenAI-compat endpoint -- confirmed live 2026-07-26
+            # (yuxinlu1/gemma-4-12B-agentic-fable5-composer2.5-v2-3.5x-tau2-GGUF, Ollama 0.31.2):
+            # a direct curl test showed enable_thinking=false left the "reasoning" field populated
+            # regardless, while reasoning_effort="none" on the SAME endpoint cleanly suppressed it.
+            # Send both; a model/server that doesn't recognize reasoning_effort just ignores the
+            # unknown field. Only sent when disabling -- no reason to force an "effort" value when
+            # enable_thinking=True, that path already works for every model tested so far.
+            extra_body["reasoning_effort"] = "none"
+        options["extra_body"] = extra_body
     return options
 
 
