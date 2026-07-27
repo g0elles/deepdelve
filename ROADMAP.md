@@ -88,6 +88,64 @@ concluded verdict, which is the actual complaint. Going forward, a candidate is 
 
 ## History
 
+### 2026-07-26 (even later): `settings.skip_chat_template_kwargs` fix unblocks Mistral-family vLLM candidates; `mistral:7b-instruct` DISQUALIFIED (narrate-instead-of-call, not the chat_template block)
+
+Continuing the same day's vLLM re-test track. `mistral:7b-instruct` (`mistralai/Mistral-7B-Instruct-v0.3`,
+`bitsandbytes` 4-bit, `mistral` tool parser — same proven path as the original pre-flight spike)
+passed its isolated tool-call smoke test cleanly (3/3, real structured `tasks` array, no `#6155`-class
+bug — a genuine improvement over the original Ollama-era "rejected at schema stage" verdict). But
+the real DeepDelve benchmark run failed immediately with the SAME `400: "chat_template is not
+supported for Mistral tokenizers"` error that already marked `mistral-nemo:12b` BLOCKED — and that
+entry had already predicted this would recur for `mistral:7b-instruct` and `devstral:24b`, now
+confirmed live for the first.
+
+**Root-caused directly at the vLLM source, not just re-confirmed from the earlier BLOCKED entry**:
+`vllm/tokenizers/mistral.py:161-162` — `if request.chat_template is not None or
+request.chat_template_kwargs is not None: raise ValueError(...)`. Confirmed via vLLM's own PR
+history this is INTENTIONAL and permanent, not a version-fixable bug: PR
+[#26358](https://github.com/vllm-project/vllm/pull/26358) (merged Oct 2025, well before this
+install's 0.25.1) explicitly changed this from a warning to a hard error, because Mistral's own
+`mistral-common` tokenizer library doesn't support overriding its built-in chat template in native
+Mistral tokenizer mode at all — checked both the model's own HF card (no vLLM serving guidance at
+all) and vLLM's docs/GitHub issues before concluding this; no server-side flag or `--tokenizer-mode`
+variant avoids it (mistral-nemo's own investigation already ruled out `auto` and `hf` modes).
+
+**Fixed on DeepDelve's side** (commit `9c8111f`): new `settings.skip_chat_template_kwargs` (default
+`false`), checked in `_get_default_options()` (`src/engine/orchestrator.py`) — when true, skips
+building `extra_body` (and therefore `chat_template_kwargs`/`reasoning_effort`) entirely. Explicit,
+user-set config, not model-family auto-detection (this project has repeatedly found string-matching
+heuristics unreliable — same philosophy as `settings.specialist_model`'s own explicit design).
+Unblocks all three Mistral-family vLLM candidates at once (`mistral-nemo:12b`, `mistral:7b-instruct`,
+`devstral:24b`), not just this one.
+
+**With the fix applied, `mistral:7b-instruct`'s real benchmark run got PAST the 400 wall — and hit a
+different, genuine capability failure: `not_delegated`, two independent runs, different queries,
+identical result.** Run 1 (the standard stress-test query, "top 5 heuristic algorithms" + "Colombian
+holiday spending"): 4/4 completion-check attempts all `not_delegated`, zero findings, zero sources
+fetched, 145s. Run 2 (deliberately simple, "what is the speed of light," to rule out query
+complexity as a confound): identical `not_delegated` failure, zero sources, 77s. **Root cause,
+confirmed from the real session log content**: the model consistently NARRATES its planned
+`delegate_tasks` call as a literal markdown fenced code block in its response text (e.g.
+`` ```\ndelegate_tasks(tasks=[...])\n``` ``) instead of actually emitting a structured tool call —
+even under `--enable-auto-tool-choice`. This reproduces the same "narrate instead of call/write"
+failure class already documented for Bonsai-8B and `qwen2.5:3b-instruct` (those at the
+FindingsWriter/writer-role stage; this one at the Planner's very first `delegate_tasks`, immediately)
+— DeepDelve's real, much longer system prompt evidently pushes this model toward narration in a way
+the short isolated smoke-test prompt didn't trigger. **Meets Model Evaluation Standard point 4** (a
+discard claim needs more than one run): two independent runs, different queries, identical failure.
+
+**Verdict: `mistral:7b-instruct` DISQUALIFIED** — genuine capability gap, confirmed NOT the
+`chat_template_kwargs` infrastructure block (that's fixed and confirmed working: the 400 is
+verifiably gone, the request reaches the model successfully both times). Distinct from
+`mistral-nemo:12b`'s own verdict, which remains BLOCKED-not-yet-re-tested (the fix removes its
+blocker too, but it hasn't actually been re-run with the fix applied — that's a separate, still-open
+opportunity, not assumed to share this exact verdict).
+
+**Cleanup**: vLLM server SIGTERM'd cleanly (`rocm-smi --showpids` confirmed zero orphans), HF cache
+checkpoint deleted (~14GB, unquantized bf16 cache — larger than the 4-bit runtime footprint since
+`bitsandbytes` quantizes on load, not on disk). `~/.deepdelve/config.yaml` restored to the gpt-oss
+baseline (`skip_chat_template_kwargs: false`, `openai_model: deepdelve-gpt-oss:latest`).
+
 ### 2026-07-26 (later still): vLLM bake-off re-test resumed — `qwen2.5:3b-instruct` and `llama3.2:3b` both DISQUALIFIED, one result challenges the track's own core premise
 
 Continuation of the same day's session, resuming the vLLM re-test plan
@@ -1355,6 +1413,13 @@ finished — see Pending for what's still open):
       re-testable until DeepDelve's client-side fix above lands. Cleanup: config reverted to
       `deepdelve-gpt-oss:latest`/`rag_cache: enabled: true`, vLLM server shut down cleanly (SIGTERM,
       confirmed zero orphan both times it was killed during this attempt).
+      **UPDATE, same day, later**: the client-side fix landed (`settings.skip_chat_template_kwargs`,
+      commit `9c8111f` — see the dedicated "even later" History entry above). `mistral:7b-instruct`
+      was re-tested with the fix applied and got past this exact block, confirming the fix works —
+      but `mistral-nemo:12b` itself has NOT yet been re-run with the fix applied. Its verdict here
+      remains BLOCKED-not-yet-re-tested, not assumed to inherit `mistral:7b-instruct`'s own
+      `not_delegated` result — that's a separate, still-open re-test opportunity (`devstral:24b`
+      likewise unblocked and untested).
 
   - **`llama3-groq-tool-use:8b` re-test, 2026-07-21 — DISQUALIFIED on real, docs-grounded evidence,
     NOT a serving-stack artifact.** `Groq/Llama-3-Groq-8B-Tool-Use` (not gated, native
