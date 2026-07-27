@@ -1930,6 +1930,12 @@ known Ollama bugs at the cost of trading into vLLM+`bitsandbytes`-on-ROCm's own,
 less battle-tested failure surface (this session's zombie crash, intermittent empty-JSON,
 garbled markers). Neither backend is unconditionally better here — they have different real bug
 classes, and `llama.cpp`/Ollama's HIP path has the mileage/maturity edge specifically for
-consumer RDNA. **Not yet decided or acted on**: whether to revert the live config back to Ollama
-for some/all roles, keep vLLM for the re-test track only, or some hybrid — this is a real decision
-for the user to make, not something to auto-apply from this research note alone.
+consumer RDNA. **Decided and acted on, same session**: reverted to Ollama as the permanent serving
+backend. `~/.venvs/vllm` and vLLM-specific HF cache checkpoints deleted (~24GB reclaimed);
+`~/.deepdelve/config.yaml` back on `http://localhost:11434/v1`/`deepdelve-gpt-oss:latest`,
+`settings.skip_chat_template_kwargs` reset to `false`. This is an explicit, informed tradeoff, not
+a full reversal of §11a/§11b's findings — the two original Ollama bugs that motivated dropping it
+in the first place (think-mode passthrough, `#6155`) are still real and still apply to the
+candidates they affect; accepted as the cost of `llama.cpp`/HIP's serving-layer maturity edge on
+this specific hardware. Full detail in the `project_ollama_restored` memory / `ROADMAP.md`
+History.

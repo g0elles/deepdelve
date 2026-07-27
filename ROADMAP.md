@@ -88,6 +88,34 @@ concluded verdict, which is the actual complaint. Going forward, a candidate is 
 
 ## History
 
+### 2026-07-26 (final entry, end of day): Ollama restored as the permanent serving backend, vLLM removed
+
+Reverses the 2026-07-21 "Ollama dropped" decision, after the same-day vLLM re-test sweep above
+disqualified/discarded 9 candidates in a row, several with genuinely serving-layer-shaped symptoms
+(a silent zombie crash, intermittent empty-JSON tool calls, a garbled tool-call marker). Research
+(`RESEARCH.md` §11, primary-sourced against vLLM's own PR history and Feb 2026 blog, not just
+inferred from symptom shape) found: `vLLM`+`bitsandbytes`-on-ROCm support is real but young
+specifically on **consumer** RDNA GPUs (this hardware ran `bitsandbytes` exactly at its minimum
+required ROCm version floor); `llama.cpp`'s HIP backend (what Ollama uses) turned up zero
+documented quantization-correctness issues across the same research, with years more real-world
+maturity on consumer AMD hardware.
+
+**Important, deliberately not oversimplified**: most of today's actual DISQUALIFIED verdicts were
+NOT ROCm-caused (`thin_coverage`/narrate-instead-of-call reproduced identically on Ollama-hosted
+candidates too, including `qwen3:8b` on both backends) — this reverts the SERVING BACKEND to fix
+the flaky/crashy low-level tail, not a claim that it changes any model-capability verdict already
+reached. The two bugs that originally motivated dropping Ollama (Qwen3 think-mode passthrough,
+`ollama/ollama#6155`) are still real and unfixed — this is an explicit, informed tradeoff (accept
+those two known, narrowly-scoped bugs) in exchange for `llama.cpp`/HIP's overall serving-layer
+maturity edge on this specific hardware, not a claim that Ollama is now bug-free.
+
+Cleanup: `~/.venvs/vllm` deleted (~11GB), vLLM-specific HF cache checkpoints deleted
+(`openai/gpt-oss-20b`, ~13GB — DeepDelve's own actual dependencies, `bge-reranker-v2-m3`/
+`nli-deberta-v3-small`/`all-MiniLM-L6-v2`, sharing the same `HF_HOME` cache location, deliberately
+preserved, NOT deleted). `~/.deepdelve/config.yaml` restored to
+`http://localhost:11434/v1`/`deepdelve-gpt-oss:latest`, `settings.skip_chat_template_kwargs` reset
+to `false`. Full detail in the `project_ollama_restored` memory (supersedes `project_ollama_dropped`).
+
 ### 2026-07-26 (later still again): `mistral-nemo:12b` re-tested with the Mistral fix — DISQUALIFIED, same `thin_coverage` non-convergence pattern
 
 Closes out the original 2026-07-21 BLOCKED verdict (see its own entry above, which already noted
