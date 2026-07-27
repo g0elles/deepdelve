@@ -88,6 +88,64 @@ concluded verdict, which is the actual complaint. Going forward, a candidate is 
 
 ## History
 
+### 2026-07-26 (still later): `qwen2.5-coder:14b-instruct` — INCONCLUSIVE, wrong parser used initially, correct parser found but shows ~50% unreliable extraction
+
+`Qwen/Qwen2.5-Coder-14B-Instruct` (confirmed real, not gated, via direct HF API check),
+`bitsandbytes` 4-bit. This candidate went through three distinct rounds before landing on an honest
+verdict — each correction below was caught by the user pushing back on an over-confident claim, not
+found independently, worth recording as-is.
+
+**Round 1 — `hermes` tool parser, crash, initially misdiagnosed.** First launch at
+`gpu_memory_utilization 0.7` failed cleanly with a graceful `ValueError` (needs 3.0 GiB KV cache,
+only 0.44 GiB available). Bumped to `0.9` (~14.3GiB budget) and retried — weight loading succeeded
+(`"Model loading took 9.9 GiB"`), then the process crashed silently with zero further log output
+(no `"Available KV cache memory"` line, which every other candidate today logged within ~2 seconds
+of the same point) — `EngineCore` found in zombie (`Z`) state, parent `APIServer` hung forever, no
+traceback anywhere. Initially attributed to a system-RAM OOM (the log's own "checkpoint size
+exceeds 90% of available RAM" warning looked suggestive) — **user asked "are you sure that's the
+reason?", which prompted actually reading `weight_utils.py`'s source**: that warning is about an
+OPTIONAL read-ahead prefetch for network filesystems, correctly skipped here (local NTFS mount),
+its absence being the RAM-safe path, not a risky one. That theory didn't hold. Discarded the
+candidate on hardware-margin grounds instead (weights alone = 9.9GiB of ~15.9GiB usable budget).
+
+**Round 2 — user asked for a retry; the crash didn't reproduce.** A clean second launch (same
+flags) got PAST the exact point that crashed before — `"Available KV cache memory: 3.62 GiB"`,
+`"Application startup complete"`. The crash was transient/intermittent, not deterministic — the
+"discard on hardware grounds" verdict from Round 1 was wrong on its own terms (it DOES start and
+run, just tightly). Ran the isolated `delegate_tasks`-shaped smoke test against the now-live
+server: 3/3 consistent failures, but a NEW, different shape than any other candidate today — the
+model produced a genuinely well-formed, correctly-structured tool call, just wrapped in `<tools>`
+tags instead of the `<tool_call>` tag the `hermes` parser requires.
+
+**Round 3 — wrong parser confirmed via primary sources, correct one found and installed.**
+Web research + direct inspection of `Qwen/Qwen2.5-Coder-14B-Instruct`'s own chat template confirmed:
+Qwen2.5-Coder (unlike vanilla Qwen2.5-Instruct) was never trained on the Hermes `<tool_call>`
+convention — it uses `<tools>` tags, and vLLM has no native parser for this variant (confirmed via
+direct grep of the installed `tool_parsers/__init__.py` registry). A real community project exists
+specifically for this gap: [`hanXen/vllm-qwen2.5-coder-tool-parser`](https://github.com/hanXen/vllm-qwen2.5-coder-tool-parser)
+(12 stars, actively maintained, pushed 2026-04-29). Reviewed the actual parser source before
+installing it (392 lines, mirrors vLLM's own bundled parser structure, no network/subprocess/eval
+calls) — safe. Relaunched with `--tool-parser-plugin`/`--tool-call-parser qwen2_5_coder`/its
+accompanying `--chat-template`. Smoke test with the CORRECT parser: **2/4 consistent successes
+(real structured array), 2/4 returned `arguments: "{}"` (empty) despite `finish_reason: "tool_calls"`
+and a similar completion-token count to the successful runs** — the plugin's own README
+independently documents that longer system prompts degrade this model's JSON-generation quality
+even under ideal conditions (49/50 vs 50/50 in their own "explicit" vs "minimal" mode tests), which
+is at least directionally consistent with an unreliable-under-load pattern, though the empty-`{}`
+extraction itself could be either the model or the third-party parser's own bug — not
+disambiguated, and not chased further given the time already spent on this one candidate.
+
+**Verdict: INCONCLUSIVE, not DISQUALIFIED and not a clean pass.** Real capability under the
+correct format was never cleanly established either way — ~50% extraction reliability in isolated
+testing is too unreliable to call a pass, but it's also not the kind of confident, repeatable
+failure (`not_delegated`, fabricated content, `#6155`-class bug) other candidates today showed. A
+full DeepDelve benchmark run was never attempted (would need the custom chat-template/parser wired
+into `~/.deepdelve/config.yaml`'s vLLM endpoint, which only needs the server-side flags already
+proven above — no DeepDelve-side changes). Left as a genuine open item, not closed.
+
+Cleanup: vLLM server SIGTERM'd cleanly (zero orphan VRAM/processes confirmed each round), HF cache
+checkpoint deleted (~28GiB) after the final round.
+
 ### 2026-07-26 (yet later): `hermes3:8b` DISQUALIFIED — narrates fake system messages instead of calling tools
 
 Continuing the same day's vLLM re-test track. `NousResearch/Hermes-3-Llama-3.1-8B`, `bitsandbytes`
