@@ -88,6 +88,21 @@ concluded verdict, which is the actual complaint. Going forward, a candidate is 
 
 ## History
 
+### 2026-07-26 (later once more): `devstral:24b` discarded on hardware grounds without a pull attempt
+
+Checked real weight size FIRST this time, per the lesson just learned from `qwen2.5-coder:14b-instruct`
+(don't spend time before confirming it fits). `mistralai/Devstral-Small-2507`'s HF repo lists 94.3GB
+of `.safetensors` files, but that's misleading: it contains BOTH a single-file `consolidated.safetensors`
+(47.14GB, for `mistral-inference`) AND a separate 10-shard set totaling the same ~47.1GB (for
+HF `transformers`/vLLM) — the same weights packaged twice, not two different models. vLLM would only
+load the sharded set, so the real relevant footprint is ~47.1GB bf16.
+
+Applying the empirically-observed `bitsandbytes` 4-bit compression ratio from `qwen2.5-coder-14b`
+earlier today (27.5GB bf16 → 9.9GB actual VRAM footprint, ≈0.36×): `devstral`'s 47.1GB bf16 would
+land around **~17GB quantized** — exceeding the entire 17.1GB card before any KV cache or activation
+overhead is even counted. Discarded on hardware grounds, same standard as `qwen3.6`'s earlier discard
+— no pull attempted, no GPU time spent.
+
 ### 2026-07-26 (still later): `qwen2.5-coder:14b-instruct` — INCONCLUSIVE, wrong parser used initially, correct parser found but shows ~50% unreliable extraction
 
 `Qwen/Qwen2.5-Coder-14B-Instruct` (confirmed real, not gated, via direct HF API check),
