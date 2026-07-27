@@ -88,6 +88,79 @@ concluded verdict, which is the actual complaint. Going forward, a candidate is 
 
 ## History
 
+### 2026-07-26 (later still): vLLM bake-off re-test resumed — `qwen2.5:3b-instruct` and `llama3.2:3b` both DISQUALIFIED, one result challenges the track's own core premise
+
+Continuation of the same day's session, resuming the vLLM re-test plan
+(`~/.claude/plans/moonlit-plotting-simon.md`) after `mistral-nemo:12b` (BLOCKED), `llama3-groq-tool-use:8b`
+(DISQUALIFIED), and `qwen3:8b` (DISQUALIFIED) were already closed in earlier sessions. `qwen3.6`
+(35b-a3b) was checked and discarded outright on hardware grounds before spending any GPU time —
+confirmed via a direct HF API blob-size query that its FP8 checkpoint alone is 37.5GB, more than
+double this hardware's entire 17.1GB VRAM budget, and no 4-bit pre-quant exists; even a hypothetical
+4-bit re-quant (~18.7GB) still wouldn't leave real KV-cache headroom. Per Model Evaluation Standard
+point 6, discarded without attempting a pull.
+
+- **`Qwen/Qwen2.5-3B-Instruct` — DISQUALIFIED, new failure mode found on vLLM, not the original
+  Ollama-era verdict's own reason.** No quantization needed (bf16, ~6GB, easy fit). Tool parser:
+  `hermes` (confirmed correct — `qwen3_engine_tool_parser` variants are Qwen3-only, don't apply to
+  2.5). Isolated single-arg tool call (`web_search`) parsed cleanly. **A nested-array schema
+  matching `delegate_tasks`' real shape (a `tasks` array of `{task_name, instructions, agent_id}`
+  objects) consistently failed**, 5+ independent reproductions: the model reliably emits genuinely
+  malformed JSON for its own tool call — closes the `"arguments"` object but omits the FINAL
+  closing brace for the outer `{"name": ..., "arguments": {...}}` wrapper (`finish_reason: "stop"`,
+  not `"length"` — not a token-budget cutoff, the model just stops one brace short). Verified this
+  is a genuine model-generation defect, not a vLLM parser bug: tested `hermes_tool_parser.py`'s
+  `extract_tool_calls` directly in isolation against the real captured response text — the parser's
+  own regex extraction is correct (confirmed via `regex.findall` on the raw content), it's the
+  extracted JSON substring itself that's malformed at the source. Consistently reproduced (open
+  brace count 4, close brace count 3) across independent live requests, not a one-off sampling
+  fluke. This is a DIFFERENT failure mode than the original Ollama-based verdict (`FindingsWriter`
+  never successfully calling `write_workspace_file` across 8 attempts) — same overall verdict
+  (disqualified), new independent evidence via a completely different backend.
+
+- **`meta-llama/Llama-3.2-3B-Instruct` — DISQUALIFIED, and this result is significant beyond just
+  this one candidate: it directly challenges the vLLM re-test track's own founding premise.**
+  Gated repo — required a real HF access-request-and-approval cycle mid-session (documented for
+  process continuity: an `hf auth login`-verified valid token can still 403 on the actual
+  `/resolve/main/...` download endpoint despite the account showing normal "Use this model" UI on
+  the model page; the metadata API's visible file listing is not proof of real download rights —
+  only the resolve endpoint is ground truth). Tool parser: `llama3_json` (confirmed via
+  `vllm/tool_parsers/__init__.py`). Isolated tool-call smoke test with the exact same
+  `delegate_tasks`-shaped nested-array schema used for the Qwen2.5 test above: **`tasks` came back
+  as a JSON-encoded STRING inside the arguments object, not a real array — the textbook `#6155`
+  shape** (`ollama/ollama#6155`, "Support Nested Parameters for Tools") — reproduced 4/4 times,
+  fully consistent. **But this ran on vLLM, not Ollama.** The entire premise motivating this
+  multi-session vLLM re-test effort was that `#6155` is an Ollama-serving-layer bug that may have
+  wrongly disqualified `mistral-nemo:12b`/`llama3-groq-tool-use:8b`/`llama3.2:3b` on a backend
+  artifact rather than genuine model incapability — this result directly disproves that hypothesis
+  for `llama3.2:3b` specifically: the identical stringified-array shape reproduces independently on
+  a completely different serving stack (vLLM's own `llama3_json` parser, not Ollama's tool-call
+  handling at all). **Confirmed via vLLM's own official documentation**
+  (`docs.vllm.ai/en/latest/features/tool_calling.html`, "Known issues" section for Llama Models):
+  *"The model can generate parameters in an incorrect format, such as generating an array
+  serialized as string instead of an array."* vLLM's own maintainers attribute this to the MODEL's
+  generation behavior, not something their parser introduces or could fix — this is Llama 3.2's own
+  limitation, independent of serving backend. `mistral-nemo:12b` and `llama3-groq-tool-use:8b`
+  already have their own independent, non-`#6155` disqualification reasons (real infra
+  incompatibility and missing XML wrapper tags respectively), so this doesn't overturn either of
+  those verdicts, but it does mean the `#6155`-is-Ollama's-fault framing that motivated re-testing
+  all three should be treated as disproven for the one candidate where a clean head-to-head
+  comparison was actually possible, not assumed to still be an open question.
+
+**Cleanup**: both candidates' vLLM servers SIGTERM'd cleanly (`rocm-smi --showpids` confirmed zero
+orphan `EngineCore` processes both times), both HF cache checkpoints deleted immediately after each
+verdict (`Qwen2.5-3B-Instruct` ~5.8GB, `Llama-3.2-3B-Instruct` ~6.0GB) rather than batched to session
+end — per explicit user instruction this session to reclaim disk space right after disqualifying a
+candidate, not just at the end.
+
+**vLLM re-test track status after this session**: `mistral-nemo:12b` BLOCKED, `llama3-groq-tool-use:8b`
+DISQUALIFIED, `qwen3:8b` DISQUALIFIED, `qwen3.6` discarded on hardware grounds without testing,
+`qwen2.5:3b-instruct` DISQUALIFIED, `llama3.2:3b` DISQUALIFIED. Remaining untested:
+`gpt-oss:20b` (deliberately deprioritized to last per explicit user instruction — it's the
+already-trusted default, lowest information value to re-confirm), the schema-stage rejects
+(`devstral`, `hermes3`, `qwen2.5-coder`, `mistral:7b-instruct`), the writer-role failures (the
+other Gemma-4-12B, `granite3.1-dense`, `phi4-mini`), and Bonsai-8B/the GRPO fine-tune (lowest
+priority per the plan's own "attempt only if time remains" framing).
+
 ### 2026-07-26 (later): three more production bugs + `yuxinlu1/gemma-4-12B-agentic-fable5-composer2.5-v2-3.5x-tau2-GGUF` DISQUALIFIED
 
 Continuation of the same day's session below. All committed and pushed to `main`.
