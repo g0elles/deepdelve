@@ -201,9 +201,12 @@ the same base architecture) — this is a separate fine-tune, evaluated separate
   passthrough bugs (point 3 of the standard): nothink and tool-calling were both independently
   confirmed clean at the raw API level beforehand, and the failure only appears once the model is
   actually driving the full multi-turn agentic loop.
-- `~/.deepdelve/config.yaml` needs to be restored to the `gpt-oss` baseline
-  (`openai_model: deepdelve-gpt-oss:latest`) before any non-bake-off work resumes — currently still
-  pointed at `deepdelve-gemma4-12b:latest` as of this entry.
+- **Closed out**: `~/.deepdelve/config.yaml` restored to the `gpt-oss` baseline
+  (`openai_model: deepdelve-gpt-oss:latest`). Both Ollama tags for this candidate deleted
+  (`deepdelve-gemma4-12b:latest` and the raw `hf.co/yuxinlu1/...:Q4_K_M` pull it was derived from,
+  ~7.4GB reclaimed — they shared blobs, not 2×7.4GB), same cleanup convention as every other
+  disqualified candidate's checkpoint (e.g. `qwen3:8b`'s vLLM checkpoint deletion above). No trace
+  of this candidate left on disk or in `ollama list`.
 
 ### 2026-07-26: Planner redelegation-loop fix + two new production bugs found by live testing
 
