@@ -88,6 +88,123 @@ concluded verdict, which is the actual complaint. Going forward, a candidate is 
 
 ## History
 
+### 2026-07-26 (later): three more production bugs + `yuxinlu1/gemma-4-12B-agentic-fable5-composer2.5-v2-3.5x-tau2-GGUF` DISQUALIFIED
+
+Continuation of the same day's session below. All committed and pushed to `main`.
+
+**Three more real bugs found via live testing, each caught by actually reading `final_report.md`
+after a smoke test, not just confirming a mechanism fired** (see this session's own hardened
+standing rule: a completion check firing correctly is not the same as the report being correct):
+
+- **`5fab261`** — `real_grounding_problem`/related checks in `src/utils/grounding.py` compared
+  cited URLs against fetched URLs with plain string equality. A citation the model percent-encoded
+  (`%E2%80%93`) didn't match a fetched URL stored with the raw Unicode en-dash, false-flagging a
+  genuinely correct citation as hallucinated. Root cause of a real run ("explain the main theories
+  for the extinction of the dinosaurs") coming back with an EMPTY report — "No extractable findings
+  were identified" — despite 27 real sources fetched. Added `_normalize_url` (percent-decode +
+  rstrip), applied at every URL-comparison site in the module. Regression test pinned against the
+  exact real citation/URL pair from the incident; confirmed failing on pre-fix code via `git stash`,
+  passing post-fix.
+- **`6edd9ee`** — `delegate_tasks` is one shared closure/quota across every tier (Planner's
+  top-level dispatch and every Tier-2 specialist's own dispatch to its Analyzer children draw from
+  the same global `tool_quotas_ctx` counter, no per-task sub-budget anywhere). A live smoke test on
+  a trivial single-fact query ("what is the Cretaceous–Paleogene boundary") saw ONE WebSearcher task
+  call `delegate_tasks` 6+ times in a row, despite its own prompt saying "ONE authoritative source is
+  sufficient" and "STOP EARLY" — consuming most of the run's entire global budget on one facet.
+  Added `settings.specialist_delegation_cap` (default 3), enforced via `delegation_depth_ctx`
+  (`> 0` == a Tier-2 specialist, never the Planner) in `src/engine/orchestrator.py`. **A real bug
+  was caught in the fix itself before committing, via the same live-testing discipline**: the first
+  version used `ctx.set(new_int)` to update the counter across separate `delegate_tasks` calls,
+  which silently never accumulated (8 Analyzer children spawned from one task, zero rejections) —
+  the SDK dispatches each tool call as a separate `asyncio.Task`, so a `.set()` inside one call only
+  mutates that Task's own context copy. Fixed by mirroring `task_fetched_urls_ctx`'s existing
+  mutable-list pattern (set once per dispatch, mutated in place). A second live run confirmed the
+  cap actually holds.
+- **`d88e445`** — `check_task_verification_flagged` (VERIMAP Phase 1, shipped earlier the same
+  day) had no notion that a flagged task could be superseded when the Planner renames it on retry
+  instead of reusing the `task_name`. A live run got a flagged task renamed 3x
+  (`"...definition"` → `"...definition (narrow)"` → `"...definition (peer-reviewed)"` →
+  `"...definition (peer-reviewed source)"`); two renamed variants actually succeeded (verified,
+  real Wikipedia-backed findings), but the check kept re-nudging the ORIGINAL stale names
+  specifically — burned the entire completion-check retry budget (8/8), **zero report ever
+  written**, worse than the bug this session started from. Fixed: `_update_task_verification` now
+  does a second pass, downgrading a flagged entry to a new `"superseded"` status when its dispatched
+  instructions (from `run_state.data["dispatched_tasks"]`) closely match an already-verified task's
+  instructions, reusing the existing `_looks_like_renamed_task` helper. Also reworded the check's
+  own directive to say "reuse the EXACT task_name" (defense in depth, matches the wording already
+  applied to two other checks earlier the same day — soft instructions alone don't reliably hold on
+  this hardware, which is why the structural supersede detection is the primary fix).
+  **Live-verification status: PARTIAL.** A third live run of the same query showed NO repeat of the
+  stale-nudge loop (real improvement), but the run was still going after 35+ minutes (Planner-level
+  over-fanning into multiple top-level research angles — a separate, unrelated, still-open problem
+  neither this fix nor the delegation cap constrains) and was killed before reaching a final report.
+  Mechanism-confirmed (no repeat loop), not full-outcome-confirmed (never saw a `final_report.md`
+  from this exact fix). Re-verify with a full run if this failure mode recurs.
+- **`e60e334`** — found while doing Model Evaluation Standard point 1 (confirm operating mode via a
+  raw API test) on the Gemma candidate below, but it's a general engine fix: `_get_default_options`
+  (`src/engine/orchestrator.py`) now also sends `reasoning_effort: "none"` alongside the existing
+  `chat_template_kwargs.enable_thinking` whenever thinking is disabled — some models (see verdict
+  below) ignore the latter entirely over Ollama's OpenAI-compat endpoint but respect the former.
+  Confirmed harmless against the gpt-oss baseline (unchanged short harmony-format reasoning note).
+
+**New, separate, not-yet-acted-on finding**: `_stub_reason` did NOT flag a ScienceDirect fetch that
+came back as almost entirely Adobe-Analytics tracking-script JSON, not real article content — no
+`stub` key at all in `fetched_urls`. Unlike a `google.com` fabricated-citation fetch in the SAME
+run, which WAS correctly caught as a stub. A real gap in `_stub_reason`'s pattern coverage for this
+specific bot-wall shape; low priority, didn't actually poison a citation this run.
+
+**`yuxinlu1/gemma-4-12B-agentic-fable5-composer2.5-v2-3.5x-tau2-GGUF` — DISQUALIFIED, run twice,
+identical failure signature both times.** Not the same candidate as the existing "Gemma 4 12B" row
+below (that one is `SetneufPT/Gemma4-12B-IT-QAT_Q4_64K_16GB-GPU`, a different publisher/quant of
+the same base architecture) — this is a separate fine-tune, evaluated separately.
+
+- **Base**: `google/gemma-4-12B-it`, 11.9B params. Pulled as
+  `hf.co/yuxinlu1/gemma-4-12B-agentic-fable5-composer2.5-v2-3.5x-tau2-GGUF:Q4_K_M` (7.4GB). Derived
+  tag `deepdelve-gemma4-12b:latest` created with `PARAMETER num_ctx 16384` (the raw pulled tag has
+  no context override — Ollama would otherwise silently serve it at its small default, invalidating
+  any test per this project's own context-floor rule). `OLLAMA_NUM_PARALLEL=1` already set
+  system-wide, applies automatically.
+- **Model Evaluation Standard point 1, confirmed via direct curl against the real
+  `/v1/chat/completions` endpoint before any benchmark**: plain completion clean; tool-calling
+  clean (correctly-shaped `tool_calls`, empty `content`). **`chat_template_kwargs.enable_thinking:
+  false` does NOT suppress thinking** — the `reasoning` field stayed populated regardless (same
+  passthrough-bug class already documented for Qwen3). Root-caused to a working alternative:
+  `reasoning_effort: "none"` on the SAME endpoint DOES cleanly suppress it — this is what motivated
+  `e60e334` above. Confirmed clean (no `reasoning` field, correct tool_calls) with the fix applied,
+  before running any real benchmark.
+- **Two live runs against DeepDelve's actual engine, different queries, identical failure**: run 1,
+  the same "Cretaceous–Paleogene boundary" query used to verify the delegation-cap/supersede fixes
+  above (1321s, `Report: NOT WRITTEN`); run 2, a deliberately narrow single-fact query ("what is the
+  speed of light," 934s, `Report: NOT WRITTEN`) chosen specifically to rule out query complexity as
+  a confound. Both runs ended identically: `"Task forcefully aborted: Agent trapped in loop. Quota
+  exceeded multiple times for write_todos."`
+- **Root cause, confirmed from the real session log's actual tool-call arguments (not guessed)**:
+  the model calls `write_todos` with BYTE-FOR-BYTE IDENTICAL arguments repeatedly (the same
+  fully-`[x]`-checked todo list, verbatim, call after call) — not incremental revision, a genuine
+  repetition loop. It continues even AFTER the tool starts returning `"Error: Quota reached...
+  You MUST summarize what you've done and state clearly that you had to stop due to quota
+  limits"` — the model ignores this explicit corrective instruction and calls `write_todos` again
+  with the identical content. All research work was actually done (todos fully checked, real
+  sources fetched — 17 and 10 respectively, 0 web-search failures both runs) but the model never
+  transitions to writing the final report; DeepDelve's own anti-loop safety net (quota + forced
+  abort) is what stopped the run, not the model recognizing completion.
+- **Meets the Model Evaluation Standard's point 4** (a discard claim needs more than one run): two
+  independent runs, different queries (one deliberately simple to rule out complexity as a
+  confound), identical failure signature.
+- **Distinct failure mode from every other disqualified candidate documented so far** — not the
+  `thin_coverage` Planner non-convergence pattern (`qwen3:4b`/`qwen3:8b`), not citation fabrication
+  (`InternScience/Agents-A1-4B`, the fine-tuned `qwen3:4b`), not a writer-role tool-call failure
+  (Bonsai-8B, `qwen2.5:3b-instruct`). This is a genuine inability to break out of a literal
+  identical-tool-call repetition loop even when directly instructed via a tool-error message to
+  stop — the most severe agentic-reliability failure documented in this project's bake-off so far.
+- **Not a serving-layer bug** — nothing here resembles the Qwen3/`mistral-nemo`-class Ollama
+  passthrough bugs (point 3 of the standard): nothink and tool-calling were both independently
+  confirmed clean at the raw API level beforehand, and the failure only appears once the model is
+  actually driving the full multi-turn agentic loop.
+- `~/.deepdelve/config.yaml` needs to be restored to the `gpt-oss` baseline
+  (`openai_model: deepdelve-gpt-oss:latest`) before any non-bake-off work resumes — currently still
+  pointed at `deepdelve-gemma4-12b:latest` as of this entry.
+
 ### 2026-07-26: Planner redelegation-loop fix + two new production bugs found by live testing
 
 Addressed 3 of the "still open" items from the 2026-07-24 session (excluded: the deferred
