@@ -1833,3 +1833,103 @@ that currently annotates `summary` in `src/engine/completion.py`/`src/engine/orc
 evidence-assembly filter; wherever the deterministic salvage reads raw findings (same function,
 `_dispatch_writer_review_fix`'s `deterministic_fallback` caller); `ARCHITECTURE.md`'s resume-
 carryover allowlist if a new `RunState.data` blocklist key is added, per its own checklist.
+
+## 11. Is ROCm (not CUDA) the reason so many vLLM bake-off candidates showed edge-case instability, and did the community build something better for consumer AMD GPUs? (2026-07-26)
+
+Prompted by a same-day vLLM bake-off session that disqualified/discarded 9 candidates in a row
+(§ROADMAP.md History, 2026-07-26 entries) — several with genuinely weird low-level symptoms (a
+silent zombie-process crash with zero traceback, intermittent empty `arguments: "{}"` JSON despite
+a normal completion-token count, one garbled `[n {...` tool-call marker) alongside the expected
+model-capability failures (`thin_coverage` non-convergence, narrate-instead-of-call). User asked
+directly: is this hardware (`RX 9060 XT`, `gfx1200`, RDNA4, this project's ONLY GPU) the actual
+common cause, and would CUDA (or a community-optimized alternative) have avoided it?
+
+### 11a. What's confirmed ROCm/hardware-specific, and what isn't
+
+**Confirmed, from this session's own live evidence plus primary-source verification, NOT just
+inferred from the symptom shape:**
+- `bitsandbytes`'s ROCm support gate is real and version-pinned: `vllm/model_executor/layers/
+  quantization/bitsandbytes.py` (this project's installed vLLM 0.25.1) requires
+  `bitsandbytes >= 0.49.2` specifically on ROCm (vs. `0.48.1` elsewhere) — this environment runs
+  **exactly** `0.49.2`, the minimum floor, not a version with real production mileage above it.
+- Community trackers (confirmed via direct fetch, not just search snippets) document that
+  `bitsandbytes` quantization on ROCm was reportedly **non-functional** as recently as ~2024-2025
+  ([llm-tracker.info/howto/AMD-GPUs](https://llm-tracker.info/howto/AMD-GPUs), dated ~May 2025:
+  *"vLLM bitsandbytes quantization does not run w/ ROCm"*) — meaning the working-but-flaky
+  support observed live today (6/8, 2/4, 2/3 reliability rates across three different candidates)
+  is a recently-landed capability, not a mature one.
+- vLLM's own official blog (primary source, fetched directly, Feb 2026:
+  [vllm.ai/blog/2026-02-27-rocm-attention-backend](https://vllm.ai/blog/2026-02-27-rocm-attention-backend))
+  confirms a real, current, two-tier support split: the optimized `AITER`-based attention backend
+  targets **only** `AMD CDNA3 architecture hardware (Instinct MI300X, MI325X, MI355X)`; consumer
+  Radeon GPUs get routed to the baseline `TRITON_ATTN` backend specifically because *"AITER
+  primitives aren't available"* for them. This is AMD/vLLM's own current engineering priority,
+  not a stale complaint.
+- A secondary source (CraftRigs, March 2026) claims vLLM's AMD CI pass rate went from 37%
+  (November 2025) to 93% (three months after a dedicated AMD CI pipeline went live December 29,
+  2025) — **this specific number could NOT be independently verified against vLLM's own blog**,
+  which doesn't mention it. Treat as plausible directional context (a real CI pipeline did recently
+  launch), not a confirmed hard number.
+
+**NOT ROCm-specific — the majority of today's actual DISQUALIFIED verdicts, confirmed by
+cross-backend reproduction:**
+- `thin_coverage` non-convergence (`mistral-nemo:12b`, today) reproduces **identically** on
+  `qwen3:8b` across BOTH Ollama and vLLM (two completely different serving stacks, different
+  precision paths) — ruling out a ROCm/quantization cause for this specific failure class. It's a
+  genuine small/mid-size local-model self-correction limitation.
+- `not_delegated`/narrate-instead-of-call (`mistral:7b-instruct`, `hermes3:8b`, today) is a
+  text-generation-level behavioral choice, not a numerical-precision artifact — the same failure
+  shape (narrating a tool call as prose instead of using the API) has been documented on
+  Ollama-hosted candidates earlier in this project's history (Bonsai-8B, `qwen2.5:3b-instruct`).
+- Fabricated/hallucinated content (Gemma-4-12B's fake context-overflow narrative,
+  `hermes3:8b`'s invented system-error text) is a model-behavior failure mode, not a backend one.
+
+**Conclusion on the core question**: ROCm's relative immaturity (specifically for `bitsandbytes`
+quantization on **consumer** RDNA, as opposed to CDNA) plausibly explains the LOW-LEVEL edge-case
+instability seen today (crashes, malformed JSON at 25-50% rates) — but does NOT explain the
+MAJORITY of actual disqualifications, which are model-capability limits that reproduce identically
+on other backends/precisions. Switching this project to a hypothetical CUDA setup would likely
+reduce the flaky/crashy tail, but would not have changed most of today's verdicts.
+
+### 11b. Did the community build something better for consumer AMD hardware specifically?
+
+**Yes, but not the framework/backend expected — and one flashy specific claim was checked and
+should NOT be repeated as fact.**
+
+- `llama.cpp`'s ROCm/HIP backend — which is what **Ollama uses under the hood**, the exact serving
+  layer this project moved AWAY from earlier in this same session — is repeatedly described across
+  independent sources as mature and reliable for RDNA consumer cards, with **zero documented
+  quantization-correctness complaints** found across this research, vs. vLLM+`bitsandbytes`'s
+  documented history of not working at all until recently. Confirmed via a detailed, real-hardware,
+  community-maintained GitHub discussion
+  ([ggml-org/llama.cpp#15021](https://github.com/ggml-org/llama.cpp/discussions/15021)) covering
+  RX 7800 XT/7900 XTX numbers extensively — purely performance-focused, no correctness bugs
+  reported anywhere in the thread.
+- `llama.cpp` also ships a Vulkan backend (RADV), independently community-optimized for RDNA
+  (its original author used an RDNA2 device) — a real, actively-developed alternative to ROCm/HIP
+  entirely. **But a specific claim that Vulkan beats ROCm by "+20%" on RDNA4 (from a personal blog,
+  vachsark.com) could NOT be verified** (the source blocked automated fetching, HTTP 403) and is
+  **directly contradicted** by the more thorough, multi-contributor GitHub discussion above, where
+  real users show ROCm and Vulkan trading wins depending on workload shape (one prompt-processing-
+  heavy case favored ROCm, one token-generation-heavy case favored Vulkan) on the same RX 7800 XT.
+  **Do not cite the "+20%" figure — flag as a rejected/unverifiable claim if it resurfaces.**
+- No dedicated third-party "ROCm fork optimized specifically for consumer RDNA" project was found
+  by name in this research beyond `llama.cpp` itself and its Vulkan backend — the real story is
+  that `llama.cpp`/`ggml`'s own upstream project (not a fork) already IS the community's
+  consumer-AMD-optimized answer, and has been for longer than vLLM's ROCm story has existed in any
+  serious form.
+
+### 11c. Implication for this project, not yet acted on
+
+This session's earlier move from Ollama to vLLM (`project_ollama_dropped` memory) was made
+specifically to rule out two CONFIRMED Ollama-serving-layer bugs (think-mode passthrough,
+`ollama/ollama#6155` nested-array stringification) as possible causes of prior disqualifications.
+That reasoning still holds for the candidates it was meant to isolate. But this research suggests
+the swap was a lateral trade, not a strict upgrade, for THIS specific hardware: it removed two
+known Ollama bugs at the cost of trading into vLLM+`bitsandbytes`-on-ROCm's own, much younger,
+less battle-tested failure surface (this session's zombie crash, intermittent empty-JSON,
+garbled markers). Neither backend is unconditionally better here — they have different real bug
+classes, and `llama.cpp`/Ollama's HIP path has the mileage/maturity edge specifically for
+consumer RDNA. **Not yet decided or acted on**: whether to revert the live config back to Ollama
+for some/all roles, keep vLLM for the re-test track only, or some hybrid — this is a real decision
+for the user to make, not something to auto-apply from this research note alone.
