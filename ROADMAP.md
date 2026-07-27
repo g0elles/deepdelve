@@ -88,6 +88,45 @@ concluded verdict, which is the actual complaint. Going forward, a candidate is 
 
 ## History
 
+### 2026-07-26 (later still again): `mistral-nemo:12b` re-tested with the Mistral fix — DISQUALIFIED, same `thin_coverage` non-convergence pattern
+
+Closes out the original 2026-07-21 BLOCKED verdict (see its own entry above, which already noted
+this exact fix as the remaining open re-test opportunity). Checked real weight size first, per the
+lesson from `qwen2.5-coder`/`devstral`: HF repo's `mistralai/Mistral-Nemo-Instruct-2407` lists two
+packagings of the same ~24.5GB bf16 weights (consolidated single-file + 5-shard set); at the
+observed 4-bit ratio this comfortably fits (~8.3GiB actual, confirmed — matches the original
+pre-flight spike, which used this exact model). `bitsandbytes` 4-bit, `mistral` tool parser,
+`settings.skip_chat_template_kwargs: true` (today's fix, commit `9c8111f`) — request reached the
+model cleanly this time, no `400`.
+
+Isolated tool-call smoke test: 6/8 clean across two batches (75%) — real structured arrays, no
+`#6155`-class bug — with two distinct intermittent failure shapes (a garbled tool-call marker
+prefix once, one full narration — "Cerebro has delegated the following tasks..." — with no real
+call once). Better isolated reliability than most other candidates today, not perfect.
+
+**Full DeepDelve benchmark run** (the standing stress-test query): real, genuine engagement with
+the task — 13 sources fetched, 0/7 web-search failures, 8 findings recorded — clearly not a
+narrate-only or zero-engagement failure. But ended `Retry budget exhausted (thin_coverage)`,
+`final_report.md` never written, all 4/4 completion-check attempts hitting the IDENTICAL
+`thin_coverage` problem — the same non-convergence signature already documented 3 times this
+project across different models AND backends (`qwen3:4b` on Ollama, `qwen3:8b` on both Ollama and
+vLLM): once `thin_coverage` fires, the Planner doesn't act on the corrective nudge and keeps
+repeating similar coverage instead of genuinely redelegating deeper. This is well-corroborated
+evidence even from one live run of THIS specific candidate, given how consistently this exact
+pattern recurs across unrelated model families and serving backends.
+
+**Verdict: `mistral-nemo:12b` DISQUALIFIED.** The original 2026-07-21 BLOCKED status is now
+resolved — the `chat_template_kwargs` infrastructure issue is confirmed fixed (real research
+happened this time), but the underlying capability question comes back negative, joining the
+`thin_coverage` non-convergence family rather than escaping it. Not the same failure class as
+`mistral:7b-instruct`'s own same-family verdict (`not_delegated`, narrate-instead-of-call) — this
+candidate genuinely engages with the task, it just can't escape thin-coverage retries once
+triggered.
+
+Cleanup: vLLM server SIGTERM'd cleanly (zero orphan VRAM/processes confirmed), HF cache checkpoint
+deleted (~23GiB — this is a CLOSED, final verdict, unlike `qwen2.5-coder`'s deliberately-preserved
+open item), `~/.deepdelve/config.yaml` restored to the gpt-oss baseline.
+
 ### 2026-07-26 (later once more): `devstral:24b` discarded on hardware grounds without a pull attempt
 
 Checked real weight size FIRST this time, per the lesson just learned from `qwen2.5-coder:14b-instruct`
