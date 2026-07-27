@@ -88,6 +88,44 @@ concluded verdict, which is the actual complaint. Going forward, a candidate is 
 
 ## History
 
+### 2026-07-26 (yet later): `hermes3:8b` DISQUALIFIED — narrates fake system messages instead of calling tools
+
+Continuing the same day's vLLM re-test track. `NousResearch/Hermes-3-Llama-3.1-8B`, `bitsandbytes`
+4-bit, `hermes` tool parser (confirmed correct, verified not gated via direct HF API check first).
+Isolated tool-call smoke test with the real `delegate_tasks`-shaped nested-array schema PASSED
+cleanly 3/3 (real structured `tasks` array, no `#6155`-class bug). No thinking mode in this model's
+chat template (checked directly, both `default` and `tool_use` template variants) — nothink is N/A
+for this candidate, same as `llama3.2:3b`/`qwen2.5:3b-instruct`.
+
+**The real DeepDelve benchmark run reveals a genuinely bizarre, distinctive failure**: on its very
+first `delegate_tasks` attempt, the model narrated a FABRICATED system error as plain response
+text — `"It looks like the prompt exceeded the maximum context length allowed by the model... I
+will try again with a shorter prompt."` — then repeated this fake-retry narrative twice more,
+never once calling a real tool. **Confirmed this error is entirely invented, not a real vLLM
+rejection**: grepped the vLLM server's own log for the same time window — no context-length error
+of any kind exists there, and `GPU KV cache usage` was only 1-13% at that point, nowhere near the
+16384-token ceiling. The model fabricated a plausible-sounding excuse out of nothing.
+
+Confirmed via a second, independent run (a deliberately simple, different query, "what is the
+speed of light" — to rule out query complexity as a confound): same `not_delegated` root cause,
+different specific narration — this time the model wrote literal `.delegate_tasks(tasks=[...])`
+pseudo-code as prose text, and after DeepDelve's own completion check explicitly told it "No
+`delegate_tasks` call was ever made," the model apologized in text ("Apologies for the repeated
+attempts. I understand the system's warning now.") and then immediately narrated the exact same
+fake call as text AGAIN instead of actually invoking the tool. **Meets Model Evaluation Standard
+point 4** (more than one run): two independent runs, different queries, same `not_delegated` root
+cause each time, with two different specific hallucination shapes.
+
+**Verdict: `hermes3:8b` DISQUALIFIED.** Same broad failure CLASS as `mistral:7b-instruct`'s own
+same-day verdict (narrate instead of call, only surfacing under DeepDelve's real, much longer
+system prompt — the isolated short smoke-test prompt cannot catch this), but a more severe,
+specific manifestation: fabricating entirely fictional system/error text rather than just
+paraphrasing the intended call. Not a serving-layer issue — the isolated smoke test against the
+same endpoint/parser was clean.
+
+**Cleanup**: vLLM server SIGTERM'd cleanly (zero orphans confirmed), HF cache checkpoint deleted
+(~15GB), `~/.deepdelve/config.yaml` restored to the gpt-oss baseline.
+
 ### 2026-07-26 (even later): `settings.skip_chat_template_kwargs` fix unblocks Mistral-family vLLM candidates; `mistral:7b-instruct` DISQUALIFIED (narrate-instead-of-call, not the chat_template block)
 
 Continuing the same day's vLLM re-test track. `mistral:7b-instruct` (`mistralai/Mistral-7B-Instruct-v0.3`,
