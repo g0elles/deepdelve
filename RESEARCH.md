@@ -2089,3 +2089,42 @@ fix path most likely isn't "patch the Jinja-style template," it's confirming whe
 `qwen3.5`, and whether that's what actually needs wiring up for the 4B model. Not yet acted on —
 would need checking Ollama's own renderer registry for a `qwen3` (non-3.5/3.6) entry before writing
 any new Modelfile.
+
+### 13a. Follow-up, same day: the renderer/parser hypothesis tested live — REJECTED, not just unconfirmed
+
+Checked Ollama's own source directly (`gh api repos/ollama/ollama/contents/model/renderers`,
+primary source, not an aggregator): `model/renderers/` has `qwen35.go`, `qwen3coder.go`,
+`qwen3vl.go` — **no dedicated plain-`qwen3` renderer exists at all**. `renderer.go`'s
+`rendererForName` switch confirms the `"qwen3.5"` registry name maps to
+`Qwen35Renderer{isThinking: true, emitEmptyThinkOnNoThink: true}` and is looked up by bare string
+key with **no model-architecture gating** — so a Modelfile can request `RENDERER qwen3.5` /
+`PARSER qwen3.5` against ANY GGUF regardless of its actual reported architecture. Read the
+renderer's own `Render()` source directly: when not thinking, it does exactly what was hoped —
+emits a forced, closed `<think>\n\n</think>\n\n` block before the assistant turn starts
+(`emitEmptyThinkOnNoThink` branch) — the precise mechanism our legacy Jinja-style Modelfile
+template lacks.
+
+**Live-tested against this project's actual `qwen3:4b` GGUF** (built a throwaway Ollama tag,
+`FROM` the exact same blob `ollama show qwen3:4b --modelfile` already uses, with `RENDERER
+qwen3.5`/`PARSER qwen3.5` instead of the legacy `TEMPLATE` block): the renderer swap loaded and
+worked structurally (`think: true` sanity check produced clean, correctly-separated
+`message.reasoning`/`message.content`, confirming the renderer itself functions correctly against
+this GGUF). But **`think: false` still failed to suppress reasoning** — the model generated a full
+reasoning block anyway, immediately after the renderer's own forced `<think>\n\n</think>\n\n`
+prefix, and in this run also emitted a hallucinated extra tool call
+(`example_function_name`, copied straight out of the renderer's own tool-call format instructions)
+alongside the real one, repeated 5 times.
+
+**Verdict: rejects, not just leaves unconfirmed, the "wrong serving mechanism" hypothesis for this
+specific model.** Four independent combinations have now been tested and uniformly fail to
+suppress thinking on this exact `Qwen3-4B` checkpoint: `chat_template_kwargs.enable_thinking` +
+legacy template, native `think` field + legacy template (both endpoints), and now native `think`
+field + the same battle-tested `qwen3.5` renderer/parser that works correctly for
+`deepdelve-qwen3.6`. The common factor left standing is the model checkpoint itself, not the
+serving mechanism — this specific Qwen3-4B weight set appears not to reliably honor a
+forced-empty-think instruction the way Qwen3.5/3.6 do, regardless of how correctly that
+instruction is delivered. Consistent with (but narrower than) froggeric's own explicit "Qwen 3.5
+and 3.6" scoping — their fix, and Ollama's own working mechanism, may simply not transfer to plain
+Qwen3 at all. **No further serving-layer/template lever identified to try** — the next
+investigation, if pursued, would need to look at the model/training side (e.g., whether the LoRA's
+own training data ever included nothink-formatted examples) rather than anything Ollama-configurable.
