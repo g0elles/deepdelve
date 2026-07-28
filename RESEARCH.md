@@ -1939,3 +1939,153 @@ in the first place (think-mode passthrough, `#6155`) are still real and still ap
 candidates they affect; accepted as the cost of `llama.cpp`/HIP's serving-layer maturity edge on
 this specific hardware. Full detail in the `project_ollama_restored` memory / `ROADMAP.md`
 History.
+
+## 12. Ollama/llama.cpp tuning knobs for this specific hardware (2026-07-27)
+
+Research only, nothing changed live. Hardware: AMD Radeon RX 9060 XT (gfx1200, RDNA4), 17GB VRAM,
+ROCm 7.2.4, Ryzen 5 9600X (6C/12T), 30GB system RAM, Ollama 0.31.2. Prompted by wanting to know
+whether standing up a raw `llama.cpp server` (vs. tuning Ollama's existing knobs) is worth the
+backend-swap risk this project already walked back once with vLLM (§11).
+
+**Flash attention + KV cache quantization** — the two real free levers, primary source
+[Ollama FAQ](https://docs.ollama.com/faq):
+- `OLLAMA_FLASH_ATTENTION` default `false`/auto, currently unset on this machine (confirmed via
+  `systemctl show ollama`/drop-in inspection — not enabled).
+- `OLLAMA_KV_CACHE_TYPE` (`f16` default → `q8_0`/`q4_0`) **only takes effect when flash attention
+  is on** — setting the cache type alone with flash attention off does nothing.
+- `q8_0`: ~50% KV cache memory, negligible quality loss (published perplexity delta +0.002 to
+  +0.05). `q4_0`: ~25% memory, small-medium quality loss.
+- **Not universal — gated by model architecture allowlist, not just backend.** Confirmed allowlist:
+  `gemma3, gptoss, gpt-oss, mistral3, qwen3, qwen3moe, qwen3vl, qwen3vlmoe` — `command-r`/`llama3`
+  silently fall back to f16 with no error.
+  [ollama/ollama#13337](https://github.com/ollama/ollama/issues/13337). `deepdelve-gpt-oss` (gptoss
+  arch) **is** on the list, so this is actually usable here.
+
+**A documented ROCm crash mode on this exact GPU model — the important finding.**
+[ggml-org/llama.cpp#21376](https://github.com/ggml-org/llama.cpp/issues/21376): RX 9060 XT
+(gfx1200), 16GB VRAM — exact match for this machine. ROCm/HIP backend hard-crashes
+(`cudaMalloc failed: out of memory` → segfault) when the KV cache allocation doesn't fit in
+remaining VRAM after model weights load, instead of degrading gracefully. The **same config on
+Vulkan spills to system RAM instead of crashing**. Reported unresolved as of research date, no
+maintainer fix found. Directly relevant here: this box already runs close to the ceiling
+(17GB total VRAM, `gpt-oss:20b` at `num_ctx 16384`, `OLLAMA_GPU_OVERHEAD` unset/`0` = zero reserved
+headroom). Turning on flash attention to push context higher, without also reserving overhead
+headroom, risks hitting exactly this crash.
+
+**rocWMMA (flash-attn accelerator) support on gfx1200 — real but unconfirmed for Ollama's own
+builds.** Primary source [ROCm/rocWMMA](https://github.com/ROCm/rocWMMA) confirms `gfx1200`/
+`gfx1201` **are** officially supported (grouped under `gfx12`) — an aggregator claim found earlier
+in this research pass ("RDNA3-only") was outdated/wrong, corrected against the primary repo.
+However rocWMMA flash-attn requires the llama.cpp **compile-time** flag
+`-DGGML_HIP_ROCWMMA_FATTN=ON`. Not confirmed whether Ollama's official prebuilt ROCm binaries ship
+with this flag on — would need to check Ollama's release build scripts/CI directly, not done this
+pass.
+
+**Ollama ships an experimental Vulkan backend, on by default.** `OLLAMA_VULKAN` defaults to `true`
+in current Ollama source (`envconfig/config.go`). Given the #21376 finding above, Vulkan may
+actually be the more crash-resilient backend for this specific GPU under VRAM pressure — a
+different claim than §11b's rejected "+20% Vulkan speed" one (that was about raw throughput from a
+blocked/unverifiable source; this one is about crash behavior under VRAM pressure, corroborated by
+a live GitHub issue against this exact card).
+
+**Other confirmed tunables**, read directly from `envconfig/config.go`: `OLLAMA_NUM_PARALLEL`
+(already `1` in this machine's live config, correct as-is), `OLLAMA_GPU_OVERHEAD` (bytes, default
+`0` — likely mitigation for the #21376 crash mode), `OLLAMA_SCHED_SPREAD` (spreads layers across
+multiple GPUs, irrelevant here — only one real GPU), `OLLAMA_IGPU_ENABLE` (default `true` — this
+machine has a Raphael iGPU present alongside the discrete card; could not confirm from
+`journalctl -u ollama`, which returned no entries, whether Ollama schedules anything onto it —
+needs checking Ollama's actual log location before drawing a conclusion).
+
+**Not confirmed / left open, not enough primary-source coverage to act on**:
+- `num_batch`/`ubatch` (prompt-processing throughput vs. VRAM tradeoff, general llama.cpp guidance
+  is 512-2048) — unconfirmed whether exposed as an Ollama env var or only as a Modelfile
+  `PARAMETER`.
+- CPU thread count tuning for the 6-core/12-thread 9600X — no primary source found specific to
+  this; deliberately not guessing from general knowledge.
+
+**Implication, not yet decided or acted on**: the two candidate changes with actual primary-source
+backing are (1) `OLLAMA_FLASH_ATTENTION=1` + `OLLAMA_KV_CACHE_TYPE=q8_0` for the `gpt-oss` model
+(architecture-allowlisted, real VRAM/context win) and (2) setting `OLLAMA_GPU_OVERHEAD` to some
+explicit headroom value before doing (1), specifically because of the #21376 crash mode on this
+exact card. Whether to also trial `OLLAMA_VULKAN` as the primary backend instead of ROCm is a
+separate, bigger decision — it would trade ROCm's llama.cpp/HIP serving-layer maturity edge (§11)
+for Vulkan's crash-resilience under VRAM pressure, and hasn't been benchmarked on this hardware at
+all yet.
+
+## 13. Qwen3 think-suppression: is it actually an unfixable serving-layer bug, or a fixable chat-template gap? (2026-07-28)
+
+Prompted by a user-supplied primary source: a Reddit report ("I ran Qwen 3.6 locally for 45 days,
+here are the results", r/LocalLLM) describing the exact "But wait... Actually..." unbounded
+reasoning-loop pattern this project independently hit the same day (see `ROADMAP.md`'s
+`qwen3-4b-combined-v2-lora` DISQUALIFIED entry). Two claims from that thread, checked against
+primary sources rather than taken at face value.
+
+### Claim 1: a numeric reasoning-token budget, not a boolean disable, is the community's real fix
+
+The OP and multiple commenters (`awitod`, `vexatious-big`) report that a boolean thinking-disable
+is unreliable even on their own setups ("It does it with Q8 too"), and that what actually works is
+capping reasoning at a fixed token budget (~4096 tok) via `llama.cpp`'s own
+`--reasoning-budget`-style controls. **Checked against Ollama's own docs
+([docs.ollama.com/capabilities/thinking](https://docs.ollama.com/capabilities/thinking)):
+Ollama's real native control is a top-level `think` field** (`true`/`false`, or a level string
+`"low"`/`"medium"`/`"high"` for `gpt-oss`-family models specifically) — genuinely different from
+what this project's `orchestrator.py::_get_default_options()` has been sending
+(`chat_template_kwargs.enable_thinking` + `reasoning_effort`, both OpenAI/vLLM conventions, not
+native Ollama ones). Ollama's docs confirm **no `max_thinking_tokens`-equivalent exists** on either
+endpoint — the numeric-budget lever the Reddit thread describes is real for raw `llama.cpp` server
+deployments, not currently available through Ollama at all (native or OpenAI-compat).
+
+**Live-tested against both of this project's actual Ollama endpoints, same-day, same hardware**:
+sent the correct native `"think": false` directly to `/api/chat` for `qwen3:4b` — still produced a
+full, unabbreviated `<think>...</think>` block inline in `message.content` (not even routed to the
+separate `message.thinking` field the docs describe for models that support it). Confirms this
+project's already-known "Qwen3 think-mode passthrough" bug is not an artifact of using the wrong
+parameter name (`chat_template_kwargs`/`reasoning_effort` vs. `think`) — the CORRECT, documented
+native field fails identically. Ruled out: this is not a caller-side mistake.
+
+### Claim 2: is the actual root cause a chat-template bug, not an unfixable serving bug?
+
+A commenter (`i_am_me0_0`) reports the real fix for Qwen3.6's tool-calling/reasoning problems was
+swapping in a community-patched chat template
+([froggeric/Qwen-Fixed-Chat-Templates](https://huggingface.co/froggeric/Qwen-Fixed-Chat-Templates)
+on HuggingFace), not a serving-layer flag. **Checked the repo's own README directly**: it documents
+several real, specific template bugs, most relevantly an "agentic loop stalling" bug where the
+official template's practice of injecting an empty `<think>\n\n</think>\n\n` block trains a "toxic
+learning pattern" causing an "80%+ premature `<|im_end|>` stalling rate" — the model aborts a turn
+instead of following through with content or a tool call. **This is a structurally different bug
+from this project's own symptom, not the same one**: our smoke-tested Modelfile template (derived
+from Ollama's own imported `qwen3:4b` GGUF template, `ollama show qwen3:4b --modelfile`) does the
+OPPOSITE — it unconditionally opens a bare `<think>\n` at generation start with no forced-empty
+`</think>` closing branch for the nothink case at all, so the model just keeps reasoning
+indefinitely rather than aborting early. Two different template defects, same family, opposite
+failure shape — confirms the underlying claim (Qwen chat-template correctness, not just serving
+flags, genuinely governs think-block behavior) without over-claiming that froggeric's specific fix
+applies unmodified here.
+
+**Real caveat, not glossed over**: froggeric's README states coverage for "Qwen 3.5 and 3.6
+variants" — it does **not** explicitly claim Qwen3 (4B) family coverage, which is what this
+project's own LoRA fine-tune round is built on (`Qwen/Qwen3-4B`). Applicability to the 4B model is
+a plausible lead, not a confirmed fix — would need its own direct template swap + live retest
+before being treated as resolved, not assumed from the 3.5/3.6-scoped README.
+
+### Where this leaves the standing "accepted, unfixed" bug framing
+
+`ROADMAP.md`'s "Ollama restored" entry (2026-07-26) accepted Qwen3 think-mode passthrough as a
+known, permanent tradeoff. This research suggests that framing may be premature: the actual defect
+looks more like "this project's specific Modelfile template lacks the conditional nothink-closing
+branch other Qwen3 chat templates (including community-patched ones) do implement" — a fixable,
+template-level gap, not an inherent Ollama/llama.cpp serving limitation.
+
+**Checked directly, same session**: `ollama show deepdelve-qwen3.6:latest --modelfile` has **no**
+literal Go `TEMPLATE` think-handling logic at all — it uses `TEMPLATE {{ .Prompt }}` plus
+`RENDERER qwen3.5` / `PARSER qwen3.5`, Ollama's newer built-in model-specific renderer/parser
+plugin system, a structurally different mechanism from the hand-written Jinja-style Go template
+this project's `qwen3:4b` import carries (no renderer/parser directives at all, `ollama show qwen3:4b
+--modelfile` confirms this). So the working case isn't "a template with the right conditional
+branch" as originally guessed — it's a different, newer Ollama subsystem entirely that the 4B
+import doesn't use. **Revises, doesn't invalidate, the fixable-not-serving-bug framing above**: the
+fix path most likely isn't "patch the Jinja-style template," it's confirming whether Ollama ships
+(or can be pointed at) a `qwen3`/`qwen3moe`-family renderer/parser pair the way it does for
+`qwen3.5`, and whether that's what actually needs wiring up for the 4B model. Not yet acted on —
+would need checking Ollama's own renderer registry for a `qwen3` (non-3.5/3.6) entry before writing
+any new Modelfile.

@@ -156,6 +156,67 @@ whether the `stale_findings` regression is real (more held-out prompts for that 
 noise. Full session detail in `session_status/2026-07-28.md` once archived (see `CURRENT.md` if not
 yet archived).
 
+### 2026-07-28 (later): v2 combined LoRA live-benchmarked end-to-end — DISQUALIFIED
+
+Closes the "NOT YET DONE" caveat on the entry directly above. Deployment pipeline: `merge_and_unload()`
+(CPU) → GGUF q8_0 via `convert_hf_to_gguf.py` (4.27GB) → Ollama tag
+`deepdelve-qwen3-4b-combined-v2` (num_ctx 40960, reused the proven `qwen3:4b` tool-call template) →
+direct tool-call smoke test passed cleanly → `~/.deepdelve/config.yaml` pointed at it → live run
+against the standing sales-forecasting/heuristic-algorithms benchmark
+(`eval/sales_forecasting_benchmark.md`), same query every prior model candidate has been run
+against.
+
+**Result: DISQUALIFIED — `final_report.md` never written**, retry budget exhausted. Run folder:
+`research_output/i_want_documentation_on_heuristic_algoritms_for_de_20260728_143953/`.
+`check_task_verification_flagged` fired twice against the same 3 tasks for fabricated/unverified
+citations; the model's own first synthesis attempt narrated report content in prose instead of
+calling `write_workspace_file` ("Since I cannot write or edit files directly, I will describe the
+content..."). After 2 failed grounding-verification retries it re-dispatched a duplicate/untracked
+task, tripping `check_untracked_delegation`'s hard stop before any report was produced. **This
+directly answers the open "live citation_grounding retest" question from the entry above:
+still broken live** — consistent with the held-out eval never reaching ceiling (0.615→0.781). The
+`stale_findings` open question was not exercised (no report to compare).
+
+**Model Evaluation Standard point 3 note**: confirmed via raw API test, on both this candidate and
+plain `qwen3:4b`, that the run executed under the already-known, already-accepted Qwen3
+think-mode-passthrough Ollama bug (`chat_template_kwargs.enable_thinking:false` +
+`reasoning_effort:none` suppressed nothing on either tag) — a pre-existing, model-family-wide
+confound (see the "Ollama restored" entry below), not something specific to this LoRA. Named for
+the record, doesn't change the verdict: base `qwen3:4b` carries the identical confound and this
+candidate still fabricated citations and never produced a report.
+
+**Cleanup same batch** (per this project's disqualified-candidate hygiene rule): `ollama rm
+deepdelve-qwen3-4b-combined-v2`, deleted `qwen3-4b-combined-v2-merged` (7.6GB) and
+`qwen3-4b-combined-v2.q8_0.gguf` (4.0GB), ~11.6GB reclaimed. Kept the LoRA adapter itself
+(`qwen3-4b-combined-v2-lora`, 132MB) as the training artifact. `config.yaml` restored to
+`deepdelve-gpt-oss:latest`.
+
+**Root-caused same day**: retries "not recovering" was NOT a model-capability problem — it was a
+structural bug. The known Qwen3 think-passthrough Ollama bug (see below) inflated every turn's
+token/char count 2-3x, blowing through `context_budget_chars` (50000, calibrated for nothink
+operation) in just 2 of the 8 configured completion-check attempts. `tui.py`'s context-budget
+force-final path (`run_state.attempt = 10**6`) then jumped straight to `run_completion_check`'s
+terminal branch, where `_yield_to_starved_check`'s starvation window happened to be active and
+swapped the real, still-retriable problem (`task_verification_flagged`, citation fabrication) out
+for `check_untracked_delegation` — a check whose own docstring explicitly promises it "will NOT
+block this run from finishing." The forced-final path had no awareness of that contract, so a
+low-severity hygiene nudge got reported as the run's terminal blocker instead of the real
+correctness problem, which never actually got its intended 8-attempt budget to resolve.
+
+**Fixed** (`src/engine/completion.py`, `_yield_to_starved_check`): added a `never_final_blocker`
+parameter, `True` for the `check_untracked_delegation` call site only (`check_report_underuses_findings`,
+a genuine correctness signal with no such guarantee, is unaffected — defaults `False`). Once
+`ctx.attempt >= ctx.max_attempts` (i.e. this cycle is already headed to the final branch
+regardless), the starved-check override is skipped so a documented-non-blocking check can never
+become the reported terminal reason. New regression case added to `test_structural_checks.py`'s
+existing `_starvation_guard_scenario`; full suite re-run and passing.
+
+**Consequence for the DISQUALIFIED verdict above**: it stands as recorded, but is now understood
+to be confounded — the model never got a real chance to resolve the citation-fabrication problem
+before being cut off. Re-benchmarking with this fix in place (and, ideally, once the Qwen3
+think-passthrough bug itself is resolved or worked around) would be needed for a clean verdict;
+not done this session per explicit scope ("fix the bug, don't re-benchmark yet").
+
 ### 2026-07-26 (final entry, end of day): Ollama restored as the permanent serving backend, vLLM removed
 
 Reverses the 2026-07-21 "Ollama dropped" decision, after the same-day vLLM re-test sweep above

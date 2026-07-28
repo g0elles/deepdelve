@@ -2124,7 +2124,8 @@ def _consecutive_occurrences(run_state: "RunState", problem: str) -> int:  # noq
 _STARVATION_SKIP_THRESHOLD = 2
 
 
-def _yield_to_starved_check(verdict: Optional[Verdict], ctx: Ctx, starved_check) -> Optional[Verdict]:
+def _yield_to_starved_check(verdict: Optional[Verdict], ctx: Ctx, starved_check,
+                             never_final_blocker: bool = False) -> Optional[Verdict]:
     """First-verdict-wins normally, but a low-priority hygiene check placed deliberately last in
     its own list (check_untracked_delegation in COMPLETION_CHECKS, check_report_underuses_findings
     in GROUNDING_CHECKS — both explicitly documented as lower-priority-than-correctness, "wait a
@@ -2140,9 +2141,27 @@ def _yield_to_starved_check(verdict: Optional[Verdict], ctx: Ctx, starved_check)
     already-available state (confirmed — neither mutates run_state.data, unlike e.g. check_no_urls's
     own escalation counter), so invoking one here has no side effect to worry about. Falls back to
     the original verdict if the starved check has nothing to report, so a genuinely single-problem
-    run is never worse off than before this existed."""
+    run is never worse off than before this existed.
+
+    never_final_blocker (2026-07-28, live bug): check_untracked_delegation's own docstring is
+    explicit that it "will NOT block this run from finishing" — but tui.py's context-budget/
+    max_run_minutes/malformed-tool-call paths force run_state.attempt to 10**6 (jumping straight
+    to run_completion_check's final-verdict branch) without any awareness of which problem is
+    currently winning. Confirmed live: a run whose real, still-retriable problem was
+    task_verification_flagged (persistent citation fabrication, only 2 of 8 attempts used) got its
+    context budget blown by an unrelated Ollama think-mode-passthrough bug inflating every turn's
+    token count; the forced-final cycle landed exactly on this function's starvation window and
+    yielded to check_untracked_delegation, which then got reported as the run's terminal
+    "unresolved issue" — precisely the outcome its own docstring promises never happens. Once
+    ctx.attempt has already reached ctx.max_attempts (i.e. this cycle is going straight to the
+    final branch no matter what), a check documented as never-blocking must not be allowed to
+    become the reported blocker — keep the real verdict instead. check_report_underuses_findings
+    (the OTHER caller of this function) carries no such guarantee and is a genuine correctness
+    signal, so it's unaffected by this guard (never_final_blocker defaults False)."""
     if verdict is None:
         return None
+    if never_final_blocker and ctx.attempt >= ctx.max_attempts:
+        return verdict
     if _consecutive_occurrences(ctx.run_state, verdict.problem) < _STARVATION_SKIP_THRESHOLD:
         return verdict
     alt = starved_check(ctx)
@@ -2235,7 +2254,7 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
             # only actually retrying does. Otherwise a success on the final allowed
             # attempt is never recognized as a success (it just falls through silently).
             verdict = next((v for check in COMPLETION_CHECKS if (v := check(ctx)) is not None), None)
-            verdict = _yield_to_starved_check(verdict, ctx, check_untracked_delegation)
+            verdict = _yield_to_starved_check(verdict, ctx, check_untracked_delegation, never_final_blocker=True)
             # grounding_check.enabled is the section's master switch — before this guard it was a
             # documented no-op (config_template.yaml shipped it, nothing read it; 2026-07-12 audit,
             # G2). The pre-grounding checks above are structural, not grounding, and still run.

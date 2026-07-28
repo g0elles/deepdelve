@@ -1395,6 +1395,25 @@ def main():
             # verdict is None (nothing wrong at all) -> no-op, never probes the starved check.
             assert _yield_to_starved_check(None, ctx, _must_not_be_called) is None
 
+            # never_final_blocker (2026-07-28 live bug): once a forced-final cycle has already set
+            # ctx.attempt >= ctx.max_attempts (tui.py's context-budget/max_run_minutes/malformed-
+            # retry paths jump straight there via run_state.attempt = 10**6), a check documented as
+            # "will NOT block this run from finishing" (check_untracked_delegation) must not be
+            # allowed to displace the real, still-retriable problem as the reported terminal
+            # verdict -- even if it's otherwise "due" a turn per the starvation window below.
+            rs.data["completion_check_attempts"] = [
+                {"problem": "uneven_task_investment"}, {"problem": "uneven_task_investment"},
+            ]
+            final_ctx = Ctx(req_artifact="final_report.md", attempt=8, max_attempts=8, delegated=True,
+                             files=[], content=None, quotas={}, run_state=rs)
+            result = _yield_to_starved_check(stuck, final_ctx, lambda c: starved, never_final_blocker=True)
+            assert result is stuck, result
+            # The OTHER caller (check_report_underuses_findings, a real correctness signal, not a
+            # "never blocks" hygiene check) keeps the pre-existing yield-even-when-final behavior --
+            # never_final_blocker defaults False, so nothing changes for it.
+            result = _yield_to_starved_check(stuck, final_ctx, lambda c: starved)
+            assert result is starved, result
+
     _starvation_guard_scenario()
 
     # --- find_cross_source_contradictions: citation-only lines must never be treated as claims.
