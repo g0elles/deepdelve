@@ -88,6 +88,74 @@ concluded verdict, which is the actual complaint. Going forward, a candidate is 
 
 ## History
 
+### 2026-07-28: Fine-tuning resumed — comprehensive 7-dimension combined GRPO round trained, held-out-evaluated, confirmed real generalization
+
+User explicitly decided to resume fine-tuning after the indefinite pause (see "Stretch" section's
+own standing note, updated alongside this entry), on the condition that every documented reward
+dimension be accounted for first rather than training with partial coverage again. Auditing
+`finetune/reward.py` against what `finetune/train_combined_grpo.py` actually trained (vs. what its
+own docstring merely documented) found 3 real gaps, all closed same-day: `real_tool_name_reward`
+(had real calibration data, `tool_name.jsonl`, but no synthetic-prompt generator, never trained);
+`check_stale_findings` and `check_uneven_task_investment` (no reward function at all). New
+generators built for all three (`generate_synthetic_tool_name_prompts.py`,
+`generate_synthetic_stale_findings_prompts.py`, `generate_synthetic_uneven_investment_prompts.py`),
+plus `task_verification_flagged` scenarios added to the existing `generate_synthetic_prompts.py`
+(today's own live VERIMAP quota-fix subject, reuses `thin_coverage_response_reward` — confirmed
+structurally identical response shapes, not assumed). Full design plan at
+`~/.claude/plans/imperative-tumbling-journal.md`.
+
+**Training round**: `Qwen/Qwen3-4B` base, LoRA (r=16), 7 task_types / 302 rows / 5 distinct reward
+functions (up from 3 task_types / 158 rows in the prior 2026-07-19 round) — the "one combined
+retrain, never piecemeal" methodology rule (below) honored fully this time, not partially like the
+2026-07-21 attempt that added `writer_role_response_reward` but never actually launched.
+
+**Took 5 attempts to complete, 2 real bugs found and fixed via live training** (both genuine
+model-output edge cases the reward functions weren't defensive against, not hypothetical):
+1. `findings_underuses_evidence_response_reward` crashed on a `None` per-task URL list — root
+   cause: `datasets.Dataset.from_list` unions every row's dict keys into one Arrow struct schema,
+   padding keys absent from a given row with `None` (not an empty list) since different
+   `findings_evidence` scenarios name different tasks. Fixed: treat `None` like `[]`.
+2. `schema_compliance_reward` crashed (`AttributeError`) when a real completion emitted
+   `"arguments"` as a JSON array instead of an object — ironic, since this is exactly the malformed
+   shape that function exists to score `0.0` for. Hit at step 250/260 (96% through a ~95-minute
+   run, `save_strategy="no"` meaning nothing was saved yet — a full restart). Fixed once at the
+   root with a new shared `_tool_args()` helper (not patched separately at the 4 call sites that
+   had the same unguarded `tool_call.get("arguments") or {}` idiom). Checkpointing
+   (`save_steps=50`, `save_total_limit=2`, `--resume` flag) added afterward so a future crash costs
+   at most ~50 steps, not the whole run.
+
+**Held-out evaluation** (`finetune/evaluate_combined.py`, extended today from 2 dimensions to all
+7 — was a real pre-existing gap, `findings_evidence` had no held-out coverage either before today):
+39 held-out prompts, topics never in the 302 training rows.
+
+| Dimension | base | fine-tuned | delta |
+|---|---|---|---|
+| thin_coverage | 0.542 | 1.000 | +0.458 |
+| citation_grounding | 0.615 | 0.781 | +0.167 |
+| findings_evidence | 0.562 | 1.000 | +0.438 |
+| tool_name | 0.925 | 1.000 | +0.075 |
+| stale_findings | 1.000 | 0.875 | -0.125 |
+| uneven_task_investment | 1.000 | 1.000 | 0.000 |
+| task_verification_flagged | 1.000 | 1.000 | 0.000 |
+| combined overall | 0.747 | 0.926 | +0.179 |
+
+**Verdict: real generalized improvement confirmed, not memorization** — the two hardest, most
+load-bearing dimensions (`thin_coverage`, `findings_evidence`) improved substantially on topics the
+model never trained on, directly answering the overfitting question raised mid-session. Real
+caveats: `stale_findings` regressed (-0.125) but on only 2 held-out prompts, plausibly noise;
+`citation_grounding` (the dimension most tied to actual hallucination risk) improved but did not
+reach ceiling (0.781) — the residual gap here matters most of any dimension.
+
+**NOT YET DONE — this is still an offline reward-function score, not a live-verified result.**
+Adapter saved to `/mnt/nuevovol/llm-models/qwen3-4b-combined-v2-lora` (a NEW directory, the prior
+2026-07-19 2-dimension LoRA at `qwen3-4b-combined-lora` was deliberately left untouched pending
+this round's own validation). Before this counts as deployable: (1) load the LoRA into a real
+DeepDelve run and benchmark it live, same standard every model candidate is held to, (2)
+specifically re-test a `citation_grounding`-shaped scenario given the residual gap, (3) decide
+whether the `stale_findings` regression is real (more held-out prompts for that one dimension) or
+noise. Full session detail in `session_status/2026-07-28.md` once archived (see `CURRENT.md` if not
+yet archived).
+
 ### 2026-07-26 (final entry, end of day): Ollama restored as the permanent serving backend, vLLM removed
 
 Reverses the 2026-07-21 "Ollama dropped" decision, after the same-day vLLM re-test sweep above
@@ -3634,28 +3702,17 @@ tried, twice, not merely proposed):
 ## Stretch
 
 
-**All LLM fine-tuning/GRPO work (this section, renamed from "Fine-tuning — DEFERRED indefinitely"
-back to "Stretch" during the 2026-07-21 ROADMAP reorg) is paused until the user
-explicitly decides to resume it — not a priority, not to be picked back up on inference.** Reason
-given directly: a prior fine-tuned checkpoint (the `qwen3:4b` GRPO combined LoRA — see its
-disk-loss note in the vLLM re-test "Pending" entry above, "the GRPO fine-tune's merge/LoRA
-checkpoint is gone from disk") was lost following a suggestion from the assistant the user
-considered a mistake; exact mechanics not re-litigated here, but the standing takeaway is: **no
-fine-tuning round starts, and nothing under `finetune/artifacts/`/LoRA output dirs gets touched
-(moved, cleaned up, "freed for space," etc.), without the user's explicit go-ahead each time** —
-this is now a hard gate on top of the existing "one combined base, never an isolated LoRA" rule
-below. The user's own stated reasoning for pausing entirely (not just being careful): if an LLM
-needs training, it needs to happen across multiple areas at once (matches the combined-round
-methodology already established below), so a single narrow round isn't worth resuming piecemeal
-right now.
-
-2026-07-21 status snapshot at the moment of pausing: `writer_role_response_reward` was wired into
-`finetune/train_combined_grpo.py` as a 3rd reward dimension (composed onto the existing 80
-citation_grounding rows — `wrote_file`/narration-avoidance scored alongside content grounding on
-the same completion, no new data fabricated), reward-composition logic sanity-checked
-standalone (no GPU), but **training was never launched** — caught before start. The
-`thin_coverage` synthetic-data repeated-escalation-scenario gap (see below) remains unaddressed
-too. Both stay here, ready but inert, until the user says go.
+**LLM fine-tuning/GRPO work RESUMED 2026-07-28** (was paused indefinitely since the 2026-07-21
+ROADMAP reorg — see full result in `History`'s "2026-07-28: Fine-tuning resumed" entry). The
+`qwen3-4b-combined-v2-lora` comprehensive 7-dimension round trained successfully and passed its
+held-out overfitting check. **The hard gate below still applies going forward** — nothing under
+`finetune/artifacts/`/LoRA output dirs gets touched (moved, cleaned up, "freed for space," etc.)
+without the user's explicit go-ahead each time, same reason as before (a prior checkpoint was lost
+to an assistant suggestion the user considered a mistake). The "one combined base, never an
+isolated LoRA" methodology rule below was honored fully this round (all 7 documented+newly-added
+reward dimensions in one retrain, not partial). **Still not done**: this round's own live
+validation (see the History entry's "NOT YET DONE" note) — do not start a NEXT fine-tuning round
+until that's resolved one way or the other.
 
 - **STANDING METHODOLOGY RULE (2026-07-19, engraved after real cost this month): every new
   fine-tuning objective folds into ONE combined multi-objective GRPO retrain off the same raw base

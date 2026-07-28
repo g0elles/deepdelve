@@ -34,7 +34,8 @@ import tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
 import config as app_config  # noqa: E402
-from engine.completion import check_thin_coverage, Ctx  # noqa: E402
+from engine.completion import check_thin_coverage, check_task_verification_flagged, Ctx, _update_task_verification  # noqa: E402
+from generate_synthetic_citation_prompts import _verification_warning  # noqa: E402
 from utils.run_state import RunState  # noqa: E402
 
 # Deliberately diverse across domains this project's own real run history has never touched
@@ -261,6 +262,51 @@ HELD_OUT_SCENARIOS = [
 ]
 
 
+# task_verification_flagged scenarios (2026-07-27) -- a SEPARATE check from check_thin_coverage
+# above (a task with fabricated/off-topic/contradicted findings, not zero findings), but its own
+# directive language and correct/incorrect response shapes are exactly thin_coverage_response_
+# reward's existing rubric (confirmed by reading engine/completion.py::check_task_verification_
+# flagged's current source directly) -- so no new reward function, just new PROMPTS driven through
+# the real check. Output kept in a separate file (task_verification_flagged_synthetic_prompts.jsonl)
+# rather than merged into thin_coverage_synthetic_prompts.jsonl, so the existing 78-row file never
+# needs regenerating. Each scenario: (topic, flagged_task_name, kept_task_name) -- kept_task always
+# gets one real citable finding, flagged_task gets one finding carrying the exact real
+# "[SYSTEM VERIFICATION WARNING: ...]" marker text generate_synthetic_citation_prompts.py's own
+# _verification_warning() produces, imported directly rather than reimplemented, so
+# _is_citable_finding correctly excludes it and _update_task_verification lands it as "flagged".
+TASK_VERIFICATION_SCENARIOS = [
+    ("N-BEATS forecast accuracy claims vs Colombian payroll cycle research", "forecast_accuracy", "payroll_cycles"),
+    ("Antarctic ice shelf collapse timeline vs glacial meltwater supply chains", "ice_shelf_timeline", "meltwater_supply"),
+    ("mRNA vaccine platform safety data vs cold-chain logistics costs", "safety_data", "coldchain_logistics"),
+    ("deep-sea cable repair vessel availability vs satellite backup capacity", "repair_vessel_availability", "satellite_backup"),
+]
+
+# Held out entirely -- disjoint topic from TASK_VERIFICATION_SCENARIOS above, used only for
+# base-vs-fine-tuned overfitting checks (evaluate_combined.py), same convention as every other
+# generator's own HELD_OUT_SCENARIOS.
+HELD_OUT_TASK_VERIFICATION_SCENARIOS = [
+    ("offshore wind turbine bird-strike claims vs turbine maintenance logistics", "bird_strike_claims", "maintenance_logistics"),
+]
+
+
+def build_task_verification_ctx(flagged_task: str, kept_task: str, attempt: int, max_attempts: int,
+                                 tmpdir: str, quota_exhausted: bool = False) -> tuple[Ctx, RunState]:
+    rs = RunState(tmpdir)
+    rs.set_query("synthetic task-verification scenario")
+    rs.add_finding(f"https://example.org/real-source-{kept_task}", f"Real finding for {kept_task}.",
+                    task_name=kept_task, depth=1)
+    rs.add_finding(
+        f"https://example.org/fabricated-{flagged_task}",
+        f"A claim about {flagged_task}." + _verification_warning(f"claim_unsupported:{flagged_task}"),
+        task_name=flagged_task, depth=1,
+    )
+    _update_task_verification(rs)
+    quotas = {"delegate_tasks": {"used": 6, "limit": 6}} if quota_exhausted else None
+    ctx = Ctx(req_artifact="final_report.md", attempt=attempt, max_attempts=max_attempts,
+              delegated=True, files=[], content=None, quotas=quotas, run_state=rs)
+    return ctx, rs
+
+
 def build_scenario_ctx(tasks: list[tuple[str, bool]], attempt: int, max_attempts: int, tmpdir: str) -> tuple[Ctx, RunState]:
     rs = RunState(tmpdir)
     rs.set_query("synthetic scenario")
@@ -277,12 +323,73 @@ def build_scenario_ctx(tasks: list[tuple[str, bool]], attempt: int, max_attempts
     return ctx, rs
 
 
+def _generate_task_verification(out_path: str, scenarios) -> None:
+    app_config.cfg.setdefault("settings", {})
+    app_config.cfg["settings"].setdefault("task_verification_check", {})
+
+    examples = []
+    with tempfile.TemporaryDirectory() as tmpdir:
+        for topic, flagged_task, kept_task in scenarios:
+            # First occurrence: real re-delegation-or-clean-stop nudge.
+            ctx, _ = build_task_verification_ctx(flagged_task, kept_task, attempt=0, max_attempts=8, tmpdir=tmpdir)
+            verdict = check_task_verification_flagged(ctx)
+            if verdict is not None:
+                examples.append({
+                    "topic": topic, "prior_task_instructions": [flagged_task],
+                    "prompt": verdict.inject, "escalated": False, "quota_exhausted": False,
+                    "source": "synthetic_scenario_real_check_task_verification_flagged",
+                })
+
+            # Escalated: a real prior completion_check_attempts entry recorded first.
+            ctx2, rs2 = build_task_verification_ctx(flagged_task, kept_task, attempt=1, max_attempts=8, tmpdir=tmpdir)
+            rs2.record_attempt(0, "task_verification_flagged", 0)
+            verdict2 = check_task_verification_flagged(ctx2)
+            if verdict2 is not None:
+                examples.append({
+                    "topic": topic, "prior_task_instructions": [flagged_task],
+                    "prompt": verdict2.inject, "escalated": True, "quota_exhausted": False,
+                    "source": "synthetic_scenario_real_check_task_verification_flagged",
+                })
+
+            # Quota-exhausted (2026-07-27 fix): delegate_tasks quota already spent -- directive
+            # must say stop, never "delegate_tasks again".
+            ctx3, _ = build_task_verification_ctx(flagged_task, kept_task, attempt=0, max_attempts=8,
+                                                   tmpdir=tmpdir, quota_exhausted=True)
+            verdict3 = check_task_verification_flagged(ctx3)
+            if verdict3 is not None:
+                examples.append({
+                    "topic": topic, "prior_task_instructions": [flagged_task],
+                    "prompt": verdict3.inject, "escalated": False, "quota_exhausted": True,
+                    "source": "synthetic_scenario_real_check_task_verification_flagged",
+                })
+
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        for ex in examples:
+            f.write(json.dumps(ex) + "\n")
+
+    distinct_topics = len({ex["topic"] for ex in examples})
+    print(f"Generated {len(examples)} synthetic task_verification_flagged PROMPTS across "
+          f"{distinct_topics} distinct topics (zero GPU cost -- real "
+          f"check_task_verification_flagged code, synthetic scenarios).")
+    print(f"Wrote to {out_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", default="finetune/data/thin_coverage_synthetic_prompts.jsonl")
     parser.add_argument("--held-out", action="store_true",
                          help="Generate from HELD_OUT_SCENARIOS instead (topics never used in training)")
+    parser.add_argument("--task-verification", action="store_true",
+                         help="Generate task_verification_flagged scenarios instead (separate output file, does not touch thin_coverage_synthetic_prompts.jsonl)")
     args = parser.parse_args()
+    if args.task_verification:
+        tv_scenarios = HELD_OUT_TASK_VERIFICATION_SCENARIOS if args.held_out else TASK_VERIFICATION_SCENARIOS
+        default_out = ("finetune/data/task_verification_flagged_heldout_prompts.jsonl" if args.held_out
+                       else "finetune/data/task_verification_flagged_synthetic_prompts.jsonl")
+        out_path = default_out if args.out == parser.get_default("out") else args.out
+        _generate_task_verification(out_path, tv_scenarios)
+        return
     scenarios = HELD_OUT_SCENARIOS if args.held_out else SCENARIOS
     if args.held_out and args.out == parser.get_default("out"):
         args.out = "finetune/data/thin_coverage_heldout_prompts.jsonl"

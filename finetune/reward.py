@@ -4,7 +4,7 @@ failure modes — see ROADMAP.md "Scoped fine-tuning plan (2026-07-18)" and the 
 it references. Pure functions, no model/tokenizer/training-framework dependency, so they can be
 unit-tested here and reused directly as a GRPO reward_fn once training actually starts.
 
-Four scored dimensions, each tied to a real, live-confirmed failure rather than a hypothetical:
+Seven scored dimensions, each tied to a real, live-confirmed failure rather than a hypothetical:
   1. schema_compliance_reward   -- llama3.2:3b (JSON-encoded STRING instead of a real array,
                                     confirmed on 3 independent backends) and granite3.1-dense/
                                     phi4-mini (narrated a tool call as text, no real tool_calls).
@@ -39,6 +39,14 @@ Four scored dimensions, each tied to a real, live-confirmed failure rather than 
                                     made, not whether every real source got USED at least once).
                                     Mirrors engine/completion.py's check_findings_underuses_
                                     evidence, the completion-check built for this same finding.
+  7. stale_findings_response_reward -- live case 2026-07-24 (--resume-run on a boiling-point-of-
+                                    water run): a resumed Planner kept delegating real research
+                                    after findings.md was already written once, and nothing caught
+                                    the resulting staleness before the final report was built from
+                                    the outdated file. Mirrors engine/completion.py's
+                                    check_stale_findings -- continuing to delegate is fine, only
+                                    narrating/refusing/stalling instead of letting the automatic
+                                    FindingsWriter refresh run is penalized.
 
 Deliberately excludes anything an LLM judge would be needed for (matches this project's own
 established philosophy in utils/run_state.py's coverage() docstring: prefer structural,
@@ -53,6 +61,23 @@ from difflib import SequenceMatcher
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 from utils.grounding import extract_cited_urls, _urls_prefix_match  # noqa: E402
+
+
+def _tool_args(tool_call: dict | None) -> dict:
+    """A tool_call's "arguments" field is only ever GUARANTEED to be present -- never guaranteed
+    to actually BE a dict. Live GRPO training crash, 2026-07-27, step 250/260 (96% through a
+    260-step run, save_strategy="no" meaning nothing had been saved yet -- a full restart): the
+    repeated `(tool_call.get("arguments") or {}).get(...)` idiom crashes with AttributeError the
+    moment a real model completion emits "arguments" as a JSON array instead of an object (a
+    genuinely malformed tool call, exactly the shape schema_compliance_reward exists to score 0.0
+    for -- ironic that the crash happened INSIDE the function built to catch malformed calls
+    gracefully). `list or {}` evaluates to the list itself (truthy), not `{}`, so `.get()` on it
+    crashes -- `or {}` only ever guarded against arguments being None/empty, never against it
+    being some other non-dict truthy value. One shared helper here, reused at every call site that
+    reads a tool_call's arguments (reward.py, train_combined_grpo.py, evaluate_combined.py),
+    rather than patching the same unguarded idiom four separate times."""
+    args = tool_call.get("arguments") if tool_call else None
+    return args if isinstance(args, dict) else {}
 
 VALID_AGENT_IDS = frozenset({"WebSearcher", "AcademicSearcher", "DocumentAnalyzer", "DataAnalyzer"})
 
@@ -125,7 +150,7 @@ def schema_compliance_reward(tool_call: dict | None) -> float:
     producing a real tool_calls entry at all — the granite3.1-dense/phi4-mini failure)."""
     if not tool_call or tool_call.get("name") != "delegate_tasks":
         return 0.0
-    tasks = (tool_call.get("arguments") or {}).get("tasks")
+    tasks = _tool_args(tool_call).get("tasks")
     if not isinstance(tasks, list) or not tasks:
         return 0.0  # catches the JSON-string-instead-of-array case directly
     for t in tasks:
@@ -242,6 +267,33 @@ def thin_coverage_response_reward(
     return 1.0 if response_text.strip() else 0.0
 
 
+def stale_findings_response_reward(response_tool_call: dict | None, response_text: str) -> float:
+    """Scores a Planner's response to a stale_findings-shaped corrective nudge (see
+    engine/completion.py::check_stale_findings -- fires when more real citable findings have been
+    delegated since findings.md was last written; live case 2026-07-24, `--resume-run` on a
+    boiling-point-of-water run, where a resumed Planner kept delegating after the original 9-entry
+    findings.md write and nothing ever caught the resulting staleness).
+
+    Unlike thin_coverage_response_reward, this nudge does NOT ask the Planner to re-delegate a
+    specific FAILED task with different wording -- there's no prior_task_instructions to diff a
+    new call against; the check fires precisely BECAUSE delegation has already been happening. So
+    the tool-call branch only needs schema compliance, not a similarity check.
+
+    GOOD (1.0): a genuine schema-compliant delegate_tasks call (continuing to delegate further
+    real research is not wrong here, only narrating/refusing/stalling is), OR no tool call at all
+    with a short clean stop (no narrated report/findings content, no canned refusal, no narrated
+    intent-without-action -- the Planner has no write_workspace_file tool and must not fake having
+    produced the refreshed findings itself in prose). BAD (0.0): a malformed delegate_tasks call, a
+    canned refusal, narrated findings/report content as chat text, narrated intent to act without
+    a real tool call, or an empty response."""
+    if response_tool_call:
+        return 1.0 if schema_compliance_reward(response_tool_call) == 1.0 else 0.0
+    if (_is_canned_refusal(response_text) or _looks_like_narrated_content(response_text)
+            or _looks_like_prose_narration(response_text) or _narrates_intent_without_action(response_text)):
+        return 0.0
+    return 1.0 if response_text.strip() else 0.0
+
+
 def writer_role_response_reward(wrote_file: bool, response_text: str) -> float:
     """Scores a FindingsWriter/Builder dispatch's response to being asked to write an artifact.
     1.0 only if it actually called `write_workspace_file` (`wrote_file=True` — the caller checks
@@ -304,9 +356,18 @@ def findings_underuses_evidence_response_reward(response_text: str, per_task_url
     least once" (this) are orthogonal -- a response can max the first while completely failing
     the second, exactly what happened live (see this module's own docstring, dimension 6). A task
     with no real URLs at all (delegated but produced nothing citable) is skipped -- nothing to
-    have used, not a failure of this dimension."""
+    have used, not a failure of this dimension.
+
+    `urls` per task may be None, not just an empty list -- confirmed live 2026-07-27 (GRPO
+    training crash, step 8/260): when per_task_urls dicts with DIFFERENT key sets across training
+    rows (different scenarios name different tasks) pass through datasets.Dataset.from_list,
+    Arrow/HF Datasets unions every row's keys into one struct schema and pads any key absent from
+    a given row with None, not an empty list -- a task name from a SIBLING row, not this one.
+    Treated identically to an empty list (nothing to check for a task that doesn't exist in this
+    row's own scenario), not a crash."""
     cited = {u.rstrip('/') for u in extract_cited_urls(response_text)}
     for urls in (per_task_urls or {}).values():
+        urls = urls or []
         real_urls = [u.rstrip('/') for u in urls if u]
         if not real_urls:
             continue
@@ -329,6 +390,12 @@ if __name__ == "__main__":
     assert schema_compliance_reward({
         "name": "delegate_tasks", "arguments": {"tasks": [{"task_name": "x", "instructions": "y", "agent_id": "AI-3"}]},
     }) == 0.0, "invented agent_id must score 0"
+    # Live GRPO training crash, 2026-07-27, step 250/260 (96% through a 260-step run, nothing
+    # saved yet): "arguments" itself as a JSON array, not an object, crashed the old
+    # `(tool_call.get("arguments") or {}).get(...)` idiom with AttributeError instead of scoring 0.
+    assert schema_compliance_reward({
+        "name": "delegate_tasks", "arguments": ["not", "a", "dict"],
+    }) == 0.0, "arguments as a non-dict (JSON array) must score 0, not crash"
 
     known = frozenset({"web_search", "delegate_tasks", "think_tool"})
     assert real_tool_name_reward("web_search", known_tools=known) == 1.0
@@ -415,6 +482,25 @@ if __name__ == "__main__":
     assert writer_role_response_reward(False, "## Findings\n\nReal-looking narrated content...") == 0.0, (
         "narrating instead of writing must score 0 regardless of how good the narration looks")
 
+    stale_redelegate_call = {
+        "name": "delegate_tasks",
+        "arguments": {"tasks": [{"task_name": "y", "instructions": "Find more sources on Z", "agent_id": "WebSearcher"}]},
+    }
+    assert stale_findings_response_reward(stale_redelegate_call, "") == 1.0, (
+        "continuing to delegate further real research is fine, this nudge only forbids narrating/stalling")
+    assert stale_findings_response_reward(None, "Understood, stopping here.") == 1.0, (
+        "a clean stop (no narration, no refusal) must score 1.0"
+    )
+    assert stale_findings_response_reward(None, "") == 0.0, "an empty response is not a real clean stop"
+    assert stale_findings_response_reward(
+        None, "No further tool calls needed. Your research scope is complete."
+    ) == 0.0, "the same canned-refusal pattern thin_coverage catches must also be caught here"
+    assert stale_findings_response_reward(
+        None, "**Findings.md**\n**Heuristic Algorithms**\n### 1. Heuristics\n- **[A Paper](https://x.com)**"
+    ) == 0.0, "narrating findings content instead of letting FindingsWriter refresh it must score 0"
+    malformed_call = {"name": "delegate_tasks", "arguments": {"tasks": "not a list"}}
+    assert stale_findings_response_reward(malformed_call, "") == 0.0, "a malformed delegate_tasks call must score 0"
+
     real_fetched = ["https://arxiv.org/pdf/2403.20033", "https://insightsoftware.com/blog/top-5-predictive-analytics-models-and-algorithms/"]
     assert citation_grounding_response_reward(
         "As shown in [the paper](https://arxiv.org/pdf/2403.20033), heuristics improve accuracy.",
@@ -459,5 +545,11 @@ if __name__ == "__main__":
         "Green tea has antioxidant benefits [source](https://a.example.co/x).",
         {"green_tea_health": ["https://a.example.co/x"], "dead_end_task": []},
     ) == 1.0, "a task that produced NO real URLs at all must be skipped, not counted as dropped"
+    # Live GRPO training crash, 2026-07-27, step 8/260: datasets.Dataset.from_list pads a task key
+    # absent from THIS row (present in a sibling row with different task names) with None, not [].
+    assert findings_underuses_evidence_response_reward(
+        "Green tea has antioxidant benefits [source](https://a.example.co/x).",
+        {"green_tea_health": ["https://a.example.co/x"], "dead_end_task": None},
+    ) == 1.0, "a None per-task URL list (Arrow struct padding) must be treated like [], not crash"
 
     print("All reward-function self-tests passed.")

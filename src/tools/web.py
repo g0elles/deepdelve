@@ -392,8 +392,22 @@ def _fetch_raw(url: str, convert_to_md: bool = True, _redirect_depth: int = 0):
 _STUB_MARKERS_RE = re.compile(
     r'page not found|p[aá]gina no encontrada|error 404|404 not found|no longer available|'
     r'suscr[ií]b|suscripci[oó]n|subscri(?:be|ption|ber)|sign in to continue|to continue reading|'
-    r'inicia sesi[oó]n|reg[ií]strate|contenido exclusivo|paywall',
+    r'inicia sesi[oó]n|reg[ií]strate|contenido exclusivo|paywall|'
+    r'AppMeasurement|_satellite\.|digitalData\s*=|utag_data|s\.tl\(',
     re.IGNORECASE)
+
+# Analytics/tracking-script chrome (Adobe Analytics `s.propN = "..."; s.eVarN = "..."; ...` style)
+# survives boilerplate-stripping as plain <script> text and can look exactly like prose to the
+# word-count heuristic below: many long, unbroken lines of "words" separated by whitespace. Not
+# caught live 2026-07-26 (`sources/sciencedirect_kpg_age_2016.md`, real incident): a fetch that was
+# almost entirely tracking JS scored well above the 150-prose-word threshold with zero of it being
+# real article content. Real prose doesn't chain assignments/JSON-key-value pairs this densely —
+# 3+ per line is the signal, not 1 (dialogue with a semicolon and a quote must not false-positive).
+_CODE_TOKEN_RE = re.compile(r'"[a-zA-Z_]\w*"\s*:|\b\w+\s*=\s*["\']')
+
+
+def _looks_like_code_line(line: str) -> bool:
+    return len(_CODE_TOKEN_RE.findall(line)) >= 3
 
 
 def _stub_reason(md_content: str) -> str | None:
@@ -418,6 +432,8 @@ def _stub_reason(md_content: str) -> str | None:
     prose_words = 0
     for line in text.splitlines():
         if line.lstrip().startswith("#"):
+            continue
+        if _looks_like_code_line(line):
             continue
         words = line.split()
         if len(words) >= 15:

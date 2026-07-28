@@ -2193,6 +2193,26 @@ def main():
             assert verdict is not None and verdict.problem == "task_verification_flagged", verdict
             assert "task_flagged" in verdict.warning and "task_kept" not in verdict.warning, verdict.warning
 
+            # Quota-aware directive (2026-07-27 live regression, delegate_tasks tightened 15->6):
+            # telling the Planner to "delegate_tasks again" when its delegate_tasks quota is
+            # already exhausted produced 4 wasted attempts of the Planner narrating a fake report
+            # as chat text instead. With quota exhausted, the directive must say to stop, never
+            # "delegate_tasks again".
+            ctx_quota_exhausted = Ctx(req_artifact="final_report.md", attempt=0, max_attempts=8,
+                                       delegated=True, files=[], content=None,
+                                       quotas={"delegate_tasks": {"used": 6, "limit": 6}}, run_state=rs2)
+            verdict_exhausted = check_task_verification_flagged(ctx_quota_exhausted)
+            assert verdict_exhausted is not None and verdict_exhausted.problem == "task_verification_flagged"
+            assert "delegate_tasks again" not in verdict_exhausted.inject, verdict_exhausted.inject
+            assert "stop" in verdict_exhausted.inject.lower(), verdict_exhausted.inject
+
+            # Quota NOT exhausted (used < limit) -> original "delegate_tasks again" directive still fires.
+            ctx_quota_ok = Ctx(req_artifact="final_report.md", attempt=0, max_attempts=8,
+                                delegated=True, files=[], content=None,
+                                quotas={"delegate_tasks": {"used": 2, "limit": 6}}, run_state=rs2)
+            verdict_ok = check_task_verification_flagged(ctx_quota_ok)
+            assert "delegate_tasks again" in verdict_ok.inject, verdict_ok.inject
+
             # No flagged tasks at all -> no verdict.
             rs3 = RunState(tmpdir)
             rs3.add_finding("https://a.example.co/x", "real content", task_name="task_kept", depth=1)
@@ -4059,6 +4079,22 @@ def main():
              "noting sustained demand across European and North American markets overall.")
     real_article = "\n\n".join([_para] * 6 + ["Subscribe to our newsletter for updates"])
     assert _stub_reason(real_article) is None, "real prose mentioning 'subscribe' must NOT flag"
+
+    # Adobe-Analytics-style tracking JS chrome (live gap, 2026-07-26:
+    # sources/sciencedirect_kpg_age_2016.md was almost entirely this shape and scored above the
+    # prose threshold, never flagged as a stub) — long assignment/JSON-key lines must not count
+    # as prose even though they split into 15+ whitespace-separated "words".
+    tracking_js = "\n".join([
+        's.pageName = "Article Page"; s.channel = "science-direct"; s.prop1 = "elsevier"; '
+        's.prop2 = "kpg-age-2016"; s.eVar1 = "segment-a"; s.eVar2 = "logged-out"; '
+        's.events = "event1,event2,event3"; s.linkTrackVars = "prop1,prop2,eVar1,eVar2,events";'
+    ] * 15)
+    assert _stub_reason(tracking_js), "Adobe-Analytics-style tracking JS chrome must flag as stub"
+    # Dialogue with a semicolon and a quote must not false-positive as code (only 1 token, not 3+).
+    dialogue_para = ("\"Overall demand held up,\" she said; exports remained strong across every "
+                      "major destination market this quarter according to ministry figures.")
+    assert _stub_reason("\n\n".join([dialogue_para] * 8)) is None, (
+        "real prose with a semicolon and a quote must NOT be treated as a code/tracking line")
 
     def _stub_gate_scenario():
         from tools.fs import _IN_MEMORY_FS

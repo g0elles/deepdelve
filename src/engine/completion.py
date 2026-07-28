@@ -187,9 +187,30 @@ def check_task_verification_flagged(ctx: Ctx) -> Optional[Verdict]:
         else:
             break
 
+    # Quota-aware directive (2026-07-27, live regression): telling the Planner to "delegate_tasks
+    # again" when its delegate_tasks quota is already exhausted is a directive it structurally
+    # cannot follow. Confirmed live: with delegate_tasks tightened from 15 to 6 (to curb top-level
+    # over-fanning, a separate fix), a real run hit exactly this collision — quota exhausted at 3/6
+    # calls, this check kept firing "delegate_tasks again" for 4 more attempts, and the Planner
+    # responded by narrating a full fake report as chat text instead of the tool call it couldn't
+    # make (never written to disk, but 4 wasted attempts burned the whole 8-attempt completion-check
+    # budget with zero report ever produced). Once quota is gone, the only honest instruction left is
+    # to acknowledge the gap and stop — same acknowledged-gap language the STILL-flagged-after-a-
+    # prior-warning branch already uses below, just reached one branch earlier.
+    delegate_quota = (ctx.quotas or {}).get("delegate_tasks", {})
+    quota_exhausted = delegate_quota.get("used", 0) >= delegate_quota.get("limit", float("inf"))
+
     flagged_list = ", ".join(f"'{n}'" for n in flagged[:5])
     subject = "this task" if len(flagged) == 1 else "these tasks"
-    if prior_same == 0:
+    if quota_exhausted:
+        directive = (
+            f"Task(s) {flagged_list} produced ONLY fabricated, off-topic, or unverifiable sources, "
+            f"but your delegate_tasks quota is exhausted — you cannot redelegate. Do NOT narrate a "
+            f"report or findings content yourself. Say nothing further and stop; the writer roles "
+            f"will note {flagged_list} as an acknowledged gap when they build the report from "
+            f"whatever real results you already have."
+        )
+    elif prior_same == 0:
         directive = (
             f"Task(s) {flagged_list} produced ONLY fabricated, off-topic, or unverifiable sources — "
             f"every result for {subject} was excluded from the real evidence base. The other "
