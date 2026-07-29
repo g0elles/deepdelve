@@ -3731,6 +3731,31 @@ def main():
 
     _ensure_reader_quota_headroom({"write_workspace_file": {"used": 0, "limit": 5}})  # no-op, no KeyError
 
+    # --- read_workspace_file headroom sizing correction (found live 2026-07-27, fixed 2026-07-29):
+    # the Builder/final_report.md review cycle needs PeerReviewer to read BOTH final_report.md AND
+    # findings.md (PEER_REVIEWER_INSTRUCTIONS), not just one file — the old blanket needed=2 default
+    # undersized this specific path. Callers now pass needed=3 for the Builder dispatch site. ---
+    pool_e = {"read_workspace_file": {"used": 29, "limit": 30}}
+    _ensure_reader_quota_headroom(pool_e, needed=3)
+    assert pool_e["read_workspace_file"]["limit"] - pool_e["read_workspace_file"]["used"] == 3, (
+        "Builder/PeerReviewer's two-file review cycle needs 3 guaranteed reads, not 2", pool_e)
+
+    # An 8-cycle Write->Review->Fix escalation chain (the exact shape of the live 2026-07-27
+    # incident) must not starve a late cycle even with a small starting pool, now that
+    # read_workspace_file also gets per-attempt retry_quota_topup replenishment (config_template
+    # .yaml) in addition to this per-cycle guard.
+    pool_f = {"read_workspace_file": {"used": 0, "limit": 5}}
+    for _cycle in range(8):
+        # Simulate topup_quota_pool's per-attempt replenishment (settings.retry_quota_topup).
+        pool_f["read_workspace_file"]["limit"] += 3
+        _ensure_reader_quota_headroom(pool_f, needed=3)
+        headroom = pool_f["read_workspace_file"]["limit"] - pool_f["read_workspace_file"]["used"]
+        assert headroom >= 3, (
+            f"cycle {_cycle}: a late Write->Review->Fix cycle must always have 3 guaranteed reads "
+            f"available, even after 8 escalation rounds", pool_f)
+        # Consume the reads this cycle would actually make (2 reviewer reads + 1 fix re-read).
+        pool_f["read_workspace_file"]["used"] += 3
+
     # --- missing_findings escalation (live case 2026-07-13): a real run produced literally ZERO
     # content (no tool call, no text) in response to this exact nudge for 6 consecutive attempts,
     # then genuinely self-corrected with real findings.md content on the 7th. Unlike

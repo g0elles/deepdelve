@@ -146,6 +146,11 @@ settings:
     delegate_tasks: 3
     web_search: 3
     fetch_url_to_workspace: 3
+    # Added 2026-07-29: read_workspace_file previously had NO per-attempt topup at all (only the
+    # narrower per-cycle _ensure_reader_quota_headroom guard) -- confirmed live 2026-07-27 that a
+    # long Write->Review->Fix escalation chain (8 completion-check attempts) still exhausted the
+    # shared pool and left a late Builder Fix pass unable to re-read its own source material.
+    read_workspace_file: 3
   # How many completion-check attempts a run gets before giving up with an unresolved issue
   # (missing_artifact / not_grounded / etc.) instead of continuing to retry. The old fixed default
   # of 3 could cut a run off with real sources already sitting in findings.md, well before any

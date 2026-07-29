@@ -1336,24 +1336,29 @@ def _ensure_writer_quota_headroom(pool: dict) -> None:
         entry["limit"] += (needed - headroom)
 
 
-def _ensure_reader_quota_headroom(pool: dict) -> None:
+def _ensure_reader_quota_headroom(pool: dict, needed: int = 2) -> None:
     """Mirror of _ensure_writer_quota_headroom, for `read_workspace_file` -- found live 2026-07-20,
-    fixed 2026-07-21. A Write->Review->Fix cycle needs PeerReviewer to actually open the artifact
-    (its 'REVIEW: CLEAN' is only trusted if the quota shows a real read happened -- see
-    _dispatch_writer_review_fix's reads_before/reads_after gate above) plus the Fix pass often
-    re-reading source content, against the SAME shared cumulative pool every role's
-    read_workspace_file calls draw from. Unlike write_workspace_file, read_workspace_file has no
-    entry in settings.retry_quota_topup by default, so nothing replenished it between remediation
-    cycles at all. Confirmed live: 3 remediation cycles in one run (routing-classifier re-test,
-    2026-07-20) exhausted a 30-call pool, and the final BuilderFix pass self-reported being unable
-    to re-read its source ('Due to workspace tool quota limits...') and silently dropped an entire
-    correctly-researched section rather than erroring loudly. Tops up ONLY the headroom this cycle
-    actually needs, called fresh before EVERY cycle -- protects each one independently regardless
-    of how many prior cycles already ran, same shape as the write-side helper."""
+    fixed 2026-07-21, sizing corrected 2026-07-29. A Write->Review->Fix cycle needs PeerReviewer to
+    actually open the artifact (its 'REVIEW: CLEAN' is only trusted if the quota shows a real read
+    happened -- see _dispatch_writer_review_fix's reads_before/reads_after gate above) plus the Fix
+    pass often re-reading source content, against the SAME shared cumulative pool every role's
+    read_workspace_file calls draw from. `settings.retry_quota_topup` now also replenishes this
+    tool per completion-check attempt (2026-07-29 fix, see config_template.yaml) -- this per-cycle
+    top-up is a SECOND, narrower guarantee on top of that, protecting each individual
+    Write->Review->Fix cycle within one attempt regardless of how many prior cycles already ran.
+    Confirmed live twice this pairs of fixes were still insufficient before this sizing correction:
+    2026-07-20 (3 remediation cycles exhausted a 30-call pool; final BuilderFix pass self-reported
+    'Due to workspace tool quota limits...' and silently dropped a whole section) and 2026-07-27
+    (an 8-cycle escalation chain starved a late Builder Fix pass out of re-reading a 42-line
+    findings.md, despite this guard already being in place -- the FIXED needed=2 default assumed
+    only one reviewer read, but PEER_REVIEWER_INSTRUCTIONS (prompts.py) requires PeerReviewer to
+    read BOTH final_report.md AND findings.md when reviewing the report, not just the target
+    artifact -- 2 reviewer reads + 1 possible Fix re-read = 3, not 2). Callers now pass the real
+    number of reads their specific writer role's review cycle requires instead of relying on the
+    one-size-fits-all default."""
     entry = pool.get("read_workspace_file")
     if entry is None:
         return
-    needed = 2  # PeerReviewer's mandatory read + one possible Fix-pass re-read
     headroom = entry["limit"] - entry["used"]
     if headroom < needed:
         entry["limit"] += (needed - headroom)
@@ -2389,7 +2394,11 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                         notify(f"**System ({attempt + 1}/{max_attempts}):** {verdict.warning} (dispatching Builder to rewrite, not the Planner)")
                         if pool is not None:
                             _ensure_writer_quota_headroom(pool)
-                            _ensure_reader_quota_headroom(pool)
+                            # needed=3: PeerReviewer must read BOTH final_report.md and
+                            # findings.md when reviewing the report (PEER_REVIEWER_INSTRUCTIONS),
+                            # plus one possible Fix-pass re-read -- see docstring above, found live
+                            # 2026-07-27 that the old needed=2 default was undersized for this path.
+                            _ensure_reader_quota_headroom(pool, needed=3)
                         try:
                             if force_whole_rebuild:
                                 builder_instructions = (
@@ -2422,6 +2431,9 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                         notify(f"**System ({attempt + 1}/{max_attempts}):** {verdict.warning} (dispatching FindingsWriter to rewrite, not the Planner)")
                         if pool is not None:
                             _ensure_writer_quota_headroom(pool)
+                            # needed=2 (the default): PeerReviewer reads only findings.md (the
+                            # single target artifact here, no second file) + one possible Fix
+                            # re-read.
                             _ensure_reader_quota_headroom(pool)
                         try:
                             # Deliberately NOT verdict.inject — that text is worded for the PLANNER
