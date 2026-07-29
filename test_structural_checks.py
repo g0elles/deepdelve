@@ -912,18 +912,42 @@ def main():
     from engine.tui import BasicTuiAgent
     _asyncio_tui.run(_resume_run_tui_scenario())
 
-    # run_cli's OWN copy of the same resume-carryover key list (a separate code path from the TUI's
-    # _resume_run, not covered by the scenario above -- run_cli itself isn't easily unit-testable
-    # in isolation) must independently include the marker too, or headless --resume-run alone
-    # regresses even with the TUI fixed. Confirmed live 2026-07-24: both copies had the bug
-    # independently; both must carry the fix.
+    # The resume-carryover key list used to be a byte-identical copy-pasted tuple in BOTH
+    # engine.tui's _resume_run AND run_cli independently (confirmed live 2026-07-24: both copies
+    # had the same missing-key bug independently, both needed the fix by hand). Extracted
+    # 2026-07-29 into utils.run_state.merge_resumed_state / _RESUME_CARRYOVER_KEYS, one source of
+    # truth both call sites now use — so this now pins that (a) the shared allowlist itself still
+    # includes the markers, and (b) run_cli actually calls the shared function rather than having
+    # reintroduced its own private inline copy.
     import inspect as _inspect
     import engine.tui as _tui_mod_check
+    from utils.run_state import _RESUME_CARRYOVER_KEYS as _resume_keys
+    assert "findings_written_citable_count" in _resume_keys, (
+        "shared resume-carryover allowlist must include findings_written_citable_count")
+    assert "task_verification" in _resume_keys, (
+        "shared resume-carryover allowlist must include task_verification")
     _run_cli_src = _inspect.getsource(_tui_mod_check.run_cli)
-    assert _run_cli_src.count('"findings_written_citable_count"') == 1, (
-        "run_cli's resume-carryover key list must include findings_written_citable_count")
-    assert _run_cli_src.count('"task_verification"') == 1, (
-        "run_cli's resume-carryover key list must include task_verification")
+    assert "merge_resumed_state(" in _run_cli_src, (
+        "run_cli must call the shared merge_resumed_state, not reintroduce its own inline copy "
+        "of the resume-carryover key list")
+
+    # --- TUI/CLI parity fixes, 2026-07-29: run_agent previously had NO QuotaAbortException
+    # handling at all (run_cli explicitly catches and cleanly stops on it) and NO crash-time
+    # run_state.save() outside normal loop completion (run_cli guarantees one on any top-level
+    # crash, 2026-07-11). Both read as unintentional gaps, not deliberate TUI/CLI divergences
+    # (unlike the documented `reraise` difference elsewhere in this same function) — pinned here
+    # via source inspection since run_agent itself isn't easily unit-testable in isolation (it's
+    # a Textual @work-decorated method driving live widgets). ---
+    _run_agent_src = _inspect.getsource(_tui_mod_check.BasicTuiAgent.run_agent)
+    assert "QuotaAbortException" in _run_agent_src, (
+        "run_agent must handle QuotaAbortException like run_cli does, not let it propagate "
+        "uncaught or fall into the generic malformed-retry path")
+    assert "asyncio.CancelledError" in _run_agent_src, (
+        "widening run_agent's except clause to catch QuotaAbortException (a BaseException "
+        "subclass) must not accidentally swallow /stop's asyncio.CancelledError")
+    assert _run_agent_src.count("run_state.save()") >= 2, (
+        "run_agent must save run_state both at normal loop completion AND on a top-level crash "
+        "(run_cli parity) — expected at least 2 call sites")
 
     # --- check_not_delegated resume fix (2026-07-28): Ctx.delegated must also be true when the
     # live quota pool shows zero usage (always true at the start of a resumed process) but

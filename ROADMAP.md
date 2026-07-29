@@ -3597,17 +3597,39 @@ tried, twice, not merely proposed):
   dispatch option (LLM×MapReduce-style, arXiv:2410.09342) named as a bigger, deferred alternative
   if the gate/dedupe fix ever proves insufficient again — not built, not currently needed.
 
-- **`run_cli`/`BasicTuiAgent` run-lifecycle duplication in `src/engine/tui.py` — still open,
-  reconfirmed by the whole-repo Ponytail audit 2026-07-21, tracked under a new name to avoid
-  confusion with the OLDER "Phase 6 / B4" item below (a narrower scope, already DONE).** The Phase
-  6/B4 entry unified only `iter_agent_stream`/`classify_malformed_retry` (2026-07-14). The larger
-  duplication CLAUDE.md's TUI/CLI-parity rule actually warns about — `BasicTuiAgent` (line ~640)
-  and `run_cli` (line ~1935), ~1300 lines apart in this 2513-line file, both re-implementing the
-  same completion-check loop / quota handling / artifact-writing steps — was never covered by that
-  fix and remains the single largest architectural duplication in the tracked codebase per the
-  audit. **Deferred intentionally**: user wants all codebase-improvement work held until the
-  current vLLM model bake-off is fully complete (session_status/CURRENT.md, 2026-07-21). Replacement
-  when picked up: extract the shared run-lifecycle steps into one function both entry points call.
+- **`run_cli`/`BasicTuiAgent` run-lifecycle duplication in `src/engine/tui.py` — SAFE SUBSET
+  CLOSED 2026-07-29, full unification still open, re-scoped after a live transcript-level audit.**
+  A dedicated audit (2026-07-29) mapped the duplication precisely rather than re-deriving it from
+  outcomes: it found the two entry points aren't just stylistic duplicates in several places — TUI's
+  approval-handling actually executes tools client-side and constructs full message pairs, CLI's
+  doesn't; TUI has no context-budget/wall-clock-deadline concept by design (a human can `/stop`).
+  Full mechanical unification of those parts is genuinely risky, not just tedious. What WAS safe
+  and got fixed this pass:
+  - The 9-key `RunState` resume-merge allowlist, copy-pasted verbatim in both `_resume_run` and
+    `run_cli` with comments in both warning the other must be updated by hand — extracted into
+    `utils.run_state.merge_resumed_state`/`_RESUME_CARRYOVER_KEYS`, one source of truth.
+  - The `required_artifact` config lookup, copy-pasted 4x with THREE different literal fallback
+    values scattered across call sites (a real latent inconsistency) — extracted into
+    `config.get_required_artifact()`.
+  - TUI's `run_agent` had NO `QuotaAbortException` handling at all — worse than previously
+    documented: since it subclasses `BaseException` not `Exception`, it wasn't even being caught by
+    `run_agent`'s `except Exception`, so it would have propagated uncaught rather than degrading
+    gracefully like CLI does. Fixed by widening to `except BaseException`, with an explicit
+    `asyncio.CancelledError` re-raise guard added first so `/stop` (which relies on
+    `self.workers.cancel_all()`'s cancellation propagating) doesn't silently break.
+  - TUI's `run_agent` had no crash-time `run_state.save()` outside normal loop completion (CLI
+    guarantees one on any top-level crash, 2026-07-11 fix) — added a matching outer
+    `except Exception` that saves and re-raises, without swallowing the original exception the TUI
+    surface still needs to see.
+  **Still genuinely open, re-scoped not abandoned**: unifying the stream-consumption loop
+  (`iter_agent_stream`'s outer iteration is already shared, but per-update content dispatch is two
+  independent implementations) and the approval-handling block behind explicit strategy
+  objects/parameters (a `Presenter`/tool-execution-or-not design decision, not a mechanical
+  extraction) — this is the part CLAUDE.md's "own dedicated session" guidance still applies to.
+  Replacement when picked up: design the strategy-object interface FIRST (what varies between TUI
+  and CLI: tool execution on approval, budget/deadline presence, notify() rendering), then extract
+  the loop body to take that interface as a parameter — not "extract the whole function and see
+  what breaks."
 
 - **Sharper repetition-escalation idea, the NOT-adopted narrower granularity**: `NousResearch/
   hermes-agent` issue #481's proposed SHA-256 tool-call fingerprint loop guard (per-tool-call, one

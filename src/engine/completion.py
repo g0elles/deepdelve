@@ -2250,7 +2250,7 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
     longer `run_completion_check` call instead of many short Planner round-trips — same
     `attempt < max_attempts` ceiling, no new infinite-loop risk.
     """
-    req_artifact = config.cfg.get("settings", {}).get("workspace", {}).get("required_artifact", None)
+    req_artifact = config.get_required_artifact()
     if not req_artifact:
         return False, current_input
 

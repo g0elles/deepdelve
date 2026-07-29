@@ -19,7 +19,9 @@ import sys
 import argparse
 from pathlib import Path
 from tools import tool_quotas_ctx, get_workspace_files, get_workspace_file_content
-from utils.run_state import reset_fetched_urls, get_fetched_urls, RunState, run_state_ctx
+from utils.run_state import (
+    reset_fetched_urls, get_fetched_urls, RunState, run_state_ctx, merge_resumed_state,
+)
 
 AGENT_NAME = config.APP_TITLE
 AGENT_DESCRIPTION = config.APP_DESCRIPTION
@@ -1282,6 +1284,7 @@ class BasicTuiAgent(App):
         # record is empty, which would silently break the shared-object carry across turns.
         self._conv_fetched = fetched_urls_ctx.get()
         run_state_token = None
+        run_state = None
 
         chat = self.query_one("#chat-container", VerticalScroll)
         if mount_user:
@@ -1412,7 +1415,7 @@ class BasicTuiAgent(App):
             # final_report.md may already exist as an UNVERIFIED quarantined draft — it still
             # needs the full completion-check loop, not the "already has a good report" shortcut.
             skip_completion_check = is_followup and not self._resuming_run and (
-                config.cfg.get("settings", {}).get("workspace", {}).get("required_artifact", "final_report.md")
+                config.get_required_artifact()
                 in get_workspace_files()
             )
 
@@ -1464,7 +1467,36 @@ class BasicTuiAgent(App):
                         leftover_widget.stop()
                         state["processing_widget"] = None
 
-                except Exception as e:
+                except BaseException as e:
+                    # TUI/CLI parity fix, 2026-07-29: run_cli explicitly catches QuotaAbortException
+                    # (a model stuck looping on the same tool past its quota's rescue allowance —
+                    # see tools/core.py::check_quota) and cleanly stops the run with a clear
+                    # message. run_agent previously used `except Exception`, which never even
+                    # caught QuotaAbortException at all -- it subclasses BaseException directly
+                    # (tools/core.py), so it would have propagated straight through this try/except
+                    # uncaught, crashing the whole run rather than degrading gracefully. Widened to
+                    # `except BaseException` (same as run_cli's equivalent call site) specifically
+                    # to catch this; every OTHER exception type below still behaves exactly as
+                    # before (classify_malformed_retry/reraise logic is unchanged for non-quota
+                    # errors, so this widening doesn't change behavior for anything else that
+                    # previously reached this block as a plain Exception).
+                    if isinstance(e, asyncio.CancelledError):
+                        # Must NOT be swallowed here -- /stop (self.workers.cancel_all()) relies on
+                        # this propagating all the way up to actually cancel the Textual worker.
+                        # Widening the except clause above to BaseException (to catch
+                        # QuotaAbortException) would otherwise silently break /stop.
+                        raise
+                    from tools import QuotaAbortException
+                    if isinstance(e, QuotaAbortException):
+                        p_widget = state.get("processing_widget")
+                        if p_widget:
+                            p_widget.mark_error(str(e))
+                            state["processing_widget"] = None
+                        else:
+                            chat.mount(Static(f"[red]Task forcefully aborted: {str(e)}[/red]", classes="agent-bubble"))
+                        chat.scroll_end(animate=False)
+                        has_requests = False
+                        break
                     # TUI/CLI parity fix (CLAUDE.md: any headless-only capability must be checked
                     # against the TUI) -- run_cli already retries a malformed tool call twice with
                     # a corrective nudge before degrading gracefully (added 2026-07-12 after an
@@ -1597,6 +1629,25 @@ class BasicTuiAgent(App):
                         has_requests = True
 
             run_state.save()
+        except asyncio.CancelledError:
+            # /stop (self.workers.cancel_all()) relies on this propagating -- must not be treated
+            # as a crash to save-and-swallow.
+            raise
+        except Exception as e:
+            # TUI/CLI parity fix, 2026-07-29: run_cli guarantees a persisted _run_state.json on
+            # any top-level crash (2026-07-11 fix, "a dead run must still leave its evidence
+            # behind" -- a NIM 429 once killed a run 10 minutes in with 15 fetched files and no
+            # state record, making it unscoreable). run_agent had NO equivalent outer save -- an
+            # exception anywhere above the per-turn stream handler (e.g. inside
+            # create_local_agent or run_completion_check itself) lost that turn's forensics
+            # entirely, since the only run_state.save() call was at normal loop completion, inside
+            # the try, not in a finally/except. Re-raised after saving: this mirrors run_cli's
+            # intent (never lose the crash) without swallowing the error from the TUI's own
+            # surface, which still needs to see/report it same as before this fix.
+            if run_state is not None:
+                run_state.sync_fetched_urls()
+                run_state.save()
+            raise
         finally:
             tool_quotas_ctx.reset(quota_token)
             if run_state_token is not None:
@@ -1676,7 +1727,7 @@ class BasicTuiAgent(App):
         (fetches, findings.md) is exactly what it's for, but a TUI user previously had no way to
         invoke it without dropping to a separate headless command."""
         base = config.cfg.get("settings", {}).get("workspace", {}).get("dir", ".")
-        req_artifact = config.cfg.get("settings", {}).get("workspace", {}).get("required_artifact", "final_report.md")
+        req_artifact = config.get_required_artifact()
         chat = self.query_one("#chat-container", VerticalScroll)
         if not os.path.isdir(base):
             chat.mount(Static(Markdown(f"**System:**\nNo runs found (`{base}` does not exist)."), classes="agent-bubble"))
@@ -1733,18 +1784,10 @@ class BasicTuiAgent(App):
         self._active_run_dir = run_dir_name
         self._conv_fetched = list(prior_state.get("fetched_urls") or [])
         rs = RunState(_current_run_dir(run_dir_name))
-        # findings_written_citable_count (2026-07-24, check_stale_findings's own write-time
-        # marker) MUST be carried over here -- confirmed live: without it, every --resume-run
-        # silently resets the marker to None, so check_stale_findings can never fire on ANY
-        # resumed run regardless of how much more research gets delegated afterward. Exactly the
-        # kind of blast-radius miss this project's own CLAUDE.md warns about: a new run_state.data
-        # key needs checking against every place that already has a fixed carryover allowlist.
-        for key in ("query", "findings", "fetched_urls", "completion_check_attempts",
-                    "search_health", "started_at", "plan", "findings_written_citable_count",
-                    "task_verification"):
-            if key in prior_state:
-                rs.data[key] = prior_state[key]
-        rs.data["resumed_at"] = time.time()
+        # merge_resumed_state (utils/run_state.py, extracted 2026-07-29): carries the same
+        # allowlist of prior-run keys onto this fresh RunState that run_cli's --resume-run branch
+        # uses — was a byte-identical copy-pasted 9-key tuple in both places until this extraction.
+        merge_resumed_state(rs, prior_state)
         rs.set_query(query)
         self._conv_run_state = rs
 
@@ -2214,20 +2257,13 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
             # completion-check budget (and a fresh quota pool from the top of this function).
             # ponytail: fresh quotas on resume — quotas exist to stop model loops, not to meter
             # cross-run budgets; per-run carryover accounting if that ever proves too generous.
-            # "query" is included even though set_query() follows immediately: a crash between
-            # this merge and set_query must never save a query-less state file over the original
-            # (exactly that happened on this feature's first live smoke test).
-            # findings_written_citable_count (2026-07-24, check_stale_findings's own write-time
-            # marker) MUST be carried over here too -- see the TUI's _resume_run copy of this same
-            # list for the full explanation. Confirmed live: without it here, headless
-            # --resume-run also silently resets the marker, so a resumed run's own new research
-            # never triggers a findings.md refresh before Builder runs.
-            for key in ("query", "findings", "fetched_urls", "completion_check_attempts",
-                        "search_health", "started_at", "plan", "findings_written_citable_count",
-                        "task_verification"):
-                if key in prior_state:
-                    run_state.data[key] = prior_state[key]
-            run_state.data["resumed_at"] = time.time()
+            # merge_resumed_state (utils/run_state.py, extracted 2026-07-29) carries the same
+            # allowlist the TUI's _resume_run uses — was a byte-identical copy-pasted 9-key tuple
+            # in both places until this extraction. "query" is included even though set_query()
+            # follows immediately: a crash between this merge and set_query must never save a
+            # query-less state file over the original (exactly that happened on this feature's
+            # first live smoke test).
+            merge_resumed_state(run_state, prior_state)
         run_state.set_query(prompt)
         run_state_token = run_state_ctx.set(run_state)
         # Written immediately (not only at the first completion check / clean run end) so a crash
@@ -2400,7 +2436,7 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
                     # its final verdict (same mechanism as max_run_minutes) — never nudge-loop.
                     budget_nudged = True
                     run_stream_chars = 0
-                    req_artifact = config.cfg.get("settings", {}).get("workspace", {}).get("required_artifact", "final_report.md")
+                    req_artifact = config.get_required_artifact()
                     endgame = (
                         f"SYSTEM: you have reached your context budget for this run. Do NOT call "
                         f"delegate_tasks or any research tool again. Write findings.md (if missing) "
@@ -2475,7 +2511,7 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
         # The one answer every headless run owes its user: which file to read, and whether the
         # run's environment/grounding stats mean it can be trusted at a glance.
         from utils.run_state import get_search_health
-        req_artifact = config.cfg.get("settings", {}).get("workspace", {}).get("required_artifact", "final_report.md")
+        req_artifact = config.get_required_artifact()
         report_path = os.path.join(os.path.abspath(_current_run_dir(run_dir_name)), req_artifact)
         health = get_search_health()
         if os.path.exists(report_path):
@@ -2545,7 +2581,7 @@ def cli_main(builder):
 
     if args.list_runs:
         base = config.cfg.get("settings", {}).get("workspace", {}).get("dir", ".")
-        req_artifact = config.cfg.get("settings", {}).get("workspace", {}).get("required_artifact", "final_report.md")
+        req_artifact = config.get_required_artifact()
         if not os.path.isdir(base):
             sys.stdout.write(f"No runs found ({base} does not exist).\n")
             sys.exit(0)

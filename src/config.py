@@ -48,6 +48,16 @@ cfg: dict = {}
 # save_config() persists against THIS, not `cfg` — see its docstring.
 _file_cfg: dict = {}
 
+def get_required_artifact() -> str:
+    """The filename a run's completion checks treat as the mandatory final deliverable
+    (settings.workspace.required_artifact). Extracted 2026-07-29: this exact
+    `cfg.get("settings", {}).get("workspace", {}).get("required_artifact", ...)` chain was
+    copy-pasted at 4 separate call sites in engine/tui.py, with THREE different literal fallback
+    values scattered across them ("final_report.md" in most, `None` in engine/completion.py) — a
+    real latent inconsistency, not just duplication. One accessor, one fallback."""
+    return cfg.get("settings", {}).get("workspace", {}).get("required_artifact", "final_report.md")
+
+
 def _deep_merge(base: dict, overlay: dict) -> dict:
     """Merge overlay into base, recursively for nested dicts."""
     result = copy.deepcopy(base)

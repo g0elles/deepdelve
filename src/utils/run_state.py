@@ -317,3 +317,27 @@ class RunState:
             # Never crash the run over its own bookkeeping, but never lose the failure silently
             # either — this file is the forensic record the whole scoring methodology relies on.
             print(f"[run_state] WARNING: failed to write _run_state.json: {e}", file=sys.stderr)
+
+
+# Extracted 2026-07-29: this exact 9-key allowlist was copy-pasted verbatim in both
+# engine/tui.py's BasicTuiAgent._resume_run (interactive /resume-run) and run_cli's --resume-run
+# branch, each with its own comment warning that adding a new run_state.data key requires
+# updating BOTH copies by hand — a textbook "the fix already knows it will be forgotten
+# somewhere" pattern. One function now, called from both.
+_RESUME_CARRYOVER_KEYS = (
+    "query", "findings", "fetched_urls", "completion_check_attempts",
+    "search_health", "started_at", "plan", "findings_written_citable_count",
+    "task_verification",
+)
+
+
+def merge_resumed_state(run_state: "RunState", prior_state: dict) -> None:
+    """Carry a prior (interrupted/failed) run's recorded data onto a fresh RunState so a resumed
+    run continues the same logical timeline instead of starting from an empty ledger. Shared by
+    both engine.tui's interactive /resume-run and headless run_cli's --resume-run — see the
+    allowlist's own history above for why this must not be two copies. `resumed_at` is stamped
+    fresh each call so a run resumed more than once shows its most recent resume time."""
+    for key in _RESUME_CARRYOVER_KEYS:
+        if key in prior_state:
+            run_state.data[key] = prior_state[key]
+    run_state.data["resumed_at"] = time.time()
