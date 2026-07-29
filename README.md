@@ -226,6 +226,14 @@ None of the rows above have actually been re-benchmarked through DeepDelve with 
 mode yet, though — their existing scores stand as the best available evidence, just not as clean
 evidence as previously assumed. Full trace in `ROADMAP.md`.
 
+**Lower-cost re-test path now available, 2026-07-28**: at the time this was found, the only known
+fix was switching the whole serving stack to vLLM — a big step, since reverted (`ROADMAP.md`'s
+"Ollama restored" entry). `api.backend: "ollama"` (`ARCHITECTURE.md` §6) now gives the same clean
+nothink behavior directly through Ollama's native `/api/chat` endpoint, live-verified for `gpt-oss`
+and `Ornith-1.0-9B` — no backend swap required. Re-testing any `†`-marked row through this path is
+now a real, low-friction option; still not done, still an open call, but no longer blocked on a
+bigger infrastructure decision the way it was on 2026-07-21.
+
 The meta-result holds across every run and model: **no fabricated report has ever gotten past the
 grounding gates unlabeled.** The defense layer is the validated product; model quality only
 determines how often it has to fire. Eleven candidates tried so far, `gpt-oss:20b` is still the only

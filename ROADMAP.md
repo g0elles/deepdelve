@@ -2268,6 +2268,26 @@ finished — see Pending for what's still open):
     an explanation rather than treating the old numbers as unaffected. Whether re-testing is worth
     the time (these are all still sub-14B, below the literature's own capacity floor regardless) is
     an open call, not yet made.
+  - **Retrospective audit closed, 2026-07-28**: confirmed via a structural scan of all 158
+    `research_output/` run folders (searching every `_run_state.json` for the `run_state.attempt =
+    10**6` force-final sentinel, the reliable persisted fingerprint of a context-budget/
+    max_run_minutes forced cutoff — raw stdout logs from past sessions aren't preserved, so this is
+    the only reliable retroactive signal) that no OTHER disqualified candidate beyond the Qwen3-family
+    rows already `†`-marked above shows this signature. 9 total hits: 2 from the 2026-07-28 Ornith/
+    Qwen3-4B-LoRA session (already documented, `RESEARCH.md` §13/§14), 5 unrelated dev/smoke-test
+    runs (trivial queries testing the completion-check mechanism itself, not model quality — see
+    `session_status/2026-07-14i.md`), and the remaining 2 are these exact same 2026-07-21 Qwen3
+    investigation runs. `mistral-nemo`/`llama3-groq-tool-use`/`llama3.2:3b`/`Bonsai-8B`/Gemma/MiniCPM
+    variants show no trace of this signature, consistent with their disqualifications being
+    unrelated failure classes (malformed JSON, wrong tool-call format, citation fabrication from
+    training knowledge) that this specific mechanism can't explain.
+  - **The "not yet re-tested" blocker above is resolved, 2026-07-28**: at the time this open call was
+    left, the only known fix was a full vLLM serving-stack swap — a big step, since reverted (see
+    "Ollama restored" entry below). `api.backend: "ollama"` (`ARCHITECTURE.md` §6, added same day)
+    gives the same clean nothink behavior directly through Ollama's own native `/api/chat` endpoint,
+    live-verified for `gpt-oss` and `Ornith-1.0-9B` — no backend swap required. Re-testing any
+    `†`-marked Qwen3 candidate through this path is now genuinely low-friction; still not actually
+    done, still the user's call on priority, but no longer gated on a bigger infrastructure decision.
   - **Confirmed via vLLM, 2026-07-21: the bug is Ollama-specific, not a Qwen3 model limitation.**
     Unloaded `gpt-oss` from Ollama first (`ollama stop`, freed ~14.3GB, matching the earlier lesson
     about not squeezing vLLM into leftover VRAM), launched `vllm serve Qwen/Qwen3-4B --tool-call-

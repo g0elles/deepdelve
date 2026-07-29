@@ -2304,3 +2304,46 @@ properly-tracked process this time (see the "resume-run PID tracking" lesson in
 `session_status/CURRENT.md`) and enough attempt budget to let the correction cycle actually play
 out, is the natural next step whenever this is picked back up — not a re-run of the same
 confounded conditions.
+
+### 14h. `api.backend: "ollama"` live verification: a recurring `aclose()` warning investigated and cleared, a real evidence-abandonment gap found unrelated to the new backend
+
+First full end-to-end run through the new `OllamaChatClient` path (`gpt-oss:20b`, the trusted
+baseline, isolating the backend as the only variable per the Model Evaluation Standard) surfaced a
+repeating `RuntimeError: aclose(): asynchronous generator is already running` / "Task exception was
+never retrieved" warning. Checked against primary sources rather than dismissed or assumed
+harmful: Python's own asyncio docs (`docs.python.org/3/library/asyncio-dev.html`, "Close
+asynchronous generators explicitly") confirm this is a known class of issue — an async generator
+that exits early without explicit closure has its cleanup deferred to garbage collection, which can
+run "in an unexpected context," including racing with another concurrent task. Traced to the
+`ollama` Python package's own `_client.py` (uses `yield`-based async generators internally for chat
+streaming, confirmed via direct source read), not anything in DeepDelve's own new backend-selection
+code — a pre-existing upstream quirk surfaced for the first time because this project is now
+exercising that code path. The docs' own recommended fix (`contextlib.aclosing()`) belongs in
+`ollama`/`agent_framework_ollama`, not this codebase.
+
+**Live-traced through the raw session JSON to rule out actual data loss**, not just assumed benign:
+every `write_workspace_file`/`read_workspace_file` call whose result window overlapped an `aclose()`
+warning was checked directly — no truncated or malformed result found. One real, separate issue
+surfaced in the same trace: a single `write_workspace_file` call failed a Pydantic validation
+(missing required `filename` field) — a genuine model-generation slip (`gpt-oss` omitted an
+argument), confirmed unrelated to the backend by reading `agent_framework_ollama`'s own
+`_prepare_tools_for_ollama`: it converts DeepDelve's real `@tool` functions via the same generic
+`FunctionTool.to_json_schema_spec()` method both backends share, so the tool schema (including
+`required: [...]`) isn't backend-specific. Self-corrected on the very next call, and this project's
+own `include_detailed_errors=True` setting (`create_local_agent`) worked correctly through the new
+client too, surfacing the real Pydantic error text rather than a generic one.
+
+**A real, separate quality gap found in the same run, also unrelated to the backend**: the final
+report dropped genuinely on-topic, well-cited heuristic-algorithm findings (GA, PSO, Bayesian
+optimization, simulated annealing — sitting correctly in `findings.md`) in favor of an off-topic
+citation (a Maryland school district's payday schedule). `check_report_underuses_findings` didn't
+catch it: the aggregate citation ratio (~8 of ~14 sources, ~57%) cleared its 50% threshold, even
+though the specific 43% dropped happened to be the most query-relevant content while an irrelevant
+source was kept. A real, pre-existing blind spot (measures *how much* evidence survives synthesis,
+not *which*) — not something the backend change introduced, but worth a ROADMAP entry of its own if
+picked up later.
+
+**Verdict on the backend change itself: no data loss found, no correctness regression found**,
+across everything traceable in this run. The `aclose()` noise and the Pydantic slip are both
+pre-existing failure classes with their own instrumentation already in place; neither correlates
+with the actual content-quality issue found in the same run.
