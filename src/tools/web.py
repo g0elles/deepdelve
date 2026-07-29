@@ -5,7 +5,7 @@ import asyncio
 import threading
 from bs4 import BeautifulSoup
 from agent_framework import tool
-from tools.core import with_quota, tool_quotas_ctx
+from tools.core import with_quota, tool_quotas_ctx, TOOL_ERROR_PREFIX
 from tools.fs import _get_safe_path, _get_workspace_type, _IN_MEMORY_FS
 from utils.run_state import record_fetched_url, task_id_ctx
 from utils.browser_fetch import fetch_via_headless_browser
@@ -658,7 +658,7 @@ async def fetch_url_to_workspace(url: str | list, filename: str = "", convert_to
         return _save_fetched(urls_fetched, filename, data, convert_to_md, metadata=metadata) + list_note
     except Exception as e:
         import traceback
-        return f"Failed: {e}\n\nTraceback:\n{traceback.format_exc()}"
+        return f"{TOOL_ERROR_PREFIX}Fetch failed: {e}\n\nTraceback:\n{traceback.format_exc()}"
 
 
 _DIVERSITY_STOPWORDS = {
@@ -844,11 +844,11 @@ async def web_search(
         # An environmental failure must not burn the model's research budget on top of failing.
         refund_quota("web_search")
         if isinstance(err, TimeoutError):
-            return (f"Search failed: timed out after {timeout_s}s with no response — the search "
+            return (f"{TOOL_ERROR_PREFIX}Search timed out after {timeout_s}s with no response — the search "
                     f"layer appears to be hanging, not just slow. This is an environmental issue, "
                     f"not a query problem; try a different query or search backend.")
         import traceback
-        return f"Search failed: {err}\n\nTraceback:\n{''.join(traceback.format_exception(err))}"
+        return f"{TOOL_ERROR_PREFIX}Search failed: {err}\n\nTraceback:\n{''.join(traceback.format_exception(err))}"
     # Zero results counts as a failure: under provider throttling ddgs often returns empty rather
     # than raising, and an all-empty run is indistinguishable from a fabrication-prone one.
     record_search_health(ok=bool(results))

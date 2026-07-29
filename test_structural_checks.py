@@ -4912,12 +4912,32 @@ def main():
     from engine.tui import _looks_like_tool_error
     assert _looks_like_tool_error('Error: Requested function "read_workspace..." not found.')
     assert _looks_like_tool_error("Error: 'foo.md' not found.")
-    assert _looks_like_tool_error("CRITICAL TOOL EXECUTION ERROR: web_search failed internally.")
     assert _looks_like_tool_error("## Error for Analyze paper\nTask forcefully aborted: timeout\n---")
     assert not _looks_like_tool_error("Wrote 'final_report.md' to disk.")
     assert not _looks_like_tool_error("## Result for background\n**Findings**\n\n- real content")
     assert not _looks_like_tool_error("")
     assert not _looks_like_tool_error(None)
+
+    # --- Shared tool-error sentinel, 2026-07-29: previously each tool file invented its own
+    # crash-path prefix ("CRITICAL TOOL EXECUTION ERROR", "Grep Error:", "Failed:",
+    # "Search failed:"), and _looks_like_tool_error had to hand-list all of them (found missing
+    # three of them in a 2026-07-19 QA audit). Converged onto tools.core.TOOL_ERROR_PREFIX --
+    # pin that every one of these tools' actual crash paths now emits it, not a private prefix. ---
+    from tools.core import TOOL_ERROR_PREFIX
+    assert _looks_like_tool_error(f"{TOOL_ERROR_PREFIX}web_search failed internally.\n\nException Details:\n...")
+    assert _looks_like_tool_error(f"{TOOL_ERROR_PREFIX}Grep failed: boom\n\nTraceback:\n...")
+    assert _looks_like_tool_error(f"{TOOL_ERROR_PREFIX}Fetch failed: boom\n\nTraceback:\n...")
+    assert _looks_like_tool_error(f"{TOOL_ERROR_PREFIX}Search failed: boom\n\nTraceback:\n...")
+    assert _looks_like_tool_error(f"{TOOL_ERROR_PREFIX}Search timed out after 20s with no response.")
+    import inspect as _inspect_tool_err
+    import tools.core as _core_mod_check
+    import tools.fs as _fs_mod_check
+    import tools.web as _web_mod_check
+    for _mod in (_core_mod_check, _fs_mod_check, _web_mod_check):
+        _src = _inspect_tool_err.getsource(_mod)
+        assert "CRITICAL TOOL EXECUTION ERROR" not in _src, (
+            f"{_mod.__name__}: old crash-path prefix must not be reintroduced, use TOOL_ERROR_PREFIX")
+        assert '"Grep Error:' not in _src, f"{_mod.__name__}: use TOOL_ERROR_PREFIX, not a private prefix"
 
     # --- create_local_agent must return a 3-tuple (agent, session, dispatch_task) — a caller
     # still unpacking 2 values is a hard ValueError, not a silent bug, but worth pinning since

@@ -4,6 +4,20 @@ import asyncio
 
 from utils.run_state import task_id_ctx
 
+# Shared tool-error sentinel, added 2026-07-29. Every tool in this project returns a formatted
+# error STRING instead of raising (see engine/tui.py's _looks_like_tool_error) — but before this,
+# each tool file invented its own crash-path prefix independently (a "grep failed" variant, a
+# "fetch failed" variant, a "search failed" variant, and an internal-exception variant each spelled
+# differently), and _looks_like_tool_error had to hand-list all of them (a 2026-07-19 QA audit
+# found three that were missing entirely, showing a green checkmark on a crashed tool call). Per
+# LLM tool-calling error-handling literature surveyed this session: converging on one shared
+# PREFIX string is still the same fragile hand-parsed-text pattern, just with fewer variants -- the
+# next new tool can just as easily invent one more. This constant exists so error-detection code
+# checks for ONE stable marker instead of guessing at wording; every tool's error path should
+# prefix its message with this (see fs.py/data.py/todos.py/web.py for the established call shape:
+# f"{TOOL_ERROR_PREFIX}<what failed>: {e}\n\nTraceback:...").
+TOOL_ERROR_PREFIX = "Error: "
+
 # --- TOOL QUOTA SYSTEM ---
 # Protects local LLM workflows from infinite retry loops (e.g., repeatedly failing to parse a URL)
 tool_quotas_ctx = contextvars.ContextVar('tool_quotas', default=None)
@@ -129,7 +143,7 @@ def with_quota(func):
             try:
                 return await func(*args, **kwargs)
             except Exception:
-                return f"CRITICAL TOOL EXECUTION ERROR: {func.__name__} failed internally.\n\nException Details:\n{traceback.format_exc()}"
+                return f"{TOOL_ERROR_PREFIX}{func.__name__} failed internally.\n\nException Details:\n{traceback.format_exc()}"
         return async_wrapper
     else:
         @functools.wraps(func)
@@ -139,5 +153,5 @@ def with_quota(func):
             try:
                 return func(*args, **kwargs)
             except Exception:
-                return f"CRITICAL TOOL EXECUTION ERROR: {func.__name__} failed internally.\n\nException Details:\n{traceback.format_exc()}"
+                return f"{TOOL_ERROR_PREFIX}{func.__name__} failed internally.\n\nException Details:\n{traceback.format_exc()}"
         return sync_wrapper

@@ -3,7 +3,7 @@ import os
 import re
 import contextvars
 from agent_framework import tool
-from tools.core import with_quota, _get_tool_rule
+from tools.core import with_quota, _get_tool_rule, TOOL_ERROR_PREFIX
 
 # --- WORKSPACE FILE SYSTEM ---
 _IN_MEMORY_FS: Dict[str, str] = {}
@@ -284,7 +284,7 @@ def grep_workspace_file(filename: str, pattern: str, context_lines: int = 2) -> 
         return "\n".join(out)
     except Exception as e:
         import traceback
-        return f"Grep Error: {e}\n\nTraceback:\n{traceback.format_exc()}"
+        return f"{TOOL_ERROR_PREFIX}Grep failed: {e}\n\nTraceback:\n{traceback.format_exc()}"
 
 @tool
 @with_quota

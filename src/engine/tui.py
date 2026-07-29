@@ -563,25 +563,21 @@ def _looks_like_tool_error(text: str) -> bool:
     success from failure without checking the text itself. Found live, 2026-07-12: a
     read_workspace_file call that failed with 'Error: Requested function "read_workspace..."
     not found.' still showed a green checkmark, misleading the user into treating a failed
-    sub-agent step as a successful one while reading the transcript. Covers every error-string
-    convention actually used across the codebase (checked via grep) rather than guessing one.
+    sub-agent step as a successful one while reading the transcript.
 
-    2026-07-19 QA audit: grep_workspace_file ("Grep Error: ..."), fetch_url_to_workspace
-    ("Failed: ..."), and web_search ("Search failed: ...") each use their own crash-path prefix
-    instead of "Error:" — none of the three were recognized here, so a crashed grep/fetch/search
-    got a green checkmark and left no trace in RunState.tool_error_count/tool_error_samples,
-    which both the completion-check nudges and the finetune reward/extraction pipeline read."""
+    2026-07-19 QA audit found THREE tools using their own independently-invented crash-path
+    prefix instead of "Error:" ("Grep Error:", "Failed:", "Search failed:") — none were
+    recognized here, so a crashed grep/fetch/search got a green checkmark and left no trace in
+    RunState.tool_error_count/tool_error_samples. That was fixed by hand-listing all the
+    variants found at the time, which just repeats the same fragile pattern for the next new
+    tool. 2026-07-29: converged every tool onto ONE shared marker instead
+    (tools.core.TOOL_ERROR_PREFIX) — this now checks for that single marker, not five
+    hand-maintained prefix strings."""
     if not text:
         return False
+    from tools.core import TOOL_ERROR_PREFIX
     stripped = text.lstrip("#").strip()
-    return (
-        stripped.startswith("Error:")
-        or stripped.startswith("CRITICAL TOOL EXECUTION ERROR")
-        or stripped.startswith("Grep Error:")
-        or stripped.startswith("Failed:")
-        or stripped.startswith("Search failed:")
-        or "forcefully aborted" in text
-    )
+    return stripped.startswith(TOOL_ERROR_PREFIX) or "forcefully aborted" in text
 
 
 class ToolCallWidget(Collapsible):
@@ -1383,7 +1379,7 @@ class BasicTuiAgent(App):
                 for u in self._pending_seed_urls:
                     result = await fetch_url_to_workspace.func(url=u, filename=_slugify_for_filename(u, "seed"))
                     refund_quota("fetch_url_to_workspace")
-                    ok = not str(result).lstrip().startswith("Failed")
+                    ok = not _looks_like_tool_error(str(result))
                     chat.mount(Static(Markdown(f"**System:**\nSeed {'fetched' if ok else 'FAILED'}: {u}"), classes="agent-bubble"))
                     if ok:
                         seeded.append(u)
@@ -2310,7 +2306,7 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
             for u in seed_urls:
                 result = await fetch_url_to_workspace.func(url=u, filename=_slugify_for_filename(u, "seed"))
                 refund_quota("fetch_url_to_workspace")
-                ok = not str(result).lstrip().startswith("Failed")
+                ok = not _looks_like_tool_error(str(result))
                 sys.stdout.write(f"\033[93m[System] Seed {'fetched' if ok else 'FAILED'}: {u}\033[0m\n")
                 if ok:
                     seeded.append(u)
