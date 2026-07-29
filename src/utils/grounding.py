@@ -27,9 +27,37 @@ def _normalize_url(url: str) -> str:
     '...Cretaceous%E2%80%93Paleogene...' — the exact-string/rstrip('/') comparison used everywhere
     below treated that as a DIFFERENT, unfetched URL, false-flagging a legitimate finding as
     hallucinated and excluding it from findings.md entirely (the run's real content got salvage-empty
-    as a result)."""
-    from urllib.parse import unquote
-    return unquote(url).rstrip('/')
+    as a result).
+
+    Also lowercases scheme+host (RFC 3986 §6.2.2.1 — these are case-insensitive by spec; path is
+    NOT, deliberately left alone here). This is an unconditionally correct normalization, unlike
+    the path-case fallback in _url_is_grounded below, which is a narrower, deliberate exception."""
+    from urllib.parse import unquote, urlsplit, urlunsplit
+    decoded = unquote(url).rstrip('/')
+    parts = urlsplit(decoded)
+    return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path, parts.query, parts.fragment))
+
+
+def _url_is_grounded(key: str, fetched: set[str]) -> bool:
+    """True if a normalized cited URL matches a normalized fetched URL: exact match first, then
+    the existing path-boundary prefix-match (redirect/query-string variants), then — as a narrow,
+    deliberate LAST-RESORT fallback, not a general claim that URLs are case-insensitive (RFC 3986
+    §6.2.2.1: only scheme+host are case-insensitive by spec, path deliberately is not, because two
+    paths differing only in case CAN be genuinely different resources) — a case-insensitive match.
+
+    Confirmed live 2026-07-29: a well-formed, correctly self-corrected report (Ornith-1.0-9B run)
+    was rejected as 'not grounded' for citing '.../Public_holidays_in_colombia' against an
+    actually-fetched '.../Public_holidays_in_Colombia', forcing another full rewrite cycle for a
+    formatting artifact, not a real grounding failure. Exact-case comparison is tried FIRST and
+    remains the primary, load-bearing signal for catching real fabrications — this fallback only
+    prevents a genuinely-fetched URL whose cited form drifted in case from reading as fabricated.
+    It does NOT treat two structurally different paths as equivalent for any other purpose; a
+    fabricated citation is still caught unless it happens to be an exact case-fold of a real
+    fetched URL, which is a much narrower coincidence than the false-rejection this closes."""
+    if key in fetched or any(_urls_prefix_match(key, f) for f in fetched):
+        return True
+    key_lower = key.lower()
+    return any(key_lower == f.lower() for f in fetched)
 
 
 def _urls_prefix_match(a: str, b: str) -> bool:
@@ -997,8 +1025,7 @@ def fully_ungrounded(content: str) -> str | None:
         return "no_urls"
     fetched = {_normalize_url(entry["url"]) for entry in get_fetched_urls()}
     for u in cited:
-        key = _normalize_url(u)
-        if key in fetched or any(_urls_prefix_match(key, f) for f in fetched):
+        if _url_is_grounded(_normalize_url(u), fetched):
             return None
     return "all_cited_urls_unverified"
 
@@ -1032,10 +1059,7 @@ def partially_ungrounded(content: str) -> str | None:
     if not cited:
         return None  # fully_ungrounded's own no_urls case already covers a wholesale-empty file
     fetched = {_normalize_url(entry["url"]) for entry in get_fetched_urls()}
-    bad = [
-        u for u in cited
-        if _normalize_url(u) not in fetched and not any(_urls_prefix_match(_normalize_url(u), f) for f in fetched)
-    ]
+    bad = [u for u in cited if not _url_is_grounded(_normalize_url(u), fetched)]
     if not bad:
         return None
     return f"unverified_entry_sources:{', '.join(bad[:3])}"
@@ -1052,7 +1076,7 @@ async def real_grounding_problem(content: str) -> str | None:
 
     fetched_entries = get_fetched_urls()
     fetched = {_normalize_url(entry["url"]) for entry in fetched_entries}
-    unverified = [u for u in cited if _normalize_url(u) not in fetched and not any(_urls_prefix_match(_normalize_url(u), f) for f in fetched)]
+    unverified = [u for u in cited if not _url_is_grounded(_normalize_url(u), fetched)]
 
     gc_cfg = config.cfg.get("settings", {}).get("grounding_check", {})
 
@@ -1077,10 +1101,8 @@ async def real_grounding_problem(content: str) -> str | None:
         if stub_only:
             stub_cited = [
                 u for u in cited
-                if _normalize_url(u) not in non_stub
-                and not any(_urls_prefix_match(_normalize_url(u), f) for f in non_stub)
-                and (_normalize_url(u) in stub_only
-                     or any(_urls_prefix_match(_normalize_url(u), f) for f in stub_only))
+                if not _url_is_grounded(_normalize_url(u), non_stub)
+                and _url_is_grounded(_normalize_url(u), stub_only)
             ]
             if stub_cited:
                 return f"stub_source:{', '.join(stub_cited[:3])}"

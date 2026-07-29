@@ -4207,6 +4207,40 @@ def main():
     assert _asyncio_pct.run(_percent_encoded_citation_scenario()) is None, (
         "a percent-encoded citation of an actually-fetched non-ASCII URL must not be flagged as unverified")
 
+    # --- URL case-sensitivity false-positive grounding rejection (live case 2026-07-29, Ornith-1.0-9B
+    # run: a well-formed, correctly self-corrected final_report.md draft was rejected by
+    # check_not_grounded solely because it cited '.../Public_holidays_in_colombia' (lowercase c)
+    # against an actually-fetched '.../Public_holidays_in_Colombia' (capital C), forcing another
+    # full rewrite cycle for a formatting artifact, not a real grounding failure. Per RFC 3986
+    # §6.2.2.1, path IS case-sensitive by spec -- this fallback is a deliberate, narrow exception
+    # for THIS fetched-vs-cited comparison only, not a general "URLs are case-insensitive" claim,
+    # so a negative case is pinned alongside the positive one. ---
+    async def _case_mismatch_citation_scenario():
+        reset_fetched_urls()
+        record_fetched_url("https://en.wikipedia.org/wiki/Public_holidays_in_Colombia",
+                            "colombia_holidays.md")
+        content = "- **[Public holidays in Colombia](https://en.wikipedia.org/wiki/Public_holidays_in_colombia)**"
+        return await _real_grounding_problem_pct(content)
+
+    assert _asyncio_pct.run(_case_mismatch_citation_scenario()) is None, (
+        "a citation differing from the actually-fetched URL only by path case must not be "
+        "flagged as unverified -- the fetch is real, only the model's cited casing drifted")
+
+    async def _case_distinct_paths_scenario():
+        # Negative case: two DIFFERENT real pages that happen to case-collide must NOT be treated
+        # as equivalent -- the case-insensitive fallback must only rescue a genuinely-fetched URL,
+        # never wave through a citation to a page that was never fetched at all.
+        reset_fetched_urls()
+        record_fetched_url("https://example.com/wiki/Article_One", "article_one.md")
+        content = "- **[Fabricated](https://example.com/wiki/article_two)**"
+        return await _real_grounding_problem_pct(content)
+
+    assert _asyncio_pct.run(_case_distinct_paths_scenario()) is not None, (
+        "a citation to a genuinely different (never-fetched) path must still be flagged, even if "
+        "it happens to case-collide with something else -- the case-insensitive fallback must not "
+        "make structurally different paths equivalent"
+    )
+
     # --- stub-fetch detection (live case run 14: a model-invented URL answered by a 200
     # soft-404 — 5KB of subscription chrome — was recorded as a real fetch and passed the
     # hard URL gate) ---
