@@ -3582,6 +3582,56 @@ tried, twice, not merely proposed):
 
 ## Pending
 
+- **`create_local_agent`'s 963-line nested-closure god-function — new, scoped 2026-07-29, NOT
+  attempted, needs its own dedicated session.** A whole-repo structural audit
+  (`src/engine/orchestrator.py` ~698-1661) found this the single riskiest piece of code in the
+  repo to change: `_run_single_task` (~490 lines) and `delegate_tasks` (~280 lines) are defined as
+  deeply-nested closures INSIDE `create_local_agent`, capturing dozens of enclosing locals
+  (`client`, `specialist_client`, `sem`, `holds_token`, `report_style_instructions`,
+  `_sdk_timeout_ceiling_seconds`, etc.) by reference rather than as parameters. `test_structural_
+  checks.py` never imports either closure directly — only small pure helper fragments that were
+  pulled OUT of this function over time (`_extract_excluded_topics`, `_looks_like_renamed_task`,
+  `_ring_fenced_deadline`) are tested; the actual per-task dispatch/quota-ring-fencing/specialist-
+  tiering behavior this function implements has ZERO direct test coverage. Per extract-method/
+  extract-class refactoring literature checked this session (arXiv:2312.12600, arXiv:2303.14253):
+  long functions with implicit shared state directly drive up the number of tests needed for full
+  coverage and should be pulled into parameter objects, not left as closures — confirming this
+  audit's own assessment, not just restating it. **Recommended approach when picked up**: write
+  characterization tests FIRST (pinning current behavior end-to-end, since none exist), THEN
+  decompose — attempting decomposition without a safety net on a function this size, alongside
+  other unrelated work, is exactly the kind of change that creates a new incident rather than
+  closing one.
+
+- **`completion.py`'s mixed responsibilities — new, scoped 2026-07-29, NOT attempted.** The same
+  structural audit found this 2591-line file's own header describes it as a clean list of pure
+  `Ctx -> Optional[Verdict]` check functions, but it also contains, with no separation: findings-
+  authoring/evidence-assembly logic (`_dedupe_findings`, `_collapse_multi_url_task_findings`,
+  `_build_findings_source_material`, ~220 lines), disk-touching quarantine/restore/salvage helpers
+  that reach into `tools.fs._get_safe_path` (a private name) at four separate call sites, async
+  sub-agent dispatch orchestration (`_dispatch_writer_review_fix`, `_dispatch_deepening_round`),
+  the task-verification ledger mutator, and the 390-line `run_completion_check` state machine
+  tying all of it together. None of this is individually bug-prone (the docstrings show real
+  care), but it means "add a new completion check" (the one thing CLAUDE.md documents as routine)
+  requires understanding artifact quarantine, writer dispatch, and findings-material assembly
+  living in the same module namespace. **Blast-radius warning for whenever this is picked up**:
+  `test_structural_checks.py` imports 40+ private (`_`-prefixed) names directly from across
+  `orchestrator.py`/`completion.py`/`tui.py`/`tools.fs`/`tools.web`/`tools.core` — any module split
+  must update that test file's imports in lockstep, not as an afterthought, or the test suite
+  silently stops covering what it used to.
+
+- **Config accessor for the 85 scattered `config.cfg.get("settings", {}).get(...)`-style chains —
+  new, scoped 2026-07-29, PARTIALLY addressed.** The structural audit counted 85 call sites across
+  `orchestrator.py` (33), `tui.py` (27), `completion.py` (12), and the tools/utils modules, with no
+  single accessor and no consistent default handling — confirmed as a REAL bug source, not just
+  duplication, by the `required_artifact` case: 3 different literal fallback values (`"final_report
+  .md"` in most `tui.py` call sites, `None` in `completion.py`) scattered across the 4 call sites
+  for that ONE setting. **Fixed for that one instance** (`config.get_required_artifact()`, added
+  2026-07-29 as part of the `run_cli`/`BasicTuiAgent` safe-subset cleanup) — the other 81 call
+  sites are unaddressed. Recommend incremental migration (add an accessor the next time any of
+  these settings' call sites needs touching for an unrelated reason) rather than a big-bang
+  rewrite of every site in one pass — most are one-off reads with no demonstrated inconsistency
+  risk like `required_artifact` had.
+
 - **`check_findings_underuses_evidence` evidence-dropping — MONITORING POINT, not a fix target
   yet (2026-07-29).** During the 2026-07-29 findings/report-writing diagnosis session (prompted by
   a direct request to find out whether the writer turn is structurally overwhelming these models,
@@ -3712,6 +3762,28 @@ tried, twice, not merely proposed):
   current work** — the cheapest first test would be standing up vLLM for ONE already-disqualified
   small model in the Builder/FindingsWriter role only, with `tool_choice: required`, against the
   exact benchmark query that disqualified it, before investing in a full mixed-backend build.
+
+  **Fresh data point + literature caveat, 2026-07-29**: a findings/report-writing diagnosis session
+  (prompted by a direct request to find out whether the writer turn is structurally overwhelming
+  these models, not assume it) reconfirmed this exact failure class live — `qwen3-4b-combined-v2
+  -lora`'s verbatim narration ("Since I cannot write or edit files directly, I will describe the
+  content...") — and it survived every OTHER fix made that same session (URL-case grounding
+  false-positive, retry-budget bonus, quota starvation), none of which touch narration avoidance
+  at all, confirming this remains the single most direct fix for that specific failure shape.
+  BUT: two real caveats surfaced this session, not previously in this entry's own citations:
+  (1) arXiv:2606.25605 ("Constraint Tax in Open-Weight LLMs," already cited elsewhere in this
+  project) documents forcing required fields via constrained decoding can make a model
+  **fabricate a plausible-sounding value instead of narrating uncertainty** when it doesn't
+  actually know the answer — `tool_choice: required` could trade "narrates instead of writing"
+  for "writes, but confidently fabricates a citation," arguably worse for a project whose
+  grounding checks specifically hunt fabricated citations. (2) vLLM's own tool-calling docs/RFC
+  #39848 confirm `tool_choice: required` enforces a JSON schema via guided decoding, and
+  explicitly warn a model expecting a different native format (e.g. XML) gets forced into JSON
+  with possible performance degradation — a concrete risk for THIS project specifically, since
+  Ornith and other Qwen3.5-architecture candidates use a native XML-style tool-call template (the
+  same family whose `PARSER`/`RENDERER qwen3.5` corruption bug was root-caused and fixed the same
+  week). **Any future prototype of this fix must test specifically against the candidate model's
+  native tool-call format, not assume JSON-schema forcing is free.**
 
 - **Strategic options for the "no small local model is reliable enough" gap** (decided 2026-07-18,
   after the bake-off reached 10 tried candidates, 9 disqualified — full trial history in the
