@@ -2204,7 +2204,7 @@ def _yield_to_starved_check(verdict: Optional[Verdict], ctx: Ctx, starved_check,
     return verdict
 
 
-async def run_completion_check(query: str, current_input, run_state: "RunState", notify, last_assistant_text: str = "", dispatch_task=None, budget_deadline: float | None = None):  # noqa: F821 — utils.run_state.RunState, annotation only
+async def run_completion_check(query: str, current_input, run_state: "RunState", notify, last_assistant_text: str = "", dispatch_task=None, budget_deadline: float | None = None, find_substantial_text: Optional[Callable[[], str]] = None):  # noqa: F821 — utils.run_state.RunState, annotation only
     """Runs the 3-tier completion check (delegated? artifact exists? really grounded?) plus the
     structural fixes: per-attempt quota top-up, artifact quarantine, run-state persistence, and
     (as a last resort) salvaging a narrated-but-never-written report instead of losing it.
@@ -2232,6 +2232,22 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
     consecutive-same-problem escalation case, so it reuses the existing salvage/quarantine
     final-verdict path instead of a new bespoke cutoff. None (the default) preserves the TUI's
     existing unbounded behavior unchanged.
+
+    `find_substantial_text` (optional callback, no args, returns str): scans the caller's own
+    session-event history for the most recent substantial narrated text block, used only by the
+    final-verdict narration-salvage path below. Injected by the caller (same pattern as `notify`)
+    rather than imported directly — extracted 2026-07-29 to break a real circular import: this
+    module used to lazy-import `_find_last_substantial_text` from `engine.tui` at call time
+    (not at module load) specifically because engine.tui imports THIS module at load time, and a
+    top-level cross-import here would have crashed on a partially-initialized module. Both
+    tui.py callers
+    (`run_agent`, `run_cli`) pass their own local `_find_last_substantial_text` function, which
+    reads tui.py's own `_session_events` list — that data structure is tui-specific bookkeeping
+    completion.py has no independent reason to know about, so callback injection is the right
+    boundary here, not just an import-cycle workaround. None (the default) preserves the old
+    behavior of falling back to `last_assistant_text` alone (a caller that doesn't pass this gets
+    exactly what `_find_last_substantial_text() or last_assistant_text` would have done if the
+    scan came up empty).
 
     Returns (should_retry: bool, new_current_input). Caller is responsible for looping while
     should_retry is True, same as before.
@@ -2573,10 +2589,8 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                            f"known check beats salvaged narration; review the flagged claims before "
                            f"trusting it.")
                 else:
-                    # _find_last_substantial_text scans the TUI's session event history — lazy import,
-                    # engine.tui imports this module at load time.
-                    from engine.tui import _find_last_substantial_text
-                    if problem == "missing_artifact" and _salvage_narrated_report(req_artifact, _find_last_substantial_text() or last_assistant_text):
+                    substantial_text = (find_substantial_text() if find_substantial_text else "") or last_assistant_text
+                    if problem == "missing_artifact" and _salvage_narrated_report(req_artifact, substantial_text):
                         # Structural fallback, not another prompt nudge — see _salvage_narrated_report's
                         # docstring for why: nudging alone has proven insufficient for this exact pattern
                         # across two independent projects now.

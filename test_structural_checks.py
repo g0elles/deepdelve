@@ -949,6 +949,22 @@ def main():
         "run_agent must save run_state both at normal loop completion AND on a top-level crash "
         "(run_cli parity) — expected at least 2 call sites")
 
+    # --- Circular import fix, 2026-07-29: engine.completion used to lazy-import
+    # _find_last_substantial_text FROM engine.tui at call time, specifically to avoid a real
+    # circular import (engine.tui imports engine.completion; engine.completion importing back
+    # from a partially-initialized engine.tui at ITS top level would crash on load). Fixed via
+    # callback injection (run_completion_check's find_substantial_text parameter) instead of a
+    # shared-module extraction, since the underlying data (_session_events) is tui-specific
+    # bookkeeping completion.py has no independent reason to know about. Pin both halves: the
+    # import is gone, AND the actual module import order doesn't crash.
+    import engine.completion as _completion_mod_check
+    _completion_src = _inspect.getsource(_completion_mod_check)
+    assert "from engine.tui import" not in _completion_src, (
+        "engine.completion must not import from engine.tui at all — that was the circular-import "
+        "workaround this fix removed; a new import here would reintroduce the cycle")
+    assert "find_substantial_text" in _inspect.signature(_completion_mod_check.run_completion_check).parameters, (
+        "run_completion_check must accept find_substantial_text as an injected callback")
+
     # --- check_not_delegated resume fix (2026-07-28): Ctx.delegated must also be true when the
     # live quota pool shows zero usage (always true at the start of a resumed process) but
     # run_state.data["fetched_urls"] is non-empty (real delegation happened in ANY session,

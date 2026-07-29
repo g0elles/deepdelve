@@ -6,6 +6,16 @@ from textual.containers import VerticalScroll, Horizontal, Vertical
 from rich.markdown import Markdown
 from engine.orchestrator import create_local_agent, reset_session, delegation_depth_ctx, build_quota_pool, iter_agent_stream
 import engine.orchestrator as orchestrator_module
+# The completion-check engine (verdict checks, quarantine/restore/salvage) lives in
+# engine/completion.py as a data-driven check list — see its header for why it left this file.
+# Was a mid-file, not top-of-file, import until 2026-07-29: engine.completion used to
+# lazy-import _find_last_substantial_text FROM this module at call time specifically to avoid a
+# circular import (this module imports completion.py; completion.py can't import this module back
+# at ITS top level without crashing on a partially-initialized module). Fixed by callback
+# injection instead (run_completion_check's find_substantial_text parameter) — completion.py no
+# longer imports anything from engine.tui at all, so this can live at the top like every other
+# import.
+from engine.completion import run_completion_check, _restore_quarantined_draft
 import asyncio
 import json
 import config
@@ -1624,6 +1634,7 @@ class BasicTuiAgent(App):
                         query=query, current_input=current_input, run_state=run_state, notify=_tui_notify,
                         last_assistant_text=turn_msg.text if turn_msg else "",
                         dispatch_task=dispatch_task,
+                        find_substantial_text=_find_last_substantial_text,
                     )
                     if should_continue:
                         has_requests = True
@@ -2007,16 +2018,6 @@ def _clarify_verdict(text: str) -> str | None:
     if not v or v.upper().startswith("CLEAR") or len(v) > 600:
         return None
     return v
-
-
-# The completion-check engine (verdict checks, quarantine/restore/salvage) lives in
-# engine/completion.py as a data-driven check list — see its header for why it left this file.
-# Re-imported here because this module's callers and test_structural_checks.py address it as
-# engine.tui, and _find_last_substantial_text below is its lazy tui-side dependency.
-from engine.completion import (  # noqa: F401 — re-exports
-    run_completion_check,
-    _restore_quarantined_draft,
-)
 
 
 def _find_last_substantial_text(min_len: int = 200) -> str:
@@ -2485,6 +2486,7 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
                     last_assistant_text=turn_text,
                     dispatch_task=dispatch_task,
                     budget_deadline=budget_deadline,
+                    find_substantial_text=_find_last_substantial_text,
                 )
                 if should_continue:
                     has_requests = True
