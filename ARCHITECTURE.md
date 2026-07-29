@@ -291,3 +291,16 @@ Extending to another backend later (Anthropic, Bedrock, a different OpenAI-compa
 its own quirks) follows the identical one-branch pattern in both functions — the corresponding
 `agent_framework_*` plugin packages are already installed, just unused. Deliberately NOT built
 speculatively here — add a branch when a real need shows up, not before.
+
+**Landmine, found 2026-07-29** (`RESEARCH.md` §15): the `"ollama"` branch fixes the thinking-leak
+above, but per-model Ollama tag configuration matters just as much as the backend choice. Qwen3.6-
+architecture models (confirmed on Ornith-1.0-9B) can intermittently drift off their own tool-call XML
+template — a known, still-open upstream bug
+([ollama/ollama#16383](https://github.com/ollama/ollama/issues/16383)). If the Ollama tag doesn't
+explicitly declare `PARSER qwen3.5` / `RENDERER qwen3.5` in its Modelfile, this drift doesn't produce
+a clean, catchable error — it silently corrupts the model's tool-call arguments (confirmed live:
+`web_search` looping with the entire arg set wrongly nested under one key, deterministically, from
+the first call). **Before benchmarking any Qwen3.5/3.6-family GGUF through `api.backend: "ollama"`,
+check `ollama show <tag> --modelfile` for an explicit `PARSER`/`RENDERER` declaration matching the
+model's actual architecture** — an undeclared tag relying on whatever fallback handles a
+GGUF-embedded template is not equivalent and was the actual root cause here, not the model itself.

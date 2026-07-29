@@ -2347,3 +2347,94 @@ picked up later.
 across everything traceable in this run. The `aclose()` noise and the Pydantic slip are both
 pre-existing failure classes with their own instrumentation already in place; neither correlates
 with the actual content-quality issue found in the same run.
+
+### 15. Ornith-1.0-9B native-backend tool-call corruption: root cause, two ruled-out hypotheses, live-verified fix
+
+Resuming §14's own recommended next step (retest Ornith through `api.backend: "ollama"`) immediately
+hit a new failure: `web_search` calls looping with corrupted arguments — the entire arg set wrongly
+nested one level under a `"query"` key (`{"query": {"max_results": 10, "query": "...", "topic":
+"general"}}`), repeated 15+ times identically, never self-correcting. Killed before it burned the
+attempt budget.
+
+#### 15a. Ruled out: multi-turn context pollution
+
+First hypothesis — the model degrading after repeatedly seeing its own identical Pydantic validation
+error echoed back. Disproven directly: pulled every `web_search` call's raw arguments from the
+session's `ui_events` log in chronological order. The **very first** call was already malformed, and
+all 24 retries were byte-identical (same query text, same nested shape, word for word). No drift, no
+variation — a deterministic single-shot generation issue tied to the real prompt/tool-schema context,
+not something that requires a long conversation to manifest.
+
+#### 15b. Ruled out (as the proximate cause here): tool_call_id collision
+
+Second hypothesis, prompted by an independent Reddit-adjacent lead about Ollama's tool-calling
+reliability: `agent_framework_ollama`'s `_parse_tool_calls_from_ollama`
+(`_chat_client.py:604`) sets `call_id=tool.function.name` — every `web_search` call in one
+conversation gets the *identical* `call_id`. Traced why: Ollama's raw HTTP response DOES include a
+genuine per-call `id` (confirmed directly via a raw `curl` probe against `/api/chat`), but the
+`ollama` Python package's own `Message.ToolCall` Pydantic model (`ollama/_types.py:290`) only
+declares a `function` field — the `id` is silently dropped on parse, forcing the name-based fallback.
+Confirmed this is a known, still-open upstream limitation
+([ollama/ollama#11417](https://github.com/ollama/ollama/issues/11417) "Consistent Tool Call Ids") and
+independently corroborated by an unrelated project, `matthiasn/lotti`'s Ollama inference repository
+(PR #3200, closed/unmerged but the relevant file's diff was inspected directly): their own from-scratch
+client hits the identical limitation and works around it by maintaining an app-level
+`toolCallId → functionName` map, failing loudly (`throw StateError`) rather than silently corrupting
+history — their code comment cites the same root fact, that Ollama matches tool results to calls by
+function name only, per [Ollama's own docs](https://docs.ollama.com/capabilities/tool-calling).
+
+This is a real, documented limitation worth knowing about for any FUTURE scenario with genuinely
+parallel/concurrent same-name tool calls in one turn. It is NOT what caused this specific bug: checked
+the real session's timestamps and confirmed DeepDelve's dispatch pattern is strictly sequential (one
+outstanding call, one result, before the next call) — the collapsed call_id is never actually
+ambiguous under that pattern.
+
+#### 15c. Confirmed root cause: open upstream Ollama bug, Qwen3.6-family template drift
+
+Web research surfaced [ollama/ollama#16383](https://github.com/ollama/ollama/issues/16383)
+("qwen3.6 occasionally violates its own tool-call template; qwen3.5 parser returns 500 instead of
+tolerating the drift") — still OPEN, fix PR [#16398](https://github.com/ollama/ollama/pull/16398)
+unmerged. Qwen3.6-architecture models (Ornith's base) intermittently drift off their own XML
+tool-call format, emitting stray/mismatched closing tags (e.g. a spurious `</function_invocation>`
+leak from an older training format, per the issue's own captured evidence). When a tag explicitly
+declares `PARSER qwen3.5`, this causes a clean, catchable 500. **Our Ornith tag declared no explicit
+`PARSER`/`RENDERER`** (`ollama show --modelfile` showed only `TEMPLATE {{ .Prompt }}`, using
+whatever GGUF-embedded jinja + Ollama's undeclared-tag fallback handles it) — plausibly why drift
+here produced silently corrupted arguments instead of a clean error.
+
+#### 15d. Reproduction methodology — confirmed with DeepDelve's own real wiring, not a synthetic approximation
+
+A simplified synthetic probe (hand-built tool schema, generic system prompt) did NOT reliably
+reproduce the bug — underscoring that isolated smoke tests can miss real multi-tool-schema
+interaction effects. Built a faithful repro harness instead: imported `orchestrator._build_client`,
+`orchestrator._safe_format`, the real `WEB_SEARCHER_INSTRUCTIONS`, `SUBAGENT_DELEGATION_INSTRUCTIONS`,
+and the real 4-tool WebSearcher tool list (`web_search`, `fetch_url_to_workspace`, `think_tool`,
+`search_verified_findings`) directly from DeepDelve's own source, constructed the agent the same way
+`create_local_agent` does, and replayed the real first delegate-task instructions. This reproduced the
+"Maximum consecutive function call errors reached (3)" failure against the OLD tag
+(`deepdelve-ornith-9b-froggeric`) on the very first turn.
+
+#### 15e. Fix: explicit `PARSER qwen3.5` / `RENDERER qwen3.5`, live-verified
+
+Built `deepdelve-ornith-9b-jsonfmt:latest` from a fresh GGUF copy
+(`/mnt/nuevovol/llm-models/ornith-1.0-9b-froggeric-jsonfmt.gguf`, same `gguf_new_metadata.py`
+technique as the earlier froggeric patch) with a Modelfile explicitly declaring `PARSER qwen3.5` /
+`RENDERER qwen3.5`. Note: declaring `RENDERER qwen3.5` makes Ollama use its own internal built-in
+renderer, overriding the GGUF-embedded jinja entirely — so the template's own tool-call-format default
+(patched to `'json'` as a first attempt) ended up moot; what actually fixed it was Ollama's own
+matched renderer+parser pair, not the template edit.
+
+**Reran the identical repro harness against the new tag: zero "Maximum consecutive function call
+errors" across ~10+ real `web_search` calls**, versus the old tag failing by call #5 every time.
+**Live-verified again in the real full benchmark run** (`research_output/`
+`i_want_documentation_on_heuristic_algoritms_for_de_20260728_233339`, ~47 minutes,
+`max_completion_check_attempts: 14`): final summary line reported **`web_search failures: 0/18`** —
+a complete elimination of this bug class across a real, full multi-hour run, not just a short probe.
+
+**Ornith's own overall verdict remains open, for an unrelated reason**: the run hit `max_run_minutes`
+(45 min) mid-retry-chain while still correcting a genuine, separate content-quality issue
+(`findings_underuses_evidence`). `final_report.md` exists (22 real sources fetched) but the system
+explicitly flagged it unverified rather than silently accepting it — 6 honest write→review→fix rounds
+happened; it simply ran out of wall-clock budget. This is a content-convergence-speed question, not a
+new architecture bug — a longer `max_run_minutes` or fewer fixed retry-rounds-per-issue is the natural
+next lever, not another root-cause hunt.
