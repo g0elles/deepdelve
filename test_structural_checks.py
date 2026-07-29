@@ -1417,7 +1417,7 @@ def main():
     # entire run's retry budget when some OTHER problem keeps recurring every attempt, "wait a
     # cycle" becoming "wait forever" in practice. Tested directly against the helper's own
     # inputs/outputs rather than needing to construct two simultaneously-triggering real checks. ---
-    from engine.completion import _yield_to_starved_check, _consecutive_occurrences, Ctx, Verdict
+    from engine.completion import _yield_to_starved_check, _consecutive_occurrences, Verdict
 
     def _starvation_guard_scenario():
         with tempfile.TemporaryDirectory() as tmpdir5:
