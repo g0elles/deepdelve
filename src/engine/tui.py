@@ -15,7 +15,7 @@ import engine.orchestrator as orchestrator_module
 # injection instead (run_completion_check's find_substantial_text parameter) — completion.py no
 # longer imports anything from engine.tui at all, so this can live at the top like every other
 # import.
-from engine.completion import run_completion_check, _restore_quarantined_draft
+from engine.completion import run_completion_check, _restore_quarantined_draft  # noqa: F401 — re-export, test_structural_checks.py addresses it as engine.tui
 import asyncio
 import json
 import config
@@ -1640,7 +1640,7 @@ class BasicTuiAgent(App):
             # /stop (self.workers.cancel_all()) relies on this propagating -- must not be treated
             # as a crash to save-and-swallow.
             raise
-        except Exception as e:
+        except Exception:
             # TUI/CLI parity fix, 2026-07-29: run_cli guarantees a persisted _run_state.json on
             # any top-level crash (2026-07-11 fix, "a dead run must still leave its evidence
             # behind" -- a NIM 429 once killed a run 10 minutes in with 15 fetched files and no
