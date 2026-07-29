@@ -3786,18 +3786,24 @@ tried, twice, not merely proposed):
 
 
 
-- **VERIMAP Phase 2 — actually independent per-task retry dispatch** (scoped 2026-07-26, see
-  History for Phase 1 which shipped same day). Phase 1 gave DeepDelve a real per-task verification
-  ledger (`_update_task_verification`/`check_task_verification_flagged`, `src/engine/completion.py`)
-  but it still only ever produces ONE whole-run `Verdict` per completion-check attempt, same as
-  every other check — a flagged task's directive names it specifically, but redelegating it still
-  routes back through the Planner's own turn, same as any other nudge. The deeper VERIMAP win —
-  redispatching ONLY the flagged task directly, bypassing the Planner's own turn entirely (similar
-  in spirit to how `_dispatch_writer_review_fix` already bypasses the Planner for artifact fixes) —
-  needs `run_completion_check`'s dispatch loop reworked, not just an additive ledger. Explicitly
-  deferred: worth seeing real `task_verification` data from a few live runs first (does "flagged"
-  actually recur often enough to justify a dispatch-loop rework, or does the Phase-1 directive
-  already resolve it in practice) before designing Phase 2 on top of it.
+- **VERIMAP Phase 2 — CLOSED as documented no-go, 2026-07-29, real live-run evidence gathered,
+  not left open on a "need more data" pretext the data itself now contradicts.** Phase 1
+  (`_update_task_verification`/`check_task_verification_flagged`, `src/engine/completion.py`) was
+  deliberately left deferred pending real data on whether `task_verification_flagged` recurs often
+  enough to justify redispatching ONLY the flagged task directly (bypassing the Planner's own turn,
+  similar in spirit to how `_dispatch_writer_review_fix` bypasses the Planner for artifact fixes) —
+  a real `run_completion_check` dispatch-loop rework, not an additive ledger. An audit of every
+  `research_output/` run where the flag actually fired (K-Pg boundary cluster 2026-07-26,
+  deep-learning-vs-2008-crisis cluster 2026-07-27, `qwen3-4b-combined-v2-lora` 2026-07-28) found
+  **zero clean, unconfounded cases** where the same task recurred 3+ times under a normal retry
+  budget with the Phase-1 nudge genuinely failing to resolve it. Every observed recurrence traced
+  to an independent, already-fixed root cause instead: quota exhaustion made the directive
+  structurally impossible to follow (fixed by making the check quota-aware) or a stale-task-rename
+  loop (fixed by adding the `superseded` ledger status) — and post-fix reruns on the same queries
+  show the flag resolving in 0-1 nudges. **Verdict: no-go for now.** Revisit only if a future clean
+  run (normal retry budget, no other confound) shows the identical task recurring 3+ times with the
+  Phase-1 directive genuinely unable to resolve it — that specific trigger, not elapsed time or
+  general "more data," is the reopen condition.
 
 ### Candidates from the 2026-07-12 reference-repo review (see README References)
 
