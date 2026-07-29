@@ -3582,6 +3582,25 @@ tried, twice, not merely proposed):
 
 ## Pending
 
+- **`check_findings_underuses_evidence` evidence-dropping — MONITORING POINT, not a fix target
+  yet (2026-07-29).** During the 2026-07-29 findings/report-writing diagnosis session (prompted by
+  a direct request to find out whether the writer turn is structurally overwhelming these models,
+  not assume it), this check's own docstring surfaced the single strongest piece of evidence found
+  for a genuine model synthesis-discipline weakness independent of any infra bug: a clean,
+  balanced, non-overloaded 2-task run (`explain_the_health_benefits_of_green_tea_and_separ_
+  20260726_113029`, 7 + 5 real sources, `run_state.coverage()` ratio 1.0, no research-volume
+  problem) still had FindingsWriter silently drop an ENTIRE covered topic (Roman Empire) from
+  `findings.md` — not thin, not truncated, gone outright. Every OTHER 2026-07-28 writer-stage
+  failure investigated in that same session (Ornith's URL-case rejection, its wall-clock cutoff,
+  qwen3-4b-combined-v2-lora's narration-instead-of-write) traced to a specific, non-model
+  mechanism, now fixed — this is the one exception. **Deliberately not fixed via a blind prompt
+  rewrite**: per this project's own Model Evaluation Standard reasoning (a discard/fix claim needs
+  more than one occurrence, one clean pass can't establish a pattern either), a single incident
+  isn't enough to design a targeted fix from without guessing. Concrete reopen trigger: if a
+  SECOND clean (non-overloaded, unconfounded) run shows the same whole-topic-dropping shape, it's
+  worth a targeted prompt reinforcement (e.g. an explicit per-task-name coverage checklist
+  FindingsWriter must satisfy before calling `write_workspace_file`) — not before.
+
 - **Backend-adapter abstraction for serving endpoints — CLOSED same day, see History
   ("2026-07-28: pluggable api.backend").** `api.backend: "ollama"` now reuses
   `agent_framework.ollama.OllamaChatClient` (already-installed sibling package to the default
