@@ -1451,6 +1451,100 @@ def main():
 
     contextvars.copy_context().run(_untracked_delegation_scenario)
 
+    # --- distinct-problem retry-budget bonus (2026-07-29, Track A8): confirmed live, the
+    # Ornith-1.0-9B run did 6 honest write-review-fix rounds each fixing a DIFFERENT real problem
+    # and was cut off by the flat max_completion_check_attempts ceiling despite never looping on
+    # any single issue. When the two most recently RECORDED attempts (before this round even
+    # runs) show different problems -- genuine progress, not a repeat -- a bounded bonus attempt
+    # (and a proportional slice of extra wall-clock budget) is granted, capped so a run can't earn
+    # this forever. ---
+    def _distinct_problem_bonus_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        from tools.core import tool_quotas_ctx as q_ctx
+        _orig_ws6 = _config.cfg.get("settings", {}).get("workspace")
+        _orig_mca = _config.cfg.get("settings", {}).get("max_completion_check_attempts")
+        _config.cfg["settings"]["workspace"] = {"type": "memory"}
+        _config.cfg["settings"]["max_completion_check_attempts"] = 3
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            _IN_MEMORY_FS.clear()
+            reset_fetched_urls()
+            q_ctx.set({})  # nothing delegated -> check_not_delegated fires deterministically
+
+            # (a) Already AT the ceiling (attempt == max_attempts), but the last two recorded
+            # attempts show two DIFFERENT problems -- must grant one bonus attempt.
+            with tempfile.TemporaryDirectory() as tmpdir6:
+                rs = RunState(tmpdir6)
+                rs.set_query("q")
+                rs.attempt = 3  # already at the (unbumped) ceiling
+                rs.data["completion_check_attempts"] = [
+                    {"attempt": 0, "problem": "stub_source"},
+                    {"attempt": 1, "problem": "not_grounded"},  # different from the one before it
+                ]
+                run_state_ctx.set(rs)
+                msgs = []
+                should_retry, _ = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append))
+                assert should_retry, (
+                    "genuine progress (two different recorded problems in a row) must earn a "
+                    "bonus attempt instead of terminating exactly at the flat ceiling", msgs)
+                assert rs.data.get("distinct_problem_bonus_used") == 1, rs.data
+
+            # (b) Same ceiling, but the last two recorded attempts show the SAME problem twice --
+            # this is a real loop (already handled by the separate consecutive-same-problem
+            # escalation), NOT genuine progress -- must NOT grant a bonus.
+            with tempfile.TemporaryDirectory() as tmpdir7:
+                rs2 = RunState(tmpdir7)
+                rs2.set_query("q")
+                rs2.attempt = 3
+                rs2.data["completion_check_attempts"] = [
+                    {"attempt": 0, "problem": "not_grounded"},
+                    {"attempt": 1, "problem": "not_grounded"},  # identical -- a repeat, not progress
+                ]
+                run_state_ctx.set(rs2)
+                msgs2 = []
+                should_retry2, _ = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs2, notify=msgs2.append))
+                assert not should_retry2, (
+                    "a repeated identical problem must NOT earn a bonus attempt -- that's a real "
+                    "loop, not progress", msgs2)
+                assert rs2.data.get("distinct_problem_bonus_used", 0) == 0, rs2.data
+
+            # (c) Bonus cap: once distinct_problem_bonus_used already sits at the cap, further
+            # "different problem" history must NOT grant yet another bonus -- bounded, not a way
+            # to disable the ceiling entirely for a run that keeps finding new-looking problems.
+            with tempfile.TemporaryDirectory() as tmpdir8:
+                rs3 = RunState(tmpdir8)
+                rs3.set_query("q")
+                rs3.attempt = 3
+                rs3.data["distinct_problem_bonus_used"] = 4  # already at DISTINCT_PROBLEM_BONUS_CAP
+                rs3.data["completion_check_attempts"] = [
+                    {"attempt": 0, "problem": "stub_source"},
+                    {"attempt": 1, "problem": "uncited_claims"},
+                ]
+                run_state_ctx.set(rs3)
+                msgs3 = []
+                should_retry3, _ = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs3, notify=msgs3.append))
+                assert not should_retry3, (
+                    "the distinct-problem bonus must be capped, not an unbounded ceiling override", msgs3)
+                assert rs3.data["distinct_problem_bonus_used"] == 4, (
+                    "bonus counter must not exceed its own cap", rs3.data)
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            if _orig_ws6 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws6
+            if _orig_mca is None:
+                _config.cfg["settings"].pop("max_completion_check_attempts", None)
+            else:
+                _config.cfg["settings"]["max_completion_check_attempts"] = _orig_mca
+
+    contextvars.copy_context().run(_distinct_problem_bonus_scenario)
+
     # --- _yield_to_starved_check (2026-07-24): check_untracked_delegation/
     # check_report_underuses_findings are deliberately placed LAST in their own check lists (lower
     # priority than real correctness problems) -- confirmed live this can starve them for an

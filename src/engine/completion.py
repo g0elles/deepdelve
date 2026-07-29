@@ -2278,10 +2278,45 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
     max_attempts = config.cfg.get("settings", {}).get(
         "max_completion_check_attempts", DEFAULT_MAX_COMPLETION_CHECK_ATTEMPTS
     )
+    # 2026-07-29: distinguish "still making genuine progress" (each retry fixes a DIFFERENT
+    # problem) from "stuck on the same issue" (already handled below via the consecutive-
+    # same-problem escalation, which forces a whole-rebuild then a hard stop). Confirmed live: the
+    # Ornith-1.0-9B run did 6 honest write-review-fix rounds, each fixing a REAL, DIFFERENT problem
+    # (a stub source, then an unrelated URL-case grounding false-positive -- see
+    # utils/grounding.py's _url_is_grounded, fixed the same session) and was cut off by the flat
+    # max_attempts ceiling despite never looping on any single issue -- a flat per-run ceiling
+    # can't tell "6 different real fixes" from "6 repeats of one fix" apart on its own. Per
+    # literature checked this session (arXiv:2606.04056's catalog of real agent budget-overrun
+    # incidents confirms a hard ceiling is legitimate risk management; arXiv:2606.27009's semantic
+    # early-stopping result argues the better lever distinguishes genuine progress from spinning,
+    # rather than raising one flat number for every run alike): reuse the SAME per-attempt
+    # `problem` field every check already records, no new tracking machinery beyond one bounded
+    # counter. Capped total, not unbounded -- this rewards real sequential progress, it does not
+    # disable the ceiling for a run that's actually stuck (that stays gated by the existing
+    # CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD logic below, unchanged).
+    DISTINCT_PROBLEM_BONUS_CAP = 4
+    # Ornith's own cutoff was the WALL-CLOCK deadline (max_run_minutes), not the attempt-count
+    # ceiling -- extending max_attempts alone wouldn't have helped that specific incident, since
+    # budget_deadline is checked independently, below, regardless of how many attempts remain.
+    # Each bonus attempt also earns a proportional slice of extra wall-clock time (this run's own
+    # configured per-attempt pace), not a flat guess.
+    _configured_run_minutes = config.cfg.get("settings", {}).get("max_run_minutes", 0) or 0
+    _bonus_seconds_per_attempt = (
+        (_configured_run_minutes * 60) / max_attempts if (_configured_run_minutes and max_attempts) else 0
+    )
 
     try:
         while True:
             attempt = run_state.attempt
+            recorded_attempts = run_state.data.get("completion_check_attempts", [])
+            if (len(recorded_attempts) >= 2 and recorded_attempts[-1].get("problem")
+                    and recorded_attempts[-1].get("problem") != recorded_attempts[-2].get("problem")):
+                bonus_used = run_state.data.get("distinct_problem_bonus_used", 0)
+                if bonus_used < DISTINCT_PROBLEM_BONUS_CAP:
+                    run_state.data["distinct_problem_bonus_used"] = bonus_used + 1
+                    max_attempts += 1
+                    if budget_deadline is not None and _bonus_seconds_per_attempt:
+                        budget_deadline += _bonus_seconds_per_attempt
             if budget_deadline is not None and attempt < max_attempts and time.monotonic() > budget_deadline:
                 notify("**System (final):** max_run_minutes exceeded mid-retry-chain — stopping "
                        "further Write/Review/Fix dispatches and finishing with whatever exists.")
