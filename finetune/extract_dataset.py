@@ -47,24 +47,9 @@ import re
 import sys
 
 from reward import real_tool_name_reward
+from _session_io import _load_json, _iter_session_files
 
 RESEARCH_OUTPUT_GLOB = "research_output/*/_run_state.json"
-SESSIONS_DIR = os.path.expanduser("~/.deepdelve/sessions")
-
-
-def _load_json(path: str):
-    try:
-        with open(path, encoding="utf-8") as f:
-            return json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return None
-
-
-def _iter_session_files():
-    for path in glob.glob(os.path.join(SESSIONS_DIR, "session_*.json")):
-        data = _load_json(path)
-        if data is not None:
-            yield path, data
 
 
 def _find_matching_session(query: str, started_at: float, sessions: list[tuple[str, dict]]) -> dict | None:

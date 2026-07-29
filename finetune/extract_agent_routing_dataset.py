@@ -28,15 +28,13 @@ Usage:
 """
 
 import argparse
-import glob
 import json
 import os
 import random
 import sys
 
 from reward import VALID_AGENT_IDS, _similarity
-
-SESSIONS_DIR = os.path.expanduser("~/.deepdelve/sessions")
+from _session_io import _iter_session_files, SESSIONS_DIR
 
 # Threshold for treating two instruction strings as near-duplicates of the same real dispatch —
 # same value reward.py's thin_coverage_response_reward already uses for its own re-delegation
@@ -45,21 +43,6 @@ _DEDUP_SIMILARITY_THRESHOLD = 0.8
 
 HELD_OUT_FRACTION = 0.2
 RANDOM_SEED = 20260720  # fixed for reproducibility across re-runs, not tuned
-
-
-def _load_json(path: str):
-    try:
-        with open(path, encoding="utf-8") as f:
-            return json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return None
-
-
-def _iter_session_files():
-    for path in glob.glob(os.path.join(SESSIONS_DIR, "session_*.json")):
-        data = _load_json(path)
-        if data is not None:
-            yield path, data
 
 
 def _iter_delegate_tasks_calls(session_path: str, session: dict):
