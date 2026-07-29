@@ -120,6 +120,42 @@ independently, after a real regression where each section was budgeted separatel
 still overflowed. Any change to this function's return-value shape needs to re-verify the true
 total still fits, not just that each individual piece does.
 
+### Builder/FindingsWriter's tool set is narrower than the Planner's — `verdict.inject` text must respect that
+
+Both writer roles have exactly `read_workspace_file`, `grep_workspace_file`, `write_workspace_file`,
+`edit_workspace_file`, `think_tool` — **no `delegate_tasks`, no `web_search`, no
+`fetch_url_to_workspace`**. Several `_BUILDER_FIXABLE_PROBLEMS` checks' `verdict.inject` text (the
+shared `_redelegate_directive` helper, plus `check_no_urls`/`check_regulation_unsupported`/
+`check_stub_source`/others) is worded for the Planner — "delegate a Searcher", "your ONLY next tool
+call must be delegate_tasks" — because that text also gets injected into the Planner's own
+conversation on the classic (non-writer-dispatch) path. Embedding it verbatim into a Builder
+dispatch (`run_completion_check`'s `_BUILDER_FIXABLE_PROBLEMS` branch) hands Builder an instruction
+it is structurally incapable of following. Live-confirmed 2026-07-28: a Builder correction cycle
+got stuck narrating "I will delegate a Searcher..." across multiple retries instead of ever
+rewriting the file, because that is literally what its (wrong-audience) instructions told it to do.
+**Fixed** via a single shared `_BUILDER_NO_DELEGATE_CLARIFICATION` string appended after
+`verdict.inject` in both Builder-dispatch branches (classic and `force_whole_rebuild`) — telling
+Builder plainly that a delegation instruction doesn't apply to it and to drop/rewrite the claim
+instead. `FindingsWriter`'s own dispatch branch never had this problem — it was already rewritten
+to use per-problem, role-appropriate directives instead of raw `verdict.inject` (see its own
+docstring: "Deliberately NOT verdict.inject... would be actively confusing to FindingsWriter").
+
+**Checklist for a new `_BUILDER_FIXABLE_PROBLEMS` (or `_FINDINGS_WRITER_FIXABLE_PROBLEMS`) entry**:
+if the check's `inject` text can ever tell the reader to delegate/search/fetch (directly, or via
+`_redelegate_directive`), confirm the Builder-dispatch path still makes sense for it — either the
+shared clarification covers it, or the problem doesn't belong in that tuple at all.
+
+`edit_workspace_file(filename, old_string, new_string, replace_all=False)` (added 2026-07-28,
+`src/tools/fs.py`) exists specifically so a correction cycle doesn't have to be a full-document
+regeneration — a genuine capacity difference for smaller models, confirmed live: a "drop 3 flagged
+citations, keep everything else" correction repeatedly produced nothing usable via
+`write_workspace_file`-only regeneration (whack-a-mole: each full rewrite fixed the previously
+flagged citations while introducing different new ones). Has its own quota
+(`edit_workspace_file: 10`, both `config_template.yaml` and any live config) — a new tool added to
+either writer role's tool list needs the same three things: the tool list in `app.py`, a quota
+entry (or it runs unmetered), and a mention in that role's own prompt instructions in
+`prompts.py` telling it when to prefer the new tool over the old one.
+
 ### The staleness marker: `findings_written_citable_count`
 
 `check_stale_findings` (`completion.py`) compares this `run_state.data` key — the number of real,
@@ -188,12 +224,19 @@ Deliberate design choices, each with a real live-found failure mode when they co
 - **`build_resume_input`** now tells the resumed Planner explicitly which stage the interrupted run
   reached (found `findings.md`? found `final_report.md` too?) so it doesn't treat "resumed" as
   "start over with a full budget and no context for what already happened."
-- **`check_not_delegated` is scoped to the CURRENT PROCESS's own quota usage** (`ctx.delegated`
-  checks `quotas.get("delegate_tasks", {}).get("used", 0) > 0`), which is always 0 at the start of
-  a fresh resumed process even though the interrupted run already delegated real research. A
-  resumed Planner that correctly wants to stop immediately gets forced to delegate at least once
-  regardless. Not fixed — noted here so it isn't mistaken for a new bug if seen again; it's a
-  known, live-confirmed side effect of how quotas are scoped per-process.
+- **`check_not_delegated` was scoped to the CURRENT PROCESS's own quota usage** (`ctx.delegated`
+  checked only `quotas.get("delegate_tasks", {}).get("used", 0) > 0`), which is always 0 at the
+  start of a fresh resumed process even though the interrupted run already delegated real
+  research. A resumed Planner that correctly wants to stop immediately got forced to delegate at
+  least once regardless. **Fixed 2026-07-28** (live-confirmed: a resumed Ornith-1.0-9B run got
+  caught in this exact contradiction and spiraled into a `think_tool` reflection loop until it hit
+  quota and was force-aborted): `Ctx.delegated`'s construction in `run_completion_check` now also
+  treats a non-empty `run_state.data["fetched_urls"]` as proof delegation happened, in ANY session
+  — `fetched_urls` is already carried over via this section's own resume-carryover allowlist and
+  only a real specialist dispatch ever populates it, so it's ground truth regardless of which
+  process actually delegated. Single fix at the one construction site propagates to every reader
+  of `ctx.delegated` (`check_not_delegated` and `check_missing_artifact`'s redelegation-forbidding
+  message alike) — no other call site needed touching.
 
 **Checklist for anything new that touches "how much work has this run already done"**: does it need
 to behave differently on a fresh run vs. a resumed one? Check both `run_cli`'s resume branch and
@@ -210,6 +253,41 @@ a fix in one without the other is an incomplete fix, not a smaller one.
 | A new config key under `settings.*` | `config_template.yaml` (documented default) AND confirm it's read with a safe `.get(..., default)` — this project's convention is "absent in the live `~/.deepdelve/config.yaml` is fine," never require a live-config edit for a new default-on feature |
 | Anything that changes behavior based on "how far has this run gotten" | §4: both `run_cli` and the TUI's resume/follow-up paths |
 | A new tool result shape or error format | `CLAUDE.md`'s own blast-radius rule: the TUI's `ToolCallWidget` rendering, `log_stream_content`'s persisted event log, `utils/grounding.py`'s citation/error detection |
+| A new tool for Builder or FindingsWriter | §2's tool-set checklist: `app.py`'s `SubAgentConfig.tools`, a quota entry (`config_template.yaml` + live config), a mention in that role's `prompts.py` instructions, and — if the tool changes what "delegate" could mean — check every `_BUILDER_FIXABLE_PROBLEMS`/`_FINDINGS_WRITER_FIXABLE_PROBLEMS` check's `inject` text still makes sense for a recipient with this exact tool set |
+| A completion check whose `inject` text can tell the reader to delegate/search/fetch | §2: confirm the Builder/FindingsWriter dispatch path (if applicable) doesn't hand a delegation instruction to a role with no `delegate_tasks` tool — see `_BUILDER_NO_DELEGATE_CLARIFICATION` |
 
 This table is not exhaustive by construction — it's the set of landmines this project has actually
 stepped on. When you find a new one, add a row here instead of just fixing the instance.
+
+## 6. Serving endpoint: OpenAI-compat vs. Ollama's native API
+
+**Where**: `src/engine/orchestrator.py`'s `_get_default_options()`, `config.cfg["api"]["openai_base_url"]`.
+
+DeepDelve talks to its serving backend exclusively through an OpenAI-compatible client
+(`api.openai_base_url`, currently always Ollama's `/v1/chat/completions`). **Confirmed live
+2026-07-28** (four direct API tests against the same model/template, holding everything else
+constant — see `RESEARCH.md` §14e for the full table): Ollama's native `/api/chat` endpoint
+correctly suppresses thinking even with tools present and `think:false`, but the OpenAI-compat
+`/v1/chat/completions` endpoint leaks a short reasoning field back in for the exact same request —
+tools present is the trigger. This means **every model this project has ever tested through Ollama
+has been subject to this specific endpoint-level leak** whenever it makes a tool call with thinking
+nominally disabled, distinct from (and narrower than) cases where the underlying model genuinely
+cannot suppress thinking at all regardless of endpoint (the Qwen3-4B finding, `RESEARCH.md`
+§13/§13a).
+
+**Fixed 2026-07-28**: `api.backend` (`"openai"` default, `"ollama"` new) in both `_build_client` and
+`_get_default_options`. The `"ollama"` branch doesn't hand-roll a custom adapter — it reuses
+`agent_framework.ollama.OllamaChatClient`, already installed in this project's own dependency tree
+as part of the same plugin family `OpenAIChatCompletionClient` comes from (`agent_framework_ollama`,
+alongside `agent_framework_anthropic`/`agent_framework_bedrock`/etc., all pre-installed but unused
+until now). It's built on the official `ollama` package's `AsyncClient` against `/api/chat`
+directly, with a genuine `think: bool` field on its `OllamaChatOptions` — no `chat_template_kwargs`/
+`extra_body`/`reasoning_effort` dance needed on this path at all, which is exactly why the leak
+described above doesn't happen here. `create_local_agent`'s existing
+`client.function_invocation_configuration[...] = True` line (right after `_build_client()` returns)
+needed no change — it already operates on the generic client interface both branches satisfy.
+
+Extending to another backend later (Anthropic, Bedrock, a different OpenAI-compatible server with
+its own quirks) follows the identical one-branch pattern in both functions — the corresponding
+`agent_framework_*` plugin packages are already installed, just unused. Deliberately NOT built
+speculatively here — add a branch when a real need shows up, not before.

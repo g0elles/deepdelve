@@ -11,6 +11,7 @@ from engine.sdk import AgentBuilder, SubAgentConfig
 from tools import (
     read_workspace_file,
     write_workspace_file,
+    edit_workspace_file,
     list_workspace_files,
     grep_workspace_file,
     fetch_url_to_workspace,
@@ -95,7 +96,7 @@ peer_reviewer = SubAgentConfig(
 builder_agent = SubAgentConfig(
     name="Builder",
     instructions=BUILDER_INSTRUCTIONS,
-    tools=[read_workspace_file, grep_workspace_file, write_workspace_file, think_tool]
+    tools=[read_workspace_file, grep_workspace_file, write_workspace_file, edit_workspace_file, think_tool]
 )
 
 # Planner-tier delegate, same non-routed pattern as builder_agent above (2026-07-14 architecture
@@ -113,7 +114,7 @@ builder_agent = SubAgentConfig(
 findings_writer_agent = SubAgentConfig(
     name="FindingsWriter",
     instructions=FINDINGS_WRITER_INSTRUCTIONS,
-    tools=[read_workspace_file, grep_workspace_file, write_workspace_file, think_tool]
+    tools=[read_workspace_file, grep_workspace_file, write_workspace_file, edit_workspace_file, think_tool]
 )
 
 # Tier 1 — plans, tracks todos, delegates all research. No web tools, no file-reading tools, and

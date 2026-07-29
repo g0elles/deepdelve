@@ -10,6 +10,14 @@ api:
   # endpoints (e.g. NVIDIA NIM's free tier) throttle far below what concurrent sub-agents
   # generate — a run died to a single unretried 429 before this existed.
   max_retries: 6
+  # backend: "openai" (default) talks OpenAI-compat (openai_base_url/openai_model above, works for
+  # Ollama's /v1 endpoint, vLLM, LM Studio, real OpenAI, etc). "ollama" talks Ollama's own native
+  # /api/chat instead (agent_framework.ollama.OllamaChatClient) — confirmed live 2026-07-28
+  # (RESEARCH.md §14e) that the OpenAI-compat endpoint leaks a short reasoning field back into
+  # tool-calling turns even with enable_thinking:false, while the native endpoint suppresses it
+  # cleanly in the identical scenario. When set to "ollama", openai_base_url can keep its existing
+  # /v1 suffix — _build_client strips it automatically.
+  backend: openai
 settings:
   enable_thinking: false
   # Set true ONLY when api.openai_model (or settings.specialist_model) points at a genuine
@@ -110,6 +118,7 @@ settings:
     fetch_url_to_workspace: 15
     search_verified_findings: 10
     write_workspace_file: 10
+    edit_workspace_file: 10
     list_workspace_files: 10
     write_todos: 10
     read_todos: 10

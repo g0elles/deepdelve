@@ -835,9 +835,11 @@ never from your own prior knowledge.
 
 # Capabilities
 You have these tools ONLY: `read_workspace_file`, `grep_workspace_file`, `write_workspace_file`,
-`think_tool`. You do NOT have `web_search`, `fetch_url_to_workspace`, or `delegate_tasks` — you
-cannot do new research, and if `findings.md` doesn't cover something the task asks for, say so in
-the report rather than filling the gap from memory.
+`edit_workspace_file`, `think_tool`. You do NOT have `web_search`, `fetch_url_to_workspace`, or
+`delegate_tasks` — you cannot do new research, and if `findings.md` doesn't cover something the
+task asks for, say so in the report rather than filling the gap from memory. If a corrective
+instruction tells you to "delegate" for a new source, that does not apply to you (you have no such
+tool) — instead, remove or rewrite the specific claim using only what `findings.md` already has.
 
 {delegation_instructions}
 
@@ -848,9 +850,14 @@ the report rather than filling the gap from memory.
    from scratch, or to fix a SPECIFIC problem in an existing draft (e.g. a citation that doesn't
    trace to a real finding, a missing artifact, an unsupported claim). If a critique or corrective
    instruction is included, address every point it raises — do not just lightly edit and resubmit.
-3. **Write `final_report.md`** via `write_workspace_file`, overwriting any previous draft. Every
-   claim must trace back to a specific line in `findings.md`.
-4. **STOP EARLY**: Once you've written the file, stop. Do not re-read or re-write it speculatively.
+3. **Choose the right write tool.** For a small, targeted fix to an EXISTING draft (dropping one
+   bad citation, correcting one figure, fixing one unsupported claim), use `edit_workspace_file`
+   with the exact old text and its replacement — it can't accidentally drop or alter anything else
+   in the file. Reserve `write_workspace_file` for writing from scratch or when you're genuinely
+   rewriting most of the report's content. Every claim must trace back to a specific line in
+   `findings.md`.
+4. **STOP EARLY**: Once you've written/edited the file, stop. Do not re-read or re-write it
+   speculatively.
 
 # Report Requirements
 - Include clear source attribution for each finding.
@@ -873,6 +880,7 @@ of from a finding? If yes, remove or flag it.
 - **read_workspace_file**: {read_workspace_file_quota} maximum calls
 - **grep_workspace_file**: {grep_workspace_file_quota} maximum calls
 - **write_workspace_file**: {write_workspace_file_quota} maximum calls
+- **edit_workspace_file**: {edit_workspace_file_quota} maximum calls
 
 **Stop Early**:
 Do NOT re-read `findings.md` repeatedly. One thorough pass is enough before writing.
@@ -928,9 +936,12 @@ result, plus every URL actually fetched). Your job is faithful consolidation, no
 
 # Capabilities
 You have these tools ONLY: `read_workspace_file`, `grep_workspace_file`, `write_workspace_file`,
-`think_tool`. You do NOT have `web_search`, `fetch_url_to_workspace`, or `delegate_tasks` — you
-cannot do new research. If your task instructions' evidence base doesn't cover something, say so
-in `findings.md` rather than filling the gap from your own prior knowledge.
+`edit_workspace_file`, `think_tool`. You do NOT have `web_search`, `fetch_url_to_workspace`, or
+`delegate_tasks` — you cannot do new research. If your task instructions' evidence base doesn't
+cover something, say so in `findings.md` rather than filling the gap from your own prior
+knowledge. If a corrective instruction tells you to "delegate" for a new source, that does not
+apply to you (you have no such tool) — instead, remove or rewrite the specific claim using only
+what your task instructions' evidence base already has.
 
 {delegation_instructions}
 
@@ -951,8 +962,10 @@ in `findings.md` rather than filling the gap from your own prior knowledge.
 3. **Only after that first write**, if a specific entry's summary was genuinely too thin for what
    the task needs, you MAY use `read_workspace_file`/`grep_workspace_file` on that source's saved
    file (path given alongside its URL) to pull more detail directly from the real fetched content
-   — never invent detail that isn't in either the summary or the source file — then overwrite
-   `findings.md` again with the added detail via a second `write_workspace_file` call.
+   — never invent detail that isn't in either the summary or the source file — then update
+   `findings.md` with the added detail. For a small, targeted addition or correction to one entry,
+   prefer `edit_workspace_file` (exact old text + its replacement) over rewriting the whole file
+   again — it can't accidentally drop or alter any other entry.
 4. Use the EXACT entry format below — one entry per DISTINCT source URL (never per task; if one
    task's result covers several sources, that's several entries, not one entry listing several
    links). Keep each finding's exact figures, entity names, dates, and identifiers verbatim as the
@@ -990,6 +1003,7 @@ anything from my own prior knowledge instead of from real evidence? If yes, remo
 - **read_workspace_file**: {read_workspace_file_quota} maximum calls
 - **grep_workspace_file**: {grep_workspace_file_quota} maximum calls
 - **write_workspace_file**: {write_workspace_file_quota} maximum calls
+- **edit_workspace_file**: {edit_workspace_file_quota} maximum calls
 
 **Stop Early**:
 Do NOT re-read source files repeatedly. One thorough pass through the evidence in your task

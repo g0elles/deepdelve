@@ -494,6 +494,13 @@ def main():
         from engine.orchestrator import _get_default_options
         import config as _config
 
+        # Isolate from whatever api.backend the LIVE ~/.deepdelve/config.yaml happens to have --
+        # this scenario is specifically about the OpenAI-only extra_body shape (api.backend not
+        # "ollama"), and must not silently pass/fail based on unrelated live-config state a
+        # previous session's manual testing left behind.
+        _orig_backend = _config.cfg.get("api", {}).get("backend")
+        _config.cfg.setdefault("api", {})["backend"] = "openai"
+
         _orig = _config.cfg.get("settings", {}).get("skip_chat_template_kwargs")
         try:
             _config.cfg.setdefault("settings", {})["skip_chat_template_kwargs"] = True
@@ -517,6 +524,10 @@ def main():
                 _config.cfg["settings"].pop("skip_chat_template_kwargs", None)
             else:
                 _config.cfg["settings"]["skip_chat_template_kwargs"] = _orig
+            if _orig_backend is None:
+                _config.cfg["api"].pop("backend", None)
+            else:
+                _config.cfg["api"]["backend"] = _orig_backend
 
     _default_options_scenario()
 
@@ -913,6 +924,56 @@ def main():
         "run_cli's resume-carryover key list must include findings_written_citable_count")
     assert _run_cli_src.count('"task_verification"') == 1, (
         "run_cli's resume-carryover key list must include task_verification")
+
+    # --- check_not_delegated resume fix (2026-07-28): Ctx.delegated must also be true when the
+    # live quota pool shows zero usage (always true at the start of a resumed process) but
+    # run_state.data["fetched_urls"] is non-empty (real delegation happened in ANY session,
+    # this one or a resumed prior one) -- otherwise a resumed Planner correctly told not to
+    # re-delegate gets check_not_delegated's "your ONLY next tool call must be delegate_tasks"
+    # directive anyway, a live-confirmed contradiction that derailed a resumed Ornith-1.0-9B run
+    # into a think_tool reflection loop until it hit quota and was force-aborted. Ctx.delegated is
+    # constructed inline in run_completion_check (not a separately-callable unit), so this pins the
+    # OR-condition at the source level -- same "run_cli isn't easily unit-testable in isolation"
+    # precedent as the resume-carryover tuple assertions just above. ---
+    _run_completion_check_src = _inspect.getsource(_tui_mod_check.run_completion_check)
+    assert 'run_state.data.get("fetched_urls")' in _run_completion_check_src, (
+        "run_completion_check's Ctx.delegated construction must also check "
+        "run_state.data['fetched_urls'] (resume-safe), not just the live quota pool")
+
+    # check_not_delegated itself must NOT fire once ctx.delegated is True, regardless of why --
+    # confirms the consumer side still behaves correctly given the corrected Ctx construction.
+    from engine.completion import check_not_delegated, Ctx
+    def _not_delegated_resume_scenario():
+        with tempfile.TemporaryDirectory() as tmpdir6:
+            rs6 = RunState(tmpdir6)
+            rs6.set_query("q")
+            resumed_ctx = Ctx(req_artifact="final_report.md", attempt=0, max_attempts=8,
+                               delegated=True,  # what the fixed construction produces on resume
+                               files=[], content=None, quotas={"delegate_tasks": {"used": 0, "limit": 6}},
+                               run_state=rs6)
+            assert check_not_delegated(resumed_ctx) is None, (
+                "check_not_delegated must not fire when ctx.delegated is True, even with a "
+                "fresh (zero-usage) quota pool")
+    _not_delegated_resume_scenario()
+
+    # --- Builder no-delegate clarification (2026-07-28 live bug): several _BUILDER_FIXABLE_PROBLEMS
+    # checks' verdict.inject text tells the reader to "delegate a Searcher" / "your ONLY next tool
+    # call must be delegate_tasks" (via the shared _redelegate_directive helper) -- worded for the
+    # Planner, which has delegate_tasks. Builder does NOT (read_workspace_file/grep_workspace_file/
+    # write_workspace_file/think_tool only), so embedding that text verbatim hands Builder a
+    # genuinely impossible instruction. Live-confirmed: a Builder correction cycle got stuck
+    # narrating "I will delegate a Searcher..." across multiple retries instead of ever rewriting
+    # the file, because that's literally what its (wrong-audience) instructions told it to do.
+    # Pins that both Builder-dispatch branches (classic + force_whole_rebuild) now append the
+    # shared clarification after verdict.inject -- source-inspection, same "run_cli isn't easily
+    # unit-testable in isolation" precedent as the resume-carryover assertions above, since the
+    # instructions are built inline inside run_completion_check, not a separately-callable unit.
+    from engine.completion import _BUILDER_NO_DELEGATE_CLARIFICATION
+    assert "delegate_tasks tool" in _BUILDER_NO_DELEGATE_CLARIFICATION, (
+        "_BUILDER_NO_DELEGATE_CLARIFICATION must explicitly tell Builder it cannot delegate")
+    assert _run_completion_check_src.count("_BUILDER_NO_DELEGATE_CLARIFICATION") == 2, (
+        "both Builder-dispatch branches (classic and force_whole_rebuild) in run_completion_check "
+        "must append _BUILDER_NO_DELEGATE_CLARIFICATION after verdict.inject")
 
     # --- TUI QoE: widget maximize (2026-07-24) — ROADMAP.md flagged this as "likely already
     # works via Textual's default focus/ALLOW_MAXIMIZE mechanism (same category as the already-
@@ -5242,6 +5303,89 @@ def main():
             _rag_cache._matrix = None
 
     _rag_cache_lookup_scenario()
+
+    # --- edit_workspace_file (2026-07-28, added after a live stall): Builder/FindingsWriter had
+    # only write_workspace_file for corrections, forcing a full-document regeneration for even a
+    # one-line fix (drop a bad citation, correct a figure) -- confirmed live to be a real capacity
+    # edge for a small model (repeated attempts producing nothing usable on a "drop 3 citations,
+    # keep everything else" correction). edit_workspace_file does a targeted old_string/new_string
+    # replacement instead, same shape as this project's own editing tool, so a small model only
+    # has to get the ONE changed span right, not regenerate the whole file from memory. ---
+    from tools.fs import edit_workspace_file, write_workspace_file, get_workspace_file_content
+    from tools.fs import _IN_MEMORY_FS
+
+    def _edit_workspace_file_scenario():
+        import config as _config
+        _orig_ws_type = _config.cfg.get("settings", {}).get("workspace", {}).get("type")
+        _config.cfg.setdefault("settings", {}).setdefault("workspace", {})["type"] = "memory"
+        try:
+            write_workspace_file(filename="doc.md", content="alpha\nbeta\ngamma\n")
+
+            # Unique match -> replaced cleanly.
+            result = edit_workspace_file(filename="doc.md", old_string="beta", new_string="BETA")
+            assert "Edited" in result and "1 replacement" in result, result
+            assert get_workspace_file_content("doc.md") == "alpha\nBETA\ngamma\n"
+
+            # old_string not present at all -> clear error, file unchanged.
+            miss = edit_workspace_file(filename="doc.md", old_string="not-there", new_string="x")
+            assert miss.startswith("Error:") and "not found" in miss, miss
+            assert get_workspace_file_content("doc.md") == "alpha\nBETA\ngamma\n"
+
+            # old_string matches more than once without replace_all -> refuses rather than
+            # guessing which occurrence was meant.
+            write_workspace_file(filename="dup.md", content="x\nx\ny\n")
+            ambiguous = edit_workspace_file(filename="dup.md", old_string="x", new_string="z")
+            assert ambiguous.startswith("Error:") and "2 times" in ambiguous, ambiguous
+            assert get_workspace_file_content("dup.md") == "x\nx\ny\n"
+
+            # replace_all=True replaces every occurrence.
+            all_result = edit_workspace_file(filename="dup.md", old_string="x", new_string="z", replace_all=True)
+            assert "2 replacements" in all_result, all_result
+            assert get_workspace_file_content("dup.md") == "z\nz\ny\n"
+        finally:
+            _IN_MEMORY_FS.clear()
+            if _orig_ws_type is None:
+                _config.cfg.get("settings", {}).get("workspace", {}).pop("type", None)
+            else:
+                _config.cfg["settings"]["workspace"]["type"] = _orig_ws_type
+    _edit_workspace_file_scenario()
+
+    # Both writer roles (Builder, FindingsWriter) must actually have the new tool wired in --
+    # app.py's own SubAgentConfig tool lists, not just defined in tools/fs.py and never attached.
+    import app as _app_mod_check
+    assert edit_workspace_file in _app_mod_check.builder_agent.tools, (
+        "builder_agent must have edit_workspace_file in its tools list")
+    assert edit_workspace_file in _app_mod_check.findings_writer_agent.tools, (
+        "findings_writer_agent must have edit_workspace_file in its tools list")
+
+    # --- api.backend pluggable serving endpoint (2026-07-28): _build_client and
+    # _get_default_options must both branch on api.backend, and the "ollama" branch must use
+    # OllamaChatClient's own `think` option rather than the OpenAI-only chat_template_kwargs/
+    # extra_body shape -- confirmed live (RESEARCH.md §14e) that shape is what leaks reasoning
+    # back into tool-calling turns on Ollama's OpenAI-compat endpoint even with
+    # enable_thinking:false, and the whole point of the native OllamaChatClient branch is to avoid
+    # it entirely. Source-inspection, same "not easily unit-testable in isolation" precedent as
+    # the resume-carryover tuple assertions above -- these functions build real network clients,
+    # not pure functions worth mocking for a structural pin. ---
+    import inspect as _inspect2
+    import engine.orchestrator as _orch_mod_check
+    _build_client_src = _inspect2.getsource(_orch_mod_check._build_client)
+    assert 'api_cfg.get("backend"' in _build_client_src or 'get("backend"' in _build_client_src, (
+        "_build_client must branch on api.backend")
+    assert "OllamaChatClient" in _build_client_src, (
+        "_build_client's ollama branch must use agent_framework.ollama.OllamaChatClient")
+
+    _default_options_src = _inspect2.getsource(_orch_mod_check._get_default_options)
+    assert 'get("backend"' in _default_options_src, (
+        "_get_default_options must branch on api.backend")
+    # Split on the ollama branch's own early return so the two shapes can't accidentally bleed
+    # into each other -- the ollama branch must never carry the OpenAI-only extra_body dance, and
+    # vice versa doesn't matter (the openai branch predates and is unaffected by this feature).
+    _ollama_branch_src = _default_options_src.split('== "ollama"', 1)[1].split("return options", 1)[0]
+    assert "chat_template_kwargs" not in _ollama_branch_src, (
+        "_get_default_options' ollama branch must not use the OpenAI-only chat_template_kwargs shape")
+    assert '"think"' in _ollama_branch_src, (
+        "_get_default_options' ollama branch must set the native `think` option")
 
     print("All structural-check assertions passed.")
 

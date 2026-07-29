@@ -1168,11 +1168,40 @@ _QUARANTINE_PROBLEMS = ("not_grounded", "claim_unsupported", "non_url_citation",
 # Write->Review->Fix loop instead of growing the Planner's own conversation. The complement
 # (not_delegated) genuinely needs more/different research, which only the Planner can decide and
 # delegate, so that one still falls through to the classic inject-into-Planner path below.
+#
+# CAVEAT (this comment's own assumption doesn't fully hold): several of these checks'
+# `verdict.inject` text (check_no_urls, check_regulation_unsupported, check_non_url_citation,
+# check_stub_source, plus the hallucinated-URL not_grounded message, all via the shared
+# `_redelegate_directive` helper) explicitly tells the reader to "delegate a Searcher" /
+# "Your ONLY next tool call must be delegate_tasks" when no new sources exist yet -- that
+# instruction is worded for the PLANNER, which has `delegate_tasks`. Builder does NOT (its tools
+# are read_workspace_file/grep_workspace_file/write_workspace_file/think_tool only), so embedding
+# that text verbatim into a Builder dispatch hands it a genuinely impossible instruction.
+# Live-confirmed 2026-07-28: a Builder correction cycle got stuck narrating "I will delegate a
+# Searcher... this delegation is required before any further report writing can occur" across
+# multiple retries instead of ever rewriting the file, because that's literally what its
+# (wrong-audience) instructions told it to do. FindingsWriter's own dispatch branch already avoids
+# this exact trap (see its docstring: "Deliberately NOT verdict.inject -- worded for the PLANNER
+# fallback path... would be actively confusing to FindingsWriter, which has the opposite tool
+# set") -- Builder's branch never got the same treatment until this fix.
+# See _BUILDER_NO_DELEGATE_CLARIFICATION below for the fix.
 _BUILDER_FIXABLE_PROBLEMS = ("missing_artifact", "not_grounded", "claim_unsupported",
                              "non_url_citation", "regulation_unsupported", "quote_paraphrased",
                              "stub_source", "nli_unsupported", "topical_mismatch", "uncited_claims",
                              "excluded_topic_present", "cross_source_contradiction",
                              "report_underuses_findings")
+
+# Appended to every Builder-dispatch instruction (both the classic and force_whole_rebuild
+# branches) right after verdict.inject -- a single shared clarification rather than hand-rewriting
+# 13 separate problem messages, since the contradiction only matters for the subset that mention
+# delegation at all and the clarification is a no-op (ignored) for the rest.
+_BUILDER_NO_DELEGATE_CLARIFICATION = (
+    "\n\nNOTE: you are the Builder role and do NOT have a delegate_tasks tool -- you cannot "
+    "delegate new research no matter what the problem description above says. If it mentions "
+    "delegating a Searcher or says your only next tool call must be delegate_tasks, that "
+    "instruction does not apply to you: instead, remove or rewrite the specific unverifiable "
+    "claim so the report no longer depends on it, using only what findings.md already contains.\n\n"
+)
 
 # Findings-authoring problems, fixable by a fresh-context FindingsWriter (+ PeerReviewer check)
 # from this run's REAL structured results (see _build_findings_source_material) — the Planner
@@ -2243,7 +2272,19 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                 req_artifact=req_artifact,
                 attempt=attempt,
                 max_attempts=max_attempts,
-                delegated=bool(quotas and quotas.get("delegate_tasks", {}).get("used", 0) > 0),
+                # 2026-07-28 resume fix (ARCHITECTURE.md §4's own documented, previously-accepted
+                # gap): the live quota pool alone is always 0 at the start of a resumed process,
+                # even when the interrupted run already delegated real research -- a resumed
+                # Planner correctly told (via build_resume_input) not to re-delegate then gets
+                # check_not_delegated's "your ONLY next tool call must be delegate_tasks" directive
+                # anyway, a live-confirmed direct contradiction that derailed a resumed run into a
+                # think_tool reflection loop. fetched_urls is carried over via the resume-carryover
+                # allowlist (tui.py) and only ever gets populated by a real specialist dispatch, so
+                # a non-empty list is proof delegation genuinely happened in ANY session (this one
+                # or a resumed prior one) -- same "fetched_urls is ground truth" philosophy already
+                # used for grounding checks on resume.
+                delegated=bool(quotas and quotas.get("delegate_tasks", {}).get("used", 0) > 0)
+                          or bool(run_state.data.get("fetched_urls")),
                 files=files,
                 content=get_workspace_file_content(req_artifact) if req_artifact in files else None,
                 quotas=quotas,
@@ -2358,12 +2399,14 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                                     f"writing it for the first time, reconsidering your whole approach "
                                     f"to this task rather than repeating the same local fix. The "
                                     f"specific problem previously flagged was:\n{verdict.inject}\n\n"
+                                    f"{_BUILDER_NO_DELEGATE_CLARIFICATION}"
                                     f"Write the corrected file now via write_workspace_file."
                                 )
                             else:
                                 builder_instructions = (
                                     f"Rewrite '{req_artifact}' from findings.md, fixing this specific problem:\n"
-                                    f"{verdict.inject}\n\nWrite the corrected file now via write_workspace_file."
+                                    f"{verdict.inject}\n\n{_BUILDER_NO_DELEGATE_CLARIFICATION}"
+                                    f"Write the corrected file now via write_workspace_file."
                                 )
                             await _dispatch_writer_review_fix(dispatch_task, "Builder", req_artifact, builder_instructions, attempt, notify)
                             run_state.save()

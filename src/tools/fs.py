@@ -190,6 +190,44 @@ def write_workspace_file(filename: str, content: str) -> str:
 
 @tool
 @with_quota
+def edit_workspace_file(filename: str, old_string: str, new_string: str, replace_all: bool = False) -> str:
+    """Replace an exact substring within an existing workspace file, without rewriting the rest
+    of it. Prefer this over write_workspace_file for a small, targeted fix (e.g. dropping one bad
+    citation, correcting one figure) -- it can't accidentally drop or alter anything else in the
+    file the way a full regeneration can. old_string must appear EXACTLY ONCE in the file unless
+    replace_all is true (in which case every occurrence is replaced); use write_workspace_file
+    instead if you're rewriting most of the file's content."""
+    try:
+        content = get_workspace_file_content(filename)
+        if content is None:
+            resolved = resolve_fuzzy_filename(filename)
+            content = get_workspace_file_content(resolved) if resolved else None
+            if content is None:
+                return f"Error: '{filename}' not found."
+            filename = resolved
+
+        count = content.count(old_string)
+        if count == 0:
+            return f"Error: old_string not found in '{filename}' -- it must match the file's exact existing text (no paraphrasing)."
+        if count > 1 and not replace_all:
+            return f"Error: old_string appears {count} times in '{filename}' -- make it more specific (include surrounding context) or pass replace_all=true if you really mean to replace all of them."
+
+        new_content = content.replace(old_string, new_string) if replace_all else content.replace(old_string, new_string, 1)
+        path = _get_safe_path(filename)
+        if not path:
+            return f"Error: Invalid filename '{filename}'."
+        if _get_workspace_type() == "disk":
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(new_content)
+        else:
+            _IN_MEMORY_FS[path] = new_content
+        return f"Edited '{filename}' ({count} replacement{'s' if count != 1 else ''})."
+    except Exception as e:
+        import traceback
+        return f"Error: {e}\n\nTraceback:\n{traceback.format_exc()}"
+
+@tool
+@with_quota
 def list_workspace_files() -> str:
     """List all files in your workspace, showing line and character counts."""
     files = get_workspace_files()

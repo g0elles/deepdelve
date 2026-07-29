@@ -2128,3 +2128,179 @@ and 3.6" scoping — their fix, and Ollama's own working mechanism, may simply n
 Qwen3 at all. **No further serving-layer/template lever identified to try** — the next
 investigation, if pursued, would need to look at the model/training side (e.g., whether the LoRA's
 own training data ever included nothink-formatted examples) rather than anything Ollama-configurable.
+
+## 14. Ornith-1.0-9B live bake-off (2026-07-28): a genuine architecture bug found, a real serving-layer gap confirmed, model verdict left open
+
+Full live-benchmark trail for `deepreinforce-ai/Ornith-1.0-9B` (dense, built on Qwen3.5
+architecture, MIT licensed) — the "untested middle ground" candidate identified while scoping
+alternatives to `gpt-oss:20b`. Five live runs total (one cold pull + smoke test, then four
+`--resume-run` attempts against the same interrupted research), two real DeepDelve bugs found and
+fixed along the way, one Ollama serving-layer gap isolated and confirmed. Full blow-by-blow in
+`session_status/CURRENT.md`; this section is the durable research record.
+
+### 14a. Smoke test and first live run: genuinely strong initial synthesis, but two different failure modes across two attempts
+
+Direct tool-call smoke test (3/3 runs) showed short, bounded reasoning (446-1092 chars) and
+correctly-nested `delegate_tasks` calls matching DeepDelve's exact schema — qualitatively the
+cleanest smoke-test result of any candidate this project has tested, better than the base
+`qwen3:4b`/LoRA candidates tested the same day (see §13/§13a above).
+
+**First full benchmark run**: real, substantial research (28 fetched sources, 0 web_search
+failures) but ended in `QuotaAbortException` ("Agent trapped in loop... delegate_tasks") — one
+specialist kept re-delegating its own sub-analyzers until the shared quota pool was exhausted.
+Never reached the completion-check phase at all.
+
+**Second run (quota bumped 6→12 to isolate whether over-delegation alone was the blocker)**:
+produced a real, accepted, grounded `final_report.md` — but it was an honest, near-empty report:
+*"No task returned a real citable source URL meeting the threshold for inclusion"* despite 19
+newly-fetched, genuinely on-topic sources (arXiv, ACM, IEEE, Springer papers) sitting unused. Every
+dispatched Analyzer self-rejected its own real evidence as non-citable. Trivially "grounded" (zero
+citations = nothing to be wrong about) but delivered zero actual answer — the mirror image of the
+Reddit thread's original "grades its own homework and gives itself an A" concern: this model, this
+day, graded its own real evidence an F across the board.
+
+### 14b. Root cause of the stuck-loop failures traced to a real chat-template defect, independently corroborated by the model's own GitHub issues
+
+Checked `deepreinforce-ai/Ornith-1` GitHub issues directly (`gh api`, primary source): #4 ("stuck
+in tool loops quite often") and #16 (adds evidence to #4, an 8-hour Claude Code session that
+re-fetched the same document 37 times, <1K tokens of real prose across the whole session) both
+report the *exact* symptom shape hit here, reproducing independently across VSCode/Continue and
+Claude Code — not something specific to this project's harness. HF discussion #42 on the 35B GGUF
+names the mechanism: the stock chat template injects an empty `<think>\n\n</think>` block before
+tool calls, "poisoning" the model into associating empty thoughts with looping tool invocation, and
+separately strips reasoning from past turns, invalidating the KV-cache prefix on every turn. The
+fix already existed and was already being investigated this same day for the Qwen3-4B LoRA (§13):
+`froggeric/Qwen-Fixed-Chat-Templates`.
+
+**Applied directly to this candidate**: patched the pulled GGUF's `tokenizer.chat_template`
+metadata with froggeric's v21.3 template via `gguf_new_metadata.py --chat-template-file` (no
+tensor rewrite, ~18s), re-imported as a fresh Ollama tag. Live-retested 3/3: now correctly splits a
+two-part request into two separate `delegate_tasks` entries (the base import always merged them
+into one) — a real, measurable improvement, not just a placebo.
+
+### 14c. Two genuine DeepDelve architecture bugs found and fixed live, independent of this candidate's own capability
+
+**Bug 1 — `check_not_delegated` scoped to the wrong process.** Already flagged as a known,
+deliberately-unfixed gap in `ARCHITECTURE.md` §4: `Ctx.delegated` only checked the CURRENT
+process's live quota usage (always 0 at the start of a resumed process), so a resumed Planner
+correctly told (via `build_resume_input`) not to re-delegate got `check_not_delegated`'s "your ONLY
+next tool call must be delegate_tasks" directive anyway — a live-confirmed direct contradiction
+that derailed a resumed run into a `think_tool` reflection loop until forced quota-abort. **Fixed**:
+`Ctx.delegated`'s construction in `run_completion_check` now also treats a non-empty
+`run_state.data["fetched_urls"]` (already resume-carried-over, ground truth per this project's own
+existing philosophy) as proof delegation happened in ANY session. One shared fix site, both
+consumers (`check_not_delegated`, `check_missing_artifact`'s redelegation-forbidding message)
+benefit.
+
+**Bug 2 — Builder handed an instruction it structurally cannot follow.** Eight
+`_BUILDER_FIXABLE_PROBLEMS` grounding checks (`check_no_urls`, `check_regulation_unsupported`,
+`check_stub_source`, and others sharing the `_redelegate_directive` helper) explicitly tell the
+reader to "delegate a Searcher" / "your ONLY next tool call must be delegate_tasks" when no new
+sources exist yet — worded for the Planner, which has `delegate_tasks`. Builder does not (only
+`read_workspace_file`/`grep_workspace_file`/`write_workspace_file`/`think_tool`). Live-confirmed: a
+Builder correction cycle got stuck narrating *"I will delegate a Searcher... this delegation is
+required before any further report writing can occur"* across multiple retries instead of ever
+rewriting the file — a reasonably honest reaction to a genuinely impossible instruction, not
+misbehavior. `FindingsWriter`'s own dispatch branch already avoided this exact trap (see its own
+docstring); Builder's branch never got the same treatment until now. **Fixed**: a shared
+`_BUILDER_NO_DELEGATE_CLARIFICATION` string appended to both Builder-dispatch branches, telling it
+plainly it cannot delegate and to drop/rewrite the claim instead.
+
+**Both fixes are model-independent** — they would have produced the identical contradiction for
+ANY model hitting these paths, not something specific to Ornith. Regression tests added for both
+(`test_structural_checks.py`); full suite passing.
+
+### 14d. `edit_workspace_file` added — a real capability gap, not (only) a prompt-wording problem
+
+Even after 14c's fixes, a genuine "drop 3 flagged citations, keep everything else" correction cycle
+kept failing: Builder has only `write_workspace_file`, meaning every correction is a full-document
+regeneration from a cold context — a much harder task (hold the whole ~15-20KB document plus the
+fix instructions, reproduce everything except the flagged spans correctly) than fresh synthesis
+from `findings.md`, which this same model did well. Confirmed via the raw session-event log:
+one correction attempt made zero write/edit tool calls at all across ~8 minutes of
+reading/reflection, and successive full-rewrites fixed the previously-flagged stub citations while
+introducing *different* new ones each time (whack-a-mole), never converging.
+
+**Added**: `edit_workspace_file(filename, old_string, new_string, replace_all=False)` — an
+old-string/new-string targeted replacement tool (same shape as this project's own editing
+convention), wired into both `Builder` and `FindingsWriter`'s tool lists, with its own quota
+(`edit_workspace_file: 10`, both `config_template.yaml` and the live config) and instruction text
+telling each role to prefer it for a small fix over a full rewrite. Regression tests added (tool
+behavior + both roles actually having it wired into `app.py`).
+
+**Live-tested, not yet load-bearing**: the model did not spontaneously reach for the new tool even
+on a textbook targeted-fix case in the one live retest performed after adding it — inconclusive on
+whether the tool itself changes behavior versus needing an even more explicit steer. Not
+contradicted either; the sample size (one attempt) is too small to draw a real conclusion. Left
+open for a future session.
+
+### 14e. Serving-layer finding: thinking suppression works on Ollama's native API, leaks on the OpenAI-compat endpoint when tools are present
+
+Precisely isolated via four direct API tests against the froggeric-templated tag, holding
+everything else constant:
+
+| Endpoint | Tools present | `think` value | Result |
+|---|---|---|---|
+| native `/api/chat` | no | `false` | Clean — zero reasoning, `content: "42"` |
+| native `/api/chat` | no | `true` | Full reasoning in separate `thinking` field (works as designed) |
+| native `/api/chat` | **yes** | `false` | **Clean — zero reasoning, correct tool call** |
+| OpenAI-compat `/v1/chat/completions` | **yes** | `false` | **Leaks — short reasoning text in a `reasoning` field** |
+
+The model and the froggeric template's think-suppression mechanism (`ns_state.thinking` forcing an
+empty `<think></think>` block) work correctly in every case tested — including the exact
+tool-calling shape DeepDelve needs. The leak is isolated specifically to Ollama's OpenAI-compat
+translation layer failing to forward `think:false` into the template context when `tools` is also
+present in the request — a narrower, more precisely-scoped instance of the same class of gap as
+`ROADMAP.md`'s already-accepted "Qwen3 think-mode passthrough" bug, but confirmed here NOT to be
+inherent to the model or template: the native endpoint proves full suppression is achievable.
+
+**Real consequence**: DeepDelve is built entirely on an OpenAI-compatible client
+(`api.openai_base_url`), so every model this project has ever tested through Ollama has been
+subject to this same endpoint-level leak whenever it makes a tool call with thinking nominally
+disabled — a small but real, previously-unattributed source of the "reasoning present even with
+`enable_thinking: false`" symptom seen across multiple candidates today and in earlier sessions,
+distinct from (and narrower than) cases where the underlying model/template genuinely cannot
+suppress thinking at all (§13/§13a's Qwen3-4B finding). Not fixable without either switching
+DeepDelve to Ollama's native API for at least the tool-calling path, or an upstream Ollama fix to
+its OpenAI-compat shim — see `ROADMAP.md`'s Pending section for the resulting design question.
+
+### 14f. Independent community corroboration (2026-07-28, two Reddit threads, r/LocalLLaMA)
+
+Checked user-supplied primary sources directly (not aggregator summaries) after tonight's own
+findings, specifically to see whether the looping/stalling pattern was unique to this setup:
+
+- **Looping is widely and independently reported** for both the 9B and 35B variants, across
+  multiple unrelated users and harnesses (VSCode/Continue, Claude Code, GH Copilot, Pi): *"the darn
+  thing keep looping up over an issue millions times"*, *"It looped so bad for me"*, *"9b tends to
+  loop... as long as it has clear instructions, it's pretty great"*. Confirms tonight's struggles
+  reflect a real, model-family-wide trait, not something specific to this project's harness or
+  hardware.
+- **One user reports thinking-ON correlating with looping**: *"I got no loops and it coded fine,
+  but I turn off thinking"* — consistent with, but not proof of, the fact that this project's own
+  thinking-suppression was never fully clean for Ornith until 14e's endpoint-isolation testing
+  (and even then, only via an endpoint DeepDelve doesn't use for its actual agent loop).
+- **One user independently reports poor agentic-harness results even with the official/correct
+  chat template**: *"I experimented with a few [harnesses], but the results were generally poor
+  even when using their official Jinja template"* — tempers how much of tonight's partial
+  improvement should be attributed to the froggeric template fix alone versus this being a broader,
+  harness-agnostic agentic-reliability limitation of the model family.
+- **One blunt outside opinion, independently arrived at**: *"There's no 'good' model at 9B... unless
+  you need auto-completion or very simple code snippets, forget it"* — consistent with this
+  project's own "no more small models" scoping decision made earlier the same day, from a source
+  with no knowledge of that decision.
+
+### 14g. Overall verdict
+
+**Not DISQUALIFIED, not PASSED — left INCONCLUSIVE, deliberately.** Per the Model Evaluation
+Standard: every failure mode hit tonight has an independent, non-model explanation attached to it
+(a DeepDelve architecture bug fixed mid-session twice, a serving-layer endpoint gap, a missing
+editing capability now added) — none of tonight's runs constitute a clean, unconfounded test of
+this model's real ceiling. What IS confirmed, positively: the model's initial cold-start synthesis
+from real evidence (§14a's `findings.md`, 45 real sources, correct architecture-family coverage
+matching the benchmark's own gold reference) was the strongest of any candidate tested this
+session. What remains unconfirmed: whether it can reliably close out a correction cycle to a clean,
+fully-verified `final_report.md`, even with all three fixes in place. A clean re-test, with a
+properly-tracked process this time (see the "resume-run PID tracking" lesson in
+`session_status/CURRENT.md`) and enough attempt budget to let the correction cycle actually play
+out, is the natural next step whenever this is picked back up — not a re-run of the same
+confounded conditions.

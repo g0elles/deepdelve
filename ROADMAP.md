@@ -88,6 +88,73 @@ concluded verdict, which is the actual complaint. Going forward, a candidate is 
 
 ## History
 
+### 2026-07-28 (latest): Ornith-1.0-9B bake-off — INCONCLUSIVE, two real DeepDelve architecture bugs found+fixed, one serving-layer gap isolated
+
+Full trail in `RESEARCH.md` §14 (a-g); working summary in `session_status/CURRENT.md`. Candidate:
+`deepreinforce-ai/Ornith-1.0-9B` (dense, Qwen3.5-arch, MIT), the untested middle ground identified
+after `gpt-oss:20b` between the already-exhausted sub-14B local-model space and paid frontier APIs.
+GLM-4.7-Flash and Ornith-1.0-35B were both ruled out on hardware grounds first (smallest available
+quants 19GB/21.2GB, over this hardware's 17.1GB VRAM budget) without spending GPU time on either.
+
+Five live runs (cold pull + benchmark, then three `--resume-run` attempts) surfaced a genuinely
+strong cold-start synthesis (45 real sources, correct architecture-family coverage matching the
+benchmark's own gold reference — the best `findings.md` of any candidate this project has tested),
+but never converged on a clean, fully-verified `final_report.md`. Root cause of the looping/
+self-rejection pattern traced to the stock chat template's empty-`<think>`-injection defect,
+independently corroborated by `deepreinforce-ai/Ornith-1`'s own GitHub issues (#4, #16) and two
+Reddit threads (r/LocalLLaMA) — a real, model-family-wide trait, not a DeepDelve-specific one.
+Fixed via `froggeric/Qwen-Fixed-Chat-Templates`, patched directly into the pulled GGUF's
+`tokenizer.chat_template` metadata (`gguf_new_metadata.py --chat-template-file`, no tensor rewrite).
+
+**Two real, model-independent DeepDelve architecture bugs found and fixed along the way** (would
+affect any model hitting these paths, not specific to this candidate):
+1. `check_not_delegated` was scoped to the current process's live quota pool (always 0 at the start
+   of a resumed process), contradicting `build_resume_input`'s own "don't re-delegate" instruction
+   — live-confirmed to derail a resumed run into a `think_tool` reflection loop. Fixed:
+   `Ctx.delegated` now also checks `run_state.data["fetched_urls"]` (already resume-carried-over
+   ground truth). `ARCHITECTURE.md` §4 updated from "known, not fixed" to "fixed".
+2. Builder was dispatched with grounding-check `inject` text worded for the Planner ("delegate a
+   Searcher"), but Builder has no `delegate_tasks` tool at all — live-confirmed to get it stuck
+   narrating "I will delegate..." instead of ever rewriting the file. Fixed: a shared
+   `_BUILDER_NO_DELEGATE_CLARIFICATION` string appended to both Builder-dispatch branches.
+   `ARCHITECTURE.md` §2 gained a new subsection on this class of bug.
+
+Both fixes have regression tests in `test_structural_checks.py`; full suite passing.
+
+**Added `edit_workspace_file`** (`src/tools/fs.py`, targeted old-string/new-string replacement,
+wired into both `Builder` and `FindingsWriter` — `app.py`, quota in `config_template.yaml` + live
+config, prompt text in `prompts.py`) after confirming live that a "drop 3 flagged citations, keep
+everything else" correction cycle was a genuine capacity edge for full-document regeneration (one
+attempt made zero write/edit calls across ~8 minutes; successive full rewrites fixed old stub
+citations while introducing new ones, never converging). Live-tested once after adding it — the
+model didn't spontaneously reach for the new tool even on a textbook case; inconclusive on one
+sample, not contradicted, left open for a future retest.
+
+**Real serving-layer gap isolated and confirmed** (`RESEARCH.md` §14e, `ARCHITECTURE.md` §6, new):
+four direct API tests holding everything else constant showed thinking suppression works cleanly
+via Ollama's native `/api/chat` endpoint, even with tools present, but **leaks** via the
+OpenAI-compat `/v1/chat/completions` endpoint DeepDelve actually uses — specifically triggered by
+tools being present in the request. Since DeepDelve is built entirely on an OpenAI-compatible
+client, this likely affects every model ever tested through Ollama on this project whenever it
+makes a tool call with thinking nominally disabled, not just this candidate. Not fixed — proposed as
+a real architecture question (a backend-adapter abstraction: how does a serving backend want
+thinking toggled / tool schemas shaped / errors surfaced, replacing the growing pile of
+`if base_url contains X` special cases in `_get_default_options()`), not yet designed or scoped.
+Added to Pending below.
+
+**Process hygiene lesson**: `nohup python src/app.py ... &` returns the *bash wrapper's* PID, not
+the actual Python process's — killing the wrapper alone left two real `app.py` processes orphaned
+in the background mid-session, each still holding a request against the model. Use `pkill -f
+"resume-run <folder>"` or capture the real child PID directly next time.
+
+**Verdict: Ornith-1.0-9B left INCONCLUSIVE, not DISQUALIFIED, not PASSED** — every failure mode hit
+had an independent non-model explanation attached (two fixed DeepDelve bugs, one serving-layer gap,
+one missing tool now added), so no run tonight was a clean, unconfounded test of this candidate's
+real ceiling per the Model Evaluation Standard. A future clean re-test (proper process tracking,
+full attempt budget already in place) is the natural next step, not a repeat of tonight's confounded
+conditions. Ollama tags (`deepdelve-ornith-9b`, `deepdelve-ornith-9b-froggeric`) and the patched GGUF
+left in place, not cleaned up, since this isn't a closed disqualification.
+
 ### 2026-07-28: Fine-tuning resumed — comprehensive 7-dimension combined GRPO round trained, held-out-evaluated, confirmed real generalization
 
 User explicitly decided to resume fine-tuning after the indefinite pause (see "Stretch" section's
@@ -3495,6 +3562,12 @@ tried, twice, not merely proposed):
 
 ## Pending
 
+- **Backend-adapter abstraction for serving endpoints — CLOSED same day, see History
+  ("2026-07-28: pluggable api.backend").** `api.backend: "ollama"` now reuses
+  `agent_framework.ollama.OllamaChatClient` (already-installed sibling package to the default
+  `OpenAIChatCompletionClient`) to route around the OpenAI-compat endpoint's thinking-leak
+  confirmed in `RESEARCH.md` §14e. Live-verified end to end (see History entry) before being
+  considered done, not just unit-tested.
 
 - **FindingsWriter drops most real findings even when it writes the file correctly — CLOSED,
   moved to Completed 2026-07-24** (see Completed's "FindingsWriter evidence-abandonment ROOT

@@ -31,20 +31,32 @@ flowchart TD
 
     subgraph WRF ["engine/completion.py Write to Review to Fix loop, runs OUTSIDE the Planner's conversation"]
         direction LR
-        FW["<b>FindingsWriter</b><br/>writes findings.md from<br/>RunState's real structured results"] --> PR1{{PeerReviewer}}
+        FW["<b>FindingsWriter</b><br/>writes findings.md from<br/>RunState's real structured results<br/>write_workspace_file / edit_workspace_file"] --> PR1{{PeerReviewer}}
         PR1 -- issues found --> FW
-        PR1 -- clean --> BU["<b>Builder</b><br/>writes final_report.md<br/>from findings.md"]
+        PR1 -- clean --> BU["<b>Builder</b><br/>writes final_report.md<br/>from findings.md<br/>write_workspace_file / edit_workspace_file"]
         BU --> PR2{{PeerReviewer}}
         PR2 -- issues found --> BU
     end
+
+    subgraph AUX ["Auxiliary local models — run in-process on CPU, NOT the Ollama-served LLM"]
+        direction LR
+        NLI["cross-encoder/nli-deberta-v3-small<br/>NLI entailment check<br/>(nli_unsupported_problem)"]
+        RERANK["BAAI/bge-reranker-v2-m3<br/>topical-relevance cross-encoder<br/>(topical_mismatch_problem)"]
+        EMBED["all-MiniLM-L6-v2<br/>sentence embeddings<br/>(rag_cache lookup + agent_routing_classifier)"]
+    end
+
+    WRF -. "grounding checks on<br/>final_report.md content" .-> NLI
+    WRF -. "grounding checks on<br/>final_report.md content" .-> RERANK
+    Planner -. "delegate_tasks agent_id<br/>prediction (optional)" .-> EMBED
 ```
 
 - **Planner**: plans in bounded, named slots (`background`/`comparison`/`related_work`/`verification`, never an open-ended task list), dispatches specialists, and runs an adaptive planning loop (observe results, replan if something's missing or contradictory). That is its entire job: it has no `write_workspace_file` tool at all, so it structurally cannot write `findings.md`, `final_report.md`, or anything else. Once it stops delegating (enough real results, or quota exhausted), its turn simply ends.
-- **FindingsWriter**: NOT dispatched by the Planner. A Planner-tier delegate dispatched exclusively by the completion-check system, in a fresh context, once the Planner has stopped delegating (or a prior `findings.md` failed its grounding check). Writes `findings.md`, a verbatim consolidation of every dispatched task's real result, from `RunState`'s structured `{source_url, summary}` records (populated automatically by every Searcher/Analyzer dispatch, not from the Planner's own conversation, which it never sees). A fresh `PeerReviewer` dispatch then reviews the result; if flagged, FindingsWriter is re-dispatched once with the critique folded in.
-- **Builder**: same pattern, one artifact later. Dispatched once `findings.md` is ready, writes/rewrites `final_report.md` from it, reviewed by a fresh `PeerReviewer` dispatch the same way.
+- **FindingsWriter**: NOT dispatched by the Planner. A Planner-tier delegate dispatched exclusively by the completion-check system, in a fresh context, once the Planner has stopped delegating (or a prior `findings.md` failed its grounding check). Writes `findings.md`, a verbatim consolidation of every dispatched task's real result, from `RunState`'s structured `{source_url, summary}` records (populated automatically by every Searcher/Analyzer dispatch, not from the Planner's own conversation, which it never sees). Has `edit_workspace_file` (targeted old-string/new-string replacement, added 2026-07-28) alongside `write_workspace_file` for a small correction that doesn't warrant regenerating the whole file — see `ARCHITECTURE.md` §2. A fresh `PeerReviewer` dispatch then reviews the result; if flagged, FindingsWriter is re-dispatched once with the critique folded in.
+- **Builder**: same pattern, one artifact later. Dispatched once `findings.md` is ready, writes/rewrites `final_report.md` from it (same `write_workspace_file`/`edit_workspace_file` pair), reviewed by a fresh `PeerReviewer` dispatch the same way.
 - **WebSearcher / AcademicSearcher**: search and fetch. Specialist summaries are grounding-checked *before* they reach the Planner, not just at final-artifact time.
 - **PeerReviewer**: Planner-tier delegate for an independent, fresh-context critique of `findings.md` when the FindingsWriter loop dispatches it, or of `final_report.md` when the Builder loop dispatches it (same role, different target artifact named in its task instructions). Never dispatched by the Planner itself.
 - **DocumentAnalyzer / DataAnalyzer**: read/extract from downloaded files. `DataAnalyzer` also has `extract_structured_data` for tables/code/JSON blocks.
+- **Auxiliary local models** (`src/utils/grounding.py`, `src/utils/agent_routing.py`, `src/utils/rag_cache.py`): three small models loaded directly in-process via `sentence-transformers`, on CPU, entirely separate from the Ollama-served LLM every agent role above talks to. `cross-encoder/nli-deberta-v3-small` powers the NLI entailment grounding check (layered on top of, never replacing, the existing lexical/term-overlap check — see the HALT-RAG reference below). `BAAI/bge-reranker-v2-m3` powers the topical-relevance check that catches an acronym-collision citation (a source that shares terms with a claim but is about a genuinely different subject). `all-MiniLM-L6-v2` produces the embeddings behind both the cross-run RAG cache's semantic similarity lookup and the optional `agent_routing_classifier` (predicts a `delegate_tasks` call's likely `agent_id` from its instructions text, `settings.agent_routing_classifier`, off by default — see `RESEARCH.md` §6).
 
 Tool access is withheld from each parent so it's structurally forced to delegate rather than short-circuit the chain; see each role's Delegation Routing block in `src/prompts.py`. FindingsWriter and Builder exist for the same reason, one level down: giving the Planner the job of writing *either* artifact meant a retry on it grew the Planner's own conversation, the context-poisoning risk this design exists to avoid (see "Context management" below). That was true for `final_report.md`/Builder from the start; it was only fixed for `findings.md`/FindingsWriter on 2026-07-14, after a live benchmark run hit 4 consecutive `findings_ungrounded` retries and exhausted its budget with nothing ever written.
 
@@ -127,6 +139,17 @@ DeepDelve talks to any **OpenAI-compatible chat-completions endpoint**. It isn't
    ```bash
    python src/app.py --config /path/to/other-config.yaml
    ```
+
+**`api.backend`** (default `"openai"`, added 2026-07-28): set to `"ollama"` to talk to Ollama's own
+**native** `/api/chat` endpoint instead of its OpenAI-compat `/v1/chat/completions` one
+(`agent_framework.ollama.OllamaChatClient`, same plugin family as the default OpenAI-compat
+client). Confirmed live (`RESEARCH.md` §14e): the OpenAI-compat endpoint leaks a short reasoning
+field back into tool-calling turns even with `settings.enable_thinking: false`, while the native
+endpoint suppresses it cleanly in the identical scenario — a real, model-independent gap in
+Ollama's OpenAI-compat shim, not something a config value can fix on that path. `openai_base_url`
+can keep its existing `/v1` suffix when switching — it's stripped automatically. Only meaningful
+when actually running against Ollama; irrelevant for other OpenAI-compatible providers (vLLM,
+LM Studio, real OpenAI, etc.), which stay on the default `"openai"` backend.
 
 This works for any local server that speaks the OpenAI chat-completions API (Ollama, LM Studio, vLLM, llama.cpp's server, text-generation-webui) or any hosted provider that does (OpenAI itself, OpenRouter, Together, Groq, etc.). Just set the base URL, model name, and API key accordingly. The one hard requirement, regardless of provider, is real structured tool-calling support (see below): this agent is 100% tool-call driven, and a model/endpoint that only narrates JSON as text will not work.
 
@@ -293,3 +316,5 @@ still-open leads in `RESEARCH.md`.
 - [`Alibaba-NLP/DeepResearch`](https://github.com/Alibaba-NLP/DeepResearch) (Tongyi DeepResearch): source of the heavy search mode (test-time scaling, credited in `tools/web.py`) and the DocumentAnalyzer verbatim-evidence rule (its visit-tool extractor separates verbatim `evidence` from `summary`). Its context-budget endgame and the Tongyi-DeepResearch-30B-A3B model itself are ROADMAP candidates.
 - [`imbad0202/academic-research-skills`](https://github.com/imbad0202/academic-research-skills): reviewed for its literature-review paper structure and Anti-Leakage Protocol ("Knowledge Isolation Directive": prefer session materials over parametric memory, flag `[MATERIAL GAP]` instead of fabricating). Both are ROADMAP candidates for the academic output-mode work. Its bibliographic-API citation verification (Semantic Scholar/OpenAlex/Crossref/arXiv) was reviewed but not adopted, see ROADMAP "Rejected".
 - [`SkyworkAI/DeepResearchAgent`](https://github.com/SkyworkAI/DeepResearchAgent): reviewed (self-evolution agent runtime: RSPL/SEPL protocol layers, RL-based prompt/solution optimizers, versioned tracing). Not adopted, see ROADMAP "Rejected".
+- [`froggeric/Qwen-Fixed-Chat-Templates`](https://huggingface.co/froggeric/Qwen-Fixed-Chat-Templates): community-patched Qwen 3.5/3.6-family chat template fixing an "empty `<think>` block poisons the model into tool-looping" defect in the stock template, plus KV-cache-invalidating whitespace churn across turns. Applied directly (2026-07-28) to an `Ornith-1.0-9B` GGUF's `tokenizer.chat_template` metadata via `gguf_new_metadata.py --chat-template-file` (no tensor rewrite) during a live bake-off — measurably reduced task-splitting/looping regressions. See `RESEARCH.md` §13/§14 for the full before/after evidence.
+- [`deepreinforce-ai/Ornith-1`](https://github.com/deepreinforce-ai/Ornith-1) GitHub issues [#4](https://github.com/deepreinforce-ai/Ornith-1/issues/4) and [#16](https://github.com/deepreinforce-ai/Ornith-1/issues/16): the model author's own issue tracker, read directly as primary corroboration that the tool-looping pattern hit during this project's own `Ornith-1.0-9B` bake-off reproduces independently across unrelated harnesses (VSCode/Continue, Claude Code) — confirms it as a real, model-family-wide trait rather than a DeepDelve-specific bug, and names the same root cause (`froggeric`'s template fix, HF discussion #42 on the 35B GGUF) this project independently arrived at the same day.

@@ -4,6 +4,7 @@ from tools.fs import (
     get_workspace_file_content,
     read_workspace_file,
     write_workspace_file,
+    edit_workspace_file,
     list_workspace_files,
     grep_workspace_file,
     remove_workspace_file
@@ -43,6 +44,7 @@ __all__ = [
     # Individual tools (import these in app.py for selective per-agent tool assignment)
     "read_workspace_file",
     "write_workspace_file",
+    "edit_workspace_file",
     "list_workspace_files",
     "grep_workspace_file",
     "remove_workspace_file",

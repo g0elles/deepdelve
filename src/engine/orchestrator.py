@@ -329,6 +329,16 @@ def _safe_format(template: str, **kwargs) -> str:
 
 def _get_default_options():
     options = {"temperature": config.cfg.get("settings", {}).get("temperature", 0.0)}
+    # api.backend: "ollama" (2026-07-28) -- OllamaChatOptions has a genuine, already-correctly-
+    # implemented `think: bool` field (agent_framework_ollama's _chat_client.py maps it straight
+    # onto the native /api/chat request and separates response.message.thinking into its own
+    # Content object). None of the OpenAI-only chat_template_kwargs/reasoning_effort dance below
+    # applies here -- that whole mechanism only exists because the OpenAI-compat endpoint has no
+    # equivalent first-class option, which is exactly why RESEARCH.md §14e found it leaks
+    # reasoning back in on tool-calling turns even with enable_thinking:false.
+    if config.cfg.get("api", {}).get("backend", "openai") == "ollama":
+        options["think"] = config.cfg.get("settings", {}).get("enable_thinking", False)
+        return options
     # settings.skip_chat_template_kwargs (2026-07-26): vLLM's native Mistral tokenizer mode
     # unconditionally rejects any request where chat_template_kwargs is present at all --
     # confirmed at the source (vllm/tokenizers/mistral.py: "if request.chat_template_kwargs is
@@ -599,15 +609,36 @@ def _build_client(model_override: str | None = None, base_url_override: str | No
     specialist model that isn't OpenAI-tool-calling compatible on the SAME endpoint as the main
     model (e.g. a local translation proxy in front of a model with its own native tool-call
     format, like MiniCPM4-MCP's Python-code-block output). Only meaningful together with
-    model_override; the main client never uses this."""
+    model_override; the main client never uses this.
+
+    api.backend (2026-07-28): "openai" (default, unchanged) or "ollama". Confirmed live
+    (RESEARCH.md §14e): Ollama's OpenAI-compat endpoint leaks a short reasoning field back into
+    tool-calling turns even with enable_thinking:false, while its native /api/chat endpoint
+    suppresses it cleanly in the exact same scenario — not fixable from config, only by talking to
+    a different endpoint shape. agent_framework already ships agent_framework.ollama.OllamaChatClient
+    (same plugin family as OpenAIChatCompletionClient, built on the official `ollama` package's
+    AsyncClient against /api/chat, with a genuine `think: bool` ChatOptions field) — reused
+    directly rather than hand-building a custom adapter. create_local_agent's own
+    `client.function_invocation_configuration[...] = True` line, right after this function
+    returns, already operates on the generic client interface both branches satisfy."""
+    api_cfg = config.cfg["api"]
+    model_name = model_override or api_cfg["openai_model"]
+    base_url = base_url_override or api_cfg["openai_base_url"]
+    backend = api_cfg.get("backend", "openai")
+
+    if backend == "ollama":
+        from agent_framework.ollama import OllamaChatClient
+        # OllamaChatClient wants the bare Ollama origin, not the /v1-suffixed URL this project's
+        # config otherwise always uses for the OpenAI-compat path — strip it so an existing
+        # openai_base_url only needs `backend: ollama` added, not its own URL rewritten too.
+        host = base_url[:-len("/v1")] if base_url.endswith("/v1") else base_url
+        return OllamaChatClient(host=host, model=model_name)
+
     # Injected AsyncOpenAI so the SDK's own exponential backoff (which honors Retry-After) covers
     # 429/5xx. Confirmed live 2026-07-11: NIM's free-tier rate limit 429-crashed an entire
     # multi-agent run when the default 2 retries ran out — hosted endpoints throttle far below
     # what concurrent sub-agents generate. api.max_retries in config.yaml overrides the default.
     from openai import AsyncOpenAI
-    api_cfg = config.cfg["api"]
-    model_name = model_override or api_cfg["openai_model"]
-    base_url = base_url_override or api_cfg["openai_base_url"]
     api_key = os.getenv("OPENAI_API_KEY", "dummy")
     # Explicit timeout, comfortably LONGER than both settings.max_run_minutes AND
     # settings.sub_agent_timeout_minutes, not the openai SDK's own default (600s / 10 minutes) —
