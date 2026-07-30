@@ -2482,6 +2482,57 @@ def main():
             verdict5 = check_task_verification_flagged(ctx5)
             assert verdict5 is not None and "task_flagged" in verdict5.warning, verdict5
 
+            # --- 2026-07-29 live incident: an untracked_delegation attempt sandwiched between two
+            # task_verification_flagged attempts must NOT reset the escalation streak -- it's a
+            # direct symptom of the model failing to comply with THIS check's own "stop
+            # redelegating" directive, not a genuinely different problem. Before this fix, this
+            # exact sequence kept getting the fresh "delegate_tasks again" directive forever
+            # instead of ever escalating to "acknowledge the gap." ---
+            rs6 = RunState(tmpdir)
+            rs6.add_finding(
+                "https://b.example.co/y",
+                "[SYSTEM VERIFICATION WARNING: stub_source:https://b.example.co/y]",
+                task_name="task_flagged", depth=1,
+            )
+            _update_task_verification(rs6)
+            rs6.data["completion_check_attempts"] = [
+                {"problem": "task_verification_flagged"},
+                {"problem": "untracked_delegation"},
+            ]
+            ctx6 = Ctx(req_artifact="final_report.md", attempt=2, max_attempts=8, delegated=True,
+                       files=[], content=None, quotas=None, run_state=rs6)
+            verdict6 = check_task_verification_flagged(ctx6)
+            assert verdict6 is not None
+            assert "delegate_tasks again" not in verdict6.inject, (
+                "untracked_delegation interrupting the streak must not reset prior_same to 0", verdict6.inject)
+            assert "acknowledged gap" in verdict6.inject, verdict6.inject
+            # The .warning (human/log-facing) field must reflect the SAME branch as .inject
+            # (model-facing) -- confirmed live this was a static string claiming "redo them
+            # specifically" even on the acknowledge-the-gap branch, making a stuck run's real
+            # cause harder to diagnose from _run_state.json alone.
+            assert "redo them specifically" not in verdict6.warning, verdict6.warning
+            assert "acknowledge" in verdict6.warning.lower(), verdict6.warning
+
+            # A genuinely different, unrelated problem in between (not untracked_delegation) still
+            # correctly breaks the streak -- this fix is scoped to that one specific symptom, not a
+            # blanket "ignore any interruption."
+            rs7 = RunState(tmpdir)
+            rs7.add_finding(
+                "https://b.example.co/y",
+                "[SYSTEM VERIFICATION WARNING: stub_source:https://b.example.co/y]",
+                task_name="task_flagged", depth=1,
+            )
+            _update_task_verification(rs7)
+            rs7.data["completion_check_attempts"] = [
+                {"problem": "task_verification_flagged"},
+                {"problem": "missing_artifact"},
+            ]
+            ctx7 = Ctx(req_artifact="final_report.md", attempt=2, max_attempts=8, delegated=True,
+                       files=[], content=None, quotas=None, run_state=rs7)
+            verdict7 = check_task_verification_flagged(ctx7)
+            assert "delegate_tasks again" in verdict7.inject, (
+                "an unrelated interrupting problem SHOULD still reset the streak", verdict7.inject)
+
     contextvars.copy_context().run(_task_verification_scenario)
 
     # --- check_report_underuses_findings (2026-07-22): Builder's own version of check_thin_

@@ -180,10 +180,22 @@ def check_task_verification_flagged(ctx: Ctx) -> Optional[Verdict]:
     if not flagged:
         return None
 
+    # 2026-07-29 (live incident): a plain _consecutive_occurrences-style count breaks the streak
+    # the moment `untracked_delegation` fires in between -- but that check is itself the DIRECT
+    # symptom of the model failing to comply with THIS check's own "stop redelegating, reuse the
+    # exact task_name" directive (confirmed live: attempt 2's untracked_delegation fired because
+    # the model tried redispatching the flagged task under a new name instead of retrying it
+    # correctly). Counting it as a break meant a run that was continuously stuck on the same
+    # underlying task-verification problem for its ENTIRE retry budget never once reached
+    # prior_same > 0 after that interruption, repeating the "delegate_tasks again" directive
+    # forever instead of ever escalating to "acknowledge the gap." Skip it rather than break.
     prior_same = 0
     for a in reversed(ctx.run_state.data.get("completion_check_attempts", [])):
-        if a.get("problem") == "task_verification_flagged":
+        p = a.get("problem")
+        if p == "task_verification_flagged":
             prior_same += 1
+        elif p == "untracked_delegation":
+            continue
         else:
             break
 
@@ -210,6 +222,14 @@ def check_task_verification_flagged(ctx: Ctx) -> Optional[Verdict]:
             f"will note {flagged_list} as an acknowledged gap when they build the report from "
             f"whatever real results you already have."
         )
+        # 2026-07-29 (live incident): this Verdict's own .warning field was a STATIC string
+        # ("Pushing agent to redo them specifically") regardless of which branch actually fired --
+        # a run whose delegate_tasks quota was exhausted, or whose model had already been told
+        # TWICE to acknowledge the gap, still logged/recorded "redo them specifically" every time,
+        # making the real cause of a stuck run harder to diagnose after the fact (confirmed while
+        # investigating this exact run's _run_state.json). Each branch now states what it actually
+        # told the model.
+        warning = f"Task(s) {flagged_list} have only fabricated/unusable sources and delegate_tasks quota is exhausted — telling agent to stop and accept the gap."
     elif prior_same == 0:
         directive = (
             f"Task(s) {flagged_list} produced ONLY fabricated, off-topic, or unverifiable sources — "
@@ -218,16 +238,18 @@ def check_task_verification_flagged(ctx: Ctx) -> Optional[Verdict]:
             f"reusing the EXACT same task_name as before — try a different search approach or a "
             f"narrower query, but do NOT rename the task, before finishing."
         )
+        warning = f"Task(s) {flagged_list} have only fabricated/unusable sources (task-level verification ledger). Pushing agent to redo them specifically."
     else:
         directive = (
             f"{flagged_list} STILL has no real usable source after a prior warning. If you have "
             f"genuinely tried and cannot find one, say so explicitly in the report as an "
             f"acknowledged gap for {flagged_list}, rather than silently omitting it."
         )
+        warning = f"Task(s) {flagged_list} STILL have only fabricated/unusable sources after a prior warning — telling agent to acknowledge the gap instead of redoing again."
 
     return Verdict(
         "task_verification_flagged",
-        f"Task(s) {flagged_list} have only fabricated/unusable sources (task-level verification ledger). Pushing agent to redo them specifically.",
+        warning,
         f"SYSTEM WARNING: {ctx.last_chance_prefix}{directive}",
     )
 

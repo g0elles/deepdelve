@@ -2546,6 +2546,31 @@ tried, twice, not merely proposed):
 ## Completed
 
 
+- **`check_task_verification_flagged` escalation-streak fragmentation + static warning-text bug —
+  IMPLEMENTED and live-verified 2026-07-29, found while live-smoke-testing the two fixes above.**
+  Two live runs of the standing 2-facet benchmark query (one fresh, one `--resume-run`) both ended
+  `Report: NOT WRITTEN` — `task_verification_flagged` cycling for the ENTIRE retry budget, never
+  reaching `findings.md`/`final_report.md` at all. Root-caused via `_run_state.json` directly, not
+  assumed: `check_task_verification_flagged`'s escalation from "delegate_tasks again" to
+  "acknowledge the gap" (and eventually to `force_whole_rebuild`) counts a CONSECUTIVE streak of
+  the same problem — but `check_untracked_delegation` firing once in between (itself a direct
+  symptom of the model failing to comply with this check's own "stop redelegating, reuse the exact
+  task_name" directive, confirmed live) reset that streak to zero, so a run stuck on the identical
+  underlying problem for its whole budget kept getting the same "redo" directive instead of ever
+  escalating. Separately, the check's own `.warning` field (the human/log-facing message,
+  distinct from `.inject`, the model-facing directive) was a static string always claiming
+  "Pushing agent to redo them specifically" regardless of which of the three branches
+  (fresh-redo/acknowledge-after-repeat/quota-exhausted-stop) actually fired — made diagnosing this
+  exact incident from `_run_state.json` alone harder than it should have been. Fixed:
+  `check_task_verification_flagged`'s own `prior_same` counting now treats `untracked_delegation`
+  as a continuation, not a break (scoped to that one specific symptom — a genuinely different
+  interrupting problem still correctly resets it); `.warning` now has three distinct messages
+  matching the three directives. Live-reverified directly against both failed runs' actual saved
+  `_run_state.json` sequences: replaying the exact attempt history now correctly produces
+  "acknowledge the gap" instead of "delegate_tasks again" at the point the real run got stuck.
+  Regression test in `test_structural_checks.py` (4 cases: interruption doesn't reset, unrelated
+  problem still does, warning text matches each of the 3 branches).
+
 - **`check_report_underuses_evidence` — Builder-stage per-task coverage check, IMPLEMENTED and
   live-verified 2026-07-29.** `check_findings_underuses_evidence` (2026-07-26) already guarantees
   every covered top-level task has ≥1 real URL surviving into `findings.md`, but nothing then
