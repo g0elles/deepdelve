@@ -274,6 +274,21 @@ def parse_academic_references(report: str) -> dict[str, str]:
 # "**Sources:**" section header (URLs on the FOLLOWING lines, which the http-skip exempts
 # individually) isn't flagged.
 _SOURCE_LABEL_RE = re.compile(r'^[\s>*_\-#]*(?:sources?|fuentes?)\s*:[\s*_]*[^\s*_]', re.IGNORECASE)
+# A third non-URL pseudo-citation shape, found live 2026-07-29 (a real gpt-oss:20b report):
+# 【LinkedIn article】/【Wikipedia】-style full-width-bracket labels dropped inline at the end of a
+# claim sentence, with the real URL living only in a separate, unordered "## Sources" list at the
+# bottom -- structurally the same failure as the "(Source N)" numbered-citation incident found the
+# same day (a claim's real link lives elsewhere, not on the claim's own line), just a third
+# distinct marker SHAPE, after "Source:"-labeled and "(Author, Year)" above. Neither
+# find_uncited_claim_lines (scoped to numeric claims only, by design) nor the two patterns above
+# recognized it -- confirmed live, not assumed: extract_cited_urls/find_uncited_claim_lines/
+# find_non_url_citations all returned empty against the actual saved report. Full-width brackets
+# (U+3010/U+3011) are essentially never used legitimately in English markdown prose, so this is a
+# low-false-positive-risk, narrowly-scoped addition -- deliberately NOT a general "any bracket is
+# suspect" rule (would risk flagging legitimate footnote markers like "[1]" or editorial "[sic]"
+# insertions this project has no live evidence of yet; extend narrowly again if a fourth shape
+# is found, per this same section's own history, rather than guessing ahead of evidence).
+_FULLWIDTH_BRACKET_LABEL_RE = re.compile(r'【[^【】]{2,60}】')
 # A bare "(Org Name, 2020)"-style attribution — e.g. "(DANE, 2020)", "(Ministry of Environment,
 # 2021)", "(World Bank, 2020)" — AND an academic "(Author, Year)" in-text citation, including
 # "et al.", "&", "and", and accented surnames: "(Punati et al., 2025)", "(Ürgenç & Özgüz, 2025)",
@@ -347,7 +362,8 @@ def find_non_url_citations(text: str) -> list[str]:
             # (fabricated) one later on the same line.
             if all(_academic_citation_key(m.group(0)) in ref_map for m in paren_ms):
                 continue
-        m = label_m or (paren_ms[0] if paren_ms else None)
+        bracket_m = _FULLWIDTH_BRACKET_LABEL_RE.search(line)
+        m = label_m or (paren_ms[0] if paren_ms else None) or bracket_m
         if m:
             hits.append(line.strip()[:120])
     return hits

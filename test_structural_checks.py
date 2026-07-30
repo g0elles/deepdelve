@@ -242,6 +242,21 @@ def main():
     assert not find_non_url_citations("No claims were made without source attribution.")
     assert not find_non_url_citations("**Sources:**\n- **[Title](https://x.org/a)**")
 
+    # --- third non-URL pseudo-citation shape, live case 2026-07-29: 【Bracketed Label】-style
+    # full-width-bracket markers, real URL living only in a separate "## Sources" list, not on the
+    # claim's own line. Confirmed live against the actual saved report that triggered this fix:
+    # extract_cited_urls/find_uncited_claim_lines/find_non_url_citations all returned nothing
+    # before this addition. ---
+    assert find_non_url_citations(
+        "Regression remains foundational for sales forecasting【LinkedIn article】.")
+    assert find_non_url_citations("The Wikipedia entry defines a heuristic【Wikipedia】.")
+    # A markdown link on the SAME line still exempts it, same convention as the other two shapes.
+    assert not find_non_url_citations(
+        "Regression remains foundational [LinkedIn article](https://linkedin.com/pulse/x)【LinkedIn article】.")
+    # Plain ASCII brackets are deliberately NOT flagged (narrower scope than a general "any
+    # bracket" rule -- no live evidence yet of that shape causing this failure).
+    assert not find_non_url_citations("See the appendix [1] for details.")
+
     # --- search-health counter (persists into _run_state.json via RunState) ---
     import contextvars
     import json
