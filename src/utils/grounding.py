@@ -1065,11 +1065,82 @@ def partially_ungrounded(content: str) -> str | None:
     return f"unverified_entry_sources:{', '.join(bad[:3])}"
 
 
+def cheap_grounding_problems(content: str, gc_cfg: dict, fetched_entries: list) -> list[str]:
+    """The subset of real_grounding_problem's own ordered checks that are pure string/regex/
+    term-overlap operations -- no NLI cross-encoder or reranker model inference -- safe to
+    re-run cheaply and repeatedly. Mirrors real_grounding_problem's own priority ordering exactly
+    for the checks it covers (stub_source, non_url_citation, regulation_unsupported,
+    quote_paraphrased, content-level term-overlap, uncited_claims), returning EVERY one that's
+    true rather than stopping at the first, unlike real_grounding_problem itself.
+
+    Exists because real_grounding_problem returns only its single FIRST hit, and completion.py's
+    checks (check_stub_source, check_uncited_claims, etc.) all key off that ONE shared string via
+    ctx.grounding_problem -- confirmed live 2026-07-29: a real run's final_report.md had BOTH a
+    stub_source citation AND 6 uncited-claims lines (independently verified by calling
+    find_uncited_claim_lines directly against the saved output), but check_uncited_claims could
+    never fire because ctx.grounding_problem was permanently "stub_source:..." -- re-running
+    check_uncited_claims against that same ctx, no matter how many times, always returns None,
+    since the underlying fact was never computed once an earlier check in real_grounding_problem's
+    OWN internal chain already matched. This function is the fix at the right layer: called a
+    second time (still cheap -- no model calls) to reveal what real_grounding_problem's early
+    return short-circuited past, so completion.py can tell the model about it instead of staying
+    silent for the rest of the run.
+
+    Deliberately excludes nli_unsupported_problem/topical_relevance_problem (real NLI/reranker
+    model inference -- multiplying those per attempt is a genuine cost, not free like the checks
+    here) -- a regression in one of those two stays invisible until it's the primary hit, same as
+    before this function existed. That's an accepted, narrower gap than the one being closed."""
+    out = []
+    cited = extract_cited_urls(content)
+    if not cited:
+        return out
+    non_stub = {_normalize_url(e["url"]) for e in fetched_entries if not e.get("stub")}
+    stub_only = {_normalize_url(e["url"]) for e in fetched_entries if e.get("stub")} - non_stub
+    if gc_cfg.get("stub_detection", True) and stub_only:
+        stub_cited = [
+            u for u in cited
+            if not _url_is_grounded(_normalize_url(u), non_stub)
+            and _url_is_grounded(_normalize_url(u), stub_only)
+        ]
+        if stub_cited:
+            out.append(f"stub_source:{', '.join(stub_cited[:3])}")
+    if gc_cfg.get("non_url_citation_check", True):
+        non_url = find_non_url_citations(content)
+        if non_url:
+            out.append(f"non_url_citation:{'; '.join(non_url[:3])}")
+    if gc_cfg.get("regulation_id_check", True):
+        bad_regs = find_unsupported_regulation_ids(content)
+        if bad_regs:
+            out.append(f"regulation_unsupported:{'; '.join(bad_regs[:3])}")
+    if gc_cfg.get("quote_fidelity_check", True):
+        bad_quotes = find_paraphrased_quotes(content)
+        if bad_quotes:
+            out.append(f"quote_paraphrased:{'; '.join(bad_quotes[:3])}")
+    if gc_cfg.get("content_level_check", True):
+        problem = claim_grounding_problem(content)
+        if problem:
+            out.append(problem)
+    # Last, because it's the weakest signal: everything cited is real, no line-scoped check
+    # fired — but if the claims are decoupled from the citations wholesale (table + detached
+    # URL list, run 14's shape), that silence is vacuous, not a pass.
+    if gc_cfg.get("citation_format_check", True):
+        uncited = find_uncited_claim_lines(content)
+        if len(uncited) >= 3:
+            out.append(f"uncited_claims:{len(uncited)} figure-bearing lines with no citation on "
+                       f"the line, e.g. {uncited[0][:80]!r}")
+    return out
+
+
 async def real_grounding_problem(content: str) -> str | None:
     """Cross-references every URL cited in `content` against URLs the engine actually saw
     fetch_url_to_workspace fetch this run. A URL not in that verified set is ALWAYS a grounding
     problem — this is the primary, hard gate. Returns a human-readable problem description, or
-    None if every citation is verified (or there are no citations to check)."""
+    None if every citation is verified (or there are no citations to check).
+
+    Behavior/return value unchanged by the 2026-07-29 cheap_grounding_problems extraction above --
+    this still returns only the single first hit, same priority order as always; see that
+    function's own docstring for why a second, fuller pass now also exists for callers that need
+    to know about OTHER simultaneously-true problems this one's early return shadows."""
     cited = extract_cited_urls(content)
     if not cited:
         return "no_urls"
@@ -1090,42 +1161,9 @@ async def real_grounding_problem(content: str) -> str | None:
                 detail += f" (also unreachable: {', '.join(dead[:3])})"
         return detail
 
-    # Every cited URL WAS fetched — but a fetch that returned only a soft-404/paywall shell
-    # (entry["stub"], see tools/web.py's _stub_reason) has no real content behind it, so a
-    # citation resolving ONLY to stub fetches is hollow. Closes run 14's hole: a model-invented
-    # URL that the domain answered with a 200 subscription shell passed this gate as a "real"
-    # fetch. A URL also fetched non-stub elsewhere (retry that got the real page) stays valid.
-    if gc_cfg.get("stub_detection", True):
-        non_stub = {_normalize_url(e["url"]) for e in fetched_entries if not e.get("stub")}
-        stub_only = {_normalize_url(e["url"]) for e in fetched_entries if e.get("stub")} - non_stub
-        if stub_only:
-            stub_cited = [
-                u for u in cited
-                if not _url_is_grounded(_normalize_url(u), non_stub)
-                and _url_is_grounded(_normalize_url(u), stub_only)
-            ]
-            if stub_cited:
-                return f"stub_source:{', '.join(stub_cited[:3])}"
-
-    if gc_cfg.get("non_url_citation_check", True):
-        non_url = find_non_url_citations(content)
-        if non_url:
-            return f"non_url_citation:{'; '.join(non_url[:3])}"
-
-    if gc_cfg.get("regulation_id_check", True):
-        bad_regs = find_unsupported_regulation_ids(content)
-        if bad_regs:
-            return f"regulation_unsupported:{'; '.join(bad_regs[:3])}"
-
-    if gc_cfg.get("quote_fidelity_check", True):
-        bad_quotes = find_paraphrased_quotes(content)
-        if bad_quotes:
-            return f"quote_paraphrased:{'; '.join(bad_quotes[:3])}"
-
-    if gc_cfg.get("content_level_check", True):
-        problem = claim_grounding_problem(content)
-        if problem:
-            return problem
+    cheap = cheap_grounding_problems(content, gc_cfg, fetched_entries)
+    if cheap:
+        return cheap[0]
 
     if gc_cfg.get("nli_verify", True):
         problem = nli_unsupported_problem(content)
@@ -1136,14 +1174,5 @@ async def real_grounding_problem(content: str) -> str | None:
         problem = topical_relevance_problem(content)
         if problem:
             return problem
-
-    # Last, because it's the weakest signal: everything cited is real, no line-scoped check
-    # fired — but if the claims are decoupled from the citations wholesale (table + detached
-    # URL list, run 14's shape), that silence is vacuous, not a pass.
-    if gc_cfg.get("citation_format_check", True):
-        uncited = find_uncited_claim_lines(content)
-        if len(uncited) >= 3:
-            return (f"uncited_claims:{len(uncited)} figure-bearing lines with no citation on "
-                    f"the line, e.g. {uncited[0][:80]!r}")
 
     return None

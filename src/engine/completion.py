@@ -21,7 +21,7 @@ from tools import tool_quotas_ctx, get_workspace_files, get_workspace_file_conte
 from utils.run_state import get_fetched_urls, get_search_health
 from utils.grounding import (
     fully_ungrounded, partially_ungrounded, real_grounding_problem, split_into_heading_sections,
-    find_cross_source_contradictions,
+    find_cross_source_contradictions, cheap_grounding_problems,
 )
 from engine.orchestrator import (
     topup_quota_pool, available_sub_agents_ctx, _extract_excluded_topics, get_context_budget,
@@ -804,6 +804,91 @@ def check_report_underuses_findings(ctx: Ctx) -> Optional[Verdict]:
     )
 
 
+def check_report_underuses_evidence(ctx: Ctx) -> Optional[Verdict]:
+    """check_findings_underuses_evidence's own per-TASK diagnosis, one stage further downstream:
+    that check guarantees every covered top-level task has at least one real URL surviving into
+    findings.md, but nothing then guarantees Builder's own selection FROM findings.md represents
+    every task either. check_report_underuses_findings' flat citation-count ratio can clear its
+    threshold while every surviving citation comes from a single task -- a report can be
+    well-formatted, fully grounded, AND pass the ratio check while still reducing a multi-facet
+    query to one facet.
+
+    Confirmed live 2026-07-28 (RESEARCH.md Sec.14h): a `gpt-oss:20b` run's findings.md correctly
+    covered both a heuristic-algorithms task and a Colombia-cultural task (no upstream check fired).
+    final_report.md dropped the heuristic-algorithms task entirely in favor of an off-topic citation,
+    yet still cited ~57% of findings.md's total URLs by RAW COUNT (Colombia had more sources) --
+    comfortably above check_report_underuses_findings' 50% ratio threshold. The dropped 43% happened
+    to be the query's most relevant content; the check has no way to see that, since it only counts,
+    never groups by task. Same root cause the 2026-07-26 catalog review (session_status/CURRENT.md)
+    named as the single clearest counter-example to a pure budget-pressure theory: this recurs even
+    on the trusted baseline model, with no quota/timeout signal, in small balanced runs.
+
+    Deliberately per-TASK like its sibling, not a second ratio: reuses the exact same ground truth
+    (run_state.data["findings"], depth==1) filtered to URLs that check_findings_underuses_evidence
+    has already confirmed survive into findings.md -- a task whose real URLs never reached
+    findings.md at all is that check's problem, not this one. Fires when at least one task with
+    real, surviving findings.md coverage has ZERO of its URLs cited anywhere in the report."""
+    cov_cfg = config.cfg.get("settings", {}).get("report_evidence_check", {})
+    if not cov_cfg.get("enabled", True):
+        return None
+    if "findings.md" not in ctx.files or "final_report.md" not in ctx.files or ctx.content is None:
+        return None
+    from utils.grounding import extract_cited_urls, _urls_prefix_match
+    findings_urls = {u.rstrip('/') for u in extract_cited_urls(get_workspace_file_content("findings.md") or "")}
+    report_urls = {u.rstrip('/') for u in extract_cited_urls(ctx.content)}
+
+    by_task: dict[str, set] = {}
+    for f in ctx.run_state.data.get("findings", []):
+        if f.get("depth") != 1:
+            continue
+        name = f.get("task_name")
+        url = (f.get("source_url") or "").strip().rstrip('/')
+        if not name or not url.startswith("http"):
+            continue
+        if url not in findings_urls and not any(_urls_prefix_match(url, f2) for f2 in findings_urls):
+            continue  # never reached findings.md -- check_findings_underuses_evidence's job.
+        by_task.setdefault(name, set()).add(url)
+
+    min_tasks = cov_cfg.get("min_tasks", 2)
+    if len(by_task) < min_tasks:
+        return None
+    dropped = sorted(
+        name for name, urls in by_task.items()
+        if not any(u in report_urls or any(_urls_prefix_match(u, r) for r in report_urls) for u in urls)
+    )
+    if not dropped:
+        return None
+
+    prior_same = 0
+    for a in reversed(ctx.run_state.data.get("completion_check_attempts", [])):
+        if a.get("problem") == "report_underuses_evidence":
+            prior_same += 1
+        else:
+            break
+
+    dropped_list = ", ".join(f"'{n}'" for n in dropped[:5])
+    if prior_same == 0:
+        directive = (
+            f"'{ctx.req_artifact}' has NO citations at all for task(s) {dropped_list}, even though "
+            f"findings.md has real, surviving sources for them. This looks like one research angle "
+            f"crowded out another during synthesis, not thin coverage of a single topic. Rewrite the "
+            f"report to include real coverage of every task's sources, not just whichever one was "
+            f"easiest or had the most sources to write about."
+        )
+    else:
+        directive = (
+            f"'{ctx.req_artifact}' STILL has no citations for task(s) {dropped_list} after a prior "
+            f"warning. Do not just lightly edit the existing draft — actually add sections covering "
+            f"these tasks' real sources from findings.md."
+        )
+
+    return Verdict(
+        "report_underuses_evidence",
+        f"'{ctx.req_artifact}' has zero citations for task(s) {dropped_list}, despite findings.md having real surviving sources for them. Pushing agent to cover every task, not just one.",
+        f"SYSTEM WARNING: {ctx.last_chance_prefix}{directive}",
+    )
+
+
 def _redelegate_directive(ctx: Ctx) -> str:
     """Structural signal for a real, confirmed failure mode: a model makes ONE
     delegate_tasks call early on (satisfying "you must delegate"), then — after a
@@ -1152,6 +1237,9 @@ GROUNDING_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
     # the generic catch-all, so a report that both under-cites AND has one bad citation gets the
     # bad-citation problem fixed first.
     check_report_underuses_findings,
+    # Same breadth-not-accuracy category as its sibling above, one layer more specific (per-TASK
+    # zero-coverage, not a flat ratio) -- see its own docstring (2026-07-29, RESEARCH.md Sec.14h).
+    check_report_underuses_evidence,
     check_not_grounded,  # generic catch-all: fires on ANY grounding problem — keep it LAST
 ]
 
@@ -2204,6 +2292,104 @@ def _yield_to_starved_check(verdict: Optional[Verdict], ctx: Ctx, starved_check,
     return verdict
 
 
+_OTHER_ACTIVE_PROBLEMS_CAP = 3
+
+
+def _collect_other_active_problems(ctx: Ctx, checks: list, exclude_problem: str) -> list[Verdict]:
+    """`_yield_to_starved_check` above only protects two specifically-named low-priority checks
+    from being permanently shadowed by "first verdict wins" -- confirmed live 2026-07-29 that the
+    same shadowing shape recurs anywhere it ISN'T hand-wired: a real, MID-priority accuracy check
+    (check_uncited_claims) sat independently, simultaneously true for 3 completion-check attempts
+    behind a persistently-recurring check_stub_source, never got a turn, and was never disclosed
+    even in the terminal "retry budget exhausted" message. Direct evidence: re-running
+    find_uncited_claim_lines against that run's actual saved final_report.md returned 6 hits
+    (above the 3-line firing threshold) on the very attempt that ended the run reporting only
+    stub_source as "the" unresolved issue.
+
+    Rather than hand-wiring a growing list of specific check pairs (how the two existing
+    _yield_to_starved_check call sites came to exist -- one incident at a time), this runs the
+    REST of whichever list just produced the winning verdict and surfaces EVERYTHING else
+    currently true. Per arXiv:2607.01855 ("Regression Accumulation in Multi-Turn LLM Programming
+    Conversations"): the dominant regression cause in iterative LLM correction (55.7%) is a later
+    fix breaking an earlier, already-satisfied requirement through incompatibility, not simple
+    forgetting -- confirmed here too (attempt 4 fixed 3 uncited-claim lines; attempts 5-6 then
+    rewrote the document to fix stub_source and silently reintroduced new uncited-claim-shaped
+    lines). Their validated mitigation is full re-verification every turn with every failing
+    constraint made visible, not a persisted "history of what broke" or a rollback mechanism --
+    this function is exactly that: cheap (pure functions of the already-built ctx, no new LLM or
+    tool calls -- the one expensive fact, ctx.grounding_problem, is already computed once per
+    attempt regardless of this) and stateless.
+
+    Deliberately does NOT change which Verdict is "the" recorded problem (run_state.record_attempt,
+    the escalation/bonus counters, the verdict-matrix tests all stay untouched) -- only the TEXT
+    shown to the model/user gains an addendum, preserving the one-primary-directive-per-turn design
+    this module was built around (completion.py's own top-of-file comment: a single clear
+    instruction per turn is what replaced the bug-prone if/elif chain, not a wall of competing
+    demands)."""
+    out = []
+    for check in checks:
+        v = check(ctx)
+        if v is not None and v.problem != exclude_problem:
+            out.append(v)
+            if len(out) >= _OTHER_ACTIVE_PROBLEMS_CAP:
+                break
+    return out
+
+
+def _with_other_problems_addendum(verdict: Verdict, ctx: Ctx, checks: list) -> Verdict:
+    """Wraps a winning verdict's `inject` text with a short, explicitly-secondary addendum naming
+    any OTHER currently-active problem from the same check list -- see
+    _collect_other_active_problems' docstring for the incident and literature this closes. A no-op
+    (returns verdict unchanged) when nothing else is active, so a genuinely single-problem run's
+    injected text is byte-identical to before this existed.
+
+    ONLY valid for COMPLETION_CHECKS: its checks are genuinely independent of each other (each
+    reads its own distinct fact off ctx/run_state). Do NOT call this with GROUNDING_CHECKS -- most
+    of those checks key off the SINGLE shared ctx.grounding_problem string, which real_grounding_
+    problem computes as only its own first hit; re-running a sibling grounding check against that
+    same ctx can never reveal a second, different grounding problem (confirmed live 2026-07-29 --
+    see _other_grounding_problems_addendum below, the correct-layer version for that list)."""
+    others = _collect_other_active_problems(ctx, checks, verdict.problem)
+    if not others:
+        return verdict
+    addendum = (
+        " ALSO currently true (lower priority than the above -- do not undo it while fixing the "
+        "above): " + "; ".join(f"{o.problem}: {o.warning}" for o in others)
+    )
+    return verdict._replace(inject=verdict.inject + addendum)
+
+
+def _other_grounding_problems(ctx: Ctx, exclude_problem: str) -> list[str]:
+    """The GROUNDING_CHECKS-list equivalent of _collect_other_active_problems, but at the correct
+    layer: most GROUNDING_CHECKS functions key off the single ctx.grounding_problem string, which
+    real_grounding_problem computes as only its OWN first hit (utils/grounding.py's ordered
+    if-chain) -- re-calling a sibling check_* function against that same ctx can never reveal a
+    second, simultaneously-true grounding problem, since the underlying fact was never computed.
+    Confirmed live 2026-07-29: a real run's final_report.md had both a stub_source citation and 6
+    uncited-claims lines (verified directly against the saved output); check_uncited_claims could
+    never fire because ctx.grounding_problem stayed "stub_source:..." for the rest of the run.
+
+    Calls utils.grounding.cheap_grounding_problems directly instead -- see its own docstring for
+    exactly which sub-checks it covers (the pure string/regex ones) and which it deliberately
+    excludes (NLI/reranker model inference, to avoid multiplying that cost every attempt)."""
+    gc_cfg = config.cfg.get("settings", {}).get("grounding_check", {})
+    raw = cheap_grounding_problems(ctx.content or "", gc_cfg, get_fetched_urls())
+    return [p for p in raw if p.split(":", 1)[0] != exclude_problem][:_OTHER_ACTIVE_PROBLEMS_CAP]
+
+
+def _with_other_grounding_addendum(verdict: Verdict, ctx: Ctx) -> Verdict:
+    """_with_other_problems_addendum's GROUNDING_CHECKS counterpart, built on the correct-layer
+    _other_grounding_problems above instead of re-walking GROUNDING_CHECKS itself."""
+    others = _other_grounding_problems(ctx, verdict.problem)
+    if not others:
+        return verdict
+    addendum = (
+        " ALSO currently true in the same document (lower priority than the above -- do not undo "
+        "it while fixing the above): " + "; ".join(others)
+    )
+    return verdict._replace(inject=verdict.inject + addendum)
+
+
 async def run_completion_check(query: str, current_input, run_state: "RunState", notify, last_assistant_text: str = "", dispatch_task=None, budget_deadline: float | None = None, find_substantial_text: Optional[Callable[[], str]] = None):  # noqa: F821 — utils.run_state.RunState, annotation only
     """Runs the 3-tier completion check (delegated? artifact exists? really grounded?) plus the
     structural fixes: per-attempt quota top-up, artifact quarantine, run-state persistence, and
@@ -2352,13 +2538,29 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
             # attempt is never recognized as a success (it just falls through silently).
             verdict = next((v for check in COMPLETION_CHECKS if (v := check(ctx)) is not None), None)
             verdict = _yield_to_starved_check(verdict, ctx, check_untracked_delegation, never_final_blocker=True)
+            if verdict is not None:
+                verdict = _with_other_problems_addendum(verdict, ctx, COMPLETION_CHECKS)
             # grounding_check.enabled is the section's master switch — before this guard it was a
             # documented no-op (config_template.yaml shipped it, nothing read it; 2026-07-12 audit,
             # G2). The pre-grounding checks above are structural, not grounding, and still run.
             if verdict is None and config.cfg.get("settings", {}).get("grounding_check", {}).get("enabled", True):
                 ctx.grounding_problem = await real_grounding_problem(ctx.content or "")
                 verdict = next((v for check in GROUNDING_CHECKS if (v := check(ctx)) is not None), None)
-                verdict = _yield_to_starved_check(verdict, ctx, check_report_underuses_findings)
+                # Both siblings share the same starvation risk (2026-07-24's finding, applied
+                # 2026-07-29 to the newer per-task check too) -- neither is meant to compete with a
+                # real correctness problem, but a run stuck on one OTHER recurring problem must not
+                # starve either of them for its whole retry budget.
+                verdict = _yield_to_starved_check(
+                    verdict, ctx,
+                    lambda c: check_report_underuses_findings(c) or check_report_underuses_evidence(c),
+                )
+                # 2026-07-29 (live incident, see _other_grounding_problems' docstring): check_
+                # stub_source shadowed check_uncited_claims for 3 whole attempts, silently, because
+                # both key off the single ctx.grounding_problem string real_grounding_problem
+                # computes as only its own first hit. Surfaces (not swaps in) whatever else is
+                # cheaply detectable in the same document.
+                if verdict is not None:
+                    verdict = _with_other_grounding_addendum(verdict, ctx)
             problem = verdict.problem if verdict else None
 
             run_state.sync_fetched_urls()
@@ -2614,9 +2816,25 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                     (a["problem"] for a in reversed(run_state.data.get("completion_check_attempts", []))
                      if a.get("problem") in _QUARANTINE_PROBLEMS), problem)
                 if req_artifact in get_workspace_files():
+                    # 2026-07-29 (live incident): this exact branch reported ONLY stub_source as
+                    # "the" unresolved issue on a real run whose saved final_report.md ALSO had 6
+                    # uncited-claims lines (check_uncited_claims never got a turn -- both key off
+                    # the single ctx.grounding_problem string, see _other_grounding_problems'
+                    # docstring). One-shot final branch, so recomputing both COMPLETION_CHECKS (a
+                    # genuinely independent list, safe to re-walk directly) and the cheap grounding
+                    # sub-checks (the correct layer for that list, NOT GROUNDING_CHECKS itself) here
+                    # is cheap and honest about everything actually still wrong, not just whichever
+                    # problem won last.
+                    others_final = (
+                        [o.problem for o in _collect_other_active_problems(ctx, COMPLETION_CHECKS, problem)]
+                        + _other_grounding_problems(ctx, problem)
+                    )[:_OTHER_ACTIVE_PROBLEMS_CAP]
+                    others_note = (
+                        " Also independently unresolved: " + "; ".join(others_final) + "."
+                    ) if others_final else ""
                     notify(f"**System (final):** Retry budget exhausted with an unresolved issue ({problem}). "
                            f"`{req_artifact}` exists but could NOT be fully verified this run — treat its "
-                           f"claims as unconfirmed. This was not silently accepted.")
+                           f"claims as unconfirmed. This was not silently accepted.{others_note}")
                 elif problem == "missing_artifact" and _restore_quarantined_draft(req_artifact, quarantine_reason):
                     notify(f"**System (final):** The model never rewrote `{req_artifact}` after its draft "
                            f"was quarantined ({quarantine_reason}) — restored the quarantined draft, "

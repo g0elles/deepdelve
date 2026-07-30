@@ -88,7 +88,37 @@ concluded verdict, which is the actual complaint. Going forward, a candidate is 
 
 ## History
 
-### 2026-07-28 (latest): Ornith-1.0-9B bake-off — INCONCLUSIVE, two real DeepDelve architecture bugs found+fixed, one serving-layer gap isolated
+### 2026-07-29 (latest): "no proper report despite solid findings" investigated end-to-end — one real coverage gap fixed, one real check-priority-shadowing bug fixed, both live-verified
+
+User pushed back on the earlier 2026-07-29 completion-check cleanup session's own diagnosis that
+the findings/report-writing stage wasn't structurally overwhelming models, insisting on a fresh,
+whole-repo pass over every historical run rather than trusting the prior audit's conclusion. A
+dedicated catalog pass over `ROADMAP.md`'s full History, `RESEARCH.md`, and every `session_status/
+*.md` archive found 17 distinct report-writing-stage incidents across 5 patterns, spanning
+2026-07-10 through 2026-07-28 and every model this project has ever tested, including the trusted
+`gpt-oss:20b` baseline. Two real, distinct root causes were fixed as a result — see Completed below
+(`check_report_underuses_evidence`, the check-priority-shadowing fix in `completion.py`/
+`grounding.py`) — both grounded in checked literature (NAACL 2025 "Coverage-based Fairness in
+Multi-document Summarization", arXiv:2412.08795; "Regression Accumulation in Multi-Turn LLM
+Programming Conversations", arXiv:2607.01855) and both live-verified: the first via a real 48-minute
+`gpt-oss:20b` run against the standing 2-facet benchmark query, the second by feeding that SAME
+run's actual saved `final_report.md` into the fixed code directly and confirming the previously-
+silent `uncited_claims` problem now surfaces.
+
+**A live smoke test caught a real gap in my own verification, worth recording**: the first "smoke
+test passed" read of that 48-minute run was wrong — it checked for crashes and false-positive
+regressions on the new check, but never read what the report actually said. The user rejected that
+read outright ("this is not acceptable, no proper report made") and was right to: the report used a
+fabricated `(Source 1)`...`(Source 8)` inline numbering scheme with no numbered reference list at
+the bottom (unverifiable to a human despite passing URL-presence grounding), a claim attributing
+payroll-tax coordination to a source that, read directly, never mentions it, and — the concrete bug
+fixed this session — `check_uncited_claims` never got a turn across 3 attempts because
+`check_stub_source` kept winning `real_grounding_problem`'s own first-hit priority chain, and the
+terminal "retry budget exhausted" message reported only `stub_source` even though `uncited_claims`
+was independently, simultaneously true. Read the real output, not just the check log, before
+calling any smoke test conclusive.
+
+### 2026-07-28: Ornith-1.0-9B bake-off — INCONCLUSIVE, two real DeepDelve architecture bugs found+fixed, one serving-layer gap isolated
 
 Full trail in `RESEARCH.md` §14 (a-g); working summary in `session_status/CURRENT.md`. Candidate:
 `deepreinforce-ai/Ornith-1.0-9B` (dense, Qwen3.5-arch, MIT), the untested middle ground identified
@@ -2515,6 +2545,58 @@ tried, twice, not merely proposed):
 
 ## Completed
 
+
+- **`check_report_underuses_evidence` — Builder-stage per-task coverage check, IMPLEMENTED and
+  live-verified 2026-07-29.** `check_findings_underuses_evidence` (2026-07-26) already guarantees
+  every covered top-level task has ≥1 real URL surviving into `findings.md`, but nothing then
+  guaranteed Builder's OWN selection from `findings.md` represented every task either —
+  `check_report_underuses_findings`'s flat citation ratio can pass while every surviving citation
+  comes from a single task (confirmed live 2026-07-28, `RESEARCH.md` §14h: `gpt-oss:20b` dropped a
+  heuristic-algorithms task entirely for an off-topic citation, but still cleared the 50% ratio
+  threshold on Colombia's larger raw source count). Literature-grounded (NAACL 2025
+  "Coverage-based Fairness in Multi-document Summarization", arXiv:2412.08795 — validates a binary
+  per-cluster presence check as a legitimate, cheap proxy for their more expensive NLI-based
+  "Equal Coverage" metric). New sibling check (`src/engine/completion.py`), same per-task
+  binary-presence design as its upstream sibling; wired into `GROUNDING_CHECKS` and the existing
+  starvation-guard (`_yield_to_starved_check`); new `report_evidence_check` config section
+  (`config_template.yaml`). 5-case regression suite in `test_structural_checks.py`. Live-smoke-
+  tested (real `gpt-oss:20b`, 48-minute run, standing 2-facet benchmark query): correctly stayed
+  silent on a report that unevenly but genuinely covered both tasks — no false positive.
+
+- **Check-priority-shadowing / cross-fix regression blindness — IMPLEMENTED and live-verified
+  2026-07-29.** The same live smoke test above surfaced a second, independent, more serious bug
+  when the user insisted the actual report content be read, not just checked for crashes:
+  `check_uncited_claims` never got a turn across 3 completion-check attempts because
+  `check_stub_source` kept winning — traced to `real_grounding_problem`'s own internal ordered
+  if-chain (`utils/grounding.py`) returning only its FIRST hit, so every `GROUNDING_CHECKS`
+  function keyed off the single shared `ctx.grounding_problem` string can be permanently shadowed
+  by a persistently-recurring higher-priority one; re-running a sibling check against the same
+  `ctx` can never reveal a second problem, since the fact was never computed. The terminal "retry
+  budget exhausted" message reported only `stub_source`, even though `uncited_claims` (6
+  figure-bearing lines with no citation, confirmed by calling `find_uncited_claim_lines` directly
+  against the run's actual saved output) was independently, simultaneously true the whole time.
+  Literature-grounded ("Regression Accumulation in Multi-Turn LLM Programming Conversations",
+  arXiv:2607.01855 — 55.7% of multi-turn regressions are a later fix breaking an earlier
+  requirement through incompatibility, not forgetting; their validated fix, "Verification Gate,"
+  is full re-verification every turn with every failing constraint made visible). Fixed at the
+  correct layer: `utils/grounding.py::cheap_grounding_problems` extracts the pure string/regex
+  sub-checks (stub_source, non_url_citation, regulation_unsupported, quote_paraphrased,
+  claim_unsupported, uncited_claims — deliberately excluding NLI/reranker model-inference checks,
+  to avoid multiplying that cost every attempt) into a function that returns EVERY hit, not just
+  the first; `real_grounding_problem` itself is unchanged in behavior (verified: existing test
+  suite covering it, including 18 other call sites, passed unmodified). `completion.py` gained
+  `_other_grounding_problems`/`_with_other_grounding_addendum` (correct-layer) plus
+  `_collect_other_active_problems`/`_with_other_problems_addendum` (for `COMPLETION_CHECKS`, whose
+  checks ARE genuinely independent of each other, unlike most of `GROUNDING_CHECKS` — confirmed via
+  direct testing, not assumed, after the first implementation attempt targeted `GROUNDING_CHECKS`
+  itself and was proven dead code by feeding it this session's own real incident data). Deliberately
+  does NOT change which single Verdict is "the" recorded problem, the escalation/bonus counters, or
+  the verdict-matrix tests — only the addendum text shown to the model (`.inject`) and the terminal
+  user-facing message gain the extra visibility, preserving the one-primary-directive-per-turn
+  design. Live-reverified directly against this session's own captured incident: feeding the real
+  saved `final_report.md` into the fixed code now correctly surfaces `uncited_claims` alongside
+  `stub_source`. Regression test in `test_structural_checks.py` reproduces the same shape
+  end-to-end (a report with both a stub citation and 6 uncited-claims lines in a separate section).
 
 - **FindingsWriter evidence-base quality, two fixes — IMPLEMENTED and live-verified 2026-07-21
   (confirmed working at their own layer; the deeper root behavior they were meant to help with is

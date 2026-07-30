@@ -2588,6 +2588,182 @@ def main():
 
     contextvars.copy_context().run(_report_underuses_findings_scenario)
 
+    # --- check_report_underuses_evidence (2026-07-29): check_findings_underuses_evidence's own
+    # sibling one stage downstream -- findings.md can correctly cover every task (that check stays
+    # silent) while final_report.md still cites only ONE task's sources by raw ratio, clearing
+    # check_report_underuses_findings' flat threshold because the surviving task happened to have
+    # more sources. Live case: RESEARCH.md Sec.14h, gpt-oss:20b dropped the heuristic-algorithms
+    # task for an off-topic citation while still clearing the 50% ratio on Colombia's larger count.
+    # Direct calls against the check function itself, same style as its sibling's own test. ---
+    def _report_underuses_evidence_scenario():
+        from engine.completion import check_report_underuses_evidence, Ctx
+        from utils.run_state import RunState
+        from tools.fs import _IN_MEMORY_FS
+
+        _orig_ws12 = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory"}
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                rs = RunState(tmpdir)
+                # heuristics: 2 real URLs, both survive into findings.md. colombia: 3 real URLs,
+                # both survive -- uneven counts, same shape as the live incident (bigger cluster
+                # wins on raw ratio).
+                heur_urls = ["https://a.example.co/heur1", "https://a.example.co/heur2"]
+                colo_urls = ["https://b.example.co/colo1", "https://b.example.co/colo2", "https://b.example.co/colo3"]
+                for u in heur_urls:
+                    rs.add_finding(u, "heuristic finding", task_name="heuristics", depth=1)
+                for u in colo_urls:
+                    rs.add_finding(u, "colombia finding", task_name="colombia", depth=1)
+                # Nested (depth>1) must be ignored, same convention as the sibling check.
+                rs.add_finding("https://a.example.co/nested", "s", task_name="heuristics", depth=2)
+
+                findings_md = "\n\n".join(
+                    f"### [Src]({u})\n- real finding." for u in heur_urls + colo_urls)
+                _IN_MEMORY_FS.clear()
+                _IN_MEMORY_FS["findings.md"] = findings_md
+
+                def _ctx(report_text):
+                    return Ctx(req_artifact="final_report.md", attempt=0, max_attempts=8,
+                               delegated=True, files=["findings.md", "final_report.md"],
+                               content=report_text, quotas=None, run_state=rs)
+
+                # (a) report cites ALL 3 colombia URLs (raw ratio 3/5 = 60%, clears
+                # check_report_underuses_findings' 50% threshold) but ZERO heuristics URLs ->
+                # this check fires even though the ratio check wouldn't.
+                report_colombia_only = "\n".join(f"- dato. [Src]({u})" for u in colo_urls)
+                verdict = check_report_underuses_evidence(_ctx(report_colombia_only))
+                assert verdict is not None and verdict.problem == "report_underuses_evidence", verdict
+                assert "heuristics" in verdict.warning and "colombia" not in verdict.warning, verdict.warning
+
+                # (b) report cites at least one URL from EACH task -> no problem, even though
+                # citation counts are uneven (not this check's job).
+                report_both = "\n".join(f"- dato. [Src]({u})" for u in [heur_urls[0], colo_urls[0]])
+                assert check_report_underuses_evidence(_ctx(report_both)) is None
+
+                # (c) only 1 task's URLs actually reached findings.md -> min_tasks gate blocks it.
+                rs2 = RunState(tmpdir)
+                rs2.add_finding(heur_urls[0], "heuristic finding", task_name="heuristics", depth=1)
+                _IN_MEMORY_FS["findings.md"] = f"### [Src]({heur_urls[0]})\n- real finding."
+                ctx_one_task = Ctx(req_artifact="final_report.md", attempt=0, max_attempts=8,
+                                    delegated=True, files=["findings.md", "final_report.md"],
+                                    content="nothing cited", quotas=None, run_state=rs2)
+                assert check_report_underuses_evidence(ctx_one_task) is None
+
+                # (d) a task's real URLs exist in run_state but never reached findings.md at all ->
+                # not this check's job (check_findings_underuses_evidence's), so it must stay silent
+                # even though the report obviously can't cite what findings.md never gave it.
+                _IN_MEMORY_FS["findings.md"] = findings_md
+                rs3 = RunState(tmpdir)
+                for u in heur_urls:
+                    rs3.add_finding(u, "heuristic finding", task_name="heuristics", depth=1)
+                rs3.add_finding("https://c.example.co/never-in-findings", "dropped upstream",
+                                 task_name="dropped_upstream", depth=1)
+                ctx_upstream_drop = Ctx(req_artifact="final_report.md", attempt=0, max_attempts=8,
+                                         delegated=True, files=["findings.md", "final_report.md"],
+                                         content=f"- dato. [Src]({heur_urls[0]})",
+                                         quotas=None, run_state=rs3)
+                assert check_report_underuses_evidence(ctx_upstream_drop) is None
+
+                # (e) final_report.md missing entirely -> not this check's job.
+                ctx_no_report = Ctx(req_artifact="final_report.md", attempt=0, max_attempts=8,
+                                     delegated=True, files=["findings.md"], content=None,
+                                     quotas=None, run_state=rs)
+                assert check_report_underuses_evidence(ctx_no_report) is None
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            if _orig_ws12 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws12
+
+    contextvars.copy_context().run(_report_underuses_evidence_scenario)
+
+    # --- cheap_grounding_problems / _other_grounding_problems / _with_other_grounding_addendum
+    # (2026-07-29): real_grounding_problem's own ordered if-chain returns only its FIRST hit, so
+    # every GROUNDING_CHECKS function keyed off the shared ctx.grounding_problem string can be
+    # permanently shadowed by a persistently-recurring higher-priority one -- live-confirmed
+    # against this session's OWN real run output: a saved final_report.md
+    # (give_me_documentation_on_the_top_5_heuristic_algor_20260729_174715) had both a stub_source
+    # citation AND 6 uncited-claims lines (verified by calling find_uncited_claim_lines directly
+    # against the saved file); check_uncited_claims never got a turn across 3 attempts because
+    # ctx.grounding_problem stayed "stub_source:..." the whole time, and the terminal "retry budget
+    # exhausted" message reported only stub_source. This reproduces the same shape directly rather
+    # than replaying the saved file (keeps the test self-contained and fast). ---
+    def _other_grounding_problems_scenario():
+        from engine.completion import (
+            Ctx, check_stub_source, cheap_grounding_problems, _other_grounding_problems,
+            _with_other_grounding_addendum,
+        )
+        from utils.run_state import RunState, record_fetched_url, reset_fetched_urls
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rs = RunState(tmpdir)
+            reset_fetched_urls()
+            try:
+                stub_url = "https://news.example.co/paywalled-calendar"
+                record_fetched_url(stub_url, filename="sources/stub.md", stub="paywall")
+                # 6 figure-bearing lines, no citation on any of them, in their own heading section
+                # with no URL anywhere in it (find_uncited_claim_lines is section-scoped) -- but the
+                # document ALSO cites the stub URL, which real_grounding_problem's stub-detection
+                # check (earlier in its own priority chain) matches FIRST.
+                report = (
+                    "## Findings\n"
+                    "This report synthesizes recent findings on sales figures for the region overall.\n"
+                    "Revenue rose to 200,016 million units in the most recent quarter under review.\n"
+                    "Projected spending for next year is estimated near 198,161 million units total.\n"
+                    "Long-term estimates place the 2027 figure around 203,930 million units total.\n"
+                    "Long-term estimates place the 2028 figure around 210,660 million units total.\n"
+                    "The overall trend suggests steady growth is expected to continue through 2029.\n"
+                    "## Sources\n"
+                    f"- [Calendar]({stub_url})\n"
+                )
+                gc_cfg = _config.cfg.get("settings", {}).get("grounding_check", {})
+                from utils.run_state import get_fetched_urls
+                raw = cheap_grounding_problems(report, gc_cfg, get_fetched_urls())
+                names = [p.split(":", 1)[0] for p in raw]
+                assert "stub_source" in names, names
+                assert "uncited_claims" in names, names
+
+                ctx = Ctx(req_artifact="final_report.md", attempt=6, max_attempts=8, delegated=True,
+                          files=["findings.md", "final_report.md"], content=report,
+                          quotas={}, run_state=rs)
+                ctx.grounding_problem = f"stub_source:{stub_url}"
+                primary = check_stub_source(ctx)
+                assert primary is not None and primary.problem == "stub_source", primary
+
+                # The bug this closes: re-running the sibling check against the SAME ctx can never
+                # see the uncited-claims problem (the fact was never computed) -- confirms the fix
+                # had to move to cheap_grounding_problems, not a GROUNDING_CHECKS re-walk.
+                from engine.completion import check_uncited_claims
+                assert check_uncited_claims(ctx) is None, (
+                    "sanity check: a sibling check keyed off the same shared grounding_problem "
+                    "string cannot independently reveal a second problem")
+
+                others = _other_grounding_problems(ctx, primary.problem)
+                assert any(o.startswith("uncited_claims:") for o in others), others
+
+                augmented = _with_other_grounding_addendum(primary, ctx)
+                assert "uncited_claims" in augmented.inject, augmented.inject
+                assert augmented.warning == primary.warning, (
+                    "only .inject (model-facing) gains the addendum, not .warning (user-facing "
+                    "live progress notification) -- see _with_other_problems_addendum's docstring")
+
+                # No secondary problem present -> byte-identical verdict, no addendum.
+                clean_ctx = Ctx(req_artifact="final_report.md", attempt=0, max_attempts=8,
+                                 delegated=True, files=["findings.md", "final_report.md"],
+                                 content=f"Steady growth continued. [Calendar]({stub_url})",
+                                 quotas={}, run_state=rs)
+                clean_ctx.grounding_problem = f"stub_source:{stub_url}"
+                clean_primary = check_stub_source(clean_ctx)
+                clean_augmented = _with_other_grounding_addendum(clean_primary, clean_ctx)
+                assert clean_augmented is clean_primary, clean_augmented
+            finally:
+                reset_fetched_urls()
+
+    contextvars.copy_context().run(_other_grounding_problems_scenario)
+
     # --- missing_artifact escalation (live case 2026-07-12: 24 real fetched URLs + a populated
     # findings.md, but the model still got this nudge 5x verbatim and never once attempted
     # write_workspace_file). Two behaviors added: findings.md content quoted directly in the

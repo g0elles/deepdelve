@@ -205,6 +205,13 @@ settings:
   findings_evidence_check:
     enabled: true
     min_tasks: 2  # need at least this many covered tasks -- can't detect "one topic missing" with just one
+  # check_findings_underuses_evidence's own sibling, one stage downstream (2026-07-29): findings.md
+  # underuses_evidence guarantees every covered task reaches findings.md, but nothing then
+  # guarantees Builder's report actually cites every task's surviving sources -- report_coverage_check's
+  # flat ratio can pass while one whole task's citations are zero (RESEARCH.md Sec.14h).
+  report_evidence_check:
+    enabled: true
+    min_tasks: 2
   # Engine-driven iterative deepening (2026-07-19, ROADMAP item 10, dzhng/deep-research pattern):
   # when a thin_coverage retry fires AND a Searcher's own real "FOLLOW-UP DIRECTIONS:" section
   # named a real lead, the ENGINE dispatches those directions directly as new tasks (geometric
