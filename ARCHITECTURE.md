@@ -62,6 +62,19 @@ documented symptom relationship, not generically). **Before trusting any future 
 count fix as complete, grep the whole file for every `for a in reversed(...completion_check_attempts...)`
 loop — there is no shared helper, each is its own local reimplementation.**
 
+**A third landmine in the same incident, found immediately after fixing the second:** the
+final-verdict salvage path (`run_completion_check`'s last branch, right before `return False,
+current_input`) only calls `_salvage_narrated_report` — which rescues a substantial narrated
+response into `req_artifact` when nothing was ever written — for `problem == "missing_artifact"`.
+That function itself is generic; it doesn't care WHY the artifact is missing. But any OTHER problem
+that ends a run with `req_artifact` never written (confirmed live: `task_verification_flagged`, a
+genuinely unfillable per-task source gap) hit "Report NOT WRITTEN" with zero salvage attempt,
+discarding a coherent narrated summary purely because a different check happened to be the terminal
+one — model-independent, not specific to whichever candidate was running. Broadened to also cover
+`task_verification_flagged` (2026-07-31). **If a new completion-check problem can legitimately end a
+run with `req_artifact` still unwritten, check whether it belongs in this salvage condition too —
+don't assume `missing_artifact` is the only such case.**
+
 ### Verdict → downstream routing: four tuples that must all agree
 
 A new problem name isn't "done" when its check function returns a `Verdict`. It also needs an entry

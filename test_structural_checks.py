@@ -4003,6 +4003,82 @@ def main():
 
     contextvars.copy_context().run(_force_whole_rebuild_survives_untracked_delegation_interruption_scenario)
 
+    # --- run_completion_check's final-verdict salvage must also cover task_verification_flagged,
+    # not just missing_artifact (2026-07-31 live incident, Ornith-1.0-9B re-test #2): confirmed
+    # live that a run whose retry budget exhausted with task_verification_flagged as the ONLY
+    # unresolved problem, req_artifact never written, reported "Report NOT WRITTEN" and discarded
+    # the model's own substantial final narration -- even though _salvage_narrated_report is
+    # generic and doesn't care WHY the artifact is missing. Model-independent: any candidate
+    # ending a run stuck on an unfillable task-level source gap hits this same dead end. Disk mode
+    # (not memory) -- the salvage helpers write via plain open()/_get_safe_path, bypassing the
+    # in-memory FS dict entirely, same reason the other salvage scenario in this file uses disk. ---
+    with tempfile.TemporaryDirectory() as tmpdir2:
+        def _task_verification_flagged_final_salvage_scenario():
+            from tools.core import tool_quotas_ctx as q_ctx
+            from engine.completion import _update_task_verification
+
+            _orig_ws14 = _config.cfg.get("settings", {}).get("workspace")
+            _config.cfg["settings"]["workspace"] = {"type": "disk", "dir": tmpdir2, "required_artifact": "final_report.md"}
+            _orig_gc14 = _config.cfg.get("settings", {}).get("grounding_check")
+            _config.cfg["settings"]["grounding_check"] = {"nli_verify": False, "topical_relevance_check": False}
+            _orig_max14 = _config.cfg.get("settings", {}).get("max_completion_check_attempts")
+            _config.cfg["settings"]["max_completion_check_attempts"] = 1
+            try:
+                reset_fetched_urls()
+                q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5},
+                           "read_workspace_file": {"used": 0, "limit": 30},
+                           "write_workspace_file": {"used": 0, "limit": 30},
+                           "think_tool": {"used": 0, "limit": 30}})
+
+                rs = RunState(tmpdir2)
+                rs.attempt = 1  # already at max_completion_check_attempts (1) -- exhausted on this pass
+                rs.data["dispatched_tasks"] = [
+                    {"task_name": "task_flagged", "instructions": "Research the K-Pg boundary definition and age."},
+                ]
+                rs.add_finding(
+                    "https://b.example.co/y",
+                    "[SYSTEM VERIFICATION WARNING: stub_source:https://b.example.co/y]",
+                    task_name="task_flagged", depth=1,
+                )
+                run_state_ctx.set(rs)
+                _update_task_verification(rs)
+                assert rs.data["task_verification"]["task_flagged"]["status"] == "flagged", rs.data["task_verification"]
+
+                narrated_summary = (
+                    "## Scoping Summary\n\n" + ("Real substantive research content, acknowledged gap. " * 15)
+                )
+                msgs = []
+                should_retry, _ = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append,
+                    last_assistant_text=narrated_summary))
+                assert should_retry is False, (should_retry, msgs)
+
+                path = os.path.join(tmpdir2, "final_report.md")
+                assert os.path.exists(path), (
+                    "task_verification_flagged as the terminal exhausted problem must still salvage "
+                    "the model's own substantial narration into the required artifact, same as "
+                    "missing_artifact already does", msgs)
+                content = open(path, encoding="utf-8").read()
+                assert "Real substantive research content" in content, content
+                assert "AUTO-RECOVERED" in content or "unverified" in content.lower(), (
+                    "salvaged content must be clearly flagged as unverified", content)
+            finally:
+                if _orig_ws14 is None:
+                    _config.cfg["settings"].pop("workspace", None)
+                else:
+                    _config.cfg["settings"]["workspace"] = _orig_ws14
+                if _orig_gc14 is None:
+                    _config.cfg["settings"].pop("grounding_check", None)
+                else:
+                    _config.cfg["settings"]["grounding_check"] = _orig_gc14
+                if _orig_max14 is None:
+                    _config.cfg["settings"].pop("max_completion_check_attempts", None)
+                else:
+                    _config.cfg["settings"]["max_completion_check_attempts"] = _orig_max14
+                reset_fetched_urls()
+
+        contextvars.copy_context().run(_task_verification_flagged_final_salvage_scenario)
+
     # --- _dispatch_writer_review_fix immediate narration salvage (2026-07-18 bake-off finding:
     # qwen2.5:3b-instruct as FindingsWriter narrated a complete findings.md draft as chat text on
     # EVERY attempt, never once calling write_workspace_file, and burned the full 8-attempt retry

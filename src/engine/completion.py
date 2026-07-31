@@ -2878,7 +2878,21 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                            f"trusting it.")
                 else:
                     substantial_text = (find_substantial_text() if find_substantial_text else "") or last_assistant_text
-                    if problem == "missing_artifact" and _salvage_narrated_report(req_artifact, substantial_text):
+                    # 2026-07-31 (live incident, Ornith-1.0-9B re-test): this salvage attempt was
+                    # gated to problem == "missing_artifact" only, but _salvage_narrated_report
+                    # itself is generic -- it just rescues a substantial narrated response into
+                    # req_artifact when nothing was ever written, regardless of WHY the run got
+                    # stuck. A run terminally stuck on task_verification_flagged (a real,
+                    # unfillable source gap for one task) is structurally identical here: nothing
+                    # in req_artifact, but the model's own final message already narrated the
+                    # acknowledged-gap summary its own directive asked for (see
+                    # check_task_verification_flagged's docstring: "say so explicitly in the
+                    # report as an acknowledged gap"). Confirmed live: a run whose ONLY unresolved
+                    # problem was task_verification_flagged reported "Report NOT WRITTEN" with zero
+                    # salvage attempt, discarding a real, coherent narrated summary purely because
+                    # of which check happened to be the terminal one -- model-independent, would
+                    # hit any candidate the same way.
+                    if problem in ("missing_artifact", "task_verification_flagged") and _salvage_narrated_report(req_artifact, substantial_text):
                         # Structural fallback, not another prompt nudge — see _salvage_narrated_report's
                         # docstring for why: nudging alone has proven insufficient for this exact pattern
                         # across two independent projects now.
