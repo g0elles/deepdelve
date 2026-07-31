@@ -93,6 +93,23 @@ dispatch loop — it will keep winning first-match forever unless it caps its ow
 gets wired into the starvation-guard mechanism above. A check whose directive promises an outcome
 ("the writer roles will handle X") must itself get out of the way for that outcome to happen.**
 
+**A fifth landmine, found by systematically auditing every check above `check_missing_findings`/
+`check_missing_artifact` against this exact shape (user-requested review, right after the fourth
+landmine above), not another live incident:** `check_thin_coverage` — one slot HIGHER priority than
+`check_task_verification_flagged` was — has the identical problem: not Builder/FindingsWriter-
+fixable, no cap at all (unlike the others, it didn't even have an existing 2-3 occurrence ceiling),
+and its own escalated directive uses the same broken-promise language ("say so explicitly in the
+report as an acknowledged gap... rather than silently omitting it"). Fixed the same way (cap at 3
+occurrences, same untracked_delegation-continuation treatment). The other checks above the
+artifact-existence checks were audited and cleared: `check_not_delegated` self-clears the moment any
+real delegation happens (not the same risk shape); `check_findings_ungrounded` IS in
+`_FINDINGS_WRITER_FIXABLE_PROBLEMS`, so it already dispatches its own recovery. **When auditing this
+class of bug, check every entry in `COMPLETION_CHECKS` above the artifact-existence checks against
+three questions: (1) is it in `_BUILDER_FIXABLE_PROBLEMS` or `_FINDINGS_WRITER_FIXABLE_PROBLEMS`? if
+yes, it self-resolves, not a landmine. (2) does its own firing condition permanently self-clear once
+satisfied (like `check_not_delegated`)? if yes, not a landmine. (3) if neither, does it cap its own
+firing count? if no, it can starve the writer-dispatch pipeline forever — this is the landmine.**
+
 ### Verdict → downstream routing: four tuples that must all agree
 
 A new problem name isn't "done" when its check function returns a `Verdict`. It also needs an entry

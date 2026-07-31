@@ -3033,8 +3033,16 @@ def main():
                 injected = new_input[-1].contents[0].text
                 assert "reconsider your whole approach" in injected, injected
 
-            # 4th consecutive occurrence: whole-approach retry already spent for this problem ->
-            # falls through to the pre-existing early-exit behavior, same as missing_artifact.
+            # 4th consecutive occurrence (2026-07-31, BEHAVIOR CHANGED by check_thin_coverage's own
+            # 3-firing cap, same landmine class as check_task_verification_flagged found the same
+            # night -- see that function's docstring): check_thin_coverage now goes quiet at
+            # prior_same>=3 instead of firing a 4th time, so it no longer reaches this generalized
+            # escalation guard at all for thin_coverage specifically. The pipeline correctly falls
+            # through to WHICHEVER check is next in COMPLETION_CHECKS priority order with something
+            # real to say -- here, check_task_verification_flagged (this fixture's "found nothing
+            # usable" summaries fail the citability check too) -- and gets a normal retry instead of
+            # a forced final-verdict/salvage stop. This is the deliberate improvement: real ongoing
+            # progress beats a premature hard stop.
             with tempfile.TemporaryDirectory() as tmpdir11:
                 rs = _thin_run_state(tmpdir11)
                 rs.data["completion_check_attempts"] = [
@@ -3047,10 +3055,10 @@ def main():
                 msgs = []
                 should_retry, _ = _asyncio.run(run_completion_check(
                     query="q", current_input="q", run_state=rs, notify=msgs.append))
-                assert not should_retry, (
-                    "4th consecutive thin_coverage, whole-approach retry already spent, must "
-                    "escalate straight to the final verdict -- the generalized guard, not just "
-                    "missing_artifact-specific", msgs)
+                assert should_retry, (
+                    "thin_coverage's own cap must yield to the next real problem (here, "
+                    "task_verification_flagged) for a normal retry, not force a premature final "
+                    "verdict while real recovery is still possible", msgs)
         finally:
             _IN_MEMORY_FS.clear()
             _IN_MEMORY_FS.update(saved_fs)
@@ -3061,6 +3069,57 @@ def main():
                 _config.cfg["settings"]["workspace"] = _orig_ws11
 
     contextvars.copy_context().run(_thin_coverage_escalation_scenario)
+
+    # --- check_thin_coverage's own 3-firing cap, tested directly against the function (not just
+    # through run_completion_check above) -- same landmine class and same threshold reasoning as
+    # check_task_verification_flagged's cap (2026-07-31, see that function's docstring). ---
+    def _thin_coverage_cap_scenario():
+        from engine.completion import check_thin_coverage
+        rs = RunState(tmpdir_root := tempfile.mkdtemp())
+        try:
+            rs.add_finding("https://a.example.co/x", "summary", task_name="Background", depth=1)
+            rs.add_finding("Comparison A", "found nothing usable", task_name="Comparison A", depth=1)
+            rs.add_finding("Comparison B", "found nothing usable", task_name="Comparison B", depth=1)
+
+            # Below the cap (3rd occurrence, prior_same==2): must still fire.
+            rs.data["completion_check_attempts"] = [
+                {"problem": "thin_coverage"},
+                {"problem": "thin_coverage"},
+            ]
+            ctx = Ctx(req_artifact="final_report.md", attempt=2, max_attempts=8, delegated=True,
+                      files=[], content=None, quotas=None, run_state=rs)
+            assert check_thin_coverage(ctx) is not None, (
+                "the 3rd occurrence itself must still fire (force_whole_rebuild's turn)")
+
+            # At the cap (4th occurrence, prior_same==3): must go quiet.
+            rs.data["completion_check_attempts"] = [
+                {"problem": "thin_coverage"},
+                {"problem": "thin_coverage"},
+                {"problem": "thin_coverage"},
+            ]
+            ctx2 = Ctx(req_artifact="final_report.md", attempt=3, max_attempts=8, delegated=True,
+                       files=[], content=None, quotas=None, run_state=rs)
+            assert check_thin_coverage(ctx2) is None, (
+                "a 4th+ consecutive occurrence must go quiet and yield to missing_findings/"
+                "missing_artifact instead of permanently starving them")
+
+            # untracked_delegation interrupting the streak must not reset the count either --
+            # same reasoning as check_task_verification_flagged's own cap.
+            rs.data["completion_check_attempts"] = [
+                {"problem": "thin_coverage"},
+                {"problem": "untracked_delegation"},
+                {"problem": "thin_coverage"},
+                {"problem": "thin_coverage"},
+            ]
+            ctx3 = Ctx(req_artifact="final_report.md", attempt=4, max_attempts=8, delegated=True,
+                       files=[], content=None, quotas=None, run_state=rs)
+            assert check_thin_coverage(ctx3) is None, (
+                "untracked_delegation interrupting the streak must not reset thin_coverage's own cap")
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir_root, ignore_errors=True)
+
+    contextvars.copy_context().run(_thin_coverage_cap_scenario)
 
     # --- check_thin_coverage against REAL captured data, not just hand-written fixtures (2026-07-19
     # QA audit finding: all 16 completion checks were tested with synthetic fixtures only, even

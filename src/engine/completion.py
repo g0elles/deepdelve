@@ -114,7 +114,21 @@ def check_thin_coverage(ctx: Ctx) -> Optional[Verdict]:
     Colombian payroll with zero mention of the query's other half -- the run still reported
     'verified, no unresolved issues' the whole time. "Half your explicit tasks produced nothing"
     is already a real failure on its own terms; there's no principled reason 0.5 exactly should
-    be treated as acceptable when 0.49 isn't."""
+    be treated as acceptable when 0.49 isn't.
+
+    Capped to at most 3 firings total (2026-07-31, same landmine class as check_task_verification_
+    flagged found the same night — see that function's own docstring for the live incident and the
+    general lesson in ARCHITECTURE.md §1). This check sits ABOVE check_missing_findings/
+    check_missing_artifact in COMPLETION_CHECKS and is not itself Builder/FindingsWriter-fixable —
+    so without a cap, a run whose coverage never improves (a genuinely unfindable topic, not a
+    model-capability problem) would starve the checks that actually dispatch a real writer role
+    forever, exactly like task_verification_flagged did before its own fix, and this check's own
+    escalated directive uses the identical broken-promise language ("say so explicitly in the
+    report as an acknowledged gap... rather than silently omitting it") that only comes true if the
+    pipeline actually reaches a writer dispatch. The iterative-deepening dispatch in
+    run_completion_check (a genuine, self-resolving recovery attempt, up to max_deepening_rounds)
+    still gets its own turn first — this cap only stops the CLASSIC Planner-nudge path once that
+    budget and the redo/acknowledge cycle are both exhausted."""
     cov_cfg = config.cfg.get("settings", {}).get("coverage_check", {})
     if not cov_cfg.get("enabled", True):
         return None
@@ -124,12 +138,21 @@ def check_thin_coverage(ctx: Ctx) -> Optional[Verdict]:
     if coverage["total"] < min_tasks or coverage["ratio"] > threshold:
         return None
 
+    # untracked_delegation skip: same reasoning as check_task_verification_flagged's own prior_same
+    # counter (2026-07-29 fix) -- this check's own redo directive says "reuse the exact same
+    # task_name... do NOT invent a new task_name," so untracked_delegation firing in between is a
+    # direct symptom of THIS check's own directive being violated, not an unrelated interruption.
     prior_same = 0
     for a in reversed(ctx.run_state.data.get("completion_check_attempts", [])):
-        if a.get("problem") == "thin_coverage":
+        p = a.get("problem")
+        if p == "thin_coverage":
             prior_same += 1
+        elif p == "untracked_delegation":
+            continue
         else:
             break
+    if prior_same >= 3:
+        return None
 
     uncovered_list = ", ".join(f"'{t}'" for t in coverage["uncovered_task_names"][:5])
     if prior_same == 0:
