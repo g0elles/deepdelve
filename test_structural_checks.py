@@ -2548,6 +2548,51 @@ def main():
             assert "delegate_tasks again" in verdict7.inject, (
                 "an unrelated interrupting problem SHOULD still reset the streak", verdict7.inject)
 
+            # --- 2026-07-31 live incident (gpt-oss AND Ornith-1.0-9B, same night): this check sits
+            # ABOVE check_missing_findings/check_missing_artifact in COMPLETION_CHECKS and isn't
+            # itself Builder/FindingsWriter-fixable, so as long as one task stays flagged it wins
+            # first-match on EVERY attempt, permanently starving the checks that actually dispatch
+            # a real writer role -- confirmed live: findings.md never got written despite real,
+            # usable findings for every OTHER task, and the quota_exhausted branch's own directive
+            # ("the writer roles will note X as an acknowledged gap") never came true because those
+            # writer roles never got dispatched. Must return None on a 3rd+ occurrence so the
+            # pipeline falls through. ---
+            rs8 = RunState(tmpdir)
+            rs8.add_finding(
+                "https://b.example.co/y",
+                "[SYSTEM VERIFICATION WARNING: stub_source:https://b.example.co/y]",
+                task_name="task_flagged", depth=1,
+            )
+            _update_task_verification(rs8)
+            rs8.data["completion_check_attempts"] = [
+                {"problem": "task_verification_flagged"},
+                {"problem": "task_verification_flagged"},
+                {"problem": "task_verification_flagged"},
+            ]
+            ctx8 = Ctx(req_artifact="final_report.md", attempt=3, max_attempts=8, delegated=True,
+                       files=[], content=None, quotas=None, run_state=rs8)
+            assert check_task_verification_flagged(ctx8) is None, (
+                "a 4th+ consecutive occurrence must go quiet and yield to missing_findings/"
+                "missing_artifact instead of permanently starving them")
+
+            # Below the cap (3rd occurrence, prior_same==2): must still fire normally, so
+            # force_whole_rebuild's own one-extra-attempt escalation gets its turn first.
+            rs9 = RunState(tmpdir)
+            rs9.add_finding(
+                "https://b.example.co/y",
+                "[SYSTEM VERIFICATION WARNING: stub_source:https://b.example.co/y]",
+                task_name="task_flagged", depth=1,
+            )
+            _update_task_verification(rs9)
+            rs9.data["completion_check_attempts"] = [
+                {"problem": "task_verification_flagged"},
+                {"problem": "task_verification_flagged"},
+            ]
+            ctx9 = Ctx(req_artifact="final_report.md", attempt=2, max_attempts=8, delegated=True,
+                       files=[], content=None, quotas=None, run_state=rs9)
+            assert check_task_verification_flagged(ctx9) is not None, (
+                "the 3rd occurrence itself must still fire (force_whole_rebuild's turn)")
+
     contextvars.copy_context().run(_task_verification_scenario)
 
     # --- check_report_underuses_findings (2026-07-22): Builder's own version of check_thin_

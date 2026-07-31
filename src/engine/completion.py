@@ -171,7 +171,22 @@ def check_task_verification_flagged(ctx: Ctx) -> Optional[Verdict]:
     not "delegate more"). Still one Verdict per attempt, same as every other check here (Phase 2 of
     the design -- actually independent per-task redispatch bypassing the Planner's own turn -- is
     explicitly deferred, see ROADMAP.md Pending) -- but the directive names the SPECIFIC flagged
-    task(s) rather than nudging the whole run generically."""
+    task(s) rather than nudging the whole run generically.
+
+    Capped to at most 2 firings total (2026-07-31 live incident, gpt-oss AND Ornith-1.0-9B both hit
+    this the same night): this check sits ABOVE check_missing_findings/check_missing_artifact in
+    COMPLETION_CHECKS and is not itself Builder/FindingsWriter-fixable (not in either
+    _*_FIXABLE_PROBLEMS tuple) -- so as long as one task stays genuinely flagged, it wins
+    first-match on EVERY attempt and permanently starves the checks that actually dispatch a real
+    writer role. Confirmed live: the quota_exhausted branch's own directive text promises "the
+    writer roles will note X as an acknowledged gap when they build the report" -- a promise this
+    check's own priority position structurally prevented from ever coming true. findings.md never
+    got written despite real, usable findings existing for every OTHER task; the run ended with a
+    salvaged narration (or nothing) instead of a real report built from real evidence. Once this
+    check has said its piece twice (once "redo", once "acknowledge/stop"), further occurrences
+    return None so the pipeline falls through to missing_findings/missing_artifact -- the SAME
+    bounded-escalation-then-yield shape already used by force_whole_rebuild elsewhere in this file,
+    not a new mechanism."""
     cfg = config.cfg.get("settings", {}).get("task_verification_check", {})
     if not cfg.get("enabled", True):
         return None
@@ -198,6 +213,18 @@ def check_task_verification_flagged(ctx: Ctx) -> Optional[Verdict]:
             continue
         else:
             break
+
+    # 2026-07-31 (live incident): once this check has fired 3 times (one "redo" + one
+    # "acknowledge"/"stop" + the one extra attempt run_completion_check's own
+    # force_whole_rebuild escalation grants every problem type on its 3rd consecutive occurrence,
+    # see CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD), a 4th+ occurrence adds no new information
+    # and only continues starving check_missing_findings/check_missing_artifact below it in
+    # COMPLETION_CHECKS -- see this function's own docstring for the live incident that motivated
+    # this cap. Go quiet and let the pipeline actually reach the writer roles this check's own
+    # directives already promised would run. (Threshold is 3, not 2, so force_whole_rebuild's own
+    # one-extra-attempt escalation still gets its turn first, same as every other problem type.)
+    if prior_same >= 3:
+        return None
 
     # Quota-aware directive (2026-07-27, live regression): telling the Planner to "delegate_tasks
     # again" when its delegate_tasks quota is already exhausted is a directive it structurally

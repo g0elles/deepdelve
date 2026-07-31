@@ -75,6 +75,24 @@ one — model-independent, not specific to whichever candidate was running. Broa
 run with `req_artifact` still unwritten, check whether it belongs in this salvage condition too —
 don't assume `missing_artifact` is the only such case.**
 
+**A fourth landmine, found live the same night on a completely different candidate (gpt-oss, the
+project's own default) hitting the identical structural gap:** `check_task_verification_flagged`
+sits ABOVE `check_missing_findings`/`check_missing_artifact` in `COMPLETION_CHECKS`, and is not
+itself Builder/FindingsWriter-fixable (absent from both `_*_FIXABLE_PROBLEMS` tuples). First-match
+priority means: as long as one task stays genuinely flagged, this check wins EVERY attempt and
+permanently starves the checks that actually dispatch a real writer role — confirmed live on two
+independent candidates the same night, `findings.md` never written despite real, usable findings
+existing for every OTHER task. The check's own `quota_exhausted` directive text explicitly promises
+"the writer roles will note X as an acknowledged gap when they build the report" — a promise its
+own priority position structurally prevented from ever coming true. Fixed by capping this check's
+own firing to 3 occurrences (redo, acknowledge, force_whole_rebuild's one extra escalated attempt),
+then going quiet so the pipeline actually reaches `check_missing_findings`/`check_missing_artifact`.
+**General lesson for any future check placed above the artifact-existence checks: if it is not
+Builder/FindingsWriter-fixable, it can NEVER be blocked from firing by the normal Write→Review→Fix
+dispatch loop — it will keep winning first-match forever unless it caps its own firing count or
+gets wired into the starvation-guard mechanism above. A check whose directive promises an outcome
+("the writer roles will handle X") must itself get out of the way for that outcome to happen.**
+
 ### Verdict → downstream routing: four tuples that must all agree
 
 A new problem name isn't "done" when its check function returns a `Verdict`. It also needs an entry
