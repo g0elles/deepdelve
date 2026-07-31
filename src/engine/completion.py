@@ -2942,7 +2942,17 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                     # salvage attempt, discarding a real, coherent narrated summary purely because
                     # of which check happened to be the terminal one -- model-independent, would
                     # hit any candidate the same way.
-                    if problem in ("missing_artifact", "task_verification_flagged") and _salvage_narrated_report(req_artifact, substantial_text):
+                    # 2026-07-31 (later same night, gpt-oss re-test after the check_task_
+                    # verification_flagged/check_thin_coverage starvation fixes): the starvation
+                    # fix worked -- missing_findings finally got its first real turn instead of
+                    # being permanently blocked -- but it fired too late in the budget to complete
+                    # a full Write->Review->Fix cycle, landed here on the final branch, and
+                    # missing_findings wasn't in this condition either. Same generic salvage
+                    # applies: nothing in req_artifact, but a coherent narrated summary already
+                    # exists ("the writer roles will automatically generate findings.md" plus real
+                    # gathered content) from the attempt that never got a chance to actually run
+                    # FindingsWriter.
+                    if problem in ("missing_artifact", "task_verification_flagged", "missing_findings") and _salvage_narrated_report(req_artifact, substantial_text):
                         # Structural fallback, not another prompt nudge — see _salvage_narrated_report's
                         # docstring for why: nudging alone has proven insufficient for this exact pattern
                         # across two independent projects now.

@@ -4183,6 +4183,68 @@ def main():
 
         contextvars.copy_context().run(_task_verification_flagged_final_salvage_scenario)
 
+    # --- Same salvage broadening, one more problem type (2026-07-31, later same night): a gpt-oss
+    # re-test AFTER the check_task_verification_flagged/check_thin_coverage starvation fixes above
+    # confirmed those fixes work (missing_findings finally got a real turn instead of being
+    # permanently blocked) but landed on the final branch before FindingsWriter got a chance to
+    # actually run -- and missing_findings wasn't in the salvage condition either. Same generic
+    # fix, same reasoning: a coherent narrated summary already exists, don't discard it. ---
+    with tempfile.TemporaryDirectory() as tmpdir3:
+        def _missing_findings_final_salvage_scenario():
+            from tools.core import tool_quotas_ctx as q_ctx
+
+            _orig_ws15 = _config.cfg.get("settings", {}).get("workspace")
+            _config.cfg["settings"]["workspace"] = {"type": "disk", "dir": tmpdir3, "required_artifact": "final_report.md"}
+            _orig_gc15 = _config.cfg.get("settings", {}).get("grounding_check")
+            _config.cfg["settings"]["grounding_check"] = {"nli_verify": False, "topical_relevance_check": False}
+            _orig_max15 = _config.cfg.get("settings", {}).get("max_completion_check_attempts")
+            _config.cfg["settings"]["max_completion_check_attempts"] = 1
+            try:
+                reset_fetched_urls()
+                q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5},
+                           "read_workspace_file": {"used": 0, "limit": 30},
+                           "write_workspace_file": {"used": 0, "limit": 30},
+                           "think_tool": {"used": 0, "limit": 30}})
+
+                rs = RunState(tmpdir3)
+                rs.attempt = 1  # already at max_completion_check_attempts (1) -- exhausted on this pass
+                rs.add_finding("https://a.example.co/x", "real content", task_name="task_real", depth=1)
+                run_state_ctx.set(rs)
+
+                narrated_summary = (
+                    "## Scoping Summary\n\n" + ("Real substantive research content, gathered but never written. " * 15)
+                )
+                msgs = []
+                should_retry, _ = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append,
+                    last_assistant_text=narrated_summary))
+                assert should_retry is False, (should_retry, msgs)
+
+                path = os.path.join(tmpdir3, "final_report.md")
+                assert os.path.exists(path), (
+                    "missing_findings as the terminal exhausted problem must still salvage the "
+                    "model's own substantial narration into the required artifact", msgs)
+                content = open(path, encoding="utf-8").read()
+                assert "Real substantive research content" in content, content
+                assert "AUTO-RECOVERED" in content or "unverified" in content.lower(), (
+                    "salvaged content must be clearly flagged as unverified", content)
+            finally:
+                if _orig_ws15 is None:
+                    _config.cfg["settings"].pop("workspace", None)
+                else:
+                    _config.cfg["settings"]["workspace"] = _orig_ws15
+                if _orig_gc15 is None:
+                    _config.cfg["settings"].pop("grounding_check", None)
+                else:
+                    _config.cfg["settings"]["grounding_check"] = _orig_gc15
+                if _orig_max15 is None:
+                    _config.cfg["settings"].pop("max_completion_check_attempts", None)
+                else:
+                    _config.cfg["settings"]["max_completion_check_attempts"] = _orig_max15
+                reset_fetched_urls()
+
+        contextvars.copy_context().run(_missing_findings_final_salvage_scenario)
+
     # --- _dispatch_writer_review_fix immediate narration salvage (2026-07-18 bake-off finding:
     # qwen2.5:3b-instruct as FindingsWriter narrated a complete findings.md draft as chat text on
     # EVERY attempt, never once calling write_workspace_file, and burned the full 8-attempt retry

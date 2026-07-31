@@ -71,9 +71,14 @@ that ends a run with `req_artifact` never written (confirmed live: `task_verific
 genuinely unfillable per-task source gap) hit "Report NOT WRITTEN" with zero salvage attempt,
 discarding a coherent narrated summary purely because a different check happened to be the terminal
 one — model-independent, not specific to whichever candidate was running. Broadened to also cover
-`task_verification_flagged` (2026-07-31). **If a new completion-check problem can legitimately end a
-run with `req_artifact` still unwritten, check whether it belongs in this salvage condition too —
-don't assume `missing_artifact` is the only such case.**
+`task_verification_flagged` (2026-07-31), then `missing_findings` too (same day, later — the very
+next live re-test after the starvation fixes below confirmed those fixes work, missing_findings
+finally got a real turn, but it fired too late in the attempt budget to complete a full
+Write→Review→Fix cycle and landed here uncovered). **If a new completion-check problem can
+legitimately end a run with `req_artifact` still unwritten, check whether it belongs in this
+salvage condition too — don't assume `missing_artifact` is the only such case. This condition has
+now been widened three separate times from the same live-testing session; treat it as a strong
+candidate for "does this belong here" whenever a new problem type shows up in the final branch.**
 
 **A fourth landmine, found live the same night on a completely different candidate (gpt-oss, the
 project's own default) hitting the identical structural gap:** `check_task_verification_flagged`
