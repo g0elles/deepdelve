@@ -46,6 +46,22 @@ as a side effect of being called, so it is NOT a candidate for this pattern with
 that mutation. Before adding a new check to this starvation-guard mechanism, confirm it doesn't
 write to `run_state.data`.
 
+**A second, independent landmine of the exact same shape, found 2026-07-31 (Ornith-1.0-9B
+re-test):** "does an interrupting problem reset a consecutive-occurrence streak" is not ONE piece
+of logic in this file — it's reimplemented separately everywhere a check counts how many times in a
+row its own problem has fired. `check_task_verification_flagged`'s own `prior_same` counter (for its
+escalation wording, "redo" → "acknowledge the gap") was fixed 2026-07-29 to not let a
+`check_untracked_delegation` blip reset it. `run_completion_check`'s own SEPARATE
+`CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD` counter (drives `force_whole_rebuild` — the
+stronger "reconsider your whole approach" escalation, for every problem type, not just this one)
+is different code a few hundred lines away and was NOT touched by that fix — confirmed live: a run
+stuck on `task_verification_flagged` with one `untracked_delegation` blip in the middle never
+reached `force_whole_rebuild` either, and burned its whole retry budget on the weaker directive
+before exhausting. Fixed the same way, scoped the same way (only skips the break for this one
+documented symptom relationship, not generically). **Before trusting any future streak/consecutive-
+count fix as complete, grep the whole file for every `for a in reversed(...completion_check_attempts...)`
+loop — there is no shared helper, each is its own local reimplementation.**
+
 ### Verdict → downstream routing: four tuples that must all agree
 
 A new problem name isn't "done" when its check function returns a `Verdict`. It also needs an entry

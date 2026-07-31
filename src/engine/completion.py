@@ -2630,6 +2630,19 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                 for a in reversed(run_state.data.get("completion_check_attempts", [])):
                     if a.get("problem") == problem:
                         consecutive += 1
+                    # 2026-07-31 (live incident, Ornith-1.0-9B re-test): same root cause as
+                    # check_task_verification_flagged's own prior_same counter (fixed 2026-07-29,
+                    # 7ec86ef) -- untracked_delegation firing once is a direct symptom of the model
+                    # failing to comply with THIS check's "reuse the exact task_name" directive, not
+                    # an unrelated interruption. This counter is a SEPARATE piece of machinery (drives
+                    # force_whole_rebuild, not check_task_verification_flagged's own wording) that the
+                    # earlier fix never touched, so a task_verification_flagged run stuck for its whole
+                    # budget with one untracked_delegation blip in the middle never reached the
+                    # stronger full-plan-rebuild escalation either. Scoped narrowly, same as the
+                    # sibling fix: only skips the break for this one documented symptom relationship,
+                    # not generically for every problem pair.
+                    elif problem == "task_verification_flagged" and a.get("problem") == "untracked_delegation":
+                        continue
                     else:
                         break
                 if consecutive >= CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD:

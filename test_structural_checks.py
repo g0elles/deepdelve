@@ -3929,6 +3929,80 @@ def main():
 
     contextvars.copy_context().run(_force_whole_rebuild_dispatch_scenario)
 
+    # --- force_whole_rebuild's OWN consecutive-counter must also survive an untracked_delegation
+    # interruption for task_verification_flagged (2026-07-31 live incident, Ornith-1.0-9B re-test):
+    # check_task_verification_flagged's own prior_same counter (its wording/escalation) was fixed
+    # for this 2026-07-29 (7ec86ef), but run_completion_check's SEPARATE consecutive-counter that
+    # drives force_whole_rebuild is different code and was not touched by that fix -- a run stuck on
+    # task_verification_flagged with one untracked_delegation blip in the middle never escalated to
+    # the stronger "reconsider your whole approach" directive either, confirmed live (Report: NOT
+    # WRITTEN after 5 attempts, force_whole_rebuild never fired). task_verification_flagged is not
+    # Builder/FindingsWriter-fixable (not in either _*_FIXABLE_PROBLEMS tuple), so this exercises the
+    # classic Planner-injection path, not a writer dispatch. ---
+    def _force_whole_rebuild_survives_untracked_delegation_interruption_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        from tools.core import tool_quotas_ctx as q_ctx
+        from engine.completion import _update_task_verification
+
+        _orig_ws13 = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
+        _orig_gc13 = _config.cfg.get("settings", {}).get("grounding_check")
+        _config.cfg["settings"]["grounding_check"] = {"nli_verify": False, "topical_relevance_check": False}
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            _IN_MEMORY_FS.clear()
+            reset_fetched_urls()
+            record_fetched_url(_SRC, filename="sources/page.md")
+            _IN_MEMORY_FS["sources/page.md"] = _SOURCE_TEXT
+            _IN_MEMORY_FS["findings.md"] = "- Real finding with a real cited URL (" + _SRC + ")"
+            _IN_MEMORY_FS["final_report.md"] = f"- x [g]({_SRC})"
+            q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5},
+                       "read_workspace_file": {"used": 1, "limit": 30},
+                       "write_workspace_file": {"used": 0, "limit": 30},
+                       "think_tool": {"used": 1, "limit": 30}})
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                rs = RunState(tmpdir)
+                rs.data["dispatched_tasks"] = [
+                    {"task_name": "task_flagged", "instructions": "Research the K-Pg boundary definition and age."},
+                ]
+                rs.add_finding(
+                    "https://b.example.co/y",
+                    "[SYSTEM VERIFICATION WARNING: stub_source:https://b.example.co/y]",
+                    task_name="task_flagged", depth=1,
+                )
+                run_state_ctx.set(rs)
+                _update_task_verification(rs)
+                assert rs.data["task_verification"]["task_flagged"]["status"] == "flagged", rs.data["task_verification"]
+                rs.data["completion_check_attempts"] = [
+                    {"attempt": 0, "problem": "task_verification_flagged"},
+                    {"attempt": 1, "problem": "untracked_delegation"},
+                    {"attempt": 2, "problem": "task_verification_flagged"},
+                ]
+                msgs = []
+                should_retry, new_inputs = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append))
+                assert should_retry is True, (should_retry, msgs)
+                inject_msg = new_inputs[-1].contents[0].text
+                assert "reconsider your whole approach" in inject_msg, (
+                    "untracked_delegation interrupting the streak must not reset force_whole_rebuild's "
+                    "own consecutive counter either", inject_msg)
+                assert rs.data.get("whole_approach_retry_used_for") == {"task_verification_flagged": True}, rs.data
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            if _orig_ws13 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws13
+            if _orig_gc13 is None:
+                _config.cfg["settings"].pop("grounding_check", None)
+            else:
+                _config.cfg["settings"]["grounding_check"] = _orig_gc13
+
+    contextvars.copy_context().run(_force_whole_rebuild_survives_untracked_delegation_interruption_scenario)
+
     # --- _dispatch_writer_review_fix immediate narration salvage (2026-07-18 bake-off finding:
     # qwen2.5:3b-instruct as FindingsWriter narrated a complete findings.md draft as chat text on
     # EVERY attempt, never once calling write_workspace_file, and burned the full 8-attempt retry
