@@ -2772,6 +2772,79 @@ def main():
 
     contextvars.copy_context().run(_report_underuses_findings_scenario)
 
+    # --- null-summary exclusion (2026-08-01, RESEARCH.md Sec.16): a live 1800s-timeout run never
+    # converged because findings.md listed URLs whose Analyzer dispatch came back empty-handed
+    # ("No key findings extracted...") as real, must-be-cited evidence -- an unsatisfiable demand
+    # (nothing to write about) that could only be "resolved" by re-failing the same check or
+    # fabricating a claim. Both check_report_underuses_findings and _facet_coverage must exclude a
+    # URL whose run_state.data["findings"] entries are ALL null-summary from counting as real
+    # surviving evidence. ---
+    def _null_summary_exclusion_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        from engine.completion import check_report_underuses_findings, _facet_coverage, Ctx
+
+        _orig_ws_null = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            _IN_MEMORY_FS.clear()
+            urls = [f"https://nullsrc{i}.example.co/page" for i in range(1, 5)]
+            # 3 of 4 sources have NO real content (findings.md still lists them under a heading,
+            # same live shape as findings_by_writer's own faithful paraphrase); only url[0] has a
+            # real finding. Report cites only url[0].
+            findings_md = "\n\n".join(
+                f"### [Fuente {i}]({u})\n- " + (
+                    "dato numero 1 real sobre el tema, con una cifra concreta." if i == 1
+                    else "No key findings extracted from this source during this research run."
+                )
+                for i, u in enumerate(urls, 1)
+            )
+            _IN_MEMORY_FS["findings.md"] = findings_md
+            report_content = f"- dato numero 1 real sobre el tema. [Fuente 1]({urls[0]})"
+            _IN_MEMORY_FS["final_report.md"] = report_content
+
+            with tempfile.TemporaryDirectory() as tmpdir_null:
+                rs = RunState(tmpdir_null)
+                run_state_ctx.set(rs)
+                for i, u in enumerate(urls, 1):
+                    rs.add_finding(
+                        u,
+                        "dato numero 1 real sobre el tema, con una cifra concreta." if i == 1
+                        else "No key findings extracted from this source during this research run.",
+                        task_name=f"task_{i}", depth=1,
+                    )
+                ctx = Ctx(req_artifact="final_report.md", attempt=0, max_attempts=10, delegated=True,
+                           files=["findings.md", "final_report.md"], content=report_content,
+                           quotas=None, run_state=rs)
+                # (a) check_report_underuses_findings: only 1 real source (the other 3 are
+                # null-summary) -> below min_sources (3), must NOT fire even though the raw
+                # findings.md text has 4 headed sections.
+                v = check_report_underuses_findings(ctx)
+                assert v is None, (
+                    "3 of 4 findings.md sources are null-summary placeholders -- only 1 real "
+                    "source remains, below min_sources, must not demand the other 3 be cited", v)
+
+                # (b) _facet_coverage: task_2/3/4's only finding is null-summary -> they must NOT
+                # appear in by_task at all (no real surviving evidence to be "dropped"), while
+                # task_1 (real finding, cited in the report) is covered and also not dropped.
+                by_task, dropped = _facet_coverage(ctx)
+                assert "task_1" in by_task and urls[0].rstrip('/') in by_task["task_1"], by_task
+                for i in (2, 3, 4):
+                    assert f"task_{i}" not in by_task, (
+                        f"task_{i}'s only finding is a null-summary placeholder -- it must not "
+                        f"count as real surviving evidence", by_task)
+                assert dropped == [], (
+                    "no task with REAL evidence was dropped from the report", dropped)
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            if _orig_ws_null is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws_null
+
+    contextvars.copy_context().run(_null_summary_exclusion_scenario)
+
     # --- 2026-07-31 (research finding, not a live incident): both check_report_underuses_findings
     # and check_report_underuses_evidence used to say "actually add sections" without ever naming
     # edit_workspace_file, the tool BUILDER_INSTRUCTIONS itself reserves for exactly this narrow-
@@ -5302,6 +5375,31 @@ def main():
                       "major destination market this quarter according to ministry figures.")
     assert _stub_reason("\n\n".join([dialogue_para] * 8)) is None, (
         "real prose with a semicolon and a quote must NOT be treated as a code/tracking line")
+
+    # --- _is_null_finding_summary (2026-08-01, RESEARCH.md Sec.16): a fetch that came back
+    # stub/empty still gets a real findings.md entry, the Analyzer/Searcher just narrates that it
+    # found nothing -- two-signal (short AND phrase-matched) so a real terse finding or a long
+    # passage that happens to mention "could not find" isn't misclassified. ---
+    from utils.grounding import _is_null_finding_summary
+    assert _is_null_finding_summary(None)
+    assert _is_null_finding_summary("")
+    assert _is_null_finding_summary("   ")
+    assert _is_null_finding_summary("No key findings extracted from this source during this research run.")
+    assert _is_null_finding_summary("I was unable to find any relevant information on this page.")
+    assert _is_null_finding_summary("Could not extract any useful data from the fetched content.")
+    assert not _is_null_finding_summary(
+        "Bolt's WR is 9.58s, set 16 Sep 2009 in Berlin, wind +1.0 m/s."
+    ), "a real, if terse, finding must not be classified as null just for being short"
+    _long_but_mentions_phrase = (
+        "The Portugal D8 visa requires a minimum monthly income of EUR 3,680 and savings of "
+        "EUR 11,040, with a rental agreement of at least four months for the temporary stay "
+        "option. Processing time is approximately 90 working days. We could not find the exact "
+        "AIMA office address, but every other requirement above is fully documented on the page."
+    )
+    assert not _is_null_finding_summary(_long_but_mentions_phrase), (
+        "a long passage with real content must not be excluded just because it also mentions "
+        "'could not find' about one minor sub-detail -- length is the second required signal"
+    )
 
     def _stub_gate_scenario():
         from tools.fs import _IN_MEMORY_FS

@@ -105,6 +105,37 @@ def extract_cited_urls(text: str) -> list[str]:
     return [_strip_trailing_punct(u) for u in urls]
 
 
+# Live-confirmed 2026-08-01 (RESEARCH.md Sec.16, session_status): a fetch that came back stub/
+# empty/bot-walled still gets a real run_state.data["findings"]/findings.md entry — the dispatched
+# Analyzer or Searcher just narrates that it found nothing, verbatim, instead of the entry being
+# omitted. Two checks (check_report_underuses_findings, _facet_coverage) treat every URL with a
+# findings.md entry as "real, must-be-cited evidence" — with a null-summary URL among them, that
+# demand is unsatisfiable (there's nothing to write), and the model's only ways to "succeed" are to
+# keep re-failing the same check or fabricate a claim, an unwinnable loop that burned a full 1800s
+# run without ever converging. Two-signal match (short length AND a "nothing found" phrase) rather
+# than either alone: length alone would misclassify a real but terse finding (e.g. a one-sentence
+# fact with a number and a date), and phrase-matching alone risks a false positive on real content
+# that happens to discuss e.g. "no fee is required" — requiring both keeps this narrow to actual
+# extraction-failure narration.
+_NULL_FINDING_RE = re.compile(
+    r'no (?:key )?findings?\b.{0,20}\b(?:were|was|could be)?\s*extracted|'
+    r'no relevant (?:information|content|findings)|'
+    r'(?:could not|couldn\'?t|unable to)\s+(?:extract|find|locate)|'
+    r'nothing (?:useful|relevant)\s*(?:was|could be)?\s*found',
+    re.IGNORECASE,
+)
+
+
+def _is_null_finding_summary(summary: Optional[str]) -> bool:
+    """True if `summary` (a run_state.data['findings'] entry's own text) is an admission that
+    nothing was actually extracted, not a real finding — see the module comment above this
+    function for why this matters and the two-signal design."""
+    if not summary or not summary.strip():
+        return True
+    stripped = summary.strip()
+    return len(stripped) < 300 and bool(_NULL_FINDING_RE.search(stripped))
+
+
 def _strip_trailing_punct(url: str) -> str:
     # '*' added 2026-07-14: Builder's own citation style is `**[Title](URL)**` — the closing `**`
     # sat right after the URL's markdown-link `)`, which made `.endswith(')')` below false

@@ -809,8 +809,22 @@ def check_report_underuses_findings(ctx: Ctx) -> Optional[Verdict]:
         return None
     if "findings.md" not in ctx.files or ctx.content is None:
         return None
-    from utils.grounding import extract_cited_urls
+    from utils.grounding import extract_cited_urls, _is_null_finding_summary
     findings_urls = set(extract_cited_urls(get_workspace_file_content("findings.md") or ""))
+    # Exclude URLs whose EVERY run_state.data["findings"] entry is a null/failed-extraction
+    # summary — see _is_null_finding_summary's own docstring. A URL absent from
+    # run_state.data["findings"] entirely (e.g. this check running against a findings.md written
+    # by a path that doesn't populate that list) is NOT excluded here — absence of tracking data
+    # is not evidence of failure, only an explicit null summary is, so this can only ever shrink
+    # findings_urls, never silently disable the whole check.
+    summaries_by_url: dict[str, list] = {}
+    for f in ctx.run_state.data.get("findings", []):
+        u = (f.get("source_url") or "").strip().rstrip('/')
+        if u.startswith("http"):
+            summaries_by_url.setdefault(u, []).append(f.get("summary"))
+    null_urls = {u for u, sums in summaries_by_url.items() if all(_is_null_finding_summary(s) for s in sums)}
+    if null_urls:
+        findings_urls = {u for u in findings_urls if u.rstrip('/') not in null_urls}
     min_sources = cov_cfg.get("min_sources", 3)
     if len(findings_urls) < min_sources:
         return None
@@ -870,7 +884,7 @@ def _facet_coverage(ctx: Ctx) -> tuple[dict[str, set], list[str]]:
     and _dispatch_per_facet_builder_fix's real per-facet URL sets can never drift onto two
     different notions of "dropped" -- one computation, read twice in the same completion-check
     iteration (check's ctx, then the dispatch branch's same ctx), not duplicated."""
-    from utils.grounding import extract_cited_urls, _urls_prefix_match
+    from utils.grounding import extract_cited_urls, _urls_prefix_match, _is_null_finding_summary
     findings_urls = {u.rstrip('/') for u in extract_cited_urls(get_workspace_file_content("findings.md") or "")}
     report_urls = {u.rstrip('/') for u in extract_cited_urls(ctx.content or "")}
 
@@ -884,6 +898,11 @@ def _facet_coverage(ctx: Ctx) -> tuple[dict[str, set], list[str]]:
             continue
         if url not in findings_urls and not any(_urls_prefix_match(url, f2) for f2 in findings_urls):
             continue  # never reached findings.md -- check_findings_underuses_evidence's job.
+        if _is_null_finding_summary(f.get("summary")):
+            continue  # a fetch that yielded nothing extractable isn't real surviving evidence --
+                       # see _is_null_finding_summary's own docstring. A URL with a DIFFERENT,
+                       # real-content finding entry elsewhere in this same loop still gets added
+                       # normally, since this only skips THIS null entry, not the URL as a whole.
         by_task.setdefault(name, set()).add(url)
 
     dropped = sorted(

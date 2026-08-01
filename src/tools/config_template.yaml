@@ -108,7 +108,11 @@ settings:
   # rules on structural vs. prompted enforcement). Full writeup: RESEARCH.md §16,
   # session_status/CURRENT.md.
   web_search_backend: auto
-  # Tavily: https://app.tavily.com/home (free tier). Dedicated search API, not a scrape.
+  # Tavily: https://app.tavily.com/home (free tier). Dedicated search API, not a scrape. Also
+  # powers a third fetch-retry rung in tools/web.py::_fetch_raw (Tavily's own /extract API,
+  # tried only after the plain fetch AND the headless-browser retry both still look like a
+  # stub/bot-wall) — same key, no separate setting. See _fetch_raw's own comment at that site
+  # (RESEARCH.md §16) for the live incident that motivated it.
   tavily_api_key: ""
   # Brave Search API: https://brave.com/search/api/ (free tier). A real search index.
   brave_api_key: ""

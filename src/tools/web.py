@@ -368,6 +368,45 @@ def _fetch_raw(url: str, convert_to_md: bool = True, _redirect_depth: int = 0):
                     if not _stub_reason(retry_md_content):
                         md_content, metadata = retry_md_content, retry_metadata
 
+        # Third rung: Tavily's /extract API, when the plain fetch AND the headless-browser retry
+        # both still look like a stub (or headless is disabled/Playwright isn't installed). Only
+        # engages if settings.tavily_api_key is set — opt-in, no new hard dependency. Added
+        # 2026-08-01 after a live incident (RESEARCH.md Sec.16/session_status): a bot-wall page
+        # (mexiconewsdaily.com, an "unusual traffic" captcha shell) and a page our own fetch
+        # returned completely empty (consulmex.sre.gob.mx) both beat the headless-browser retry
+        # too (Playwright IS installed; the retry ran and still came back stub/empty) — yet
+        # Tavily's own /extract, checked directly against these exact two URLs, returned full real
+        # article/page content for both. Those two silent fetch failures were the actual root
+        # cause of a run that could never converge: findings.md kept listing them as "real, fetched
+        # sources" with nothing behind them, and the completion-check pipeline kept pushing Builder
+        # to cite content that didn't exist, an unwinnable loop (see check_report_underuses_findings
+        # below). This engages only after both earlier rungs have already failed, so it never adds
+        # latency to the common case.
+        if _stub_reason(md_content):
+            import config as app_config
+            tavily_key = app_config.cfg.get("settings", {}).get("tavily_api_key", "")
+            if tavily_key:
+                try:
+                    # The ORIGINAL url, not resp_url — a bot-walled page's plain-fetch redirect
+                    # chain often lands on the bot-CHALLENGE host itself (confirmed live,
+                    # consulmex.sre.gob.mx -> validate.perfdrive.com/?ssa=...), and Tavily fetching
+                    # THAT URL independently just gets the same challenge page again. Tavily needs
+                    # the real target to have a chance of succeeding where our own client didn't.
+                    extract_resp = httpx.post(
+                        "https://api.tavily.com/extract",
+                        json={"api_key": tavily_key, "urls": [url]},
+                        timeout=20,
+                    )
+                    extract_resp.raise_for_status()
+                    extract_results = extract_resp.json().get("results", [])
+                    if extract_results:
+                        tavily_content = extract_results[0].get("raw_content", "") or ""
+                        if tavily_content and not _stub_reason(tavily_content):
+                            md_content = tavily_content
+                except Exception:
+                    pass  # Fall through and return the earlier (stub) result rather than losing
+                          # the fetch entirely — same philosophy as the redirect-follow below.
+
         # Follow a client-side redirect stub one hop (real HTTP redirects are already handled by
         # follow_redirects=True above — this catches the ones that aren't, see
         # _looks_like_redirect_stub's docstring for the live case that motivated this).
@@ -393,7 +432,19 @@ _STUB_MARKERS_RE = re.compile(
     r'page not found|p[aá]gina no encontrada|error 404|404 not found|no longer available|'
     r'suscr[ií]b|suscripci[oó]n|subscri(?:be|ption|ber)|sign in to continue|to continue reading|'
     r'inicia sesi[oó]n|reg[ií]strate|contenido exclusivo|paywall|'
-    r'AppMeasurement|_satellite\.|digitalData\s*=|utag_data|s\.tl\(',
+    r'AppMeasurement|_satellite\.|digitalData\s*=|utag_data|s\.tl\(|'
+    # Bot-verification/CAPTCHA challenge pages (Radware/perfdrive, PerimeterX, Cloudflare "Just a
+    # moment", etc.) — a distinct stub SHAPE from paywall/404, added 2026-08-01 after a live
+    # incident where two real bot-wall pages (mexiconewsdaily.com, consulmex.sre.gob.mx) both had
+    # 10-150 prose words of genuinely readable challenge-page text ("we're checking if you're a
+    # real person...", "your activity... made us think that you are a bot") with none of the
+    # markers above, so _stub_reason returned None and neither the headless-browser retry nor the
+    # Tavily-extract fallback ever got a chance to run — see RESEARCH.md §16. "captcha" alone is
+    # safe as a bare keyword (not phrase-scoped like the others): the >=150-prose-word exemption
+    # above already protects a real article that merely discusses captchas as a topic.
+    r'captcha|checking if you.{0,3}re a real person|(?:are|is) a bot\b|automated (?:bad )?bot|'
+    r'not a robot|verify (?:you|that you)(?:.{0,3}re| are) (?:a )?human|prove you.{0,3}re human|'
+    r'unusual traffic|request unblock|please solve this|just a moment',
     re.IGNORECASE)
 
 # Analytics/tracking-script chrome (Adobe Analytics `s.propN = "..."; s.eVarN = "..."; ...` style)
