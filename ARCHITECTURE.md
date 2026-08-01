@@ -27,93 +27,82 @@ COMPLETION_CHECKS   — structural/process checks (delegation happened? findings
 GROUNDING_CHECKS     — is the artifact's CONTENT actually grounded in real fetched sources?
 ```
 
-**This ordering is a priority queue, not just a list.** A check near the top can permanently starve
-a check near the bottom of ever getting a turn, for the run's ENTIRE retry budget, if it keeps
-re-firing on every attempt. This bit twice in one session:
-- `check_report_underuses_findings` (in `GROUNDING_CHECKS`, near the bottom, correctness-adjacent
-  but ranked below citation-accuracy checks) never fired on 3 separate live runs across two
-  sessions — always preempted by something earlier.
-- `check_untracked_delegation` (last in `COMPLETION_CHECKS`, explicitly a low-priority hygiene
-  nudge per its own docstring) never fired on a live run where `stale_findings`/
-  `uneven_task_investment` kept recurring every attempt.
+**This ordering is a priority queue, not just a list (Chain of Responsibility) — a check near the
+top can permanently starve a check near the bottom of ever getting a turn, for the run's ENTIRE
+retry budget, if it keeps re-firing on every attempt.** A 2026-07-24 through 2026-07-31 incident
+chain found EIGHT real instances of this one bug class before it got a structural fix instead of a
+per-instance patch — see below for the invariant and the mechanism that now enforces it.
 
-**Fix, 2026-07-24**: `_yield_to_starved_check(verdict, ctx, starved_check)` +
-`_consecutive_occurrences(run_state, problem)` (`completion.py`, right before
-`run_completion_check`). If the currently-winning problem has fired 2 attempts in a row with no
-progress, the deliberately-low-priority check gets one direct extra probe. Only safe to do this for
-checks confirmed to be **pure reads** — `check_no_urls` mutates `run_state.data["no_urls_count"]`
-as a side effect of being called, so it is NOT a candidate for this pattern without first removing
-that mutation. Before adding a new check to this starvation-guard mechanism, confirm it doesn't
-write to `run_state.data`.
+### The invariant
 
-**A second, independent landmine of the exact same shape, found 2026-07-31 (Ornith-1.0-9B
-re-test):** "does an interrupting problem reset a consecutive-occurrence streak" is not ONE piece
-of logic in this file — it's reimplemented separately everywhere a check counts how many times in a
-row its own problem has fired. `check_task_verification_flagged`'s own `prior_same` counter (for its
-escalation wording, "redo" → "acknowledge the gap") was fixed 2026-07-29 to not let a
-`check_untracked_delegation` blip reset it. `run_completion_check`'s own SEPARATE
-`CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD` counter (drives `force_whole_rebuild` — the
-stronger "reconsider your whole approach" escalation, for every problem type, not just this one)
-is different code a few hundred lines away and was NOT touched by that fix — confirmed live: a run
-stuck on `task_verification_flagged` with one `untracked_delegation` blip in the middle never
-reached `force_whole_rebuild` either, and burned its whole retry budget on the weaker directive
-before exhausting. Fixed the same way, scoped the same way (only skips the break for this one
-documented symptom relationship, not generically). **Before trusting any future streak/consecutive-
-count fix as complete, grep the whole file for every `for a in reversed(...completion_check_attempts...)`
-loop — there is no shared helper, each is its own local reimplementation.**
+**Every check in `COMPLETION_CHECKS`/`GROUNDING_CHECKS` falls into exactly one of three buckets:**
 
-**A third landmine in the same incident, found immediately after fixing the second:** the
-final-verdict salvage path (`run_completion_check`'s last branch, right before `return False,
-current_input`) only calls `_salvage_narrated_report` — which rescues a substantial narrated
-response into `req_artifact` when nothing was ever written — for `problem == "missing_artifact"`.
-That function itself is generic; it doesn't care WHY the artifact is missing. But any OTHER problem
-that ends a run with `req_artifact` never written (confirmed live: `task_verification_flagged`, a
-genuinely unfillable per-task source gap) hit "Report NOT WRITTEN" with zero salvage attempt,
-discarding a coherent narrated summary purely because a different check happened to be the terminal
-one — model-independent, not specific to whichever candidate was running. Broadened to also cover
-`task_verification_flagged` (2026-07-31), then `missing_findings` too (same day, later — the very
-next live re-test after the starvation fixes below confirmed those fixes work, missing_findings
-finally got a real turn, but it fired too late in the attempt budget to complete a full
-Write→Review→Fix cycle and landed here uncovered). **If a new completion-check problem can
-legitimately end a run with `req_artifact` still unwritten, check whether it belongs in this
-salvage condition too — don't assume `missing_artifact` is the only such case. This condition has
-now been widened three separate times from the same live-testing session; treat it as a strong
-candidate for "does this belong here" whenever a new problem type shows up in the final branch.**
+1. **Self-resolving**: its problem name is in `_BUILDER_FIXABLE_PROBLEMS` or
+   `_FINDINGS_WRITER_FIXABLE_PROBLEMS`. Every time it wins, the Write→Review→Fix loop dispatches a
+   real fresh-context fix, so it converges (or the underlying content genuinely changes) rather than
+   looping on identical state — safe to re-fire indefinitely.
+2. **Self-clearing**: its own firing condition permanently stops being true once satisfied and
+   can't recur on unrelated grounds (e.g. `check_not_delegated` — clears the instant
+   `ctx.delegated` flips true, `check_untracked_delegation` — its own explicit "at most once ever"
+   gate, stricter than the general cap below).
+3. **Everything else**: NOT self-resolving. It only nudges the Planner's own conversation (the
+   classic inject path), and its underlying condition CAN legitimately stay true indefinitely (a
+   genuinely unfindable source, an unfillable per-task gap). **This bucket must cap its own firing
+   via the shared `_capped` helper** (`completion.py`) — without it, the check wins first-match on
+   EVERY attempt for as long as its condition holds, permanently starving every check below it.
 
-**A fourth landmine, found live the same night on a completely different candidate (gpt-oss, the
-project's own default) hitting the identical structural gap:** `check_task_verification_flagged`
-sits ABOVE `check_missing_findings`/`check_missing_artifact` in `COMPLETION_CHECKS`, and is not
-itself Builder/FindingsWriter-fixable (absent from both `_*_FIXABLE_PROBLEMS` tuples). First-match
-priority means: as long as one task stays genuinely flagged, this check wins EVERY attempt and
-permanently starves the checks that actually dispatch a real writer role — confirmed live on two
-independent candidates the same night, `findings.md` never written despite real, usable findings
-existing for every OTHER task. The check's own `quota_exhausted` directive text explicitly promises
-"the writer roles will note X as an acknowledged gap when they build the report" — a promise its
-own priority position structurally prevented from ever coming true. Fixed by capping this check's
-own firing to 3 occurrences (redo, acknowledge, force_whole_rebuild's one extra escalated attempt),
-then going quiet so the pipeline actually reaches `check_missing_findings`/`check_missing_artifact`.
-**General lesson for any future check placed above the artifact-existence checks: if it is not
-Builder/FindingsWriter-fixable, it can NEVER be blocked from firing by the normal Write→Review→Fix
-dispatch loop — it will keep winning first-match forever unless it caps its own firing count or
-gets wired into the starvation-guard mechanism above. A check whose directive promises an outcome
-("the writer roles will handle X") must itself get out of the way for that outcome to happen.**
+### The enforcement mechanism (not ad-hoc — one shared implementation, one standing test)
 
-**A fifth landmine, found by systematically auditing every check above `check_missing_findings`/
-`check_missing_artifact` against this exact shape (user-requested review, right after the fourth
-landmine above), not another live incident:** `check_thin_coverage` — one slot HIGHER priority than
-`check_task_verification_flagged` was — has the identical problem: not Builder/FindingsWriter-
-fixable, no cap at all (unlike the others, it didn't even have an existing 2-3 occurrence ceiling),
-and its own escalated directive uses the same broken-promise language ("say so explicitly in the
-report as an acknowledged gap... rather than silently omitting it"). Fixed the same way (cap at 3
-occurrences, same untracked_delegation-continuation treatment). The other checks above the
-artifact-existence checks were audited and cleared: `check_not_delegated` self-clears the moment any
-real delegation happens (not the same risk shape); `check_findings_ungrounded` IS in
-`_FINDINGS_WRITER_FIXABLE_PROBLEMS`, so it already dispatches its own recovery. **When auditing this
-class of bug, check every entry in `COMPLETION_CHECKS` above the artifact-existence checks against
-three questions: (1) is it in `_BUILDER_FIXABLE_PROBLEMS` or `_FINDINGS_WRITER_FIXABLE_PROBLEMS`? if
-yes, it self-resolves, not a landmine. (2) does its own firing condition permanently self-clear once
-satisfied (like `check_not_delegated`)? if yes, not a landmine. (3) if neither, does it cap its own
-firing count? if no, it can starve the writer-dispatch pipeline forever — this is the landmine.**
+- **`_consecutive_occurrences(run_state, problem, skip_problems=frozenset())`** — the ONE canonical
+  definition of "how many times in a row has this problem fired," with an optional skip-list for
+  interrupting problems that are themselves a direct symptom of THIS problem's own directive (e.g.
+  `untracked_delegation` firing because the model renamed a flagged task instead of retrying it
+  under the same name — counting that as a genuine interruption would trap a check in its weakest
+  wording forever). Used by `_capped`, `_apply_starvation_yield`, and `run_completion_check`'s own
+  `force_whole_rebuild` escalation — all four share one definition now, not four drifting copies.
+- **`CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD`** (module-level constant, currently 3) — the
+  ONE number every cap and escalation references. This used to be a local inside
+  `run_completion_check` while `_capped`-equivalent logic used its own separate number; they
+  disagreed once already before being unified (a real bug caught mid-session by the test suite,
+  not found live).
+- **`_capped(ctx, problem, verdict, skip_problems=frozenset())`** — bucket 3's own required call.
+  Once `problem` has fired `CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD` times in a row, returns
+  `None` instead of `verdict`, letting `COMPLETION_CHECKS`/`GROUNDING_CHECKS`' own first-match
+  ordering fall through to whatever's next in the list — no rewiring needed elsewhere, the list
+  order already does the right thing once the winning check goes quiet.
+- **`_yield_to_starved_check(verdict, ctx, starved_check, never_final_blocker=False)`** — a
+  DIFFERENT shape from `_capped`: protects one specific LOW-PRIORITY hygiene check
+  (`check_untracked_delegation`) regardless of WHICH problem is currently winning, not tied to one
+  specific problem name. Still hand-called with the specific starved check passed directly (never
+  wrapped in `or`) — this one was never buggy.
+- **`_STARVATION_YIELD_TARGETS` + `_apply_starvation_yield(verdict, ctx)`** — for a SPECIFIC problem
+  that should yield to a SPECIFIC sibling (`report_underuses_findings` → `report_underuses_
+  evidence`), a declarative `{problem_name: target_check}` dict, always probed directly. Replaces a
+  hand-written `lambda c: A(c) or B(c)` pattern that was live-confirmed dead code — `A` (the check
+  already winning) short-circuited before `B` (the actually-starved sibling) ever ran, since `or`
+  tries its first operand first and `A`'s condition was almost always still true. A future
+  sibling-yield pair is a one-line dict entry now, not a lambda that can get the order backwards.
+- **`_salvage_narrated_report`'s call site in `run_completion_check`'s final branch** — used to be
+  gated on a hardcoded problem-name tuple, widened three separate times as new terminal problems
+  were found unwritten-but-narrated. Now unconditional (the function's own 200-char-minimum gate
+  is the real safety check) — a new problem type that can legitimately end a run with `req_artifact`
+  unwritten no longer needs anyone to remember to add it to a list.
+- **Standing audit test** (`test_structural_checks.py`, right before the final "All structural-check
+  assertions passed" line): for every entry in `COMPLETION_CHECKS + GROUNDING_CHECKS`, asserts it's
+  either self-resolving (by problem-name tuple membership), on the small explicit self-clearing
+  allowlist, or calls `_capped` in its own source. **This is the actual payoff** — two of the eight
+  incidents (`check_propagated_ungrounded_content`, `check_report_underuses_evidence`) were found
+  by this exact audit before ever causing a live failure, not after. A future check that skips
+  `_capped` fails the suite immediately instead of being found five sessions from now at 2am.
+
+Prior art this design is grounded in (not a novel invention for this codebase): OS scheduler
+**aging** (a starvation counter that forces a lower-priority item to get a turn once it crosses a
+threshold); the **circuit breaker pattern** (Nygard, *Release It!* — stop retrying a failing path
+after N attempts, fail over instead of hammering it forever); **Chain of Responsibility** (GoF —
+`COMPLETION_CHECKS`/`GROUNDING_CHECKS` already are this pattern, the missing piece was a uniform
+"can't handle it after N tries, pass to the next handler" rule); and a 2026-07-14 industry writeup
+applying the same retry/circuit-breaker/fallback-chain shape specifically to production LLM agent
+systems, confirming this is a known-missing layer, not a codebase-specific quirk.
 
 ### Verdict → downstream routing: four tuples that must all agree
 

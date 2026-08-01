@@ -116,19 +116,20 @@ def check_thin_coverage(ctx: Ctx) -> Optional[Verdict]:
     is already a real failure on its own terms; there's no principled reason 0.5 exactly should
     be treated as acceptable when 0.49 isn't.
 
-    Capped to at most 3 firings total (2026-07-31, same landmine class as check_task_verification_
-    flagged found the same night — see that function's own docstring for the live incident and the
-    general lesson in ARCHITECTURE.md §1). This check sits ABOVE check_missing_findings/
-    check_missing_artifact in COMPLETION_CHECKS and is not itself Builder/FindingsWriter-fixable —
-    so without a cap, a run whose coverage never improves (a genuinely unfindable topic, not a
-    model-capability problem) would starve the checks that actually dispatch a real writer role
-    forever, exactly like task_verification_flagged did before its own fix, and this check's own
-    escalated directive uses the identical broken-promise language ("say so explicitly in the
-    report as an acknowledged gap... rather than silently omitting it") that only comes true if the
-    pipeline actually reaches a writer dispatch. The iterative-deepening dispatch in
-    run_completion_check (a genuine, self-resolving recovery attempt, up to max_deepening_rounds)
-    still gets its own turn first — this cap only stops the CLASSIC Planner-nudge path once that
-    budget and the redo/acknowledge cycle are both exhausted."""
+    Capped via the shared _capped helper (2026-07-31, same landmine class as check_task_
+    verification_flagged found the same night — this check is what motivated generalizing that
+    check's own one-off cap into a shared mechanism; see ARCHITECTURE.md for the full incident
+    writeup). This check sits ABOVE check_missing_findings/check_missing_artifact in
+    COMPLETION_CHECKS and is not itself Builder/FindingsWriter-fixable — so without a cap, a run
+    whose coverage never improves (a genuinely unfindable topic, not a model-capability problem)
+    would starve the checks that actually dispatch a real writer role forever, exactly like
+    task_verification_flagged did before its own fix, and this check's own escalated directive
+    uses the identical broken-promise language ("say so explicitly in the report as an
+    acknowledged gap... rather than silently omitting it") that only comes true if the pipeline
+    actually reaches a writer dispatch. The iterative-deepening dispatch in run_completion_check
+    (a genuine, self-resolving recovery attempt, up to max_deepening_rounds) still gets its own
+    turn first — this cap only stops the CLASSIC Planner-nudge path once that budget and the
+    redo/acknowledge cycle are both exhausted."""
     cov_cfg = config.cfg.get("settings", {}).get("coverage_check", {})
     if not cov_cfg.get("enabled", True):
         return None
@@ -138,21 +139,13 @@ def check_thin_coverage(ctx: Ctx) -> Optional[Verdict]:
     if coverage["total"] < min_tasks or coverage["ratio"] > threshold:
         return None
 
-    # untracked_delegation skip: same reasoning as check_task_verification_flagged's own prior_same
-    # counter (2026-07-29 fix) -- this check's own redo directive says "reuse the exact same
-    # task_name... do NOT invent a new task_name," so untracked_delegation firing in between is a
-    # direct symptom of THIS check's own directive being violated, not an unrelated interruption.
-    prior_same = 0
-    for a in reversed(ctx.run_state.data.get("completion_check_attempts", [])):
-        p = a.get("problem")
-        if p == "thin_coverage":
-            prior_same += 1
-        elif p == "untracked_delegation":
-            continue
-        else:
-            break
-    if prior_same >= 3:
-        return None
+    # untracked_delegation skip: same reasoning as check_task_verification_flagged's own counting
+    # (2026-07-29 fix) -- this check's own redo directive says "reuse the exact same task_name...
+    # do NOT invent a new task_name," so untracked_delegation firing in between is a direct symptom
+    # of THIS check's own directive being violated, not an unrelated interruption. Uses the shared
+    # _consecutive_occurrences instead of a hand-rolled loop (see that function's docstring).
+    _tc_skip = frozenset({"untracked_delegation"})
+    prior_same = _consecutive_occurrences(ctx.run_state, "thin_coverage", _tc_skip)
 
     uncovered_list = ", ".join(f"'{t}'" for t in coverage["uncovered_task_names"][:5])
     if prior_same == 0:
@@ -174,11 +167,11 @@ def check_thin_coverage(ctx: Ctx) -> Optional[Verdict]:
             f"gap rather than silently omitting it — do not keep re-delegating the exact same query."
         )
 
-    return Verdict(
+    return _capped(ctx, "thin_coverage", Verdict(
         "thin_coverage",
         f"Only {coverage['covered']}/{coverage['total']} delegated research tasks produced a real source ({uncovered_list}). Pushing agent to cover the gap or acknowledge it.",
         f"SYSTEM WARNING: {ctx.last_chance_prefix}{directive}",
-    )
+    ), skip_problems=_tc_skip)
 
 
 def check_task_verification_flagged(ctx: Ctx) -> Optional[Verdict]:
@@ -196,20 +189,23 @@ def check_task_verification_flagged(ctx: Ctx) -> Optional[Verdict]:
     explicitly deferred, see ROADMAP.md Pending) -- but the directive names the SPECIFIC flagged
     task(s) rather than nudging the whole run generically.
 
-    Capped to at most 2 firings total (2026-07-31 live incident, gpt-oss AND Ornith-1.0-9B both hit
-    this the same night): this check sits ABOVE check_missing_findings/check_missing_artifact in
-    COMPLETION_CHECKS and is not itself Builder/FindingsWriter-fixable (not in either
-    _*_FIXABLE_PROBLEMS tuple) -- so as long as one task stays genuinely flagged, it wins
-    first-match on EVERY attempt and permanently starves the checks that actually dispatch a real
-    writer role. Confirmed live: the quota_exhausted branch's own directive text promises "the
-    writer roles will note X as an acknowledged gap when they build the report" -- a promise this
-    check's own priority position structurally prevented from ever coming true. findings.md never
-    got written despite real, usable findings existing for every OTHER task; the run ended with a
-    salvaged narration (or nothing) instead of a real report built from real evidence. Once this
-    check has said its piece twice (once "redo", once "acknowledge/stop"), further occurrences
-    return None so the pipeline falls through to missing_findings/missing_artifact -- the SAME
-    bounded-escalation-then-yield shape already used by force_whole_rebuild elsewhere in this file,
-    not a new mechanism."""
+    Capped via the shared _capped helper (2026-07-31 live incident, gpt-oss AND Ornith-1.0-9B both
+    hit this the same night; helper generalized the same night after a second, near-identical
+    check -- check_thin_coverage -- turned out to have the exact same gap): this check sits ABOVE
+    check_missing_findings/check_missing_artifact in COMPLETION_CHECKS and is not itself Builder/
+    FindingsWriter-fixable (not in either _*_FIXABLE_PROBLEMS tuple) -- so as long as one task
+    stays genuinely flagged, it wins first-match on EVERY attempt and permanently starves the
+    checks that actually dispatch a real writer role. Confirmed live: the quota_exhausted branch's
+    own directive text promises "the writer roles will note X as an acknowledged gap when they
+    build the report" -- a promise this check's own priority position structurally prevented from
+    ever coming true. findings.md never got written despite real, usable findings existing for
+    every OTHER task; the run ended with a salvaged narration (or nothing) instead of a real
+    report built from real evidence. Once this check has said its piece 3 times (redo, acknowledge,
+    force_whole_rebuild's own one extra escalated attempt -- see CONSECUTIVE_SAME_PROBLEM_
+    ESCALATION_THRESHOLD), _capped returns None so the pipeline falls through to missing_findings/
+    missing_artifact -- see ARCHITECTURE.md for the full incident writeup and the standing test
+    that enforces every non-self-resolving check in COMPLETION_CHECKS/GROUNDING_CHECKS calls
+    _capped, not a hand-rolled equivalent."""
     cfg = config.cfg.get("settings", {}).get("task_verification_check", {})
     if not cfg.get("enabled", True):
         return None
@@ -218,36 +214,17 @@ def check_task_verification_flagged(ctx: Ctx) -> Optional[Verdict]:
     if not flagged:
         return None
 
-    # 2026-07-29 (live incident): a plain _consecutive_occurrences-style count breaks the streak
-    # the moment `untracked_delegation` fires in between -- but that check is itself the DIRECT
-    # symptom of the model failing to comply with THIS check's own "stop redelegating, reuse the
-    # exact task_name" directive (confirmed live: attempt 2's untracked_delegation fired because
-    # the model tried redispatching the flagged task under a new name instead of retrying it
-    # correctly). Counting it as a break meant a run that was continuously stuck on the same
-    # underlying task-verification problem for its ENTIRE retry budget never once reached
-    # prior_same > 0 after that interruption, repeating the "delegate_tasks again" directive
-    # forever instead of ever escalating to "acknowledge the gap." Skip it rather than break.
-    prior_same = 0
-    for a in reversed(ctx.run_state.data.get("completion_check_attempts", [])):
-        p = a.get("problem")
-        if p == "task_verification_flagged":
-            prior_same += 1
-        elif p == "untracked_delegation":
-            continue
-        else:
-            break
-
-    # 2026-07-31 (live incident): once this check has fired 3 times (one "redo" + one
-    # "acknowledge"/"stop" + the one extra attempt run_completion_check's own
-    # force_whole_rebuild escalation grants every problem type on its 3rd consecutive occurrence,
-    # see CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD), a 4th+ occurrence adds no new information
-    # and only continues starving check_missing_findings/check_missing_artifact below it in
-    # COMPLETION_CHECKS -- see this function's own docstring for the live incident that motivated
-    # this cap. Go quiet and let the pipeline actually reach the writer roles this check's own
-    # directives already promised would run. (Threshold is 3, not 2, so force_whole_rebuild's own
-    # one-extra-attempt escalation still gets its turn first, same as every other problem type.)
-    if prior_same >= 3:
-        return None
+    # 2026-07-29 (live incident), generalized 2026-07-31: some interrupting problems are
+    # themselves a DIRECT symptom of the model failing to comply with THIS check's own "stop
+    # redelegating, reuse the exact task_name" directive (confirmed live: attempt 2's
+    # untracked_delegation fired because the model tried redispatching the flagged task under a
+    # new name instead of retrying it correctly) -- counting that as a genuinely different problem
+    # breaks the streak and traps this check in its weakest "redo" wording forever instead of ever
+    # escalating. Uses the shared _consecutive_occurrences (see its own docstring) instead of a
+    # hand-rolled loop -- this exact loop used to be duplicated in run_completion_check's own
+    # force_whole_rebuild counter, with its own independent copy of this same skip patch.
+    _tvf_skip = frozenset({"untracked_delegation"})
+    prior_same = _consecutive_occurrences(ctx.run_state, "task_verification_flagged", _tvf_skip)
 
     # Quota-aware directive (2026-07-27, live regression): telling the Planner to "delegate_tasks
     # again" when its delegate_tasks quota is already exhausted is a directive it structurally
@@ -297,11 +274,11 @@ def check_task_verification_flagged(ctx: Ctx) -> Optional[Verdict]:
         )
         warning = f"Task(s) {flagged_list} STILL have only fabricated/unusable sources after a prior warning — telling agent to acknowledge the gap instead of redoing again."
 
-    return Verdict(
+    return _capped(ctx, "task_verification_flagged", Verdict(
         "task_verification_flagged",
         warning,
         f"SYSTEM WARNING: {ctx.last_chance_prefix}{directive}",
-    )
+    ), skip_problems=_tvf_skip)
 
 
 def check_uneven_task_investment(ctx: Ctx) -> Optional[Verdict]:
@@ -899,7 +876,16 @@ def check_report_underuses_evidence(ctx: Ctx) -> Optional[Verdict]:
     (run_state.data["findings"], depth==1) filtered to URLs that check_findings_underuses_evidence
     has already confirmed survive into findings.md -- a task whose real URLs never reached
     findings.md at all is that check's problem, not this one. Fires when at least one task with
-    real, surviving findings.md coverage has ZERO of its URLs cited anywhere in the report."""
+    real, surviving findings.md coverage has ZERO of its URLs cited anywhere in the report.
+
+    Capped via the shared _capped helper (2026-07-31, found by the same systematic audit that
+    caught check_propagated_ungrounded_content -- not a live incident, the audit caught it first).
+    "report_underuses_evidence" is in neither _BUILDER_FIXABLE_PROBLEMS nor _FINDINGS_WRITER_
+    FIXABLE_PROBLEMS, and although this check is the declared _STARVATION_YIELD_TARGETS entry for
+    its sibling check_report_underuses_findings, it can also win the normal first-match scan
+    entirely on its own (report_underuses_findings' ratio can clear while this check's own
+    per-task gap remains) -- at which point, uncapped, it could starve check_not_grounded (the
+    generic catch-all, last in GROUNDING_CHECKS) the same way its sibling used to starve it."""
     cov_cfg = config.cfg.get("settings", {}).get("report_evidence_check", {})
     if not cov_cfg.get("enabled", True):
         return None
@@ -931,12 +917,9 @@ def check_report_underuses_evidence(ctx: Ctx) -> Optional[Verdict]:
     if not dropped:
         return None
 
-    prior_same = 0
-    for a in reversed(ctx.run_state.data.get("completion_check_attempts", [])):
-        if a.get("problem") == "report_underuses_evidence":
-            prior_same += 1
-        else:
-            break
+    # Uses the shared _consecutive_occurrences instead of a hand-rolled loop (see that function's
+    # docstring) -- one more duplicate of this exact loop shape found during the 2026-07-31 audit.
+    prior_same = _consecutive_occurrences(ctx.run_state, "report_underuses_evidence")
 
     dropped_list = ", ".join(f"'{n}'" for n in dropped[:5])
     if prior_same == 0:
@@ -954,11 +937,11 @@ def check_report_underuses_evidence(ctx: Ctx) -> Optional[Verdict]:
             f"these tasks' real sources from findings.md."
         )
 
-    return Verdict(
+    return _capped(ctx, "report_underuses_evidence", Verdict(
         "report_underuses_evidence",
         f"'{ctx.req_artifact}' has zero citations for task(s) {dropped_list}, despite findings.md having real surviving sources for them. Pushing agent to cover every task, not just one.",
         f"SYSTEM WARNING: {ctx.last_chance_prefix}{directive}",
-    )
+    ))
 
 
 def _redelegate_directive(ctx: Ctx) -> str:
@@ -1223,7 +1206,16 @@ def check_propagated_ungrounded_content(ctx: Ctx) -> Optional[Verdict]:
     """Propagation-aware check (2026-07-22, PING taxonomy, see _find_propagated_bad_content's own
     docstring for the mechanism). Only fires if a flagged task_name's suspect content also shows
     up inside ctx.content itself -- otherwise this is a findings.md-hygiene issue the Builder never
-    actually drew on, not yet a report-level grounding problem worth quarantining over."""
+    actually drew on, not yet a report-level grounding problem worth quarantining over.
+
+    Capped via the shared _capped helper (2026-07-31, found by systematically auditing every
+    GROUNDING_CHECKS/COMPLETION_CHECKS entry against the landmine class documented in
+    ARCHITECTURE.md -- not a live incident this time, the audit itself caught it first). This
+    check's problem name ("propagated_ungrounded") is in NEITHER _BUILDER_FIXABLE_PROBLEMS nor
+    _FINDINGS_WRITER_FIXABLE_PROBLEMS and had no escalation/cap logic at all -- positioned right
+    before check_report_underuses_findings/evidence/check_not_grounded in GROUNDING_CHECKS, an
+    unresolved propagated-content condition could permanently starve all three the same way
+    check_task_verification_flagged and check_thin_coverage did before their own fixes."""
     if not ctx.content:
         return None
     findings = ctx.run_state.data.get("findings", []) if ctx.run_state else []
@@ -1244,7 +1236,7 @@ def check_propagated_ungrounded_content(ctx: Ctx) -> Optional[Verdict]:
             if src.startswith("http") and not _CUTOFF_ONLY_SUMMARY_RE.match(f.get("summary") or ""):
                 summary_terms = extract_salient_terms(f.get("summary") or "")
                 if summary_terms and (summary_terms & content_terms):
-                    return Verdict(
+                    return _capped(ctx, "propagated_ungrounded", Verdict(
                         "propagated_ungrounded",
                         f"`{ctx.req_artifact}` draws on findings for task '{task_name}' that reuse "
                         f"content from an earlier, ungrounded (cutoff/unfetched) attempt at the same "
@@ -1255,7 +1247,7 @@ def check_propagated_ungrounded_content(ctx: Ctx) -> Optional[Verdict]:
                         f"this looks like content propagated forward without being independently "
                         f"re-verified. Do not simply repeat it in '{ctx.req_artifact}'; either confirm "
                         f"it against a real fetched source or omit it.",
-                    )
+                    ))
     return None
 
 
@@ -2301,15 +2293,28 @@ async def _dispatch_deepening_round(dispatch_task, run_state: "RunState", notify
     return True
 
 
-def _consecutive_occurrences(run_state: "RunState", problem: str) -> int:  # noqa: F821
+def _consecutive_occurrences(run_state: "RunState", problem: str,  # noqa: F821
+                              skip_problems: frozenset = frozenset()) -> int:
     """How many of the run's most recent completion-check attempts, counting backward from the
     end, recorded this exact problem consecutively. Shared by run_completion_check's own
-    escalation counter (force_whole_rebuild) and _yield_to_starved_check below, so both stay in
-    sync on one definition of "stuck on the same problem" instead of drifting."""
+    escalation counter (force_whole_rebuild), _yield_to_starved_check/_apply_starvation_yield
+    below, and _capped's own cap logic, so all four stay in sync on one definition of "stuck on
+    the same problem" instead of drifting.
+
+    skip_problems (2026-07-31, generalized after the 2nd live incident of the same shape):
+    some interrupting problems are themselves a DIRECT symptom of the model failing to comply
+    with the CURRENT problem's own directive (e.g. untracked_delegation firing because the model
+    renamed a flagged task instead of retrying it under the same name) -- counting that as a
+    genuinely different problem breaks the streak and can trap a check in its weakest ("redo")
+    wording forever instead of ever escalating. Each caller declares its own skip set; default
+    empty preserves the original strict-consecutive behavior for callers that don't need it."""
     count = 0
     for a in reversed(run_state.data.get("completion_check_attempts", [])):
-        if a.get("problem") == problem:
+        p = a.get("problem")
+        if p == problem:
             count += 1
+        elif p in skip_problems:
+            continue
         else:
             break
     return count
@@ -2317,17 +2322,51 @@ def _consecutive_occurrences(run_state: "RunState", problem: str) -> int:  # noq
 
 _STARVATION_SKIP_THRESHOLD = 2
 
+# How many consecutive occurrences of the SAME problem earn a check's strongest escalation
+# (force_whole_rebuild below) or, for a non-self-resolving check (see _capped's own docstring),
+# the point past which it goes quiet instead of permanently starving whatever's next in
+# COMPLETION_CHECKS/GROUNDING_CHECKS. ONE shared constant so a future check's own cap can never
+# silently disagree with force_whole_rebuild's threshold the way it did once already this session.
+CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD = 3
+
+
+def _capped(ctx: "Ctx", problem: str, verdict: Optional["Verdict"],  # noqa: F821
+            skip_problems: frozenset = frozenset()) -> Optional["Verdict"]:  # noqa: F821
+    """For a check that is NOT Builder/FindingsWriter-fixable (cannot dispatch its own real fix
+    via the Write->Review->Fix loop -- absent from both _BUILDER_FIXABLE_PROBLEMS and
+    _FINDINGS_WRITER_FIXABLE_PROBLEMS): once it has fired CONSECUTIVE_SAME_PROBLEM_ESCALATION_
+    THRESHOLD times in a row, go quiet instead of returning verdict again, so COMPLETION_CHECKS/
+    GROUNDING_CHECKS' own first-match ordering can fall through to whatever check is next in the
+    list. Without this, such a check wins first-match on EVERY attempt for as long as its
+    underlying condition stays true, permanently starving every check below it -- confirmed live
+    twice the same night (check_task_verification_flagged starving check_missing_findings/
+    check_missing_artifact; check_thin_coverage, one priority slot higher, doing the same thing).
+    See ARCHITECTURE.md's completion-check section for the full incident writeup and the standing
+    test (test_structural_checks.py) that enforces every non-self-resolving check in either list
+    calls this -- a future check that skips it fails the suite immediately instead of being found
+    via a live incident."""
+    if verdict is None:
+        return None
+    if _consecutive_occurrences(ctx.run_state, problem, skip_problems) >= CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD:
+        return None
+    return verdict
+
 
 def _yield_to_starved_check(verdict: Optional[Verdict], ctx: Ctx, starved_check,
                              never_final_blocker: bool = False) -> Optional[Verdict]:
     """First-verdict-wins normally, but a low-priority hygiene check placed deliberately last in
-    its own list (check_untracked_delegation in COMPLETION_CHECKS, check_report_underuses_findings
-    in GROUNDING_CHECKS — both explicitly documented as lower-priority-than-correctness, "wait a
-    cycle" checks, never meant to compete with a real problem) can end up NEVER getting a turn at
-    all on a long run where some OTHER problem keeps recurring every single attempt. Confirmed live
-    2026-07-24: an 8-attempt run cycled through stale_findings/uneven_task_investment/
-    missing_artifact repeatedly and check_untracked_delegation never fired once — "wait a cycle"
-    became "wait forever" in practice, not by design.
+    its own list (check_untracked_delegation in COMPLETION_CHECKS — a "wait a cycle" check,
+    explicitly documented as lower-priority-than-correctness, never meant to compete with a real
+    problem, and protected regardless of WHICH problem is currently winning) can end up NEVER
+    getting a turn at all on a long run where some OTHER problem keeps recurring every single
+    attempt. Confirmed live 2026-07-24: an 8-attempt run cycled through stale_findings/
+    uneven_task_investment/missing_artifact repeatedly and check_untracked_delegation never fired
+    once — "wait a cycle" became "wait forever" in practice, not by design. (This function's OTHER
+    former use, report_underuses_findings yielding to its own more specific sibling
+    report_underuses_evidence, has been migrated to the declarative _STARVATION_YIELD_TARGETS +
+    _apply_starvation_yield above — a genuinely different shape, one specific problem yielding to
+    one specific sibling rather than a check protected regardless of what's winning; see that
+    function's own docstring for why the hand-written-lambda version of this pairing was buggy.)
 
     Once the CURRENT winning problem has already fired _STARVATION_SKIP_THRESHOLD times in a row
     with no progress, give the starved check one direct extra shot instead of blindly re-selecting
@@ -2349,9 +2388,9 @@ def _yield_to_starved_check(verdict: Optional[Verdict], ctx: Ctx, starved_check,
     "unresolved issue" — precisely the outcome its own docstring promises never happens. Once
     ctx.attempt has already reached ctx.max_attempts (i.e. this cycle is going straight to the
     final branch no matter what), a check documented as never-blocking must not be allowed to
-    become the reported blocker — keep the real verdict instead. check_report_underuses_findings
-    (the OTHER caller of this function) carries no such guarantee and is a genuine correctness
-    signal, so it's unaffected by this guard (never_final_blocker defaults False)."""
+    become the reported blocker — keep the real verdict instead. This is the only remaining caller
+    of this function (never_final_blocker defaults False for any future caller that carries a
+    genuine correctness guarantee and doesn't need this protection)."""
     if verdict is None:
         return None
     if never_final_blocker and ctx.attempt >= ctx.max_attempts:
@@ -2359,6 +2398,46 @@ def _yield_to_starved_check(verdict: Optional[Verdict], ctx: Ctx, starved_check,
     if _consecutive_occurrences(ctx.run_state, verdict.problem) < _STARVATION_SKIP_THRESHOLD:
         return verdict
     alt = starved_check(ctx)
+    if alt is not None and alt.problem != verdict.problem:
+        return alt
+    return verdict
+
+
+# Declarative sibling-yield targets: problem name -> the more specific check that should get one
+# direct probe once the winning check above has recurred _STARVATION_SKIP_THRESHOLD times in a
+# row. Different shape from _yield_to_starved_check above (which protects a check regardless of
+# WHICH problem is currently winning) -- this is for a SPECIFIC problem that should yield to a
+# SPECIFIC sibling, e.g. report_underuses_findings' own flat citation-ratio check yielding to
+# report_underuses_evidence's more specific per-task one. A dict entry, not a hand-written lambda
+# -- see _apply_starvation_yield's own docstring for why that distinction matters.
+_STARVATION_YIELD_TARGETS: dict = {
+    "report_underuses_findings": check_report_underuses_evidence,
+}
+
+
+def _apply_starvation_yield(verdict: Optional[Verdict], ctx: Ctx) -> Optional[Verdict]:
+    """Generic replacement for a hand-written `lambda c: A(c) or B(c)` (2026-07-31 live incident):
+    that exact pattern was live-confirmed dead code, because `A` -- the SAME check already winning
+    the main scan above -- gets evaluated first via `or`'s short-circuit, so `B` (the actually-
+    starved, more specific sibling) never runs at all as long as A's own condition is still true,
+    which it almost always still is (nothing changed between the main scan and this probe).
+    Confirmed live: a run whose report dropped 4 whole tasks' worth of evidence (including the
+    query's own Colombia angle) fired report_underuses_findings for 4+ consecutive attempts,
+    crossing _STARVATION_SKIP_THRESHOLD multiple times, and never once yielded to
+    report_underuses_evidence -- replaying report_underuses_evidence directly against that same
+    run's saved output found the dropped tasks on the first try.
+
+    Structurally cannot repeat that bug: looks up the winning verdict's OWN declared target in
+    _STARVATION_YIELD_TARGETS and probes ONLY that target directly, never wrapped in an `or` with
+    the check that's already winning."""
+    if verdict is None:
+        return None
+    target = _STARVATION_YIELD_TARGETS.get(verdict.problem)
+    if target is None:
+        return verdict
+    if _consecutive_occurrences(ctx.run_state, verdict.problem) < _STARVATION_SKIP_THRESHOLD:
+        return verdict
+    alt = target(ctx)
     if alt is not None and alt.problem != verdict.problem:
         return alt
     return verdict
@@ -2622,10 +2701,16 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                 # 2026-07-29 to the newer per-task check too) -- neither is meant to compete with a
                 # real correctness problem, but a run stuck on one OTHER recurring problem must not
                 # starve either of them for its whole retry budget.
-                verdict = _yield_to_starved_check(
-                    verdict, ctx,
-                    lambda c: check_report_underuses_findings(c) or check_report_underuses_evidence(c),
-                )
+                #
+                # 2026-07-31: was a hand-written `lambda c: A(c) or B(c)` here, live-confirmed dead
+                # code (a run that dropped 4 whole tasks' worth of evidence, including the query's
+                # own Colombia angle, fired report_underuses_findings 4+ consecutive times and never
+                # once yielded, because `or` tried the already-winning check first and its condition
+                # was still true). Replaced with the declarative _STARVATION_YIELD_TARGETS registry
+                # + _apply_starvation_yield -- see that function's own docstring for why the dict
+                # form structurally cannot repeat this ordering bug the way a hand-written lambda
+                # could.
+                verdict = _apply_starvation_yield(verdict, ctx)
                 # 2026-07-29 (live incident, see _other_grounding_problems' docstring): check_
                 # stub_source shadowed check_uncited_claims for 3 whole attempts, silently, because
                 # both key off the single ctx.grounding_problem string real_grounding_problem
@@ -2672,29 +2757,25 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
             # strategy rather than keep re-patching the same failed local fix. Bounded to exactly
             # ONE extra, more expensive attempt per problem type (whole_approach_retry_used_for,
             # on run_state.data) before falling through to the pre-existing early-exit behavior
-            # unchanged -- never an unbounded loop.
-            CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD = 3
+            # unchanged -- never an unbounded loop. Threshold is the module-level
+            # CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD (2026-07-31, hoisted out of local
+            # scope) -- shared with _capped's own cap logic so the two can never silently disagree
+            # on the number again (they did, once, before this fix: _capped's own threshold was
+            # first set to 2, which pre-empted this exact escalation's one guaranteed shot).
             force_whole_rebuild = False
             if problem and problem != "missing_findings":
-                consecutive = 0
-                for a in reversed(run_state.data.get("completion_check_attempts", [])):
-                    if a.get("problem") == problem:
-                        consecutive += 1
-                    # 2026-07-31 (live incident, Ornith-1.0-9B re-test): same root cause as
-                    # check_task_verification_flagged's own prior_same counter (fixed 2026-07-29,
-                    # 7ec86ef) -- untracked_delegation firing once is a direct symptom of the model
-                    # failing to comply with THIS check's "reuse the exact task_name" directive, not
-                    # an unrelated interruption. This counter is a SEPARATE piece of machinery (drives
-                    # force_whole_rebuild, not check_task_verification_flagged's own wording) that the
-                    # earlier fix never touched, so a task_verification_flagged run stuck for its whole
-                    # budget with one untracked_delegation blip in the middle never reached the
-                    # stronger full-plan-rebuild escalation either. Scoped narrowly, same as the
-                    # sibling fix: only skips the break for this one documented symptom relationship,
-                    # not generically for every problem pair.
-                    elif problem == "task_verification_flagged" and a.get("problem") == "untracked_delegation":
-                        continue
-                    else:
-                        break
+                # 2026-07-31: uses the shared _consecutive_occurrences (same function _capped and
+                # check_task_verification_flagged/check_thin_coverage's own caps use, see that
+                # function's docstring) instead of a third hand-rolled copy of this loop -- this
+                # exact duplication (this counter had its own independent untracked_delegation-skip
+                # patch, added live the same night check_task_verification_flagged's own prior_same
+                # loop got the identical patch, in DIFFERENT code) was itself one of the incidents
+                # that motivated consolidating onto one shared definition. untracked_delegation is a
+                # direct symptom of the model failing to comply with task_verification_flagged's own
+                # "reuse the exact task_name" directive specifically, not an unrelated interruption
+                # -- scoped narrowly to that one problem, not generically for every problem pair.
+                skip = frozenset({"untracked_delegation"}) if problem == "task_verification_flagged" else frozenset()
+                consecutive = _consecutive_occurrences(run_state, problem, skip)
                 if consecutive >= CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD:
                     whole_approach_used = run_state.data.setdefault("whole_approach_retry_used_for", {})
                     if not whole_approach_used.get(problem):
@@ -2928,31 +3009,21 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                            f"trusting it.")
                 else:
                     substantial_text = (find_substantial_text() if find_substantial_text else "") or last_assistant_text
-                    # 2026-07-31 (live incident, Ornith-1.0-9B re-test): this salvage attempt was
-                    # gated to problem == "missing_artifact" only, but _salvage_narrated_report
-                    # itself is generic -- it just rescues a substantial narrated response into
-                    # req_artifact when nothing was ever written, regardless of WHY the run got
-                    # stuck. A run terminally stuck on task_verification_flagged (a real,
-                    # unfillable source gap for one task) is structurally identical here: nothing
-                    # in req_artifact, but the model's own final message already narrated the
-                    # acknowledged-gap summary its own directive asked for (see
-                    # check_task_verification_flagged's docstring: "say so explicitly in the
-                    # report as an acknowledged gap"). Confirmed live: a run whose ONLY unresolved
-                    # problem was task_verification_flagged reported "Report NOT WRITTEN" with zero
-                    # salvage attempt, discarding a real, coherent narrated summary purely because
-                    # of which check happened to be the terminal one -- model-independent, would
-                    # hit any candidate the same way.
-                    # 2026-07-31 (later same night, gpt-oss re-test after the check_task_
-                    # verification_flagged/check_thin_coverage starvation fixes): the starvation
-                    # fix worked -- missing_findings finally got its first real turn instead of
-                    # being permanently blocked -- but it fired too late in the budget to complete
-                    # a full Write->Review->Fix cycle, landed here on the final branch, and
-                    # missing_findings wasn't in this condition either. Same generic salvage
-                    # applies: nothing in req_artifact, but a coherent narrated summary already
-                    # exists ("the writer roles will automatically generate findings.md" plus real
-                    # gathered content) from the attempt that never got a chance to actually run
-                    # FindingsWriter.
-                    if problem in ("missing_artifact", "task_verification_flagged", "missing_findings") and _salvage_narrated_report(req_artifact, substantial_text):
+                    # 2026-07-31: this salvage attempt used to be gated to a hardcoded tuple of
+                    # problem names, widened three separate times in one session as new terminal
+                    # problems were found unwritten-but-narrated (missing_artifact, then
+                    # task_verification_flagged, then missing_findings). _salvage_narrated_report
+                    # itself is generic and already has the real safety gate (refuses anything
+                    # under 200 chars) -- it doesn't care WHY req_artifact is missing, only whether
+                    # there's substantial narrated text to rescue. The tuple never added real
+                    # protection, only a maintenance trap: every NEW problem that could legitimately
+                    # end a run with req_artifact unwritten had to be remembered and added by hand,
+                    # and each omission silently discarded a coherent narrated summary purely
+                    # because a different check happened to be terminal. Now unconditional --
+                    # applies whenever nothing else above handled it (req_artifact still doesn't
+                    # exist, and the missing_artifact-specific quarantine-restore path didn't apply
+                    # first) and there's real substantial text to salvage, for ANY problem.
+                    if _salvage_narrated_report(req_artifact, substantial_text):
                         # Structural fallback, not another prompt nudge — see _salvage_narrated_report's
                         # docstring for why: nudging alone has proven insufficient for this exact pattern
                         # across two independent projects now.

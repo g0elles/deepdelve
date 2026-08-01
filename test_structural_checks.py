@@ -2791,6 +2791,76 @@ def main():
 
     contextvars.copy_context().run(_report_underuses_evidence_scenario)
 
+    # --- run_completion_check's starvation-yield for the report_underuses_findings/_evidence pair
+    # must actually reach the starved check (2026-07-31 live incident, gpt-oss re-test after
+    # tonight's earlier starvation fixes): the yield lambda tried check_report_underuses_findings
+    # FIRST via `or` -- the SAME check already winning, so it short-circuited before
+    # check_report_underuses_evidence (the actually-starved, more specific per-task check) ever ran.
+    # Confirmed live: a run whose report dropped 4 whole tasks (raw ratio still cleared by one large
+    # cluster) fired report_underuses_findings for 4+ consecutive attempts, crossing
+    # _STARVATION_SKIP_THRESHOLD (2) multiple times, and never once yielded. Fixture: 2 tasks,
+    # "heuristics" (3 URLs, all uncited) and "colombia" (5 URLs, 3 cited) -- report_underuses_
+    # findings fires on raw ratio (3/8 = 0.375 < 0.5) AND report_underuses_evidence independently
+    # fires (heuristics task has zero citations), same shape as the live incident. ---
+    def _starvation_yield_prefers_evidence_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        from tools.core import tool_quotas_ctx as q_ctx
+
+        _orig_ws16 = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
+        _orig_gc16 = _config.cfg.get("settings", {}).get("grounding_check")
+        _config.cfg["settings"]["grounding_check"] = {"nli_verify": False, "topical_relevance_check": False}
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            _IN_MEMORY_FS.clear()
+            reset_fetched_urls()
+            q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5}})
+            heur_urls = [f"https://heur{i}.example.co/page" for i in range(1, 4)]
+            colo_urls = [f"https://colo{i}.example.co/page" for i in range(1, 6)]
+            for u in heur_urls + colo_urls:
+                record_fetched_url(u, filename=f"sources/{u.split('//')[1].split('.')[0]}.md")
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                rs = RunState(tmpdir)
+                for u in heur_urls:
+                    rs.add_finding(u, "heuristic finding", task_name="heuristics", depth=1)
+                for u in colo_urls:
+                    rs.add_finding(u, "colombia finding", task_name="colombia", depth=1)
+                _IN_MEMORY_FS["findings.md"] = "\n\n".join(
+                    f"### [Src]({u})\n- real finding." for u in heur_urls + colo_urls)
+                _IN_MEMORY_FS["final_report.md"] = "\n".join(
+                    f"- dato. [Src]({u})" for u in colo_urls[:3])
+                # 2 prior consecutive report_underuses_findings occurrences -- crosses
+                # _STARVATION_SKIP_THRESHOLD (2), the yield window is open on this attempt.
+                rs.data["completion_check_attempts"] = [
+                    {"attempt": 0, "problem": "report_underuses_findings"},
+                    {"attempt": 1, "problem": "report_underuses_findings"},
+                ]
+                run_state_ctx.set(rs)
+                msgs = []
+                should_retry, _ = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append))
+                recorded = rs.data["completion_check_attempts"][-1]["problem"]
+                assert recorded == "report_underuses_evidence", (
+                    "once the starvation window opens, the starved check (report_underuses_"
+                    "evidence) must actually win, not the same check that's already been firing",
+                    recorded, msgs)
+                assert "heuristics" in msgs[-1], msgs
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            if _orig_ws16 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws16
+            if _orig_gc16 is None:
+                _config.cfg["settings"].pop("grounding_check", None)
+            else:
+                _config.cfg["settings"]["grounding_check"] = _orig_gc16
+
+    contextvars.copy_context().run(_starvation_yield_prefers_evidence_scenario)
+
     # --- cheap_grounding_problems / _other_grounding_problems / _with_other_grounding_addendum
     # (2026-07-29): real_grounding_problem's own ordered if-chain returns only its FIRST hit, so
     # every GROUNDING_CHECKS function keyed off the shared ctx.grounding_problem string can be
@@ -6157,6 +6227,51 @@ def main():
         "_get_default_options' ollama branch must not use the OpenAI-only chat_template_kwargs shape")
     assert '"think"' in _ollama_branch_src, (
         "_get_default_options' ollama branch must set the native `think` option")
+
+    # --- Standing audit: every non-self-resolving check in COMPLETION_CHECKS/GROUNDING_CHECKS
+    # must call _capped (2026-07-31, the actual payoff of the night's structural fix -- see
+    # ARCHITECTURE.md). A check that returns a Verdict for a problem NOT in _BUILDER_FIXABLE_
+    # PROBLEMS/_FINDINGS_WRITER_FIXABLE_PROBLEMS never dispatches a real Builder/FindingsWriter
+    # fix on its own -- if it also never caps its own firing, it can win first-match on EVERY
+    # attempt for as long as its condition holds, permanently starving every check below it. Six
+    # live incidents and two more found by this exact audit (check_propagated_ungrounded_content,
+    # check_report_underuses_evidence) happened before this test existed. A future check that
+    # skips _capped now fails here immediately instead of five sessions from now at 2am.
+    #
+    # Exemption is either (a) the check's own returned problem name is Builder/FindingsWriter-
+    # fixable -- it dispatches its own real recovery every time, converging rather than starving
+    # anything -- or (b) an explicit, justified allowlist: check_not_delegated self-clears the
+    # moment ctx.delegated flips true (not a persistent-condition risk); check_untracked_
+    # delegation has its own STRICTER "fires at most once ever" gate, deliberately never
+    # escalating; check_uneven_task_investment is gated behind BOTH findings.md and req_artifact
+    # already existing, so it structurally cannot starve missing_findings/missing_artifact, and
+    # its own docstring documents relying on run_completion_check's generic force_whole_rebuild/
+    # final-exhaustion escalation as its bound instead.
+    def _starvation_audit_scenario():
+        import re as _re
+        import engine.completion as _comp
+        _EXEMPT_FUNCTION_NAMES = {
+            "check_not_delegated", "check_untracked_delegation", "check_uneven_task_investment",
+        }
+        _self_resolving = set(_comp._BUILDER_FIXABLE_PROBLEMS) | set(_comp._FINDINGS_WRITER_FIXABLE_PROBLEMS)
+        violations = []
+        for check_fn in _comp.COMPLETION_CHECKS + _comp.GROUNDING_CHECKS:
+            name = check_fn.__name__
+            if name in _EXEMPT_FUNCTION_NAMES:
+                continue
+            src = _inspect2.getsource(check_fn)
+            problems = set(_re.findall(r'Verdict\(\s*\n?\s*"([a-z_]+)"', src))
+            if problems & _self_resolving:
+                continue  # self-resolving: dispatches its own real fix, doesn't need a cap
+            if "_capped(" not in src:
+                violations.append(name)
+        assert not violations, (
+            "these checks are not Builder/FindingsWriter-fixable, not on the explicit exempt "
+            "allowlist, and don't call _capped -- they can permanently starve every check below "
+            "them in COMPLETION_CHECKS/GROUNDING_CHECKS: " + ", ".join(violations)
+        )
+
+    _starvation_audit_scenario()
 
     print("All structural-check assertions passed.")
 
