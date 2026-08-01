@@ -2588,3 +2588,202 @@ specialist's nested ones) rather than the wording of any particular trigger. New
 `_RESUME_CARRYOVER_KEYS`, same precedent `deepening_round` already sets), new
 `settings.max_planner_delegate_rounds` (default 4). Full plan:
 `/home/gab/.claude/plans/enchanted-gliding-flame.md` (2026-08-01, second plan of the day).
+
+## 16. Comparative survey extension: 4 more deep research agent projects, plus a live fabrication
+test on one of them (2026-08-01)
+
+Continuation of §7's methodology (primary-source code reading, not README-skimming) on four
+additional projects, prompted directly by the day's own work: `open_deep_research` was already
+cloned to source the `max_researcher_iterations` precedent for §15's replan-cap fix, and reading it
+further turned up both a real prior-art idea (per-comparison-element task decomposition) and a live,
+directly-observed grounding failure. All four repos cloned to
+`/mnt/nuevovol/Projects/AI shit/Building_Tools/` (siblings of this repo, `.gitignore`'d as
+project-external): `open_deep_research/`, `local-deep-researcher/`, `deep-research-dzhng/` (dzhng's
+project, already covered in §7 under its GitHub description "Open Deep Research" — re-verified here
+under its actual repo name to avoid confusion with `langchain-ai/open_deep_research`, a different,
+unrelated project despite the similar name), `gpt-researcher/`, `storm/`.
+
+### `langchain-ai/open_deep_research`
+
+- **Architecture**: LangGraph supervisor/researcher graph, not DeepDelve's typed multi-agent
+  hierarchy — one `supervisor` node calls `ConductResearch` to spawn parallel `researcher_subgraph`
+  instances (`src/open_deep_research/deep_researcher.py:288-305`, `asyncio.gather`), each of which
+  runs its own ReAct tool loop then a separate `compress_research` LLM pass
+  (`deep_researcher.py:511-583`) before returning to the supervisor.
+- **Iteration caps — real, direct precedent for §15's fix, confirmed by reading the enforcement
+  code, not just the config docstring**: `max_researcher_iterations` (default 6) and
+  `max_react_tool_calls` (default 10) are both hard-enforced with direct integer comparisons every
+  loop iteration (`deep_researcher.py:247`, `:492`), and overflow `ConductResearch` calls past
+  `max_concurrent_research_units` get an explicit rejection message back to the model
+  (`deep_researcher.py:291-321`) rather than being silently dropped — the exact reject-with-reason
+  shape `_planner_delegate_over_cap`/`_specialist_delegation_over_cap` already use.
+- **A genuinely new, not-yet-applied finding: their "Scaling Rules" directly address DeepDelve's
+  open task-naming/facet-collapse problem** (`session_status/CURRENT.md` item 0, the Lisbon/Mexico
+  City `visa_requirements` task that silently only ever covered Portugal). `prompts.py:123-136`:
+  *"Comparisons presented in the user request can use a sub-agent for each element of the
+  comparison... Delegate clear, distinct, non-overlapping subtopics"* plus *"Do NOT use acronyms or
+  abbreviations in your research questions, be very clear and specific"* and *"provide complete
+  standalone instructions — sub-agents can't see other agents' work."* DeepDelve's own
+  `PLANNER_INSTRUCTIONS` single-facet-per-slot rule (`src/prompts.py:184-194`) already forbids
+  bundling two topic-facets into one slot, but has no equivalent instruction for the orthogonal
+  axis this bug actually hit: splitting per **named comparison subject** (city, product, country)
+  and requiring the task name itself to specify which subject it covers. Not yet implemented —
+  flagged here as the direct, sourced basis for that fix when it's scoped.
+- **Live fabrication test, gpt-oss via this project's own unmodified code** (not DeepDelve's):
+  ran `deepdelve-gpt-oss:latest` through all four of `open_deep_research`'s model roles
+  (summarization/research/compression/final_report) on "What is the current men's 100m world
+  record?" — a single-sub-agent, simple-fact-finding case by their own Scaling Rules, i.e. closest
+  to a best case for them. Result: the headline fact (Bolt, 9.58s, 2009 Berlin) was correct, almost
+  certainly from the model's own training data rather than the search it ran, but two of four cited
+  URLs were dead on direct fetch (`worldathletics.org/records/by-sport/general/men-100-meters` and
+  `.../news/record-ratifications/men-100m-bolt-9.58s`, both HTTP 404, checked directly) and one
+  supporting claim was fabricated outright (report stated Noah Lyles ran a wind-aided 9.58s; his
+  actual 100m PB, verified via web search, is 9.79s, 2024 Paris Olympics — a specific, wrong number
+  invented and given a fake supporting BBC citation). The run log showed **19 of 19**
+  `summarize_webpage` calls (`utils.py:175-213`) hit their hardcoded 60-second `asyncio.wait_for`
+  timeout and fell back to raw content — with `OLLAMA_NUM_PARALLEL=1` (required on this hardware,
+  see `README.md`'s Ollama setup section) serializing every parallel `asyncio.gather`'d
+  summarization call (`utils.py:108`) behind one GPU slot, a design that assumes cloud-parallel
+  model capacity and actively mismatches single-slot local serving. Their termination signal
+  (`ResearchComplete`, `state.py:21-22`) is a bare empty-schema tool the model self-reports with no
+  structural check behind it, and `compress_research` has no citation-URL-exists verification at
+  all (`deep_researcher.py:511-583` — free-text `response.content` returned as-is) — this specific
+  failure mode (fabricated citation, wrong supporting fact, shipped as a confident final report) is
+  exactly the class of defect DeepDelve's `grounding.py`/`completion.py` pipeline exists to catch,
+  and would have caught here (stub-fetch rejection alone kills the two dead URLs; NLI entailment
+  would flag the Lyles claim against its own fabricated source).
+
+### `langchain-ai/local-deep-researcher` (package name: `ollama_deep_researcher`)
+
+- **The most directly comparable project by design goal** — LangChain's own local-model-first deep
+  research agent (default `local_llm="llama3.2"`, native Ollama/LMStudio base URLs,
+  `configuration.py:1-13`). ~1,200 lines total, not multi-agent at all: one linear LangGraph loop
+  (`generate_query` → `web_research` → `summarize_sources` → `reflect_on_summary` → loop until
+  `max_web_research_loops`, `graph.py:444-465`) building one running summary. Cannot decompose a
+  query into independent facets/comparisons the way DeepDelve's Planner attempts — a structurally
+  different way of avoiding the facet-collapse bug class: it never attempts multi-facet
+  decomposition at all.
+- **The single most consequential divergence found this session: `use_tool_calling` defaults to
+  `False`** (`configuration.py:57-61`). When false, `get_llm` (`graph.py:97-135`) requests Ollama's
+  raw `format="json"` mode instead of native function-calling, and
+  `generate_search_query_with_structured_output` (`graph.py:44-95`) parses the JSON response by
+  hand with an explicit `fallback_query` on any parse failure — a deliberate, load-bearing fallback
+  path, not dead code. This is the opposite bet from DeepDelve's own stated model-selection
+  philosophy (`README.md`'s tool-call-support verification step; candidates disqualified for
+  unreliable `tool_calls` per `MODELS.md`) — real evidence that the team building the most
+  local-model-specific reference implementation in this space did not trust native tool-calling
+  enough to make it the default, even though Ollama has supported it for the models they target.
+  Both are defensible engineering bets; recorded here as a documented counter-data-point against
+  DeepDelve's tool-calling-required stance, not a recommendation to switch (switching would be a
+  large architectural change DeepDelve's entire tool-based dispatch model depends on, not scoped
+  here).
+- **No citation-to-claim verification** — sources are deduplicated and appended as a flat list at
+  `finalize_summary` (`graph.py:387-418`), never checked against the summary text.
+
+### `dzhng/deep-research` — re-confirmed under its actual repo name, one new finding beyond §7
+
+§7 already covers this project's minimalism and lack of a verification layer accurately (confirmed
+again this session, same file: `src/deep-research.ts`). One angle §7 didn't name explicitly, worth
+adding: **its control flow is entirely host-code-driven recursion, not model-driven ReAct** — breadth
+halves every level (`newBreadth = Math.ceil(breadth / 2)`, `deep-research.ts:230`), and the LLM only
+ever fills `generateObject`/zod-schema slots at fixed call sites (`generateSerpQueries`,
+`processSerpResult`, `writeFinalReport`) — the model is never asked "should I search more?" the way
+DeepDelve's Planner is via its `ADAPTIVE PLANNING LOOP`, or the way `open_deep_research`'s supervisor
+is via `ResearchComplete`. This sidesteps §15's entire problem class (a model that won't stop
+replanning) **by construction**: if the model never holds iteration-control authority, there's
+nothing for it to over-exercise. A genuinely different fix family from either §15's hard cap (limit
+the model's authority) or a smarter prompt (persuade the model to use its authority well) — worth
+naming as a third option for future iteration-control problems, though adopting it for DeepDelve
+would mean giving up the Planner's ability to genuinely adapt its plan to what it finds, which is a
+real capability trade-off, not a strict improvement.
+
+### `assafelovic/gpt-researcher`
+
+- **By far the largest, most production-hardened codebase surveyed in this section** (~9,900 lines
+  under `gpt_researcher/`) — the closest thing to a "mature OSS competitor" of the projects checked
+  today. Has a real swappable-retriever abstraction (`gpt_researcher/retrievers/` — 19 separate
+  provider modules: tavily, brave, serpapi, arxiv, semantic_scholar, pubmed_central, searx, custom,
+  etc., all behind one interface) — genuinely more mature than DeepDelve's own current state, where
+  today's own Tavily-wiring work found DeepDelve has no such abstraction (`web_search` hardcodes
+  `ddgs`; MCP servers like Brave/Tavily are a structurally separate, second tool the model must be
+  separately told to prefer, not an interchangeable backend for the same tool). Worth naming as a
+  concrete gap: if DeepDelve adds a third/fourth search backend later, a real `Retriever` interface
+  (as `gpt_researcher/actions/retriever.py` demonstrates) would scale better than another bespoke
+  MCP-server-plus-prompt-mention pair.
+- **`SourceCurator`** (`gpt_researcher/skills/curator.py`) — a dedicated LLM pass that ranks/filters
+  gathered sources by credibility and relevance *before* they reach the writer, separate from both
+  search and report generation. Still pure LLM self-judgment (no structural check backing it,
+  `curator.py:58-96` just parses whatever JSON the model returns, falling back to the unranked list
+  on any parse failure) — a real idea (separate the "is this source good" decision from "what does
+  this source say") but not a verification mechanism in DeepDelve's sense, since nothing confirms
+  the LLM's credibility judgment against anything external.
+  **`gpt_researcher/skills/deep_research.py`** (their own dzhng-lineage breadth/depth recursive mode,
+  explicitly the same architecture family as `deep-research-dzhng/` above, evolved further) has a
+  fix (`deep_research.py:493-511`, comment referencing their own issue **#1579**) for stopping
+  descent when every branch at a level fails, rather than recursing forever on empty learnings —
+  independent confirmation, from a different, more mature project in the same architecture lineage,
+  that dzhng's silent-per-branch-failure gap (flagged as a real weakness above) is not
+  hypothetical: GPT Researcher's own maintainers hit it in production and had to patch it.
+- **Defensive multi-strategy structured-output parsing** (`deep_research.py:48-116`,
+  `_extract_json_payloads`/`_load_repaired_json`/regex-line-fallback chain) — cascades from
+  `json_repair.loads` down to hand-rolled regex line matching before giving up, rather than crashing
+  or silently returning nothing on the first malformed response. DeepDelve's own tool-calling
+  architecture mostly sidesteps this class of problem (native tool schemas are framework-validated,
+  not free-text-parsed), but this is a real, battle-tested hardening pattern worth keeping in mind
+  for any future DeepDelve code path that does have to parse free-text model output by hand.
+
+### `stanford-oval/storm` (NAACL 2024, "Assisting in Writing Wikipedia-like Articles From Scratch
+with Large Language Models")
+
+- **The one project in this whole survey (today's four plus §7's five) that is not a variant of
+  "decompose into search queries, iterate, synthesize."** STORM's actual research contribution is
+  **persona-diversity-driven facet discovery**: `persona_generator.py` first pulls the table-of-
+  contents structure from real Wikipedia pages on related topics (`get_wiki_page_title_and_toc`,
+  grounded in real external reference structure, not just prompted brainstorming) and uses that as
+  grounding for an LLM call (`GenPersona`, `persona_generator.py:53-63`) that proposes N distinct
+  "Wikipedia editor" personas, each representing a different perspective/role/affiliation on the
+  topic. `knowledge_curation.py`'s `ConvSimulator` then runs a simulated multi-turn dialogue per
+  persona — a `WikiWriter` persona asks questions, a `TopicExpert` persona answers them with real
+  grounded search per turn (`knowledge_curation.py:25-81`) — so each persona drives its own
+  independent research thread before everything is merged into one outline and article.
+- **This is directly relevant to DeepDelve's still-open task-naming/facet-collapse problem**
+  (`session_status/CURRENT.md` item 0) as a structurally different fix family from
+  `open_deep_research`'s prompt-rule approach above: instead of (or in addition to) telling the
+  Planner "name each comparison subject explicitly," generate diverse perspectives on the query
+  FIRST, each of which naturally drives its own research thread — for "Lisbon vs. Mexico City,"
+  perspective-generation grounded in what similar comparison queries typically need would plausibly
+  surface "visa-Lisbon," "visa-Mexico," "cost-Lisbon," "cost-Mexico" as four separate threads more
+  reliably than hoping a single top-down planner's task-naming discipline holds under model
+  fallibility — because the diversity comes from generating N different vantage points BEFORE
+  decomposition, not from getting one planner's decomposition right in one shot. Not scoped or
+  recommended for implementation here — a materially larger architectural change than either of the
+  above two prompt-level ideas (would mean adding a whole new pre-Planner stage) — but the most
+  novel, best-grounded idea in this survey for that specific open problem, worth remembering when
+  that fix actually gets scoped.
+- **No verification/grounding layer of DeepDelve's kind** — STORM's own quality mechanism is entirely
+  upstream (better facet coverage via personas) rather than downstream (checking citations after the
+  fact); a citation is whatever URL the `TopicExpert`'s search returned, unchecked against final
+  article text for entailment or contradiction.
+
+### Updated synthesis (extends §7's, does not replace it)
+
+Nine projects now read directly across two sessions (§7's five: Tongyi DeepResearch, dzhng/
+deep-research, CYC2002tommy's Deep Science Writer, SkyworkAI/DeepResearchAgent, nashsu/llm_wiki;
+today's four: `open_deep_research`, `local-deep-researcher`, `gpt-researcher`, STORM). §7's own
+qualifications (different projects solve different problems; "most sophisticated" ≠ "most
+validated"; no survey is exhaustive) still hold and are reinforced, not weakened, by today's
+additions — GPT Researcher in particular is a materially larger, more mature codebase than anything
+in §7's set, and it still has no verification layer comparable to DeepDelve's for the same reason
+§7 already named: different projects are optimizing different axes (retriever breadth and
+production polish, in GPT Researcher's case, not post-hoc fabrication defense). The live gpt-oss
+fabrication test on `open_deep_research` is the most concrete evidence yet, on this exact local
+model, for why that verification layer earns its complexity rather than being defensive
+over-engineering: an unmodified, well-regarded reference implementation produced a fabricated fact
+and two dead citations on the simplest possible case, with no structural mechanism anywhere in its
+own code that would have caught it.
+
+Two concrete, sourced ideas from today are now on record as candidate future work, deliberately not
+implemented in this session (survey was the explicit deliverable requested): (1) `open_deep_research`'s
+per-comparison-subject task-naming rule, a small prompt-level fix; (2) STORM's persona-diversity
+facet discovery, a larger architectural one. Both target the same currently-open bug
+(`session_status/CURRENT.md` item 0) from different angles and different cost levels.

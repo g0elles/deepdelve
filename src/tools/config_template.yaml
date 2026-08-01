@@ -94,11 +94,32 @@ settings:
   # Orthogonal to --depth (that only changes tool budgets, this changes report SHAPE); set via
   # --style on the CLI or this key directly.
   report_style: standard
-  # Search engine(s) for web_search. "auto" lets the ddgs metasearcher rotate/fall back across
-  # its 10+ engines (google, bing, brave, yahoo, startpage, mojeek, duckduckgo, ...) — a single
+  # Which real search PROVIDER answers web_search — invisible to the model, which only ever sees
+  # one tool ("web_search") regardless of this setting. "auto" (default) picks the best configured
+  # provider by which API key is set below: tavily_api_key > brave_api_key > ddgs (free, no key).
+  # Or pin one explicitly: "tavily" | "brave" | "ddgs".
+  #
+  # Deliberately NOT exposed as a second/third MCP tool the model chooses between — that was tried
+  # (brave_web_search, then tavily_search, both as separate MCP-provided tools) and confirmed live
+  # 2026-08-01 not to work: across three live runs, one with an explicit "prefer it over
+  # web_search" prompt instruction, the model called web_search 100% of the time and the
+  # alternate tool zero times. Prompted tool preference is not a reliable lever on small local
+  # models — this project's whole design philosophy already says so (see CLAUDE.md's project
+  # rules on structural vs. prompted enforcement). Full writeup: RESEARCH.md §16,
+  # session_status/CURRENT.md.
+  web_search_backend: auto
+  # Tavily: https://app.tavily.com/home (free tier). Dedicated search API, not a scrape.
+  tavily_api_key: ""
+  # Brave Search API: https://brave.com/search/api/ (free tier). A real search index.
+  brave_api_key: ""
+  # ddgs (free, no API key required) is the zero-config fallback when neither key above is set —
+  # "auto" here lets ITS OWN internal metasearcher rotate/fall back across 10+ engines (google,
+  # bing, brave, yahoo, startpage, mojeek, duckduckgo, ...) rather than pinning one. A single
   # pinned provider is a single point of failure: DDG throttling after a search-heavy day made
   # whole runs fail in ways that looked like model fabrication (see search_health in
   # _run_state.json). A comma list pins specific engines in order, e.g. "google,brave,duckduckgo".
+  # Only consulted when ddgs is the active provider (see web_search_backend above) — unrelated to
+  # the tavily/brave/ddgs provider choice itself, just ddgs's own internal engine-rotation knob.
   search_backend: auto
   fetch:
     # Headless-browser (Playwright) retry when a plain HTTP fetch comes back looking like a
@@ -468,8 +489,13 @@ settings:
   # External MCP servers, scoped to specific sub-agents by name (omit 'agents' to expose to all).
   # Connected only for the lifetime of each delegated task (see
   # engine/orchestrator.py::_run_single_task). Empty by default — none of this runs unless you add
-  # an entry AND install the corresponding server yourself. Two concretely researched options
-  # (not guessed) rather than building bespoke API clients from scratch:
+  # an entry AND install the corresponding server yourself.
+  #
+  # NOTE: Brave and Tavily used to be documented here as MCP servers (a second/third tool the
+  # model picks between). That's now handled instead by settings.web_search_backend +
+  # tavily_api_key/brave_api_key above — web_search itself calls the configured provider's REST
+  # API directly, invisibly to the model. Use THAT for search. This mcp_servers section remains
+  # for genuinely different, non-search MCP tools:
   #   - Semantic Scholar MCP for AcademicSearcher (200M+ papers, citations, authors — no API key
   #     needed for the public tier): https://github.com/xiuyechen/semantic-scholar-mcp
   #     mcp_servers:
@@ -478,15 +504,4 @@ settings:
   #         command: uvx
   #         args: ["semantic-scholar-mcp"]
   #         agents: ["AcademicSearcher"]
-  #   - Brave Search MCP for WebSearcher (a real search index instead of DDGS scraping — needs a
-  #     free-tier API key from https://brave.com/search/api/). Uses Brave's own maintained
-  #     @brave/brave-search-mcp-server (migrated 2026-07-12 from the reference implementation
-  #     @modelcontextprotocol/server-brave-search, which is npm-deprecated):
-  #     mcp_servers:
-  #       - name: brave-search
-  #         transport: stdio
-  #         command: npx
-  #         args: ["-y", "@brave/brave-search-mcp-server"]
-  #         env: { BRAVE_API_KEY: "your-key-here" }
-  #         agents: ["WebSearcher"]
   mcp_servers: []

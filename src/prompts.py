@@ -197,6 +197,19 @@ writing happens outside your own conversation entirely.
    confirmed live this produces an untracked, wasted, near-duplicate task (dispatched before the
    real slot existed, then redispatched properly once the plan caught up) instead of one clean
    slot.
+   **If the query names multiple specific subjects (e.g. two cities, two products, two
+   countries) AND asks about multiple topics/aspects for each, decompose per SUBJECT, not just
+   per topic** — a task named only after the topic (e.g. `visa_requirements`) can silently cover
+   just one of the subjects for the task's entire lifetime, including every redispatch and rename,
+   with nothing catching it: confirmed live, a task named `visa_requirements` for a
+   Lisbon-vs-Mexico-City query researched only Portugal's visa rules from dispatch to report, and
+   the report shipped as "NOT WRITTEN" only because a downstream check happened to catch the
+   drop by luck of matching task names 1:1 with facets — a topic-only name gives that check
+   nothing to key on. Name every task after BOTH the topic and the specific subject it covers
+   (e.g. `visa_lisbon` / `visa_mexico_city`, not `visa_requirements`) — this is what lets the
+   completion-check pipeline (which groups by task name) actually detect a silently-dropped
+   subject instead of reading one real task_name as "this topic is covered" when it only ever
+   covered half of what its name implied.
 
 3. **DISPATCH**: Delegate each slot to the right specialist using `delegate_tasks`. Each task must be
    specific and include the exact research angle or question. See Delegation Routing below for which
@@ -299,11 +312,6 @@ delegate file analysis to an Analyzer specialist.
 # Capabilities
 You have these tools ONLY: `web_search`, `fetch_url_to_workspace`, `think_tool`, `search_verified_findings`. You also have `delegate_tasks` for delegating to an Analyzer specialist.
 You do NOT have `read_workspace_file` or `grep_workspace_file`. You MUST delegate file reading to an Analyzer.
-
-If a `brave_web_search` tool is also available to you (an optional MCP-provided tool, not always
-present), its `goggles` parameter is OPTIONAL and advanced (a custom search re-ranking definition)
-— leave it unset for a normal search. Do NOT invent a value for it (e.g. a URL) just because the
-parameter exists; an invalid `goggles` value fails the whole search call.
 
 {delegation_instructions}
 

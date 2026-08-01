@@ -802,37 +802,95 @@ async def web_search(
 
         results = []
 
-        # ddgs (free, no API key required) is the only provider — the old search_provider config
-        # key had a dead "tavily" branch that silently returned zero results and recorded every
-        # search as a health failure. A fresh, short-lived client per call rather than a shared
-        # singleton — concurrent specialists search in parallel via asyncio.gather (see
-        # engine/orchestrator.py's delegate_tasks), and the duckduckgo_search/ddgs library is not
-        # documented as safe for concurrent calls on one shared client instance. DDGS() itself is
-        # lightweight to construct.
-        client = DDGS()
-        # ddgs 9.x is a metasearcher over 10+ engines (google, bing, brave, yahoo, startpage,
-        # mojeek, ...) — "auto" rotates/falls back across them instead of pinning every call
-        # to DuckDuckGo. Confirmed live (2026-07-11): DDG throttling after a search-heavy day
-        # made two models' runs fail in ways that looked like model fabrication. A comma list
-        # (e.g. "google,brave,duckduckgo") pins specific engines in order.
-        backend = app_config.cfg.get("settings", {}).get("search_backend", "auto")
+        # Provider selection lives entirely here, invisible to the model — web_search is ONE tool
+        # regardless of which real search API answers it. Confirmed live 2026-08-01: exposing a
+        # second/third search backend as its own MCP tool (brave_web_search, tavily_search) and
+        # telling the model to "prefer" it never worked — three separate live runs, including one
+        # with an explicit "prefer it over web_search" prompt instruction, and the model called the
+        # familiar web_search 100% of the time (0 calls to either alternate tool across all three
+        # runs; see RESEARCH.md §16 and session_status/CURRENT.md). Same lesson this project's
+        # whole design already leans on: prompted preference is unreliable on small local models,
+        # structural is not. "auto" picks the best configured provider without the model ever
+        # knowing a choice was made: Tavily (dedicated search API) > Brave (real search index) >
+        # ddgs (free, no key, metasearch scrape — the original zero-config fallback).
+        backend_choice = app_config.cfg.get("settings", {}).get("web_search_backend", "auto")
+        tavily_key = app_config.cfg.get("settings", {}).get("tavily_api_key", "")
+        brave_key = app_config.cfg.get("settings", {}).get("brave_api_key", "")
+        provider = backend_choice
+        if provider == "auto":
+            provider = "tavily" if tavily_key else ("brave" if brave_key else "ddgs")
 
-        if topic == "news":
-            search_results = client.news(query, max_results=max_results, backend=backend)
-            for result in search_results:
+        if provider == "tavily" and tavily_key:
+            resp = httpx.post(
+                "https://api.tavily.com/search",
+                json={
+                    "api_key": tavily_key,
+                    "query": query,
+                    "max_results": max_results,
+                    "topic": "news" if topic == "news" else "general",
+                },
+                timeout=15,
+            )
+            resp.raise_for_status()
+            for r in resp.json().get("results", []):
                 results.append({
-                    "url": result.get("url", ""),
-                    "title": result.get("title", ""),
-                    "snippet": _sanitize_snippet(result.get("body", "No snippet available")),
+                    "url": r.get("url", ""),
+                    "title": _sanitize_snippet(r.get("title", "")),
+                    "snippet": _sanitize_snippet(r.get("content", "No snippet available")),
+                })
+        elif provider == "brave" and brave_key:
+            endpoint = (
+                "https://api.search.brave.com/res/v1/news/search" if topic == "news"
+                else "https://api.search.brave.com/res/v1/web/search"
+            )
+            resp = httpx.get(
+                endpoint,
+                params={"q": query, "count": max_results},
+                headers={"Accept": "application/json", "X-Subscription-Token": brave_key},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            raw_results = data.get("results", []) if topic == "news" else data.get("web", {}).get("results", [])
+            for r in raw_results[:max_results]:
+                results.append({
+                    "url": r.get("url", ""),
+                    "title": _sanitize_snippet(r.get("title", "")),
+                    "snippet": _sanitize_snippet(r.get("description", "No snippet available")),
                 })
         else:
-            search_results = client.text(query, max_results=max_results, backend=backend)
-            for result in search_results:
-                results.append({
-                    "url": result.get("href", ""),
-                    "title": result.get("title", ""),
-                    "snippet": _sanitize_snippet(result.get("body", "No snippet available")),
-                })
+            # ddgs (free, no API key required) — the zero-config fallback when neither Tavily nor
+            # Brave has a key set. A fresh, short-lived client per call rather than a shared
+            # singleton — concurrent specialists search in parallel via asyncio.gather (see
+            # engine/orchestrator.py's delegate_tasks), and the duckduckgo_search/ddgs library is
+            # not documented as safe for concurrent calls on one shared client instance. DDGS()
+            # itself is lightweight to construct.
+            client = DDGS()
+            # ddgs 9.x is a metasearcher over 10+ engines (google, bing, brave, yahoo, startpage,
+            # mojeek, ...) — "auto" rotates/falls back across them instead of pinning every call
+            # to DuckDuckGo. Confirmed live (2026-07-11): DDG throttling after a search-heavy day
+            # made two models' runs fail in ways that looked like model fabrication. A comma list
+            # (e.g. "google,brave,duckduckgo") pins specific engines in order. Unrelated to, and
+            # not to be confused with, settings.web_search_backend above — this is ddgs's own
+            # internal engine-rotation knob, only consulted when ddgs is the active provider.
+            ddgs_engine = app_config.cfg.get("settings", {}).get("search_backend", "auto")
+
+            if topic == "news":
+                search_results = client.news(query, max_results=max_results, backend=ddgs_engine)
+                for result in search_results:
+                    results.append({
+                        "url": result.get("url", ""),
+                        "title": result.get("title", ""),
+                        "snippet": _sanitize_snippet(result.get("body", "No snippet available")),
+                    })
+            else:
+                search_results = client.text(query, max_results=max_results, backend=ddgs_engine)
+                for result in search_results:
+                    results.append({
+                        "url": result.get("href", ""),
+                        "title": result.get("title", ""),
+                        "snippet": _sanitize_snippet(result.get("body", "No snippet available")),
+                    })
 
         return results
 

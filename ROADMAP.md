@@ -4145,6 +4145,46 @@ tried, twice, not merely proposed):
 
 ### Candidates from the 2026-07-12 reference-repo review (see README References)
 
+### Candidates from the 2026-08-01 reference-repo survey (`RESEARCH.md` §16 — full detail there)
+
+Applied already, not just noted: `open_deep_research`'s per-comparison-subject task-naming rule
+(`src/prompts.py`'s `PLANNER_INSTRUCTIONS`, ~line 195) and the `web_search_backend` provider
+abstraction (`src/tools/web.py`, config-driven Tavily/Brave/ddgs selection invisible to the model
+— GPT Researcher's `Retriever` interface was the prompt to look at this, though the actual
+implementation is a lighter config-branch, not a full class hierarchy — 3 providers doesn't
+justify one). Noted here as candidates, deliberately NOT implemented this session (bigger
+architectural changes, or judged not to add real value over what DeepDelve already does):
+
+- **STORM's persona-diversity facet discovery** (`stanford-oval/storm`,
+  `knowledge_storm/storm_wiki/modules/persona_generator.py`/`knowledge_curation.py`): generate N
+  diverse "perspective" personas grounded in related-topic reference structure BEFORE
+  decomposition, each driving its own research thread via simulated Q&A. The most structurally
+  different, best-grounded idea surveyed for DeepDelve's still-open task-naming/facet-collapse
+  problem (item 0, `session_status/CURRENT.md`) — not adopted because it's a genuinely new
+  pre-Planner pipeline stage, not a tweak to the existing one. Revisit if the prompt-level fix
+  above (already applied) turns out insufficient on live re-test.
+- **GPT Researcher's `SourceCurator`** (`gpt_researcher/skills/curator.py`): a dedicated LLM pass
+  that ranks/filters sources by credibility before the writer sees them. Considered, not
+  recommended: it's pure LLM self-judgment with no structural backing (falls back to the unranked
+  list on any parse failure) — DeepDelve's existing grounding pipeline already does something
+  stronger downstream (NLI entailment, cross-source contradiction, stub-fetch rejection), so
+  adding a weaker upstream judgment call would be redundant, not additive.
+- **GPT Researcher's defensive multi-strategy structured-output parsing**
+  (`gpt_researcher/skills/deep_research.py:48-116` — `json_repair` → regex-line-fallback cascade):
+  a real hardening pattern, but not applicable to DeepDelve's current architecture — native
+  tool-calling schemas are framework-validated, not free-text-parsed, so this class of problem
+  mostly doesn't arise here. Worth remembering if a future DeepDelve code path does need to parse
+  free-text model output by hand.
+- **Host-driven shrinking-budget iteration** (`dzhng/deep-research` and GPT Researcher's own
+  `deep_research.py` lineage — breadth halves every recursion level, LLM never decides "should I
+  search more"): a genuinely different fix family from the hard replan-round cap already shipped
+  (`RESEARCH.md` §15, `max_planner_delegate_rounds`) for the SAME problem class (a model that
+  over-exercises iteration authority) — cap the model's authority (shipped) vs. never grant it in
+  the first place (this). Not adopted: would mean rearchitecting the Planner's `ADAPTIVE PLANNING
+  LOOP` away from genuine model-driven adaptation, a real capability trade-off, and the cap already
+  shipped is confirmed live-working (RESEARCH.md §15's live-test: 6 rounds → 4, no rejections
+  needed). Recorded as a fallback option if the cap alone ever proves insufficient the way the
+  fetch-cap-and-cutoff-wording fix alone did.
 
 ## Rejected
 
