@@ -118,7 +118,15 @@ def extract_cited_urls(text: str) -> list[str]:
 # that happens to discuss e.g. "no fee is required" — requiring both keeps this narrow to actual
 # extraction-failure narration.
 _NULL_FINDING_RE = re.compile(
-    r'no (?:key )?findings?\b.{0,20}\b(?:were|was|could be)?\s*extracted|'
+    # 'available' added 2026-08-01, second live incident on the SAME session: the model's exact
+    # wording drifted from "No key findings extracted..." (the phrase this pattern was originally
+    # written from) to "No key findings available from this source regarding X" on a later run --
+    # a real phrasing variant, not a hypothetical one, that the original 'extracted'-only pattern
+    # missed entirely (confirmed: _is_null_finding_summary returned False on it), letting through
+    # 21 of 24 findings.md entries that were pure failure narration. 'found' added at the same
+    # time for the same reason -- broadening the FIRST alternative to cover the model's most
+    # common near-synonyms for "there is nothing here" rather than chasing one exact phrase.
+    r'no (?:key )?findings?\b.{0,30}\b(?:were|was|could be)?\s*(?:extracted|available|found)|'
     r'no relevant (?:information|content|findings)|'
     r'(?:could not|couldn\'?t|unable to)\s+(?:extract|find|locate)|'
     r'nothing (?:useful|relevant)\s*(?:was|could be)?\s*found',
