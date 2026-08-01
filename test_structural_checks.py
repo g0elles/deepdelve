@@ -2699,6 +2699,88 @@ def main():
 
     contextvars.copy_context().run(_report_underuses_findings_scenario)
 
+    # --- 2026-07-31 (research finding, not a live incident): both check_report_underuses_findings
+    # and check_report_underuses_evidence used to say "actually add sections" without ever naming
+    # edit_workspace_file, the tool BUILDER_INSTRUCTIONS itself reserves for exactly this narrow-
+    # scope operation -- see completion.py's own comment at the fix site for the full reasoning
+    # (self-correction blind spot literature, arXiv:2406.01297). Pin: the directive text (.inject,
+    # the model-facing field -- NOT .warning, which the other scenario's msgs assertions check)
+    # must name edit_workspace_file on BOTH the first-occurrence and escalated branches for both
+    # checks, so a future wording edit can't silently drop the tool-specific instruction again. ---
+    def _underuses_edit_tool_directive_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        from engine.completion import check_report_underuses_findings, check_report_underuses_evidence, Ctx
+
+        _orig_ws17 = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory"}
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                # --- check_report_underuses_findings ---
+                urls = [f"https://source{i}.example.co/page" for i in range(1, 6)]
+                findings_md = "\n\n".join(f"### [Fuente {i}]({u})\n- dato numero {i}." for i, u in enumerate(urls, 1))
+                _IN_MEMORY_FS.clear()
+                _IN_MEMORY_FS["findings.md"] = findings_md
+                thin_report = f"- dato numero 1. [Fuente 1]({urls[0]})\n- dato numero 2. [Fuente 2]({urls[1]})"
+
+                rs = RunState(tmpdir)
+                ctx_first = Ctx(req_artifact="final_report.md", attempt=0, max_attempts=8,
+                                 delegated=True, files=["findings.md"], content=thin_report,
+                                 quotas=None, run_state=rs)
+                v = check_report_underuses_findings(ctx_first)
+                assert v is not None and "edit_workspace_file" in v.inject, (
+                    "first-occurrence directive must name edit_workspace_file", v)
+
+                rs2 = RunState(tmpdir)
+                rs2.data["completion_check_attempts"] = [{"problem": "report_underuses_findings"}]
+                ctx_escalated = Ctx(req_artifact="final_report.md", attempt=1, max_attempts=8,
+                                     delegated=True, files=["findings.md"], content=thin_report,
+                                     quotas=None, run_state=rs2)
+                v2 = check_report_underuses_findings(ctx_escalated)
+                assert v2 is not None and "edit_workspace_file" in v2.inject, (
+                    "escalated directive must name edit_workspace_file", v2)
+
+                # --- check_report_underuses_evidence ---
+                heur_urls = ["https://a.example.co/heur1", "https://a.example.co/heur2"]
+                colo_urls = ["https://b.example.co/colo1", "https://b.example.co/colo2", "https://b.example.co/colo3"]
+                _IN_MEMORY_FS["findings.md"] = "\n\n".join(
+                    f"### [Src]({u})\n- real finding." for u in heur_urls + colo_urls)
+                colombia_only_report = "\n".join(f"- dato. [Src]({u})" for u in colo_urls)
+
+                rs3 = RunState(tmpdir)
+                for u in heur_urls:
+                    rs3.add_finding(u, "heuristic finding", task_name="heuristics", depth=1)
+                for u in colo_urls:
+                    rs3.add_finding(u, "colombia finding", task_name="colombia", depth=1)
+                ctx3 = Ctx(req_artifact="final_report.md", attempt=0, max_attempts=8, delegated=True,
+                           files=["findings.md", "final_report.md"], content=colombia_only_report,
+                           quotas=None, run_state=rs3)
+                v3 = check_report_underuses_evidence(ctx3)
+                assert v3 is not None and "edit_workspace_file" in v3.inject, (
+                    "first-occurrence evidence directive must name edit_workspace_file", v3)
+
+                rs4 = RunState(tmpdir)
+                for u in heur_urls:
+                    rs4.add_finding(u, "heuristic finding", task_name="heuristics", depth=1)
+                for u in colo_urls:
+                    rs4.add_finding(u, "colombia finding", task_name="colombia", depth=1)
+                rs4.data["completion_check_attempts"] = [{"problem": "report_underuses_evidence"}]
+                ctx4 = Ctx(req_artifact="final_report.md", attempt=1, max_attempts=8, delegated=True,
+                           files=["findings.md", "final_report.md"], content=colombia_only_report,
+                           quotas=None, run_state=rs4)
+                v4 = check_report_underuses_evidence(ctx4)
+                assert v4 is not None and "edit_workspace_file" in v4.inject, (
+                    "escalated evidence directive must name edit_workspace_file", v4)
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            if _orig_ws17 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws17
+
+    contextvars.copy_context().run(_underuses_edit_tool_directive_scenario)
+
     # --- check_report_underuses_evidence (2026-07-29): check_findings_underuses_evidence's own
     # sibling one stage downstream -- findings.md can correctly cover every task (that check stays
     # silent) while final_report.md still cites only ONE task's sources by raw ratio, clearing

@@ -830,21 +830,31 @@ def check_report_underuses_findings(ctx: Ctx) -> Optional[Verdict]:
         else:
             break
 
+    # 2026-07-31 (research finding, not a live incident): both branches already asked conceptually
+    # for an ADDITION ("actually add sections") but never named the one tool built exactly for a
+    # scoped addition -- edit_workspace_file (BUILDER_INSTRUCTIONS, src/prompts.py, explicitly
+    # reserved for "a small targeted fix... it can't accidentally drop or alter anything else in
+    # the file"). Literature (arXiv:2406.01297, the "self-correction blind spot": models are
+    # measurably worse at fixing errors in their OWN prior output than identical errors framed as
+    # external input) suggests a full write_workspace_file regeneration -- which the old wording
+    # implicitly invited by never specifying a narrower tool -- is exactly the weakest operation
+    # here. Now explicit on BOTH branches, not just the escalated one, so the narrower ask is tried
+    # from the first attempt rather than only after a full rewrite has already failed once.
     unused_list = ", ".join(unused[:5])
     if prior_same == 0:
         directive = (
             f"'{ctx.req_artifact}' only cites {len(findings_urls) - len(unused)} of "
             f"{len(findings_urls)} real sources actually present in findings.md — the rest "
             f"({unused_list}) are real, fetched, and available but never appear anywhere in the "
-            f"report. Rewrite it to actually incorporate the neglected sources too, not just "
-            f"whichever cluster was easiest to write about first — if findings.md covers multiple "
-            f"distinct angles, the report must reflect all of them, not just one."
+            f"report. Use edit_workspace_file to insert a new section covering ONLY these neglected "
+            f"sources — do not rewrite or touch any other part of the report. If findings.md covers "
+            f"multiple distinct angles, the report must reflect all of them, not just one."
         )
     else:
         directive = (
             f"'{ctx.req_artifact}' STILL neglects real sources from findings.md after a prior "
-            f"warning ({unused_list}). Do not just lightly edit the existing draft — actually add "
-            f"sections covering these neglected sources."
+            f"warning ({unused_list}). Use edit_workspace_file to insert a new section covering "
+            f"ONLY these neglected sources — do not rewrite or touch any other part of the report."
         )
     return Verdict(
         "report_underuses_findings",
@@ -921,20 +931,24 @@ def check_report_underuses_evidence(ctx: Ctx) -> Optional[Verdict]:
     # docstring) -- one more duplicate of this exact loop shape found during the 2026-07-31 audit.
     prior_same = _consecutive_occurrences(ctx.run_state, "report_underuses_evidence")
 
+    # 2026-07-31: same treatment as check_report_underuses_findings' sibling directive (see its own
+    # comment for the full reasoning) -- explicit edit_workspace_file instruction on BOTH branches
+    # instead of an implied "add sections" that never named the narrow-scope tool.
     dropped_list = ", ".join(f"'{n}'" for n in dropped[:5])
     if prior_same == 0:
         directive = (
             f"'{ctx.req_artifact}' has NO citations at all for task(s) {dropped_list}, even though "
             f"findings.md has real, surviving sources for them. This looks like one research angle "
-            f"crowded out another during synthesis, not thin coverage of a single topic. Rewrite the "
-            f"report to include real coverage of every task's sources, not just whichever one was "
-            f"easiest or had the most sources to write about."
+            f"crowded out another during synthesis, not thin coverage of a single topic. Use "
+            f"edit_workspace_file to insert a new section covering ONLY task(s) {dropped_list}'s "
+            f"real sources from findings.md — do not rewrite or touch any other part of the report."
         )
     else:
         directive = (
             f"'{ctx.req_artifact}' STILL has no citations for task(s) {dropped_list} after a prior "
-            f"warning. Do not just lightly edit the existing draft — actually add sections covering "
-            f"these tasks' real sources from findings.md."
+            f"warning. Use edit_workspace_file to insert a new section covering ONLY task(s) "
+            f"{dropped_list}'s real sources from findings.md — do not rewrite or touch any other "
+            f"part of the report."
         )
 
     return _capped(ctx, "report_underuses_evidence", Verdict(
