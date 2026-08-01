@@ -45,6 +45,15 @@ pass on both standing benchmarks.
   gap it keeps correctly flagging is the model's own unwillingness/inability to actually act on
   "cover every facet" feedback within a bounded retry budget. See ROADMAP.md's Pending for the
   literature-research angle on this (multi-facet task abandonment under iterative self-correction).
+  **Follow-up live test, same night**: an explicit `edit_workspace_file`-routing directive fix
+  (commit `67e4b00`, the smallest literature-grounded attempt) changed Builder's TOOL choice
+  correctly but did not fix the underlying gap — a subsequent re-test's report went from
+  "answers ~1/3 of the query" to answering **zero** of the ML/heuristics half (100% Colombian-
+  festivals content, the deep-learning facet dropped entirely), despite the directive explicitly
+  saying "do not touch any other part of the report." Confirms this is genuinely the self-
+  correction blind spot / aggregator noise the literature describes, not a tool-choice gap —
+  prompt-level fixes have hit their ceiling; per-facet Builder dispatch is the justified next
+  attempt (see ROADMAP.md Pending).
 
 ---
 

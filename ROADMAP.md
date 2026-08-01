@@ -3736,7 +3736,8 @@ tried, twice, not merely proposed):
 ## Pending
 
 - **Multi-facet task abandonment under iterative self-correction — scoped 2026-07-31, literature
-  review DONE, fix NOT yet designed/attempted.** With the completion-check starvation bug class
+  review DONE, first fix attempted and LIVE-TESTED: NEGATIVE RESULT, real per-facet dispatch is
+  next.** With the completion-check starvation bug class
   fully fixed (see Completed above), a clean, unconfounded gpt-oss run against the standing
   sales-forecasting benchmark converged on a real, honestly-caveated, correctly-grounded report —
   but that report still answered only ~1/3 of the query (no "top 5 heuristic algorithms" list, no
@@ -3776,16 +3777,35 @@ tried, twice, not merely proposed):
     merge) is the literature's standard mitigation for this failure shape in multi-topic
     long-form generation.
 
-  **Sharpened next step, not yet scoped as a plan**: DeepDelve already has the data model
-  divide-and-conquer would need — `check_report_underuses_evidence`'s per-task URL grouping
-  (`src/engine/completion.py`) already tracks which real findings.md sources belong to which
-  facet/task. The real architecture question is whether Builder should get dispatched ONCE PER
-  under-represented facet (each a genuinely independent, externally-scoped "production" call, per
-  the Cross-Context Review framing) instead of one holistic whole-report rewrite hoping a single
-  regeneration fixes everything the correction flagged — a structurally different intervention
-  from anything tried so far, not just a stronger-worded nudge (prompt-only fixes have a real
-  ceiling per this same literature). Needs its own scoped plan before implementation — this is a
-  genuine architecture change to the writer-dispatch shape, not a small patch.
+  **First attempt: explicit `edit_workspace_file` directive, commit `67e4b00` — LIVE-TESTED,
+  NEGATIVE RESULT (2026-07-31→08-01).** Both `check_report_underuses_findings`/`check_report_
+  underuses_evidence` directives rewritten to explicitly name `edit_workspace_file` and instruct
+  "insert a new section covering ONLY {missing}, do not rewrite or touch any other part of the
+  report," on both the first-occurrence and escalated branches — the smallest, lowest-risk,
+  literature-grounded fix per this project's own escalation discipline, tried before the bigger
+  per-facet-dispatch rebuild. Live re-run confirmed the directive DID change Builder's tool
+  choice — it correctly called `edit_workspace_file` in direct response to the check firing
+  (`research_output/i_want_documentation_on_heuristic_algoritms_for_de_20260731_234906/`, attempts
+  5 and 7) — but the citation ratio stayed frozen at the identical 2/15 both times, and by the
+  run's end (attempt 14, retry budget exhausted on an unrelated `nli_unsupported` issue) the final
+  report had gone from "answers ~1/3 of the query" to answering **zero** of the ML/heuristics half —
+  100% Colombian-festivals content, the deep-learning/sales-forecasting facet not mentioned even
+  once, despite the explicit "do not touch any other part of the report" instruction. **Verdict:
+  prompt-level tool-routing does not fix this.** The model can be told which tool to use and still
+  fail to hold both facets simultaneously — confirms this is genuinely the self-correction blind
+  spot / aggregator noise the literature describes, not a tool-choice or wording gap, and prompt-
+  only fixes have hit their ceiling per that same literature.
+
+  **Next step, now justified by evidence, not skipped past**: the per-facet Builder dispatch
+  architecture. DeepDelve already has the data model it would need — `check_report_underuses_
+  evidence`'s per-task URL grouping (`src/engine/completion.py`) already tracks which real
+  findings.md sources belong to which facet/task. Dispatch Builder ONCE PER under-represented facet
+  (each a genuinely independent, externally-scoped "production" call, per the Cross-Context Review
+  framing) instead of one holistic whole-report rewrite hoping a single regeneration fixes
+  everything the correction flagged, then a lightweight merge/assembly pass. A real architecture
+  change to the writer-dispatch shape (new dispatch shape, a merge step, TUI/CLI parity per this
+  project's own mandatory rule, new quota accounting) — needs its own scoped plan before
+  implementation, not a small patch.
 
 - **`create_local_agent`'s 963-line nested-closure god-function — new, scoped 2026-07-29, NOT
   attempted, needs its own dedicated session.** A whole-repo structural audit
