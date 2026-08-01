@@ -3735,23 +3735,57 @@ tried, twice, not merely proposed):
 
 ## Pending
 
-- **Multi-facet task abandonment under iterative self-correction — new, scoped 2026-07-31, research
-  phase starting.** With the completion-check starvation bug class fully fixed (see Completed
-  above), a clean, unconfounded gpt-oss run against the standing sales-forecasting benchmark
-  converged on a real, honestly-caveated, correctly-grounded report — but that report still
-  answered only ~1/3 of the query (no "top 5 heuristic algorithms" list, no Colombia cultural-
-  pattern integration), despite `check_report_underuses_findings`/`_evidence` correctly flagging
-  the exact missing facets on every single attempt. This is NOT a pipeline bug — the completion
-  machinery is doing its job (detect, flag, dispatch a real Builder rewrite) — it's the model's own
-  tendency to not actually incorporate the flagged facets even after repeated, specific correction.
-  Same pattern first logged 2026-07-14/18 (see MODELS.md's `gpt-oss:20b` entry), now reconfirmed
-  clean of every structural confound found since. Needs a literature review (multi-facet/multi-
-  constraint task completion under iterative LLM self-correction — does repeated feedback on WHICH
-  facet is missing reliably fix this, or does it need a structurally different intervention, e.g.
-  per-facet forced sectioning, a checklist-style final-artifact template, or splitting synthesis
-  into one Builder dispatch per facet instead of one whole-report rewrite) before attempting a fix,
-  per this project's own standing rule (`feedback_read_docs_before_building`) of researching
-  primary sources before improvising.
+- **Multi-facet task abandonment under iterative self-correction — scoped 2026-07-31, literature
+  review DONE, fix NOT yet designed/attempted.** With the completion-check starvation bug class
+  fully fixed (see Completed above), a clean, unconfounded gpt-oss run against the standing
+  sales-forecasting benchmark converged on a real, honestly-caveated, correctly-grounded report —
+  but that report still answered only ~1/3 of the query (no "top 5 heuristic algorithms" list, no
+  Colombia cultural-pattern integration), despite `check_report_underuses_findings`/`_evidence`
+  correctly flagging the exact missing facets on every single attempt, 6+ Builder rewrites in a row
+  plateauing at the same low citation count each time. Same pattern first logged 2026-07-14/18 (see
+  MODELS.md's `gpt-oss:20b` entry), now reconfirmed clean of every structural confound found since.
+
+  **Ruled out first, not assumed**: stale/leaked sub-agent context. Traced `_run_single_task`
+  (`src/engine/orchestrator.py:803`, the closure every dispatch routes through, including every
+  Builder Write→Review→Fix call) — it constructs a genuinely new `dispatch_client.as_agent(...)`
+  and calls `.run(current_input, ...)` with only the fresh instructions text on EVERY dispatch, no
+  conversation/thread object reused across attempts, `session` (conversational memory) never
+  touches this path. Live logs confirm Builder actively calls `read_workspace_file` each dispatch
+  (not working from a memorized/stale findings.md). The abandonment is not a memory bug.
+
+  **Literature review** (before attempting a fix, per `feedback_read_docs_before_building`):
+  - [*When Can LLMs Actually Correct Their Own Mistakes? A Critical Survey of Self-Correction of
+    LLMs*](https://arxiv.org/html/2406.01297v3) (TACL/MIT Press) — the "self-correction blind
+    spot": models are measurably worse at correcting errors in their OWN prior output than at
+    correcting the identical error presented as external input (~64.5% of self-generated errors
+    survive self-checking across 14 open models even though the same errors are caught when
+    presented externally). Directly matches this setup: Builder re-examines and "fixes" its own
+    prior draft every retry, not someone else's.
+  - [*Cross-Context Review: Improving LLM Output Quality by Separating Production and Review
+    Sessions*](https://arxiv.org/pdf/2603.12123) — proposes session-separation between production
+    and review as a mitigation. DeepDelve's PeerReviewer already does this partially (fresh-context
+    review dispatch), but the FIX step still routes back through Builder regenerating from its own
+    prior framing, not a genuinely independent producer.
+  - [*When Does Divide and Conquer Work for Long Context LLM? A Noise Decomposition
+    Framework*](https://arxiv.org/abs/2506.16411) — names three distinct long-context failure
+    modes (cross-chunk dependence / model confusion / **aggregator noise**). The observed pattern
+    (individual facts present and correctly grounded in findings.md, but the merge/synthesis step
+    drops whole topic clusters) is a clean match for aggregator noise specifically, not the other
+    two — useful for scoping WHICH fix family is relevant.
+  - Hierarchical/divide-and-conquer decomposition (task → parallel per-topic sub-generation →
+    merge) is the literature's standard mitigation for this failure shape in multi-topic
+    long-form generation.
+
+  **Sharpened next step, not yet scoped as a plan**: DeepDelve already has the data model
+  divide-and-conquer would need — `check_report_underuses_evidence`'s per-task URL grouping
+  (`src/engine/completion.py`) already tracks which real findings.md sources belong to which
+  facet/task. The real architecture question is whether Builder should get dispatched ONCE PER
+  under-represented facet (each a genuinely independent, externally-scoped "production" call, per
+  the Cross-Context Review framing) instead of one holistic whole-report rewrite hoping a single
+  regeneration fixes everything the correction flagged — a structurally different intervention
+  from anything tried so far, not just a stronger-worded nudge (prompt-only fixes have a real
+  ceiling per this same literature). Needs its own scoped plan before implementation — this is a
+  genuine architecture change to the writer-dispatch shape, not a small patch.
 
 - **`create_local_agent`'s 963-line nested-closure god-function — new, scoped 2026-07-29, NOT
   attempted, needs its own dedicated session.** A whole-repo structural audit
