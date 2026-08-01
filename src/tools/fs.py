@@ -135,10 +135,58 @@ def resolve_fuzzy_filename(filename: str) -> str | None:
         return scored[0][1]
     return None
 
+def _analyzer_read_over_cap(current_count: int, cap: int) -> bool:
+    """True if a research-role dispatch (DocumentAnalyzer/DataAnalyzer in practice — see
+    task_read_grep_count_ctx's own docstring for why) has already made `cap` combined
+    read_workspace_file/grep_workspace_file calls THIS dispatch and one more would push it over.
+    Mirrors tools.web._specialist_fetch_over_cap's exact shape (hard reject, don't truncate).
+    Confirmed live 2026-08-01 (RESEARCH.md Sec.16): one Analyzer dispatch burned 34-40 of the
+    shared, whole-run grep_workspace_file quota chasing a single hard document, starving every
+    OTHER Analyzer dispatched afterward in the same run of the ability to search/read their own,
+    unrelated, perfectly readable sources at all."""
+    return current_count >= cap
+
+
+def _check_analyzer_read_cap(tool_name: str) -> str | None:
+    """Shared reject-before-execution check for both read_workspace_file and grep_workspace_file
+    -- see _analyzer_read_over_cap's own docstring. Returns an error string if over cap (caller
+    must return it immediately, without doing the read/grep), else increments the counter and
+    returns None. Skipped entirely (returns None) when task_read_grep_count_ctx isn't active for
+    this dispatch (None default, or explicitly disabled for Builder/FindingsWriter/PeerReviewer at
+    the orchestrator.py reset site) -- same "if ctx.get() is not None" safety pattern
+    tools.web._specialist_fetch_over_cap's own call site already uses, so tests/dispatches outside
+    a tracked context are never affected.
+
+    Deliberately does NOT claim "no quota was consumed on this rejected call" the way
+    fetch_url_to_workspace's own sibling cap message does (checked directly, 2026-08-01): both
+    @with_quota's wrapper (tools/core.py's check_quota) increments the tool's GLOBAL `used` count
+    UNCONDITIONALLY on every under-limit call, before the wrapped function body -- where this check
+    lives -- ever runs. A global quota unit IS spent by the time this rejects the call; only the
+    real read/grep work is skipped. Worded to reflect that."""
+    from utils.run_state import task_read_grep_count_ctx
+    counter = task_read_grep_count_ctx.get()
+    if counter is None:
+        return None
+    from config import cfg
+    cap = cfg.get("settings", {}).get("analyzer_read_cap", 8)
+    if _analyzer_read_over_cap(counter[0], cap):
+        return (
+            f"Error: {tool_name} call rejected — this dispatch has already made {counter[0]} "
+            f"read/grep call(s) (cap: {cap} per dispatch). Stop searching this document: "
+            f"synthesize and return your findings now with what you have, or note that this "
+            f"source didn't yield the information you needed."
+        )
+    counter[0] += 1
+    return None
+
+
 @tool
 @with_quota
 def read_workspace_file(filename: str, start_line: int = 1, end_line: int = -1) -> str:
     """Read a stored text file. Use start_line and end_line bounds to read large files safely. Both bounds are 1-indexed."""
+    cap_error = _check_analyzer_read_cap("read_workspace_file")
+    if cap_error:
+        return cap_error
     try:
         content = get_workspace_file_content(filename)
         if content is None:
@@ -246,6 +294,9 @@ def grep_workspace_file(filename: str, pattern: str, context_lines: int = 2) -> 
     looking for. If you just want to check whether a file exists or see its raw content, use
     `read_workspace_file` instead; this tool is for finding a specific string inside a file
     already known to exist, not for browsing or existence-checking."""
+    cap_error = _check_analyzer_read_cap("grep_workspace_file")
+    if cap_error:
+        return cap_error
     try:
         content = get_workspace_file_content(filename)
         resolved_note = ""

@@ -639,6 +639,10 @@ After grepping and reading, use `think_tool` to analyze:
 **Tool Call Budgets**:
 - **read_workspace_file**: {read_workspace_file_quota} maximum calls (max {read_workspace_file_quota} reads total)
 - **grep_workspace_file**: {grep_workspace_file_quota} maximum calls
+- **Per-dispatch cap**: you may make at most {analyzer_read_cap} combined read_workspace_file +
+  grep_workspace_file calls total for THIS document, separate from and stricter than the quota
+  numbers above. If you hit it, stop and return what you've found — do not keep searching the
+  same document past that point.
 
 **Quota Exhaustion**:
 If a tool returns a quota error, STOP immediately. Return all findings collected so far.
@@ -720,6 +724,10 @@ After grepping and reading, use `think_tool` to analyze:
 **Tool Call Budgets**:
 - **read_workspace_file**: {read_workspace_file_quota} maximum calls (max {read_workspace_file_quota} reads total)
 - **grep_workspace_file**: {grep_workspace_file_quota} maximum calls
+- **Per-dispatch cap**: you may make at most {analyzer_read_cap} combined read_workspace_file +
+  grep_workspace_file calls total for THIS document, separate from and stricter than the quota
+  numbers above. If you hit it, stop and return what you've found — do not keep searching the
+  same document past that point.
 
 **Quota Exhaustion**:
 If a tool returns a quota error, STOP immediately. Return all findings collected so far.

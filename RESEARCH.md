@@ -2787,3 +2787,125 @@ implemented in this session (survey was the explicit deliverable requested): (1)
 per-comparison-subject task-naming rule, a small prompt-level fix; (2) STORM's persona-diversity
 facet discovery, a larger architectural one. Both target the same currently-open bug
 (`session_status/CURRENT.md` item 0) from different angles and different cost levels.
+
+## 17. Chasing convergence on the Lisbon/Mexico retest: four fixes, four newly-exposed layers
+(2026-08-01, later the same day)
+
+After §16's naming fix and Tavily-backend swap, the Lisbon/Mexico retest was rerun repeatedly to
+confirm a genuine end-to-end pass. It never fully converged, but each rerun cleared one real
+bottleneck and exposed a new one underneath — four distinct, independently real fixes in one
+investigative arc, not one bug with four symptoms. Recorded here in the order they were found,
+since the shape of "clear one layer, find the next" is itself the useful finding for future
+sessions chasing a stubborn non-convergence.
+
+### 17a. Findings.md counted failed extractions as real, must-cite evidence
+
+First retest: 9 of 12 `findings.md` sources contained only "No key findings extracted from this
+source during this research run" — the Analyzer's own honest failure narration, faithfully
+preserved by FindingsWriter instead of omitted. `check_report_underuses_findings` and
+`_facet_coverage` (`src/engine/completion.py`) both treated every `findings.md` URL as real
+evidence the report MUST cite — an unsatisfiable demand for a null-summary URL, which the Builder
+could only "resolve" by re-failing the same check or fabricating a claim (confirmed:
+`claim_unsupported` fired on exactly one of these).
+
+**Fixed**: new `_is_null_finding_summary(summary)` (`src/utils/grounding.py`) — two-signal match
+(summary under 300 chars AND matches a "nothing extracted/found" phrase regex), so a real terse
+finding or a long passage that happens to mention "could not find" about one minor sub-detail isn't
+misclassified. Both checks now exclude a URL from "real evidence" when every one of its
+`run_state.data["findings"]` entries is null-summary.
+
+### 17b. Bot-walled and empty fetches were never usable in the first place
+
+Traced two of §17a's "null" sources further: `mexiconewsdaily.com` and `consulmex.sre.gob.mx`
+weren't genuine Analyzer failures on real content — they were a CAPTCHA challenge page and a
+literally-empty fetch respectively. Tavily's own `/extract` API, tested directly against both
+exact URLs, returned full real content for both.
+
+**Fixed**: added Tavily `/extract` as a third rung in `_fetch_raw`'s existing stub-retry chain
+(`src/tools/web.py`: plain fetch → headless-browser retry → Tavily extract), same
+`settings.tavily_api_key` as the search backend, opt-in. Two real bugs found and fixed while
+wiring it in, not added blind: `_STUB_MARKERS_RE` only covered paywall/404 phrasing, not
+bot-verification/CAPTCHA pages, so neither retry rung ever got a chance to run on these exact
+URLs (added a bot-verification marker group); and the Tavily call was sending the POST-REDIRECT
+url instead of the original — a bot-walled page's redirect chain often lands on the challenge
+host itself (`consulmex.sre.gob.mx` → `validate.perfdrive.com/?ssa=...`), and Tavily fetching THAT
+URL just gets the same challenge page again. Live-verified against the exact two failing URLs:
+`mexiconewsdaily.com` went from a 723-char captcha stub to 7,910 real chars; `consulmex.sre.gob.mx`
+went from 0 bytes to 19,238 real chars.
+
+### 17c. FindingsWriter itself dropped facets, one layer upstream of Builder
+
+With 17a/17b fixed, the next retest still never converged — `completion_check_attempts` showed
+FindingsWriter dropping 3 of 4 facets writing `findings.md`, despite a complete, well-under-budget
+(16.5K chars under the 50K `context_budget_chars` limit — truncation ruled out directly, not
+assumed) 4-facet evidence blob given in one dispatch. The exact evidence-crowding pattern already
+fixed for Builder (`report_underuses_evidence`, §1's four-tuple checklist), one layer upstream, at
+FindingsWriter's own first synthesis.
+
+**Fixed**: `findings_underuses_evidence` removed from `_FINDINGS_WRITER_FIXABLE_PROBLEMS`, given
+its own bespoke per-facet dispatch (`_dispatch_per_facet_findings_writer_fix`), mirroring
+`_dispatch_per_facet_builder_fix` exactly. New `_findings_facet_coverage(ctx)`, factored out of the
+check function. `_build_findings_source_material` gained an optional `task_names` filter so each
+per-facet dispatch gets only that facet's own evidence — not just its findings, but its own
+fetched-URL cross-reference section too, since leaving that unscoped would reopen the same
+crowding surface from a different angle. Full blast-radius checklist walked explicitly (added
+`_capped()` since the problem is no longer self-resolving by tuple membership; confirmed
+`_QUARANTINE_PROBLEMS` and `_WRITER_DISPATCH_RE` don't need changes; found and removed a real risk
+— `deterministic_fallback`, a full-file-overwrite path meant only for a from-scratch write, was
+being passed scoped single-facet content that could destroy every other facet's entries if its
+guard were ever violated). New dedicated dispatch-path test verifying the scoping itself (asserts
+one facet's finding text never leaks into another facet's dispatch instructions), not just the
+verdict — required per `ARCHITECTURE.md`'s own checklist for a new bespoke `elif`.
+
+Caught a live wording drift in 17a's own fix during this retest: the model's failure narration had
+shifted from "No key findings extracted..." to "No key findings **available** from this source
+regarding X" — a real variant the original `_is_null_finding_summary` regex missed entirely
+(confirmed: returned `False` on it), letting 21 of 24 `findings.md` entries in that run slip
+through unfiltered. Broadened the pattern to also match "available"/"found".
+
+### 17d. grep_workspace_file/read_workspace_file: a shared global quota with no per-dispatch ceiling
+
+With 17a-17c fixed, the run STILL never reached the completion-check pipeline at all —
+`completion_check_attempts` was completely empty, meaning the entire 1800s was spent in research.
+`findings.md` had 24 real fetched sources with only 3 (12.5%) yielding actual extracted content.
+Read directly from the persisted session transcript (`~/.deepdelve/sessions/session_*.json`,
+`ui_events` — `enable_session_persistence: true`, NOT visible in the eval harness's own
+`agent_stdout.log`, which only logs tool NAMES, not arguments):
+
+- One Analyzer dispatch, given a 3,800-line Spanish-language Mexican immigration PDF, grepped for
+  "Ciudad de México" (no match), read 200 lines of irrelevant legal preamble ("Plan Nacional de
+  Desarrollo 2013-2018"), grepped again, and burned through 34 of the shared `grep_workspace_file`
+  budget without finding anything useful.
+- Every Analyzer dispatched afterward in the same run (`pumble`, `TheLatinvestor`, `Blueground`)
+  hit `"Error: Quota reached... 36/38/40 times"` almost immediately — most after one or two calls
+  — on perfectly readable, on-topic pages, purely because an earlier, unrelated dispatch had
+  already spent the shared pool. `settings.quotas` is documented as GLOBAL by design
+  (`config_template.yaml`'s own comment: "shared cumulatively across the Planner and every
+  dispatched specialist") — correct for `delegate_tasks`/`web_search`, but with no per-dispatch
+  ceiling underneath it for `read_workspace_file`/`grep_workspace_file`, the exact "one task
+  starves every sibling of a shared pool" shape `specialist_delegation_cap`/`specialist_fetch_cap`
+  already exist to prevent for `delegate_tasks`/`fetch_url_to_workspace`.
+- Separately: one Analyzer (`getgoldenvisa.com`) actually found and read the RIGHT lines (110-260,
+  containing the real €3,680 income figures) via three well-targeted reads, and still returned an
+  empty result — not a quota or targeting problem, a synthesis failure after having the right
+  content in hand. Flagged, not yet investigated — smaller and separate from the dominant cause.
+
+**Fixed**: new `settings.analyzer_read_cap` (default 8), a per-dispatch combined
+`read_workspace_file` + `grep_workspace_file` counter, third instance of the
+`specialist_delegation_cap`/`specialist_fetch_cap` pattern. New `task_read_grep_count_ctx`
+(`src/utils/run_state.py`), reset at the same point in `_run_single_task` as the other per-dispatch
+contextvars, but deliberately left `None` (cap disabled) for `_NON_RESEARCH_DISPATCH_ROLES`
+(Builder/FindingsWriter/PeerReviewer) — their read/grep usage reviews `findings.md`/
+`final_report.md`, a different, legitimate pattern from an Analyzer chasing one hard external
+document. New `_analyzer_read_over_cap`/`_check_analyzer_read_cap` (`src/tools/fs.py`), enforced
+in both tools, reject-before-execution. Found and fixed one more inherited inaccuracy while
+writing this: the rejection message deliberately does NOT claim "no quota was consumed", unlike
+`fetch_url_to_workspace`'s own sibling cap message — `@with_quota`'s wrapper (`check_quota`)
+increments the tool's GLOBAL `used` count unconditionally before the wrapped function body (where
+any per-dispatch cap check lives) ever runs, so a global quota unit IS spent by the time either
+cap rejects the call; only the real read/grep work is skipped.
+
+**Not yet live-tested** — implemented and unit-verified only (a shared, dedicated cap test
+mirroring the existing `fetch_url_to_workspace` one, covering both tools sharing one counter, and
+the disabled-for-writer-roles case). Next step: rerun the Lisbon/Mexico retest once more with all
+four of 17a-17d in place together.

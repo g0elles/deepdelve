@@ -103,6 +103,20 @@ def main():
     assert not _specialist_fetch_over_cap(current_count=0, cap=5), (
         "a task's very first fetch must always be allowed")
 
+    # --- analyzer per-dispatch read/grep cap (2026-08-01, third instance of the same recurring
+    # shape as the two caps above -- RESEARCH.md Sec.16: one Analyzer dispatch burned 34-40 of the
+    # shared, whole-run grep_workspace_file quota chasing a hard document, starving every OTHER
+    # Analyzer dispatched afterward of the ability to search/read their own unrelated sources) ---
+    from tools.fs import _analyzer_read_over_cap
+    assert not _analyzer_read_over_cap(current_count=7, cap=8), (
+        "a dispatch below the cap must be allowed one more read/grep")
+    assert _analyzer_read_over_cap(current_count=8, cap=8), (
+        "a dispatch already AT the cap must be rejected on its next call")
+    assert _analyzer_read_over_cap(current_count=34, cap=8), (
+        "a dispatch already far over the cap (the exact live-observed shape) must stay rejected")
+    assert not _analyzer_read_over_cap(current_count=0, cap=8), (
+        "a dispatch's very first read/grep call must always be allowed")
+
     # --- cutoff-marker wording (2026-08-01, RESEARCH.md Sec.15): a context-budget cutoff must not
     # get the alarming "wrapped up early" wording when the task already gathered real evidence --
     # the Planner's ADAPTIVE PLANNING LOOP reads this text to decide whether to dispatch a
@@ -749,6 +763,62 @@ def main():
         else:
             _config.cfg["settings"]["workspace"] = _orig_ws
         reset_fetched_urls()
+
+    # --- read_workspace_file/grep_workspace_file per-dispatch analyzer_read_cap (2026-08-01,
+    # RESEARCH.md Sec.16): once task_read_grep_count_ctx (THIS dispatch's own combined read+grep
+    # call count) is at the configured cap, a call for either tool must be rejected outright, no
+    # real read/grep attempted. The two tools share ONE counter -- a cap hit via grep must also
+    # reject a subsequent read, and vice versa. Disabled entirely (no rejection ever, matching
+    # Builder/FindingsWriter/PeerReviewer's own exclusion at the orchestrator.py reset site) when
+    # the contextvar is left at its None default. ---
+    def _analyzer_read_cap_scenario():
+        from tools.fs import read_workspace_file as _rwf, grep_workspace_file as _gwf, _IN_MEMORY_FS
+        from utils.run_state import task_read_grep_count_ctx as _trgc
+
+        _orig_ws2 = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory"}
+        _orig_cap2 = _config.cfg.get("settings", {}).get("analyzer_read_cap")
+        _config.cfg["settings"]["analyzer_read_cap"] = 2
+        saved_fs2 = dict(_IN_MEMORY_FS)
+        try:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS["sources/test.md"] = "Source-URL: https://example.co/x\n\nSome real content here about the topic."
+
+            # Disabled (contextvar None, the default -- e.g. a Builder/FindingsWriter/PeerReviewer
+            # dispatch): no cap enforced no matter how high a count would otherwise be.
+            _trgc.set(None)
+            for _ in range(5):
+                r = _rwf.func(filename="sources/test.md")
+                assert "rejected" not in r.lower(), r
+
+            # Active (e.g. an Analyzer dispatch), cap=2: first two calls (either tool, shared
+            # counter) succeed, the third (regardless of which tool) is rejected -- no real
+            # read/grep performed on the rejected call.
+            _trgc.set([0])
+            r1 = _gwf.func(filename="sources/test.md", pattern="real")
+            assert "rejected" not in r1.lower() and "Match" in r1, r1
+            r2 = _rwf.func(filename="sources/test.md")
+            assert "rejected" not in r2.lower() and "Source-URL" in r2, r2
+            r3 = _rwf.func(filename="sources/test.md")
+            assert "rejected" in r3.lower() and "cap" in r3.lower(), r3
+            r4 = _gwf.func(filename="sources/test.md", pattern="content")
+            assert "rejected" in r4.lower() and "cap" in r4.lower(), (
+                "the cap is a SHARED counter across both tools -- grep must also be rejected "
+                "once read_workspace_file calls alone already hit it", r4)
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs2)
+            _trgc.set(None)
+            if _orig_ws2 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws2
+            if _orig_cap2 is None:
+                _config.cfg["settings"].pop("analyzer_read_cap", None)
+            else:
+                _config.cfg["settings"]["analyzer_read_cap"] = _orig_cap2
+
+    contextvars.copy_context().run(_analyzer_read_cap_scenario)
 
     # --- _extract_html_metadata: title/author/published from a page's own <head>, best-effort,
     # never fabricated for fields the page doesn't declare ---

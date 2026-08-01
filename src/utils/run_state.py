@@ -36,6 +36,21 @@ fetched_urls_ctx = contextvars.ContextVar('fetched_urls', default=None)
 # copied context) a genuinely independent list to append to — no shared-list race.
 task_fetched_urls_ctx = contextvars.ContextVar('task_fetched_urls_ctx', default=None)
 
+# Same per-dispatch-scoping need as task_fetched_urls_ctx above, one tier further downstream:
+# read_workspace_file/grep_workspace_file's own quota (settings.quotas) is GLOBAL, shared across
+# every dispatch of the whole run -- confirmed live 2026-08-01 (RESEARCH.md Sec.16) that this lets
+# ONE Analyzer dispatch struggling with a hard document (a 3,800-line Spanish-language legal PDF,
+# repeated grep misses) burn 34-40 of the shared grep_workspace_file budget, leaving every
+# SUBSEQUENT Analyzer dispatch in the same run unable to search or read its own, perfectly
+# readable, unrelated source at all -- the exact "one task starves every sibling of a shared pool"
+# shape specialist_fetch_cap/specialist_delegation_cap already exist to prevent for
+# fetch_url_to_workspace/delegate_tasks. A mutable single-element list ([0], mutated in place,
+# never reassigned) rather than an int directly -- same shape specialist_delegate_task_count_ctx
+# already uses, for the same reason: a plain contextvar.set() inside a nested call wouldn't be
+# visible to the caller's own reads after the nested call returns, but mutating a shared list
+# object in place is.
+task_read_grep_count_ctx = contextvars.ContextVar('task_read_grep_count_ctx', default=None)
+
 # Stable per-dispatch identity for the quota ring-fence (tools/core.py::check_quota, 2026-07-19 QA
 # audit fix). ROADMAP's tracked open angle (a): the ring-fence originally rescued only the FIRST
 # task per tool/run to hit the wall while showing real progress (a single `_rescued` bool on the

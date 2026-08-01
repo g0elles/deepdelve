@@ -8,7 +8,7 @@ from typing import Optional
 from agent_framework.openai import OpenAIChatCompletionClient
 from agent_framework import tool, AgentSession, Message, ContextWindowCompactionStrategy
 from tools import with_quota, think_tool, QuotaAbortException, tool_quotas_ctx
-from utils.run_state import run_state_ctx, task_fetched_urls_ctx, scope_entities_ctx, task_id_ctx, _next_task_id
+from utils.run_state import run_state_ctx, task_fetched_urls_ctx, task_read_grep_count_ctx, scope_entities_ctx, task_id_ctx, _next_task_id
 from prompts import (
     SUBAGENT_INSTRUCTIONS, SUBAGENT_DELEGATION_INSTRUCTIONS,
     STANDARD_REPORT_STYLE_INSTRUCTIONS, ACADEMIC_REPORT_STYLE_INSTRUCTIONS, ANSWER_REPORT_STYLE_INSTRUCTIONS,
@@ -333,6 +333,10 @@ def _get_quota_format_vars() -> dict:
     # can tell the model its real per-task fetch ceiling instead of silently enforcing it) — see
     # tools/web.py's _specialist_fetch_over_cap.
     result["specialist_fetch_cap"] = config.cfg.get("settings", {}).get("specialist_fetch_cap", 5)
+    # Same treatment again, one tier further downstream — a per-dispatch cap (not a settings.quotas
+    # pool entry) exposed so DOCUMENT_ANALYZER_INSTRUCTIONS/DATA_ANALYZER_INSTRUCTIONS can tell the
+    # model its real per-dispatch read/grep ceiling — see tools/fs.py's _analyzer_read_over_cap.
+    result["analyzer_read_cap"] = config.cfg.get("settings", {}).get("analyzer_read_cap", 8)
     return result
 
 def _safe_format(template: str, **kwargs) -> str:
@@ -875,6 +879,18 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
             # comment — a mutable single-element list, mutated in place, never reassigned) — this
             # dispatch may itself be a Tier-2 specialist about to call delegate_tasks.
             specialist_delegate_count_token = specialist_delegate_task_count_ctx.set([0])
+            # Per-dispatch read_workspace_file/grep_workspace_file counter (see task_read_grep_
+            # count_ctx's own header comment). Deliberately left None (contextvar default, cap
+            # DISABLED) for Builder/FindingsWriter/PeerReviewer (_NON_RESEARCH_DISPATCH_ROLES) —
+            # their read/grep usage is reviewing findings.md/final_report.md, a different,
+            # legitimate pattern from an Analyzer chasing one hard external document, and this cap
+            # exists specifically for the latter. Set to [0] (cap ACTIVE) for every other role —
+            # in practice this only ever matters for DocumentAnalyzer/DataAnalyzer, since Searcher
+            # roles (WebSearcher/AcademicSearcher) don't have read_workspace_file/
+            # grep_workspace_file in their own tool list (app.py) at all.
+            read_grep_count_token = task_read_grep_count_ctx.set(
+                None if agent_id in _NON_RESEARCH_DISPATCH_ROLES else [0]
+            )
             # Expose this task's scope entities to web_search for the query-level scope warning
             # (see utils/run_state.py's scope_entities_ctx header comment).
             scope_token = scope_entities_ctx.set(_extract_scope_entities(instructions))
@@ -1340,6 +1356,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                 task_fetched_urls_ctx.reset(task_urls_token)
                 task_id_ctx.reset(task_id_token)
                 specialist_delegate_task_count_ctx.reset(specialist_delegate_count_token)
+                task_read_grep_count_ctx.reset(read_grep_count_token)
                 scope_entities_ctx.reset(scope_token)
 
     # -------------------------------------------------------------
