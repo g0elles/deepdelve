@@ -2546,6 +2546,52 @@ tried, twice, not merely proposed):
 ## Completed
 
 
+- **Completion-check starvation bug class: 8 real instances found and fixed, then replaced with one
+  shared structural mechanism — IMPLEMENTED and live-verified 2026-07-31.** Started as an Ornith-
+  1.0-9B re-test (see MODELS.md's Ornith entry), but the same night's investigation surfaced the
+  identical bug shape repeatedly on gpt-oss (the project's own default) too: a `COMPLETION_CHECKS`/
+  `GROUNDING_CHECKS` check that isn't Builder/FindingsWriter-fixable and never caps its own firing
+  wins first-match on EVERY attempt for as long as its condition holds, permanently starving every
+  check below it. Six live-incident patches in one night (consecutive-counter duplication across
+  `check_task_verification_flagged` and `run_completion_check`'s own `force_whole_rebuild`; final-
+  verdict salvage's hardcoded problem-name tuple widened three times; `check_task_verification_
+  flagged`/`check_thin_coverage` uncapped; a hand-written `lambda c: A(c) or B(c)` starvation guard
+  for `report_underuses_findings`/`_evidence` that was live-confirmed dead code, `or`'s short-circuit
+  meaning the already-winning check got tried first) — user explicitly asked to stop patching
+  incident-by-incident: *"we're having too much issues with starvation we need to create a defined
+  structure, we're guessing."*
+  - **Structural fix** (`src/engine/completion.py`): `_consecutive_occurrences` gained an optional
+    `skip_problems` set, becoming the one canonical counting definition (previously duplicated 3
+    times with drifting copies of the same fix). `CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD`
+    hoisted to module level (two separate copies of "3" had already silently disagreed once
+    mid-session, caught by the test suite). New `_capped(ctx, problem, verdict, skip_problems)` —
+    the required call for any non-self-resolving check. New `_STARVATION_YIELD_TARGETS` dict +
+    `_apply_starvation_yield`, replacing the buggy lambda with a declarative mechanism that cannot
+    repeat the ordering bug by construction. Final-verdict salvage's hardcoded tuple replaced with
+    an unconditional call (the function's own 200-char gate was always the real safety check).
+  - **Systematic audit (not another live incident) found 2 MORE, previously-unknown real
+    instances**: `check_propagated_ungrounded_content` and `check_report_underuses_evidence`, both
+    missing a cap, both found by checking every entry in both lists against the invariant before
+    they ever caused a failure.
+  - **New standing test** (`test_structural_checks.py`): asserts every non-self-resolving check in
+    `COMPLETION_CHECKS + GROUNDING_CHECKS` calls `_capped`. This is the actual "defined structure"
+    payoff — a future check that skips it fails the suite immediately.
+  - **Prior art grounding the design**: OS scheduler aging, the circuit breaker pattern (Nygard,
+    *Release It!*), Chain of Responsibility (GoF), and a 2026-07-14 industry piece applying the same
+    retry/circuit-breaker/fallback-chain shape to production LLM agent systems — confirmed this is a
+    known-missing layer, not a codebase-specific invention.
+  - **Live-verified post-refactor**: a fresh gpt-oss run against the standing sales-forecasting
+    benchmark converged cleanly through the full check chain (no starvation, no stuck pattern),
+    produced a real, honestly-caveated, correctly-grounded `final_report.md`. Full detail in
+    `ARCHITECTURE.md` §1.
+  - **Honest caveat, NOT resolved by this fix**: that same live-verification run's report, while
+    structurally sound, did not actually meet the query's own expectations — no "top 5 heuristic
+    algorithms" list, no Colombia cultural-pattern integration, despite `check_report_underuses_
+    findings`/`_evidence` correctly flagging both gaps every attempt. The pipeline is now working as
+    designed (real convergence, no fabrication); the model's own tendency to abandon the harder half
+    of a multi-facet query under repeated correction is a genuine, separate, still-open capability
+    gap — see MODELS.md's `gpt-oss:20b` entry and the new Pending item below.
+
 - **`check_task_verification_flagged` escalation-streak fragmentation + static warning-text bug —
   IMPLEMENTED and live-verified 2026-07-29, found while live-smoke-testing the two fixes above.**
   Two live runs of the standing 2-facet benchmark query (one fresh, one `--resume-run`) both ended
@@ -3688,6 +3734,24 @@ tried, twice, not merely proposed):
     "clipboard paste failed" warning instead of pasting.
 
 ## Pending
+
+- **Multi-facet task abandonment under iterative self-correction — new, scoped 2026-07-31, research
+  phase starting.** With the completion-check starvation bug class fully fixed (see Completed
+  above), a clean, unconfounded gpt-oss run against the standing sales-forecasting benchmark
+  converged on a real, honestly-caveated, correctly-grounded report — but that report still
+  answered only ~1/3 of the query (no "top 5 heuristic algorithms" list, no Colombia cultural-
+  pattern integration), despite `check_report_underuses_findings`/`_evidence` correctly flagging
+  the exact missing facets on every single attempt. This is NOT a pipeline bug — the completion
+  machinery is doing its job (detect, flag, dispatch a real Builder rewrite) — it's the model's own
+  tendency to not actually incorporate the flagged facets even after repeated, specific correction.
+  Same pattern first logged 2026-07-14/18 (see MODELS.md's `gpt-oss:20b` entry), now reconfirmed
+  clean of every structural confound found since. Needs a literature review (multi-facet/multi-
+  constraint task completion under iterative LLM self-correction — does repeated feedback on WHICH
+  facet is missing reliably fix this, or does it need a structurally different intervention, e.g.
+  per-facet forced sectioning, a checklist-style final-artifact template, or splitting synthesis
+  into one Builder dispatch per facet instead of one whole-report rewrite) before attempting a fix,
+  per this project's own standing rule (`feedback_read_docs_before_building`) of researching
+  primary sources before improvising.
 
 - **`create_local_agent`'s 963-line nested-closure god-function — new, scoped 2026-07-29, NOT
   attempted, needs its own dedicated session.** A whole-repo structural audit

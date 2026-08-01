@@ -30,6 +30,21 @@ pass on both standing benchmarks.
   min/run. Its own chain-of-thought can't be fully disabled either (see the Qwen3-family
   think-mode note below for the general issue), but Ollama keeps it in a separate `reasoning`
   field DeepDelve's client never reads as the model's actual output, so this is benign here.
+- **Standing, still-open content-quality gap, reconfirmed live 2026-07-31 after that session's
+  completion-pipeline starvation fixes shipped**: on the multi-facet sales-forecasting benchmark,
+  the model reliably abandons the HARDER half of a two-facet query rather than fabricating or
+  refusing — same pattern first logged 2026-07-14/18 (dropped the Colombia cultural-context half
+  that session), still present after every structural pipeline bug found that night was fixed. The
+  2026-07-31 run's `final_report.md` was real, honestly caveated, and correctly grounded (no
+  fabrication) but delivered neither the query's own "top 5 heuristic algorithms" ask nor any
+  Colombia cultural-pattern integration — the Colombia/heuristic-algorithm sources it fetched sat
+  unused in the References list, `check_report_underuses_findings`/`_evidence` correctly flagged
+  this every attempt, and the model still hadn't fixed it by the time the wall clock ran out.
+  **This is a genuine model-capability gap, not a pipeline bug** — the completion-check machinery
+  is now working exactly as designed (real convergence, no starvation, honest output), and the
+  gap it keeps correctly flagging is the model's own unwillingness/inability to actually act on
+  "cover every facet" feedback within a bounded retry budget. See ROADMAP.md's Pending for the
+  literature-research angle on this (multi-facet task abandonment under iterative self-correction).
 
 ---
 
