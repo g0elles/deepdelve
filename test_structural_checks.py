@@ -3665,6 +3665,157 @@ def main():
 
     contextvars.copy_context().run(_builder_dispatch_scenario)
 
+    # --- Per-facet Builder dispatch for report_underuses_evidence (2026-08-01): the combined-
+    # instruction Planner-mediated fix (commit 67e4b00) got a clean negative live result (commit
+    # 1092add) — asking Builder to fix every neglected facet in one turn crowded a facet out
+    # further instead of restoring it. run_completion_check must instead dispatch ONE fresh-context
+    # Builder Write->Review->Fix cycle PER dropped facet (see _dispatch_per_facet_builder_fix /
+    # _facet_coverage), sequentially, each scoped to ONLY that facet's real findings.md URLs. ---
+    def _per_facet_builder_dispatch_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        from tools.core import tool_quotas_ctx as q_ctx
+        from unittest.mock import AsyncMock
+        from engine.orchestrator import available_sub_agents_ctx
+
+        class _FakeSubAgentConfig:
+            def __init__(self, name):
+                self.name = name
+
+        _orig_ws_pf = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
+        _orig_gc_pf = _config.cfg.get("settings", {}).get("grounding_check")
+        _config.cfg["settings"]["grounding_check"] = {"nli_verify": False, "topical_relevance_check": False}
+        _orig_uc_pf = _config.cfg.get("settings", {}).get("uneven_coverage_check")
+        _config.cfg["settings"]["uneven_coverage_check"] = {"enabled": False}
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            # Same shape as check_report_underuses_evidence's own direct-call scenario: heuristics
+            # (2 URLs) and colombia (3 URLs), both surviving into findings.md. Citing colombia only
+            # clears check_report_underuses_findings' 50% raw-ratio threshold (3/5=60%), so THIS
+            # check is the one that must fire and dispatch — the live incident's exact shape.
+            heur_urls = ["https://a.example.co/heur1", "https://a.example.co/heur2"]
+            colo_urls = ["https://b.example.co/colo1", "https://b.example.co/colo2", "https://b.example.co/colo3"]
+            findings_md = "\n\n".join(f"### [Src]({u})\n- real finding." for u in heur_urls + colo_urls)
+
+            # (a) one dropped facet (heuristics) -> exactly one facet's worth of dispatches
+            # (Builder, PeerReviewer), scoped to ONLY heuristics' URLs, and the fix converges.
+            with tempfile.TemporaryDirectory() as tmpdir_a:
+                _IN_MEMORY_FS.clear()
+                _IN_MEMORY_FS["findings.md"] = findings_md
+                _IN_MEMORY_FS["final_report.md"] = "\n".join(f"- dato. [Src]({u})" for u in colo_urls)
+                reset_fetched_urls()
+                for u in heur_urls + colo_urls:
+                    record_fetched_url(u, filename=f"sources/{u.rsplit('/', 1)[-1]}.md")
+                rs = RunState(tmpdir_a)
+                run_state_ctx.set(rs)
+                for u in heur_urls:
+                    rs.add_finding(u, "heuristic finding", task_name="heuristics", depth=1)
+                for u in colo_urls:
+                    rs.add_finding(u, "colombia finding", task_name="colombia", depth=1)
+                q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5}})
+                available_sub_agents_ctx.set([_FakeSubAgentConfig("Builder"), _FakeSubAgentConfig("PeerReviewer")])
+                msgs = []
+
+                async def _side_effect_a(name, instructions, role):
+                    if role == "Builder":
+                        assert "heuristics" in instructions, instructions
+                        assert "colombia" not in instructions, instructions
+                        for u in heur_urls:
+                            assert u in instructions, instructions
+                        _IN_MEMORY_FS["final_report.md"] += "\n" + "\n".join(
+                            f"- dato. [Src]({u})" for u in heur_urls)
+                        return "## Result\nAdded heuristics section\n---"
+                    return "REVIEW: CLEAN\nNo issues found."
+
+                dispatch = AsyncMock(side_effect=_side_effect_a)
+                orig_input = "q"
+                should_retry, new_input = _asyncio.run(run_completion_check(
+                    query="q", current_input=orig_input, run_state=rs, notify=msgs.append,
+                    dispatch_task=dispatch))
+                assert not should_retry, (
+                    "a per-facet Builder dispatch that genuinely restores the dropped facet must "
+                    "converge within this call instead of returning control to the Planner", msgs)
+                assert new_input == orig_input
+                assert dispatch.call_count == 2, dispatch.call_args_list
+                assert dispatch.call_args_list[0].args[2] == "Builder", dispatch.call_args_list
+                assert dispatch.call_args_list[1].args[2] == "PeerReviewer", dispatch.call_args_list
+                assert rs.data["completion_check_attempts"][0]["problem"] == "report_underuses_evidence"
+                assert any("neglected facet" in m for m in msgs), msgs
+
+            # (b) two dropped facets (heuristics, extra), out of 3 tasks -> sequential dispatch,
+            # ONE Write->Review->Fix cycle per facet (4 dispatches total: Builder/PeerReviewer x2),
+            # never one combined instruction covering both.
+            with tempfile.TemporaryDirectory() as tmpdir_b:
+                extra_urls = [f"https://c.example.co/extra{i}" for i in range(10)]
+                findings_md_b = "\n\n".join(
+                    f"### [Src]({u})\n- real finding." for u in heur_urls + colo_urls + extra_urls)
+                _IN_MEMORY_FS.clear()
+                _IN_MEMORY_FS["findings.md"] = findings_md_b
+                # Cites only 'extra' -> ratio 10/15=67% clears report_underuses_findings' 50%
+                # threshold, but heuristics AND colombia are both dropped for this check.
+                _IN_MEMORY_FS["final_report.md"] = "\n".join(f"- dato. [Src]({u})" for u in extra_urls)
+                reset_fetched_urls()
+                for u in heur_urls + colo_urls + extra_urls:
+                    record_fetched_url(u, filename=f"sources/{u.rsplit('/', 1)[-1]}.md")
+                rs = RunState(tmpdir_b)
+                run_state_ctx.set(rs)
+                for u in heur_urls:
+                    rs.add_finding(u, "heuristic finding", task_name="heuristics", depth=1)
+                for u in colo_urls:
+                    rs.add_finding(u, "colombia finding", task_name="colombia", depth=1)
+                for u in extra_urls:
+                    rs.add_finding(u, "extra finding", task_name="extra", depth=1)
+                q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5}})
+                available_sub_agents_ctx.set([_FakeSubAgentConfig("Builder"), _FakeSubAgentConfig("PeerReviewer")])
+                msgs = []
+                builder_calls = []
+
+                async def _side_effect_b(name, instructions, role):
+                    if role == "Builder":
+                        builder_calls.append(instructions)
+                        if "heuristics" in instructions:
+                            urls = heur_urls
+                        elif "colombia" in instructions:
+                            urls = colo_urls
+                        else:
+                            raise AssertionError(f"unexpected Builder instructions: {instructions}")
+                        _IN_MEMORY_FS["final_report.md"] += "\n" + "\n".join(
+                            f"- dato. [Src]({u})" for u in urls)
+                        return "## Result\nAdded section\n---"
+                    return "REVIEW: CLEAN\nNo issues found."
+
+                dispatch = AsyncMock(side_effect=_side_effect_b)
+                should_retry, new_input = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append,
+                    dispatch_task=dispatch))
+                assert not should_retry, msgs
+                assert dispatch.call_count == 4, (
+                    "two dropped facets must produce two independent Write->Review->Fix cycles "
+                    "(4 dispatches), not one combined instruction", dispatch.call_args_list)
+                assert len(builder_calls) == 2, builder_calls
+                # colombia sorts before heuristics alphabetically -- _facet_coverage's `dropped`
+                # is sorted, and the dispatch loop must preserve that order.
+                assert "colombia" in builder_calls[0] and "heuristics" not in builder_calls[0], builder_calls
+                assert "heuristics" in builder_calls[1] and "colombia" not in builder_calls[1], builder_calls
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            if _orig_ws_pf is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws_pf
+            if _orig_gc_pf is None:
+                _config.cfg["settings"].pop("grounding_check", None)
+            else:
+                _config.cfg["settings"]["grounding_check"] = _orig_gc_pf
+            if _orig_uc_pf is None:
+                _config.cfg["settings"].pop("uneven_coverage_check", None)
+            else:
+                _config.cfg["settings"]["uneven_coverage_check"] = _orig_uc_pf
+
+    contextvars.copy_context().run(_per_facet_builder_dispatch_scenario)
+
     # --- FindingsWriter Write->Review->Fix dispatch loop (2026-07-14 architecture change: the
     # Planner no longer writes findings.md itself — see _FINDINGS_WRITER_FIXABLE_PROBLEMS /
     # _build_findings_source_material / src/prompts.py's FINDINGS_WRITER_INSTRUCTIONS). Mirrors

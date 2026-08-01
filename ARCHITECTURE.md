@@ -124,6 +124,21 @@ nothing errors):
 problem that needs to quarantine something OTHER than `req_artifact` needs its own special case the
 same way; the tuple alone assumes `req_artifact`.
 
+**A problem can also skip the shared tuples entirely and get a bespoke `elif` branch** in
+`run_completion_check`'s dispatch chain instead, when a single generic-rebuild dispatch isn't the
+right shape for it. Two examples: `thin_coverage` (`_dispatch_deepening_round` — dispatches real
+follow-up tasks directly, bypassing the Planner) and `report_underuses_evidence`
+(`_dispatch_per_facet_builder_fix` — one Builder Write→Review→Fix cycle *per dropped facet*,
+sequential, each scoped to only that facet's real URLs, instead of one Builder turn asked to fix
+every neglected facet at once). The latter exists specifically because the naive version —
+routing `report_underuses_evidence` through `_BUILDER_FIXABLE_PROBLEMS`' single combined-
+instruction dispatch — got a clean **negative** live result (commit `1092add`, after `67e4b00`):
+asking Builder to restore multiple neglected facets in one turn reproduced the exact
+evidence-crowding pattern the check exists to catch in the first draft, dropping a report's
+coverage of the harder facet from ~1/3 to 0%. If you're hunting for `report_underuses_evidence` in
+`_BUILDER_FIXABLE_PROBLEMS` and not finding it, this is why — it's deliberately absent from all
+four tuples, dispatched by its own `elif` instead.
+
 **Checklist for a new completion-check problem:**
 1. Write the check function (`Ctx -> Optional[Verdict]`), following an existing one's shape as a
    template — `check_regulation_unsupported` (narrow, GROUNDING_CHECKS) or
@@ -132,11 +147,19 @@ same way; the tuple alone assumes `req_artifact`.
    before breadth, correctness before hygiene — read the list's own ordering comments).
 3. Decide: does a bad artifact need quarantining? → `_QUARANTINE_PROBLEMS`.
 4. Decide: is this Builder-fixable, FindingsWriter-fixable, both, or neither (Planner-only, like
-   `not_delegated`)? → the matching tuple, or neither.
+   `not_delegated`)? → the matching tuple. If the fix needs per-item/per-facet handling a single
+   generic dispatch can't express, write a bespoke `elif` branch instead (see `thin_coverage` /
+   `report_underuses_evidence` above) — but still make the "why not the shared tuple" reasoning
+   explicit in a comment, the same way those two do, so a future reader doesn't read the absence
+   as an oversight.
 5. **Add a row to `test_structural_checks.py`'s verdict matrix** (`matrix = [...]`, search for
    `_row_name, _delegated, _files, _expected, _phrase`) — this is a project rule (see `CLAUDE.md`),
    not optional. It exists specifically because two identical-looking `elif` bugs (bd307f4, run 13)
-   silently merged branches before this file existed.
+   silently merged branches before this file existed. A new bespoke dispatch `elif` (not just a new
+   problem name) also needs its own dedicated scenario exercising the dispatch path itself, the way
+   `_per_facet_builder_dispatch_scenario` does for `report_underuses_evidence` — the verdict matrix
+   alone only proves the check fires with the right problem name, not that the dispatch branch
+   handles it correctly.
 
 ## 2. The writer-dispatch system (FindingsWriter / Builder)
 
@@ -313,6 +336,7 @@ a fix in one without the other is an incomplete fix, not a smaller one.
 | A new tool result shape or error format | `CLAUDE.md`'s own blast-radius rule: the TUI's `ToolCallWidget` rendering, `log_stream_content`'s persisted event log, `utils/grounding.py`'s citation/error detection |
 | A new tool for Builder or FindingsWriter | §2's tool-set checklist: `app.py`'s `SubAgentConfig.tools`, a quota entry (`config_template.yaml` + live config), a mention in that role's `prompts.py` instructions, and — if the tool changes what "delegate" could mean — check every `_BUILDER_FIXABLE_PROBLEMS`/`_FINDINGS_WRITER_FIXABLE_PROBLEMS` check's `inject` text still makes sense for a recipient with this exact tool set |
 | A completion check whose `inject` text can tell the reader to delegate/search/fetch | §2: confirm the Builder/FindingsWriter dispatch path (if applicable) doesn't hand a delegation instruction to a role with no `delegate_tasks` tool — see `_BUILDER_NO_DELEGATE_CLARIFICATION` |
+| A per-item/per-facet dispatch loop (multiple sequential sub-agent dispatches for one completion-check problem) | §1: a bespoke `elif` branch, not the shared tuples (see `thin_coverage`/`report_underuses_evidence`). Sequential (`await` in a loop), never `asyncio.gather` — concurrent writes to the same workspace file race. Cap the loop (see `_MAX_FACET_DISPATCHES`) — never unbounded. Scale any quota headroom calls by item count, not the single-dispatch default. Check any dispatch-name regex elsewhere in the codebase (e.g. `finetune/extract_dataset.py`'s `_WRITER_DISPATCH_RE`) before adding a new suffix to disambiguate loop iterations in logs — an anchored regex with no slot for it will silently misclassify the dispatch. |
 
 This table is not exhaustive by construction — it's the set of landmines this project has actually
 stepped on. When you find a new one, add a row here instead of just fixing the instance.

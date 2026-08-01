@@ -863,6 +863,36 @@ def check_report_underuses_findings(ctx: Ctx) -> Optional[Verdict]:
     )
 
 
+def _facet_coverage(ctx: Ctx) -> tuple[dict[str, set], list[str]]:
+    """by_task: {task_name: {real URLs that survived into findings.md for that task}}, dropped:
+    sorted task names among by_task with ZERO of their URLs cited anywhere in ctx.content
+    (final_report.md). Factored out of check_report_underuses_evidence (2026-08-01) so its verdict
+    and _dispatch_per_facet_builder_fix's real per-facet URL sets can never drift onto two
+    different notions of "dropped" -- one computation, read twice in the same completion-check
+    iteration (check's ctx, then the dispatch branch's same ctx), not duplicated."""
+    from utils.grounding import extract_cited_urls, _urls_prefix_match
+    findings_urls = {u.rstrip('/') for u in extract_cited_urls(get_workspace_file_content("findings.md") or "")}
+    report_urls = {u.rstrip('/') for u in extract_cited_urls(ctx.content or "")}
+
+    by_task: dict[str, set] = {}
+    for f in ctx.run_state.data.get("findings", []):
+        if f.get("depth") != 1:
+            continue
+        name = f.get("task_name")
+        url = (f.get("source_url") or "").strip().rstrip('/')
+        if not name or not url.startswith("http"):
+            continue
+        if url not in findings_urls and not any(_urls_prefix_match(url, f2) for f2 in findings_urls):
+            continue  # never reached findings.md -- check_findings_underuses_evidence's job.
+        by_task.setdefault(name, set()).add(url)
+
+    dropped = sorted(
+        name for name, urls in by_task.items()
+        if not any(u in report_urls or any(_urls_prefix_match(u, r) for r in report_urls) for u in urls)
+    )
+    return by_task, dropped
+
+
 def check_report_underuses_evidence(ctx: Ctx) -> Optional[Verdict]:
     """check_findings_underuses_evidence's own per-TASK diagnosis, one stage further downstream:
     that check guarantees every covered top-level task has at least one real URL surviving into
@@ -891,39 +921,24 @@ def check_report_underuses_evidence(ctx: Ctx) -> Optional[Verdict]:
     Capped via the shared _capped helper (2026-07-31, found by the same systematic audit that
     caught check_propagated_ungrounded_content -- not a live incident, the audit caught it first).
     "report_underuses_evidence" is in neither _BUILDER_FIXABLE_PROBLEMS nor _FINDINGS_WRITER_
-    FIXABLE_PROBLEMS, and although this check is the declared _STARVATION_YIELD_TARGETS entry for
-    its sibling check_report_underuses_findings, it can also win the normal first-match scan
-    entirely on its own (report_underuses_findings' ratio can clear while this check's own
-    per-task gap remains) -- at which point, uncapped, it could starve check_not_grounded (the
-    generic catch-all, last in GROUNDING_CHECKS) the same way its sibling used to starve it."""
+    FIXABLE_PROBLEMS (its own combined-instruction Planner-mediated fix got a clean negative live
+    result -- see run_completion_check's own report_underuses_evidence branch and
+    _dispatch_per_facet_builder_fix for the per-facet dispatch that replaced it), and although this
+    check is the declared _STARVATION_YIELD_TARGETS entry for its sibling
+    check_report_underuses_findings, it can also win the normal first-match scan entirely on its
+    own (report_underuses_findings' ratio can clear while this check's own per-task gap remains) --
+    at which point, uncapped, it could starve check_not_grounded (the generic catch-all, last in
+    GROUNDING_CHECKS) the same way its sibling used to starve it."""
     cov_cfg = config.cfg.get("settings", {}).get("report_evidence_check", {})
     if not cov_cfg.get("enabled", True):
         return None
     if "findings.md" not in ctx.files or "final_report.md" not in ctx.files or ctx.content is None:
         return None
-    from utils.grounding import extract_cited_urls, _urls_prefix_match
-    findings_urls = {u.rstrip('/') for u in extract_cited_urls(get_workspace_file_content("findings.md") or "")}
-    report_urls = {u.rstrip('/') for u in extract_cited_urls(ctx.content)}
-
-    by_task: dict[str, set] = {}
-    for f in ctx.run_state.data.get("findings", []):
-        if f.get("depth") != 1:
-            continue
-        name = f.get("task_name")
-        url = (f.get("source_url") or "").strip().rstrip('/')
-        if not name or not url.startswith("http"):
-            continue
-        if url not in findings_urls and not any(_urls_prefix_match(url, f2) for f2 in findings_urls):
-            continue  # never reached findings.md -- check_findings_underuses_evidence's job.
-        by_task.setdefault(name, set()).add(url)
+    by_task, dropped = _facet_coverage(ctx)
 
     min_tasks = cov_cfg.get("min_tasks", 2)
     if len(by_task) < min_tasks:
         return None
-    dropped = sorted(
-        name for name, urls in by_task.items()
-        if not any(u in report_urls or any(_urls_prefix_match(u, r) for r in report_urls) for u in urls)
-    )
     if not dropped:
         return None
 
@@ -1762,6 +1777,56 @@ async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artif
     finally:
         if gate_token is not None:
             writer_gate_ctx.reset(gate_token)
+
+
+# Capped total, matching this project's "never unbounded" convention already used by
+# _dispatch_writer_review_fix's own 4-dispatch cap and DISTINCT_PROBLEM_BONUS_CAP -- any dropped
+# facets beyond this are left for check_report_underuses_evidence to catch again on a later
+# completion-check attempt, since _facet_coverage recomputes `dropped` fresh every iteration.
+_MAX_FACET_DISPATCHES = 4
+
+
+async def _dispatch_per_facet_builder_fix(dispatch_task, dropped: list, by_task: dict,
+                                           req_artifact: str, attempt: int, notify) -> None:
+    """One Builder Write->Review->Fix cycle PER dropped facet (see _facet_coverage), run
+    SEQUENTIALLY -- never via asyncio.gather like _dispatch_deepening_round: concurrent
+    edit_workspace_file calls against the same req_artifact would race.
+
+    The single combined-instruction version (commit 67e4b00, routed through the classic
+    inject-into-Planner path since report_underuses_evidence was never Builder-fixable) got a
+    clean negative live result (commit 1092add): asking Builder to fix every neglected facet in
+    one turn reproduced the exact crowding pattern this check exists to catch in the first draft
+    -- a report went from ~1/3 coverage of the harder facet to 0%. Isolating each facet into its
+    own fresh-context dispatch, scoped to ONLY that facet's real URLs, removes the opportunity to
+    crowd it out again. One facet's dispatch failure doesn't abort the rest -- each is independent.
+
+    Deliberately reuses _dispatch_writer_review_fix unchanged (same Write->Review->Fix contract,
+    same narration-salvage/empty-retry handling) rather than a bespoke loop.
+
+    Naming collision, checked and deliberately left alone: _dispatch_writer_review_fix names its
+    dispatch_task calls using only `attempt` (f"{writer_role}Fix_attempt{attempt + 1}", plus
+    _retry/_reviewed suffixes), so looping it here reuses the same name across facets within one
+    attempt. Do NOT add a per-facet suffix to disambiguate -- finetune/extract_dataset.py's
+    _WRITER_DISPATCH_RE (^SubAgent_(Builder|FindingsWriter)Fix_attempt\\d+(_reviewed)?$) is
+    strictly anchored with no facet slot; any new suffix shape would silently break
+    _infer_role's classification of these dispatches for GRPO training-data extraction. The
+    per-facet notify() messages below already name the facet in prose for human-readable log
+    distinguishability -- that's sufficient."""
+    for name in dropped[:_MAX_FACET_DISPATCHES]:
+        urls = sorted(by_task.get(name, []))
+        url_list = "\n".join(f"- {u}" for u in urls)
+        instructions = (
+            f"'{req_artifact}' has NO citations for task '{name}', even though findings.md has "
+            f"real, surviving sources for it. Use edit_workspace_file to insert ONE new section "
+            f"covering ONLY task '{name}', citing ONLY these real URLs (copied verbatim, do not "
+            f"invent or paraphrase them):\n{url_list}\n\nDo not rewrite or touch any other part of "
+            f"the report.{_BUILDER_NO_DELEGATE_CLARIFICATION}Write the corrected file now via "
+            f"edit_workspace_file."
+        )
+        try:
+            await _dispatch_writer_review_fix(dispatch_task, "Builder", req_artifact, instructions, attempt, notify)
+        except Exception:
+            notify(f"**System ({attempt + 1}):** Builder dispatch for facet '{name}' failed — continuing with remaining facets.")
 
 
 # Matches orchestrator.py's task_deadline cutoff marker text exactly (both variants: mid-turn
@@ -2957,6 +3022,44 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                             notify(f"**System ({attempt + 1}/{max_attempts}):** Deepening round dispatch failed — falling back to the classic nudge.")
                     # No real directions to act on, or round budget exhausted: fall through to the
                     # unchanged classic thin_coverage Planner nudge below — zero behavior change.
+
+                elif dispatch_task is not None and problem == "report_underuses_evidence" and not force_whole_rebuild:
+                    # Bespoke per-item dispatch, same shape as thin_coverage's deepening round
+                    # above -- not a membership check against _BUILDER_FIXABLE_PROBLEMS, because
+                    # this problem needs facet-scoped handling that tuple's single generic-rebuild
+                    # dispatch doesn't support (see _dispatch_per_facet_builder_fix's own docstring
+                    # for why one combined instruction already failed live). force_whole_rebuild is
+                    # checked defensively but is effectively unreachable for this problem: _capped
+                    # (used by check_report_underuses_evidence) silences the verdict at the SAME
+                    # CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD force_whole_rebuild triggers on,
+                    # so problem becomes None first in practice.
+                    has_builder_pair = has_peer_reviewer and any(c.name == "Builder" for c in caller_sub_agents)
+                    if has_builder_pair:
+                        by_task, dropped = _facet_coverage(ctx)
+                        if dropped:
+                            notify(f"**System ({attempt + 1}/{max_attempts}):** {verdict.warning} "
+                                   f"(dispatching Builder once per neglected facet, not the Planner)")
+                            if pool is not None:
+                                _ensure_writer_quota_headroom(pool)
+                                # Scaled by facet count -- needed=3 alone (the _BUILDER_FIXABLE_
+                                # PROBLEMS sizing) was calibrated for ONE Write->Review->Fix cycle;
+                                # this branch runs up to _MAX_FACET_DISPATCHES of them, and an
+                                # undersized quota makes PeerReviewer's later reviews look
+                                # quota-starved (see _dispatch_writer_review_fix's own
+                                # reads_before/reads_after fabricated-CLEAN guard).
+                                _ensure_reader_quota_headroom(pool, needed=3 * max(1, min(len(dropped), _MAX_FACET_DISPATCHES)))
+                            try:
+                                await _dispatch_per_facet_builder_fix(dispatch_task, dropped, by_task, req_artifact, attempt, notify)
+                                run_state.save()
+                                # Chained, not returned — same pattern as Builder/FindingsWriter/
+                                # thin_coverage above. Loops straight into the next completion-check
+                                # iteration.
+                                continue
+                            except Exception:
+                                notify(f"**System ({attempt + 1}/{max_attempts}):** Per-facet Builder dispatch failed — falling back to asking the Planner directly.")
+                    # No Builder pair registered, no dropped facets (shouldn't happen — verdict
+                    # already required dropped to fire), or dispatch failed: fall through to the
+                    # unchanged classic inject-into-Planner nudge below.
 
                 notify(f"**System ({attempt + 1}/{max_attempts}):** {verdict.warning}")
                 new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)

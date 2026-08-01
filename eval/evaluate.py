@@ -40,12 +40,15 @@ def load_eval_config(path: str) -> dict:
     return {}
 
 
-def load_dataset(path: str, limit: int = 0) -> list[dict]:
+def load_dataset(path: str, limit: int = 0, difficulty: str = "") -> list[dict]:
     items = []
     with open(path, encoding="utf-8") as f:
         for line in f:
             if line.strip():
                 items.append(json.loads(line))
+    if difficulty:
+        wanted = {d.strip() for d in difficulty.split(",") if d.strip()}
+        items = [i for i in items if i.get("difficulty", "medium") in wanted]
     return items[:limit] if limit > 0 else items
 
 
@@ -392,6 +395,7 @@ def main() -> None:
     parser.add_argument("--eval-config", default=EVAL_CONFIG_PATH, help="Path to eval judge config")
     parser.add_argument("--config", "-c", default=None, help="Agent config.yaml to use as base")
     parser.add_argument("--limit", type=int, default=0, help="Max items to evaluate (0 = all)")
+    parser.add_argument("--difficulty", default="", help="Comma-separated difficulty tags to run (easy,medium,complex). Default: all. Use 'easy,medium' for fast iteration, save 'complex' for final verification runs.")
     parser.add_argument("--runs",  type=int, default=1, help="Runs per item (for variance)")
     parser.add_argument("--model",         default=None,  help="Model name for metadata (auto-detected if omitted)")
     parser.add_argument("--hardware",      default="unknown", help="Hardware tag for metadata")
@@ -400,7 +404,7 @@ def main() -> None:
     args = parser.parse_args()
 
     eval_cfg = load_eval_config(args.eval_config)
-    dataset = load_dataset(args.dataset, limit=args.limit)
+    dataset = load_dataset(args.dataset, limit=args.limit, difficulty=args.difficulty)
     existing = load_existing_keys(args.output)
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
