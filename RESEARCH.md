@@ -2438,3 +2438,153 @@ explicitly flagged it unverified rather than silently accepting it — 6 honest 
 happened; it simply ran out of wall-clock budget. This is a content-convergence-speed question, not a
 new architecture bug — a longer `max_run_minutes` or fewer fixed retry-rounds-per-issue is the natural
 next lever, not another root-cause hunt.
+
+## 15. Root cause of a Searcher over-fetching for single-fact tasks, cascading into an unforced re-verification round (2026-08-01)
+
+### Trigger
+
+Live smoke-testing the per-facet Builder dispatch fix (`ROADMAP.md` multi-facet abandonment item,
+`session_status/CURRENT.md` open thread 1) with two small, purpose-built 2-facet prompts
+(`eval/dataset.jsonl`, `medium` tier) — both timed out (900s) *before ever reaching the
+completion-check pipeline*, on prompts asking for genuinely trivial single-answer facts (the men's
+100m sprint world record holder, the cause of the 2010 Eyjafjallajökull air-travel disruption).
+
+### What actually happened (traced from `_run_state.json` + `_todos.md` + the session log, not guessed)
+
+The Planner-level plan was correctly scoped from the start — `_todos.md` shows exactly the right
+2-task plan (`world_record`, `volcano_disruption`), matching `PLANNER_INSTRUCTIONS`' "Simple factual
+query... Dispatch a SINGLE Searcher task" rule (`src/prompts.py:163`). No top-level plan bloat.
+
+The actual budget sink was one level down. `volcano_disruption`'s single `WebSearcher` dispatch
+fetched **11 distinct URLs** for a single uncontested fact, despite `WEB_SEARCHER_INSTRUCTIONS`
+explicitly saying (`src/prompts.py:322`, step 2): *"Authoritative/official sources... ONE source is
+sufficient. Do NOT search further to corroborate an official spec page"* and (step 7, line 333):
+*"STOP EARLY... stop searching for MORE sources once you have one good one."* The prompt-level
+stopping instruction exists and is explicit; the model did not reliably follow it. Fetching 11
+sources exhausted the task's `context_budget_chars` (50000, `config_template.yaml`), which triggered
+`orchestrator.py`'s one-shot budget-nudge cutoff (`_run_single_task`, ~line 1059-1070) and appended
+`"[SYSTEM: task 'volcano_disruption' hit its context budget — findings below were wrapped up early.]"`
+to the returned summary.
+
+That cutoff marker is not itself a bug — it is the intended graceful-degradation behavior. The
+cascade is what follows: the Planner's own `ADAPTIVE PLANNING LOOP` instructions
+(`src/prompts.py:212-225`) correctly read "wrapped up early" as "did this result actually answer the
+slot's question, or come back empty/uncertain?" and dispatched a legitimate follow-up
+`volcano_disruption_verification` task — but in the SAME `delegate_tasks` batch, also dispatched
+`world_record_verification`, even though `world_record`'s own finding was clean, complete, and
+carried no cutoff marker at all. The model did not distinguish "this one needs a follow-up" from
+"let me re-verify everything in this batch." `dispatched_tasks` in `_run_state.json` confirms only 8
+total top-level+nested dispatches for the whole run (not a delegation explosion) — the cost is
+wall-clock per-dispatch (many sequential `web_search`/`fetch_url_to_workspace`/`think_tool` round
+trips within the ONE `volcano_disruption` dispatch), not delegation count.
+
+### Literature grounding (checked before writing this up, not asserted from memory)
+
+This is a named, documented failure class, not a one-off quirk of this run:
+
+- **arXiv:2607.05775** ("Beyond the Leaderboard: A Synthesis of Tool-Use, Planning, and Reasoning
+  Failures in Large Language Model Agents") names exactly this shape as a termination failure: *"the
+  planner doesn't know when it has planned enough... ambiguous success conditions... cause models to
+  continue verification passes,"* plus a separate "repeated (redundant) API calls" tool-use failure
+  category. Matches both halves of what was observed here (over-fetching within one dispatch, and
+  the unforced extra verification task).
+- **arXiv:2604.17337** ("AutoSearch: Adaptive Search Depth for Efficient Agentic RAG via
+  Reinforcement Learning") targets this problem directly — its own framing is that agents need a
+  *trained, adaptive* stopping depth, not a prompted one, because prompt-only "stop when you have
+  enough" instructions are exactly what's unreliable.
+- The EviOmni vs. Search-R1 comparison (cited via the same search) is the most direct evidence for
+  why a prompt-only fix (which `WEB_SEARCHER_INSTRUCTIONS` already has, explicitly) is known to be
+  insufficient: *"EviOmni triggers early stopping when sufficient evidence has been gathered, whereas
+  Search-R1 continues with redundant searches"* — i.e. the SAME class of model, absent a structural
+  stopping signal, is documented to keep searching past a "stop early" instruction on its own.
+- Consistent with this project's own already-recorded synthesis (RESEARCH.md §"verification-heavy,
+  not coordination-heavy" / MAST's Task Verification failure category, ~23.5% share) — this is a
+  concrete, traced instance of that general category, not a new one.
+
+### Prior art from a real, popular open-source project (checked directly, not inferred)
+
+`langchain-ai/open_deep_research` — the most directly comparable project (same Planner/Supervisor
+→ Researcher sub-agent shape) — solves both halves of this exact problem with hard, code-enforced
+numeric counters, never a prompt-only instruction:
+
+- **`max_react_tool_calls`** (`configuration.py`, default 10): a per-researcher-step tool-call
+  *count* ceiling, checked every loop iteration
+  (`deep_researcher.py:492`: `tool_call_iterations >= configurable.max_react_tool_calls`). This is
+  the direct analogue to DeepDelve's `context_budget_chars` (`config_template.yaml`) — except
+  theirs counts tool CALLS, DeepDelve's counts CHARACTERS. A char budget can be blown by one
+  verbose synthesis turn, or never trip at all across many cheap calls — it doesn't directly bound
+  "how many sources did you fetch," which is the actual quantity that mattered in the
+  `volcano_disruption` incident (11 distinct URLs, one dispatch).
+- **`max_researcher_iterations`** (default 6): a hard cap on the Supervisor's own
+  reflect-and-follow-up loop, checked every iteration
+  (`deep_researcher.py:247`: `research_iterations > configurable.max_researcher_iterations`). This
+  is the piece DeepDelve is missing entirely — the `ADAPTIVE PLANNING LOOP`
+  (`src/prompts.py:212-225`) has no direct "how many times have I replanned" counter at all; it's
+  only bounded indirectly via the shared `delegate_tasks` quota and wall-clock budgets
+  (`max_run_minutes`), neither of which is a per-run replan-round ceiling.
+
+Both counters are enforced in code on every loop iteration (`>=`/`>` comparisons gating the
+Command/exit branch), never left to the model's own judgment call — the same structural-not-prompted
+shape the literature above argues for, independently arrived at by a real, widely-used project
+solving the identical agent-shape problem.
+
+### Why this matters for DeepDelve specifically, and what it rules out
+
+`WEB_SEARCHER_INSTRUCTIONS` already contains the correct prompt-level guidance (ONE source
+sufficient, stop early) — this is not a missing-instruction bug, it's the literature's own point:
+instruction-following alone is not a reliable stopping mechanism for local models under tool-use
+pressure. Per this project's own established philosophy (`RunState.coverage()`'s docstring: *"small
+local models have repeatedly proven unreliable at following new structured-output conventions"* —
+the same reasoning that keeps `COMPLETION_CHECKS` structural/deterministic rather than trusting the
+model to self-report), the natural DeepDelve-shaped fix direction is a **structural** guard, not
+another prompt rewording. Two concrete candidates, both now with a direct working precedent
+(`open_deep_research`'s two counters above) rather than invented from scratch:
+1. A hard per-task tool-call/source-count cap (DeepDelve's `context_budget_chars` is char-based;
+   `open_deep_research`'s `max_react_tool_calls` counts calls directly — a more precise lever on
+   "how many sources did you fetch," and gateable tighter for the Planner's own already-existing
+   "simple factual query" classification, `src/prompts.py:162-167`).
+2. A hard cap on the `ADAPTIVE PLANNING LOOP`'s own replan-round count (DeepDelve currently has no
+   equivalent to `max_researcher_iterations` — only indirect bounds via the shared `delegate_tasks`
+   quota and `max_run_minutes`), or, more surgically, an orchestrator-level check that only
+   escalates a context-budget cutoff to a Planner-visible "needs follow-up" signal when the cut-off
+   task's OWN source count is below some minimum (so a task that already gathered 11 sources before
+   running out of budget doesn't read as "incomplete" the same way a task cut off after 1 source
+   does).
+
+**Implemented 2026-08-01** (per-task fetch cap + softened cutoff wording, see commit/session for
+`src/tools/web.py`'s `_specialist_fetch_over_cap` and `src/engine/orchestrator.py`'s
+`_cutoff_marker_text`) and **live-tested same day** — with a genuinely mixed result, reported
+honestly rather than declared a full fix:
+
+**Confirmed fixed**: the exact traced incident. Rerunning the same two prompts
+(`/tmp/facet_smoke_dataset.jsonl`, `eval/runs/20260801_112058`), NEITHER task ran away fetching many
+sources this time (2-8 raw fetches per dispatch, well within the new cap), zero fetch-cap rejections
+were even needed, and **no context-budget cutoff fired in either run** — the specific mechanism
+described above (11 fetches → cutoff → misread-as-incomplete) is gone.
+
+**NOT fixed — a broader, previously-undercharacterized finding**: both runs still timed out at 900s
+anyway. The Lisbon/Mexico City run redispatched 3 of its 4 top-level tasks in a second
+`delegate_tasks` round; the sprint/volcano run issued **6 total** `delegate_tasks` rounds for a
+2-task query — in BOTH cases with **zero cutoff markers anywhere** to have triggered it. This proves
+the unforced-replanning behavior is not solely a reaction to the "wrapped up early" wording (which
+the softened-marker fix targeted) — it's a more general tendency of this model to keep replanning
+regardless of any specific signal in the tool results. That is exactly candidate 2 from this
+section's own "why this matters" writeup above (`open_deep_research`'s `max_react_tool_calls`/
+`max_researcher_iterations`-style hard replan-round cap on the `ADAPTIVE PLANNING LOOP` itself, not
+just softer wording at one trigger point) — deferred at plan time on the working assumption that the
+softened marker might be sufficient on its own; live evidence now says it is necessary but not
+sufficient.
+
+### Follow-up fix: hard cap on Planner-level replan rounds (2026-08-01, same day)
+
+Scoped and implemented directly in response to the live-test result above — a hard cap on the
+PLANNER's own top-level `delegate_tasks` calls, mirroring `open_deep_research`'s
+`max_researcher_iterations` directly (a real precedent, not invented from scratch): new
+`_planner_delegate_over_cap` (`src/engine/orchestrator.py`, same shape as
+`_specialist_delegation_over_cap`), enforced inside the same shared `delegate_tasks` closure,
+gated on `delegation_depth_ctx.get() == 0` (the Planner's own calls, as opposed to a Tier-2
+specialist's nested ones) rather than the wording of any particular trigger. New
+`run_state.data["planner_delegate_rounds"]` counter (deliberately excluded from
+`_RESUME_CARRYOVER_KEYS`, same precedent `deepening_round` already sets), new
+`settings.max_planner_delegate_rounds` (default 4). Full plan:
+`/home/gab/.claude/plans/enchanted-gliding-flame.md` (2026-08-01, second plan of the day).

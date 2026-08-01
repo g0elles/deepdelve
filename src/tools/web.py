@@ -610,6 +610,18 @@ def _first_of_list_arg(value, arg_name: str, tool_name: str):
     return str(items[0]), note
 
 
+def _specialist_fetch_over_cap(current_count: int, cap: int) -> bool:
+    """True if a Tier-1 specialist (WebSearcher/AcademicSearcher) has already fetched `cap` real
+    sources THIS task and a new fetch would push it over. Mirrors
+    engine.orchestrator._specialist_delegation_over_cap's exact shape (same "hard reject, don't
+    truncate" philosophy) but for the specialist's own direct web_search/fetch_url_to_workspace
+    calls, which used to be bounded only by the shared, whole-run settings.quotas pool -- not a
+    per-task ceiling. That gap is what let a single task fetch 11 distinct sources for one
+    uncontested fact, exhausting context_budget_chars and cascading into an unforced Planner
+    re-verification round (RESEARCH.md Sec.15)."""
+    return current_count >= cap
+
+
 def _slugify_for_filename(url: str, query: str) -> str:
     """Deterministic, collision-resistant filename for an auto-fetched search result."""
     import hashlib
@@ -642,6 +654,24 @@ async def fetch_url_to_workspace(url: str | list, filename: str = "", convert_to
             return (
                 f"Already fetched this run — see workspace file '{entry.get('filename')}'. "
                 f"Read/grep that file directly instead of fetching this URL again."
+            )
+
+    # Per-task fetch cap (see _specialist_fetch_over_cap's own docstring) -- checked AFTER the
+    # dedup check above (a dedup hit isn't a new fetch, must never count against the cap) and
+    # BEFORE the network fetch (reject-not-truncate, same shape as the delegate_tasks specialist
+    # cap: no wasted download/quota on a call that's going to be rejected anyway).
+    import config as app_config
+    from utils.run_state import task_fetched_urls_ctx
+    own_fetched = task_fetched_urls_ctx.get()
+    if own_fetched is not None:
+        cap = app_config.cfg.get("settings", {}).get("specialist_fetch_cap", 5)
+        if _specialist_fetch_over_cap(len(own_fetched), cap):
+            return (
+                f"Error: fetch_url_to_workspace call rejected — this task has already fetched "
+                f"{len(own_fetched)} real source(s) (cap: {cap} per task, no quota was consumed on "
+                f"this rejected call). Stop searching for more sources: synthesize and return your "
+                f"consolidated findings now instead of fetching more. Per your own instructions, "
+                f"one authoritative source is usually sufficient."
             )
 
     # filename used to be a required argument with no default -- confirmed live 2026-07-12: the
@@ -875,9 +905,22 @@ async def web_search(
     if search_mode == "heavy":
         auto_fetch_top = max(auto_fetch_top, 3)
     auto_fetch_note = ""
+    from utils.run_state import task_fetched_urls_ctx
+    _fetch_cap = app_config.cfg.get("settings", {}).get("specialist_fetch_cap", 5)
     for i, r in enumerate(results[:max(auto_fetch_top, 0)]):
         if not r["url"]:
             continue
+        # Per-task fetch cap (see _specialist_fetch_over_cap's own docstring) -- same reject point
+        # as fetch_url_to_workspace's own direct-call enforcement, applied here to web_search's
+        # auto-fetch path since both feed the same task_fetched_urls_ctx via _save_fetched.
+        _own_fetched = task_fetched_urls_ctx.get()
+        if _own_fetched is not None and _specialist_fetch_over_cap(len(_own_fetched), _fetch_cap):
+            auto_fetch_note = (
+                f"\n(Auto-fetch skipped — this task has already fetched {len(_own_fetched)} real "
+                f"source(s), cap: {_fetch_cap} per task. Stop searching for more sources: synthesize "
+                f"and return your consolidated findings now.)"
+            )
+            break
         fetch_quota_error = check_quota("fetch_url_to_workspace")
         if fetch_quota_error:
             auto_fetch_note = f"\n(Auto-fetch skipped — fetch_url_to_workspace quota exhausted: {fetch_quota_error})"

@@ -139,6 +139,27 @@ settings:
   # most of the run's entire global delegate_tasks budget on one facet before the Planner got
   # another turn. This is a structural backstop, independent of the global quotas above.
   specialist_delegation_cap: 3
+  # Per-task cap (NOT part of the global quotas pool above) on how many real sources ONE Tier-1
+  # specialist task (WebSearcher/AcademicSearcher) may fetch directly via web_search/
+  # fetch_url_to_workspace. Added 2026-08-01 — the sibling fix to specialist_delegation_cap above
+  # for the DIRECT-fetch half of the same recurring failure shape (RESEARCH.md Sec.15): a single
+  # WebSearcher task fetched 11 distinct URLs for one uncontested fact despite
+  # WEB_SEARCHER_INSTRUCTIONS already saying "ONE source is sufficient... STOP EARLY", exhausting
+  # context_budget_chars and cascading into an unforced Planner re-verification round. A soft
+  # prompt-level "stop early" instruction is documented (RESEARCH.md Sec.15's literature review) as
+  # an unreliable stopping mechanism on its own — this is the structural backstop.
+  specialist_fetch_cap: 5
+  # Hard cap on how many top-level delegate_tasks rounds the PLANNER itself may run in one call
+  # (initial dispatch + replans combined), NOT part of the global quotas pool above. Added
+  # 2026-08-01 — live-tested AFTER specialist_fetch_cap/the softened context-budget-cutoff wording
+  # above: both fixed the ORIGINAL traced incident, but two smoke-test reruns still timed out
+  # anyway because the Planner kept redispatching tasks (up to 6 total delegate_tasks rounds on a
+  # 2-task query) with NO cutoff marker or other specific signal involved — a general
+  # ADAPTIVE PLANNING LOOP over-replanning tendency, not just a reaction to that one wording
+  # (RESEARCH.md Sec.15). Modeled directly on langchain-ai/open_deep_research's
+  # max_researcher_iterations (a real, working precedent for this exact problem shape, checked
+  # directly against its source, not inferred).
+  max_planner_delegate_rounds: 4
   # How much extra headroom a completion-check retry gets on top of whatever's left in the shared
   # pool, per tool. Fixes the old project's bug where all 3 retries drew from the same
   # already-exhausted budget as the failed first attempt (see README "Completion Checks").

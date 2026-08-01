@@ -75,6 +75,49 @@ def main():
     assert not _specialist_delegation_over_cap(current_count=0, batch_size=0, cap=3), (
         "an empty batch never exceeds any cap")
 
+    # --- Planner-level replan-round cap (2026-08-01, sibling to the specialist cap above --
+    # RESEARCH.md Sec.15: live-tested AFTER the fetch cap + softened cutoff wording, the Planner
+    # still redispatched tasks repeatedly -- up to 6 total delegate_tasks rounds on a 2-task query
+    # -- with no cutoff marker involved at all) ---
+    from engine.orchestrator import _planner_delegate_over_cap
+    assert not _planner_delegate_over_cap(current_count=0, cap=4), (
+        "the Planner's very first delegate_tasks round must always be allowed")
+    assert not _planner_delegate_over_cap(current_count=3, cap=4), (
+        "a round below the cap must be allowed")
+    assert _planner_delegate_over_cap(current_count=4, cap=4), (
+        "a round already AT the cap must be rejected")
+    assert _planner_delegate_over_cap(current_count=6, cap=4), (
+        "a round already over the cap (the exact live-observed shape) must stay rejected")
+
+    # --- specialist per-task fetch cap (2026-08-01, sibling fix to the delegation cap above --
+    # RESEARCH.md Sec.15: one WebSearcher task fetched 11 distinct URLs for a single uncontested
+    # fact, exhausting context_budget_chars and cascading into an unforced Planner re-verification
+    # round) ---
+    from tools.web import _specialist_fetch_over_cap
+    assert not _specialist_fetch_over_cap(current_count=4, cap=5), (
+        "a task below the cap must be allowed to fetch one more")
+    assert _specialist_fetch_over_cap(current_count=5, cap=5), (
+        "a task already AT the cap must be rejected on its next fetch")
+    assert _specialist_fetch_over_cap(current_count=6, cap=5), (
+        "a task already over the cap (shouldn't normally happen, but must stay rejected) must be rejected")
+    assert not _specialist_fetch_over_cap(current_count=0, cap=5), (
+        "a task's very first fetch must always be allowed")
+
+    # --- cutoff-marker wording (2026-08-01, RESEARCH.md Sec.15): a context-budget cutoff must not
+    # get the alarming "wrapped up early" wording when the task already gathered real evidence --
+    # the Planner's ADAPTIVE PLANNING LOOP reads this text to decide whether to dispatch a
+    # follow-up, and treating every cutoff identically caused an unforced re-verification round for
+    # a task that had already fetched 11 real sources. ---
+    from engine.orchestrator import _cutoff_marker_text
+    _below = _cutoff_marker_text("volcano_disruption", 1)
+    assert "wrapped up early" in _below and "NOT necessarily incomplete" not in _below, _below
+    _zero = _cutoff_marker_text("volcano_disruption", 0)
+    assert "wrapped up early" in _zero, _zero
+    _at_min = _cutoff_marker_text("volcano_disruption", 2)
+    assert "NOT necessarily incomplete" in _at_min and "wrapped up early" not in _at_min, _at_min
+    _above = _cutoff_marker_text("volcano_disruption", 11)
+    assert "NOT necessarily incomplete" in _above and "11 real source" in _above, _above
+
     # --- FOLLOW-UP DIRECTIONS extraction (2026-07-19, engine-driven iterative deepening,
     # ROADMAP item 10) — matches WEB_SEARCHER_INSTRUCTIONS/ACADEMIC_SEARCHER_INSTRUCTIONS'
     # mandated trailing section format. ---
@@ -670,6 +713,36 @@ def main():
         # A genuinely different URL must not match (no real network call needed to prove this --
         # the dedup loop itself is a pure comparison against get_fetched_urls()).
         assert not any(e.get("url") == "https://example.com/genuinely-new" for e in get_fetched_urls())
+
+        # --- fetch_url_to_workspace per-task fetch cap (2026-08-01, RESEARCH.md Sec.15): once
+        # task_fetched_urls_ctx (THIS task's own real fetches) is at the configured cap, a call for
+        # a genuinely NEW url must be rejected outright, no real network fetch attempted -- proven
+        # here by using a URL that was never dedup-registered (would raise if it actually tried to
+        # fetch it, since no network mock is set up in this scenario). A dedup hit (tested above)
+        # must never count against this cap -- it's checked first and returns before this gate. ---
+        from utils.run_state import task_fetched_urls_ctx as _task_fetched_urls_ctx13
+        _orig_cap13 = _config.cfg.get("settings", {}).get("specialist_fetch_cap")
+        _config.cfg["settings"]["specialist_fetch_cap"] = 2
+        try:
+            _task_fetched_urls_ctx13.set([{"url": "https://example.com/one"}, {"url": "https://example.com/two"}])
+            _cap_result = _asyncio13.run(fetch_url_to_workspace.func(
+                url="https://example.com/genuinely-uncached-and-unfetched"))
+            assert "rejected" in _cap_result.lower() and "cap" in _cap_result.lower(), _cap_result
+            assert not any(
+                e.get("url") == "https://example.com/genuinely-uncached-and-unfetched"
+                for e in get_fetched_urls()
+            ), "a rejected call must never actually record a fetch"
+            # Below the cap -> still rejected requires no network call to prove EITHER way here, so
+            # just confirm the pure predicate agrees with the wired-up behavior above.
+            from tools.web import _specialist_fetch_over_cap as _cap_fn13
+            assert _cap_fn13(current_count=2, cap=2)
+            assert not _cap_fn13(current_count=1, cap=2)
+        finally:
+            _task_fetched_urls_ctx13.set(None)
+            if _orig_cap13 is None:
+                _config.cfg["settings"].pop("specialist_fetch_cap", None)
+            else:
+                _config.cfg["settings"]["specialist_fetch_cap"] = _orig_cap13
     finally:
         if _orig_ws is None:
             _config.cfg["settings"].pop("workspace", None)

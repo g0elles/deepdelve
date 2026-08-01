@@ -409,6 +409,13 @@ You may delegate at most {specialist_delegation_cap} Analyzer tasks total for TH
 any delegate_tasks call that would exceed it is rejected outright. Budget your sources accordingly:
 this is small on purpose, so spend it on your best source(s), not every source you find.
 
+**Per-Task Fetch Cap (hard enforced, not shared with other tasks)**:
+You may fetch at most {specialist_fetch_cap} real sources total for THIS research task (via
+web_search's auto-fetch or fetch_url_to_workspace combined) — any call that would exceed it is
+rejected outright, with no quota consumed. This is on top of, not instead of, "ONE authoritative
+source is usually sufficient" above: treat this as a hard ceiling you should rarely need to
+approach, not a target to reach.
+
 **Quota Exhaustion**:
 If a tool returns a quota error, STOP immediately. Return all findings collected so far.
 
@@ -545,6 +552,13 @@ After each search or fetch, use `think_tool` to evaluate:
 You may delegate at most {specialist_delegation_cap} Analyzer tasks total for THIS research task —
 any delegate_tasks call that would exceed it is rejected outright. Budget your sources accordingly:
 this is small on purpose, so spend it on your best source(s), not every source you find.
+
+**Per-Task Fetch Cap (hard enforced, not shared with other tasks)**:
+You may fetch at most {specialist_fetch_cap} real sources total for THIS research task (via
+web_search's auto-fetch or fetch_url_to_workspace combined) — any call that would exceed it is
+rejected outright, with no quota consumed. This is on top of, not instead of, "ONE authoritative
+source is usually sufficient" above: treat this as a hard ceiling you should rarely need to
+approach, not a target to reach.
 
 **Quota Exhaustion**:
 If a tool returns a quota error, STOP immediately. Return all findings collected so far, clearly

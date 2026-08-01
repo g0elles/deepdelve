@@ -298,6 +298,21 @@ def _specialist_delegation_over_cap(current_count: int, batch_size: int, cap: in
     return current_count + batch_size > cap
 
 
+def _planner_delegate_over_cap(current_count: int, cap: int) -> bool:
+    """True if the PLANNER's own next delegate_tasks call (delegation_depth_ctx == 0, never a
+    Tier-2 specialist's nested one -- see _specialist_delegation_over_cap above for that sibling
+    case) would be its (current_count + 1)th round this run. Sibling fix to the fetch/delegation
+    caps above (RESEARCH.md Sec.15, 2026-08-01): live-tested AFTER the fetch cap and softened
+    cutoff wording, both smoke-test reruns still timed out anyway -- the Planner redispatched tasks
+    repeatedly (up to 6 total delegate_tasks rounds on a 2-task query) with NO cutoff marker or any
+    other specific signal involved, proving the over-replanning is a general ADAPTIVE PLANNING LOOP
+    tendency, not just a reaction to that one wording. Same "hard counter, not prompt wording"
+    philosophy as its siblings, mirrored from `open_deep_research`'s `max_researcher_iterations`
+    (a real, working precedent for exactly this problem shape, checked directly against its
+    source)."""
+    return current_count >= cap
+
+
 def _get_quota_format_vars() -> dict:
     """Extract all quotas from config as {tool_name_quota: int} format variables.
 
@@ -313,6 +328,11 @@ def _get_quota_format_vars() -> dict:
     # see specialist_delegate_task_count_ctx's header comment) but exposed the same way so
     # WEB_SEARCHER_INSTRUCTIONS/ACADEMIC_SEARCHER_INSTRUCTIONS can reference it as a real number.
     result["specialist_delegation_cap"] = config.cfg.get("settings", {}).get("specialist_delegation_cap", 3)
+    # Same treatment as specialist_delegation_cap just above (a per-task cap, not a settings.quotas
+    # pool entry, exposed the same way so WEB_SEARCHER_INSTRUCTIONS/ACADEMIC_SEARCHER_INSTRUCTIONS
+    # can tell the model its real per-task fetch ceiling instead of silently enforcing it) — see
+    # tools/web.py's _specialist_fetch_over_cap.
+    result["specialist_fetch_cap"] = config.cfg.get("settings", {}).get("specialist_fetch_cap", 5)
     return result
 
 def _safe_format(template: str, **kwargs) -> str:
@@ -438,6 +458,37 @@ def get_context_budget() -> int:
     conservative proxy (per-stream streamed chars, not true prompt size): when exceeded, the turn
     is cut and the agent gets ONE wrap-up turn to return/write what it already has."""
     return config.cfg.get("settings", {}).get("context_budget_chars", 0) or 0
+
+
+# Minimum real sources a task must have already fetched (task_fetched_urls_ctx) for a
+# context-budget cutoff to get the neutral "wrapped up, not necessarily incomplete" wording instead
+# of the alarming "wrapped up early" one -- see _cutoff_marker_text and RESEARCH.md Sec.15. Matches
+# WEB_SEARCHER_INSTRUCTIONS' own "one is often sufficient, two is corroboration" framing
+# (src/prompts.py) -- not independently invented.
+_CUTOFF_SOFTEN_MIN_SOURCES = 2
+
+
+def _cutoff_marker_text(task_name: str, own_fetch_count: int) -> str:
+    """The SYSTEM marker appended to final_text when a task's stream hits context_budget_chars
+    mid-synthesis (_run_single_task's stream loop). Pulled out as a pure function (same reasoning
+    as _specialist_delegation_over_cap/_ring_fenced_deadline above -- direct unit-testability
+    without mocking the whole async stream) specifically because its WORDING has real behavioral
+    consequences downstream: the Planner's own ADAPTIVE PLANNING LOOP (src/prompts.py) reads this
+    text to decide whether a task needs a follow-up dispatch. Before this fix, EVERY cutoff got the
+    identical alarming "wrapped up early" wording regardless of how much real evidence the task had
+    already gathered -- confirmed live (RESEARCH.md Sec.15) to make the Planner dispatch an
+    unforced re-verification follow-up for a task that had already fetched 11 real sources, not
+    just the genuinely-incomplete sibling task that prompted it. A task below
+    _CUTOFF_SOFTEN_MIN_SOURCES keeps the original alarming wording -- that case genuinely IS
+    incomplete and the Planner's follow-up is the correct response."""
+    if own_fetch_count >= _CUTOFF_SOFTEN_MIN_SOURCES:
+        return (
+            f"\n\n[SYSTEM: task '{task_name}' reached its context budget after gathering "
+            f"{own_fetch_count} real source(s) -- synthesis was wrapped up at that point. This is "
+            f"NOT necessarily incomplete; only dispatch a follow-up if a specific, named gap is "
+            f"evident, not as a default reaction to this marker.]"
+        )
+    return f"\n\n[SYSTEM: task '{task_name}' hit its context budget — findings below were wrapped up early.]"
 
 
 SUBAGENT_BUDGET_NUDGE = (
@@ -1067,7 +1118,8 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                             new_inputs.append(Message("user", [{"type": "text", "text": _select_budget_nudge(agent_id)}]))
                             current_input = new_inputs
                             has_requests = True
-                            final_text += f"\n\n[SYSTEM: task '{task_name}' hit its context budget — findings below were wrapped up early.]"
+                            final_text += _cutoff_marker_text(
+                                task_name, len(task_fetched_urls_ctx.get() or []))
                             continue
 
                         if user_input_requests:
@@ -1307,6 +1359,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
         # the specialist actually stop and synthesize its findings, not dispatch a partial batch
         # and think it can keep going.
         specialist_delegation_counter = None
+        _rs_for_cap = None
         if delegation_depth_ctx.get() > 0:
             cap = config.cfg.get("settings", {}).get("specialist_delegation_cap", 3)
             specialist_delegation_counter = specialist_delegate_task_count_ctx.get()
@@ -1318,6 +1371,24 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                     f"on this rejected call). Stop searching for more sources: synthesize and return "
                     f"your consolidated findings now instead of dispatching more Analyzers. Per your "
                     f"own instructions, one authoritative source is usually sufficient."
+                )
+        elif delegation_depth_ctx.get() == 0:
+            # Hard cap on the PLANNER's own replan rounds (RESEARCH.md Sec.15, 2026-08-01) --
+            # sibling fix to the specialist cap above, checked BEFORE schema validation for the
+            # same reason (reject early, no wasted validation work on a call that's rejected
+            # anyway). Live-confirmed necessary: the fetch cap + softened cutoff wording alone
+            # fixed the ORIGINAL traced incident but both smoke-test reruns still timed out because
+            # the Planner kept redispatching with no cutoff signal involved at all -- see
+            # _planner_delegate_over_cap's own docstring.
+            planner_cap = config.cfg.get("settings", {}).get("max_planner_delegate_rounds", 4)
+            _rs_for_cap = run_state_ctx.get()
+            _planner_rounds = _rs_for_cap.data.get("planner_delegate_rounds", 0) if _rs_for_cap else 0
+            if _planner_delegate_over_cap(_planner_rounds, planner_cap):
+                return (
+                    f"Error: delegate_tasks call rejected — you have already run {_planner_rounds} "
+                    f"planning round(s) this run (cap: {planner_cap}, no quota was consumed on this "
+                    f"rejected call). Stop planning further and let the system finalize a report "
+                    f"from what has already been researched."
                 )
         # -------------------------------------------------------------
         # Validate BEFORE dispatching anything. Found via a real end-to-end test: a model emitted
@@ -1511,6 +1582,11 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
             )
         if specialist_delegation_counter is not None:
             specialist_delegation_counter[0] += len(tasks)
+        elif delegation_depth_ctx.get() == 0 and _rs_for_cap is not None:
+            # Symmetric with the specialist counter above -- only a call that actually passed
+            # validation burns a round, matching that sibling's own "a rejected/malformed call
+            # must not count" reasoning.
+            _rs_for_cap.data["planner_delegate_rounds"] = _rs_for_cap.data.get("planner_delegate_rounds", 0) + 1
 
         # Structural enforcement of the user's own exclusion rules — confirmed live three times
         # that the prompt-level rule alone doesn't hold (4 explicitly-excluded sectors researched

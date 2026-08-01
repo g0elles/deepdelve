@@ -175,6 +175,12 @@ class RunState:
             # redispatching the same direction on every subsequent retry attempt.
             "deepening_round": 0,
             "consumed_directions": [],
+            # Hard cap on the Planner's own top-level delegate_tasks calls (RESEARCH.md Sec.15,
+            # 2026-08-01), bounded by settings.max_planner_delegate_rounds -- see
+            # engine.orchestrator._planner_delegate_over_cap. Deliberately NOT in
+            # _RESUME_CARRYOVER_KEYS below, same precedent deepening_round already sets: a resumed
+            # run gets a fresh round budget, not a continuation of the interrupted run's count.
+            "planner_delegate_rounds": 0,
         }
 
     def set_query(self, query: str) -> None:
