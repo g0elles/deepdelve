@@ -551,6 +551,32 @@ def check_stale_findings(ctx: Ctx) -> Optional[Verdict]:
     )
 
 
+def _findings_facet_coverage(ctx: Ctx) -> tuple[dict[str, set], list[str]]:
+    """by_task: {task_name: {real URLs run_state.data["findings"] recorded for that task}},
+    dropped: sorted task names among by_task with ZERO of their URLs cited anywhere in
+    findings.md. Factored out of check_findings_underuses_evidence (2026-08-01) so its verdict
+    and _dispatch_per_facet_findings_writer_fix's real per-facet scoping can never drift onto two
+    different notions of "dropped" -- one computation, read twice, the same relationship
+    _facet_coverage already has with check_report_underuses_evidence/
+    _dispatch_per_facet_builder_fix one layer downstream."""
+    from utils.grounding import extract_cited_urls, _urls_prefix_match
+    findings_urls = {u.rstrip('/') for u in extract_cited_urls(get_workspace_file_content("findings.md") or "")}
+    by_task: dict[str, set] = {}
+    for f in ctx.run_state.data.get("findings", []):
+        if f.get("depth") != 1:
+            continue
+        name = f.get("task_name")
+        url = (f.get("source_url") or "").strip()
+        if not name or not url.startswith("http"):
+            continue
+        by_task.setdefault(name, set()).add(url.rstrip('/'))
+    dropped = sorted(
+        name for name, urls in by_task.items()
+        if not any(u in findings_urls or any(_urls_prefix_match(u, f) for f in findings_urls) for u in urls)
+    )
+    return by_task, dropped
+
+
 def check_findings_underuses_evidence(ctx: Ctx) -> Optional[Verdict]:
     """check_report_underuses_findings' own diagnosis, one stage further upstream: that check
     compares final_report.md against findings.md, but findings.md itself can already have
@@ -590,26 +616,10 @@ def check_findings_underuses_evidence(ctx: Ctx) -> Optional[Verdict]:
         return None
     if "findings.md" not in ctx.files:
         return None
-    from utils.grounding import extract_cited_urls, _urls_prefix_match
-    findings_urls = {u.rstrip('/') for u in extract_cited_urls(get_workspace_file_content("findings.md") or "")}
-
-    by_task: dict[str, set] = {}
-    for f in ctx.run_state.data.get("findings", []):
-        if f.get("depth") != 1:
-            continue
-        name = f.get("task_name")
-        url = (f.get("source_url") or "").strip()
-        if not name or not url.startswith("http"):
-            continue
-        by_task.setdefault(name, set()).add(url.rstrip('/'))
-
+    by_task, dropped = _findings_facet_coverage(ctx)
     min_tasks = cfg.get("min_tasks", 2)
     if len(by_task) < min_tasks:
         return None
-    dropped = sorted(
-        name for name, urls in by_task.items()
-        if not any(u in findings_urls or any(_urls_prefix_match(u, f) for f in findings_urls) for u in urls)
-    )
     if not dropped:
         return None
 
@@ -635,11 +645,11 @@ def check_findings_underuses_evidence(ctx: Ctx) -> Optional[Verdict]:
             f"just lightly edit the existing draft — add real entries for these tasks' sources too."
         )
 
-    return Verdict(
+    return _capped(ctx, "findings_underuses_evidence", Verdict(
         "findings_underuses_evidence",
         f"'findings.md' has no entries at all for delegated task(s) {dropped_list}, despite real research results existing for them. Pushing agent to rebuild it with everything included.",
         f"SYSTEM WARNING: {ctx.last_chance_prefix}{directive}",
-    )
+    ))
 
 
 def check_missing_artifact(ctx: Ctx) -> Optional[Verdict]:
@@ -1413,8 +1423,18 @@ _BUILDER_NO_DELEGATE_CLARIFICATION = (
 # dispatch_task is None), both problems fall back to the classic inject-into-Planner path so an
 # older/custom SubAgentConfig setup that hasn't added FindingsWriter doesn't just silently stop
 # working.
-_FINDINGS_WRITER_FIXABLE_PROBLEMS = ("missing_findings", "findings_ungrounded", "stale_findings",
-                                     "findings_underuses_evidence")
+#
+# "findings_underuses_evidence" is deliberately ABSENT — same reasoning as
+# "report_underuses_evidence"'s own absence from _BUILDER_FIXABLE_PROBLEMS one layer downstream
+# (see that tuple's comment). The single combined-instruction version (routed through here until
+# 2026-08-01) got a live-confirmed negative result: FindingsWriter given a complete, well-under-
+# budget (16.5K chars under a 50K settings.context_budget_chars) 4-facet evidence blob in ONE
+# dispatch wrote real content for only 1 of 4 facets — the identical evidence-crowding pattern
+# already diagnosed for Builder, one layer upstream. Dispatched instead by its own bespoke
+# per-facet branch in run_completion_check (_dispatch_per_facet_findings_writer_fix), each
+# dispatch scoped to only ITS OWN facet's findings via _build_findings_source_material's
+# task_names filter — see RESEARCH.md §16.
+_FINDINGS_WRITER_FIXABLE_PROBLEMS = ("missing_findings", "findings_ungrounded", "stale_findings")
 
 
 def _quarantine_artifact(req_artifact: str, attempt: int) -> None:
@@ -1848,6 +1868,51 @@ async def _dispatch_per_facet_builder_fix(dispatch_task, dropped: list, by_task:
             notify(f"**System ({attempt + 1}):** Builder dispatch for facet '{name}' failed — continuing with remaining facets.")
 
 
+async def _dispatch_per_facet_findings_writer_fix(dispatch_task, dropped: list, run_state, attempt: int, notify) -> None:
+    """One FindingsWriter Write->Review->Fix cycle PER dropped facet (see _findings_facet_coverage),
+    run SEQUENTIALLY -- the exact same shape as _dispatch_per_facet_builder_fix, one layer
+    upstream. The single combined-instruction version (routed through _FINDINGS_WRITER_FIXABLE_
+    PROBLEMS until 2026-08-01) got the identical live-confirmed negative result the Builder-level
+    version already had (commit 1092add): FindingsWriter given a complete, well-under-budget
+    (16.5K chars under a 50K settings.context_budget_chars — truncation ruled out directly, not
+    assumed) 4-facet evidence blob in ONE dispatch wrote real content for only 1 of 4 facets. See
+    RESEARCH.md §16 and _FINDINGS_WRITER_FIXABLE_PROBLEMS' own comment for the full incident.
+
+    Differs from _dispatch_per_facet_builder_fix in WHAT gets scoped: Builder already has
+    findings.md available to read (writer_gate_ctx doesn't apply to it), so its per-facet fix
+    scopes which URLs to cite. FindingsWriter's evidence base IS its dispatch instructions (its
+    first message, per ARCHITECTURE.md §2) — there is no "read a file to find the real content"
+    step for it to narrow, so this scopes the EVIDENCE BLOB itself instead, via
+    _build_findings_source_material's new task_names filter, giving each dispatch only that one
+    facet's own findings (and only that facet's own fetched-URL cross-reference section) rather
+    than the full multi-facet blob that caused the crowding in the first place.
+
+    Deliberately does NOT pass deterministic_fallback (unlike the generic missing_findings/
+    findings_ungrounded/stale_findings FindingsWriter call site) even though scoped_material would
+    be a valid candidate for it. That fallback's own guard only fires when findings.md doesn't
+    exist AT ALL yet (get_workspace_file_content(req_artifact) is None) — true for a from-scratch
+    write, but this branch only ever runs when findings.md already exists (check_findings_
+    underuses_evidence requires it), so the guard should never actually let it trigger here. Not
+    passing it removes even the theoretical risk entirely rather than relying on that guard
+    holding: if it ever fired anyway, the fallback IS the write content, and a single facet's
+    scoped_material becoming the whole file would destroy every OTHER facet's already-correct
+    entries — the exact evidence-loss failure this whole fix exists to prevent. Matches
+    _dispatch_per_facet_builder_fix's own precedent, which never passes it either."""
+    for name in dropped[:_MAX_FACET_DISPATCHES]:
+        scoped_material = _build_findings_source_material(run_state, task_names={name})
+        write_directive = (
+            f"findings.md is MISSING task '{name}' entirely, even though real research results "
+            f"exist for it below. Use edit_workspace_file to insert one or more new entries "
+            f"covering ONLY task '{name}', from the real research results below. Do not rewrite "
+            f"or touch any other part of the file."
+        )
+        instructions = f"{write_directive}\n\n{scoped_material}\n\nWrite the corrected file now via edit_workspace_file."
+        try:
+            await _dispatch_writer_review_fix(dispatch_task, "FindingsWriter", "findings.md", instructions, attempt, notify)
+        except Exception:
+            notify(f"**System ({attempt + 1}):** FindingsWriter dispatch for facet '{name}' failed — continuing with remaining facets.")
+
+
 # Matches orchestrator.py's task_deadline cutoff marker text exactly (both variants: mid-turn
 # and no-update-before-deadline) when it is the ENTIRE summary -- i.e. the dispatch never
 # synthesized anything real before being cut off. Deliberately does NOT match a summary that has
@@ -2097,7 +2162,7 @@ def _find_propagated_bad_content(deduped_findings: list, uncited_task_names: lis
     return flagged
 
 
-def _build_findings_source_material(run_state: "RunState") -> str:  # noqa: F821 — utils.run_state.RunState, annotation only
+def _build_findings_source_material(run_state: "RunState", task_names: Optional[set] = None) -> str:  # noqa: F821 — utils.run_state.RunState, annotation only
     """Everything FindingsWriter needs to write findings.md, assembled from RunState's structured
     per-task records rather than the Planner's own conversation — FindingsWriter is dispatched in
     a fresh context with no memory of what the Planner saw, so this is its entire evidence base.
@@ -2113,9 +2178,22 @@ def _build_findings_source_material(run_state: "RunState") -> str:  # noqa: F821
     repeats (confirmed live 2026-07-14: 25 entries for ~8-10 distinct pieces of research, e.g. the
     same `colombia_cultural_factors` summary appearing identically 5 times). Left as-is in
     `run_state.data` itself — `coverage()` only checks per-task_name presence of a real URL, which
-    duplicates don't affect, and the raw list is the audit trail other tooling may want intact."""
+    duplicates don't affect, and the raw list is the audit trail other tooling may want intact.
+
+    `task_names` (2026-08-01, `_dispatch_per_facet_findings_writer_fix`): when given, scopes
+    EVERYTHING below to just those tasks' own findings — not just findings_block, but also the
+    "ALL URLS FETCHED THIS RUN" cross-reference section, which would otherwise still show every
+    OTHER facet's fetched URLs and reopen the exact evidence-crowding surface this scoping exists
+    to remove. Applied first, as an input filter, so every downstream step (dedup, budget,
+    uncited-task accounting) already only ever sees the scoped subset — no separate scoped code
+    path to keep in sync with the unscoped one."""
     findings = run_state.data.get("findings", [])
+    if task_names is not None:
+        findings = [f for f in findings if f.get("task_name") in task_names]
     urls = run_state.data.get("fetched_urls", [])
+    if task_names is not None:
+        _scoped_urls_lower = {(f.get("source_url") or "").rstrip("/").lower() for f in findings}
+        urls = [u for u in urls if (u.get("url") or "").rstrip("/").lower() in _scoped_urls_lower]
     deduped = _dedupe_findings(findings)
     # Real filename per entry, resolved from run_state's own fetched_urls record -- NOT left for
     # FindingsWriter to guess or reconstruct. Same fix shape as the delegate_tasks filename check
@@ -2982,15 +3060,6 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                                     "includes everything from before, plus what's new), not just "
                                     "the newest additions."
                                 )
-                            elif problem == "findings_underuses_evidence":
-                                write_directive = (
-                                    "The previous findings.md draft entirely dropped at least one "
-                                    "delegated research task -- not thin, MISSING, even though real "
-                                    "results exist for it below. Rebuild findings.md from ALL of the "
-                                    "real research results below, making sure EVERY distinct "
-                                    "delegated task with a real source gets at least one entry -- "
-                                    "do not let one topic crowd another out of the file entirely."
-                                )
                             else:
                                 write_directive = "findings.md has never been written yet. Write it now from the real research results below."
                             findings_source_material = _build_findings_source_material(run_state)
@@ -3079,6 +3148,43 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                     # No Builder pair registered, no dropped facets (shouldn't happen — verdict
                     # already required dropped to fire), or dispatch failed: fall through to the
                     # unchanged classic inject-into-Planner nudge below.
+
+                elif dispatch_task is not None and problem == "findings_underuses_evidence" and not force_whole_rebuild:
+                    # Bespoke per-item dispatch, the same shape as report_underuses_evidence's own
+                    # branch immediately above (one layer downstream) — not a membership check
+                    # against _FINDINGS_WRITER_FIXABLE_PROBLEMS, because this problem needs
+                    # facet-scoped handling that tuple's single generic-rebuild dispatch doesn't
+                    # support (see _dispatch_per_facet_findings_writer_fix's own docstring for why
+                    # one combined instruction already failed live, live-confirmed 2026-08-01).
+                    has_findings_writer_pair = has_peer_reviewer and any(c.name == "FindingsWriter" for c in caller_sub_agents)
+                    if has_findings_writer_pair:
+                        _, dropped = _findings_facet_coverage(ctx)
+                        if dropped:
+                            notify(f"**System ({attempt + 1}/{max_attempts}):** {verdict.warning} "
+                                   f"(dispatching FindingsWriter once per neglected facet, not the Planner)")
+                            if pool is not None:
+                                _ensure_writer_quota_headroom(pool)
+                                # needed=2 (the _FINDINGS_WRITER_FIXABLE_PROBLEMS default): PeerReviewer
+                                # reads only findings.md (one target artifact, not two like Builder's
+                                # report+findings.md pair) — scaled by facet count for the same reason
+                                # report_underuses_evidence's own branch scales its needed=3.
+                                _ensure_reader_quota_headroom(pool, needed=2 * max(1, min(len(dropped), _MAX_FACET_DISPATCHES)))
+                            try:
+                                await _dispatch_per_facet_findings_writer_fix(dispatch_task, dropped, run_state, attempt, notify)
+                                # Staleness marker, same as the generic FindingsWriter branch above —
+                                # per-facet dispatch is still a real write to findings.md.
+                                run_state.data["findings_written_citable_count"] = len(_dedupe_findings(
+                                    [f for f in run_state.data.get("findings", []) if _is_citable_finding(f)]
+                                ))
+                                run_state.save()
+                                # Chained, not returned — same pattern as every other bespoke branch
+                                # above. Loops straight into the next completion-check iteration.
+                                continue
+                            except Exception:
+                                notify(f"**System ({attempt + 1}/{max_attempts}):** Per-facet FindingsWriter dispatch failed — falling back to asking the Planner directly.")
+                    # No FindingsWriter pair registered, no dropped facets (shouldn't happen —
+                    # verdict already required dropped to fire), or dispatch failed: fall through
+                    # to the unchanged classic inject-into-Planner nudge below.
 
                 notify(f"**System ({attempt + 1}/{max_attempts}):** {verdict.warning}")
                 new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)

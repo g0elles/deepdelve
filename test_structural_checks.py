@@ -3962,6 +3962,170 @@ def main():
 
     contextvars.copy_context().run(_per_facet_builder_dispatch_scenario)
 
+    # --- Per-facet FindingsWriter dispatch for findings_underuses_evidence (2026-08-01): the
+    # combined-instruction version (routed through _FINDINGS_WRITER_FIXABLE_PROBLEMS until this
+    # fix) got the same live-confirmed negative result as report_underuses_evidence's own Builder-
+    # level version, one layer upstream — FindingsWriter given a complete, well-under-budget
+    # multi-facet evidence blob in ONE dispatch wrote real content for only 1 of 4 facets.
+    # run_completion_check must instead dispatch ONE fresh-context FindingsWriter Write->Review->Fix
+    # cycle PER dropped facet (see _dispatch_per_facet_findings_writer_fix / _findings_facet_
+    # coverage), sequentially, each scoped to ONLY that facet's own findings. ---
+    def _per_facet_findings_writer_dispatch_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        from tools.core import tool_quotas_ctx as q_ctx
+        from unittest.mock import AsyncMock
+        from engine.orchestrator import available_sub_agents_ctx
+
+        class _FakeSubAgentConfig:
+            def __init__(self, name):
+                self.name = name
+
+        _orig_ws_pfw = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
+        _orig_gc_pfw = _config.cfg.get("settings", {}).get("grounding_check")
+        _config.cfg["settings"]["grounding_check"] = {"nli_verify": False, "topical_relevance_check": False}
+        _orig_uc_pfw = _config.cfg.get("settings", {}).get("uneven_coverage_check")
+        _config.cfg["settings"]["uneven_coverage_check"] = {"enabled": False}
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            heur_urls = ["https://a.example.co/heur1", "https://a.example.co/heur2"]
+            colo_urls = ["https://b.example.co/colo1", "https://b.example.co/colo2", "https://b.example.co/colo3"]
+
+            # (a) one dropped facet (heuristics, real findings exist in run_state.data["findings"]
+            # but findings.md only ever mentions colombia) -> exactly one facet's worth of
+            # dispatches (FindingsWriter, PeerReviewer), scoped to ONLY heuristics' own findings,
+            # and the fix converges.
+            with tempfile.TemporaryDirectory() as tmpdir_a:
+                _IN_MEMORY_FS.clear()
+                # findings.md exists (required for the check to even run) but never cites any
+                # heuristics URL -- the live incident's exact shape (real research, dropped anyway).
+                _IN_MEMORY_FS["findings.md"] = "\n\n".join(f"### [Src]({u})\n- colombia finding." for u in colo_urls)
+                reset_fetched_urls()
+                for u in heur_urls + colo_urls:
+                    record_fetched_url(u, filename=f"sources/{u.rsplit('/', 1)[-1]}.md")
+                rs = RunState(tmpdir_a)
+                run_state_ctx.set(rs)
+                for u in heur_urls:
+                    rs.add_finding(u, "heuristic finding", task_name="heuristics", depth=1)
+                for u in colo_urls:
+                    rs.add_finding(u, "colombia finding", task_name="colombia", depth=1)
+                q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5}})
+                available_sub_agents_ctx.set([_FakeSubAgentConfig("FindingsWriter"), _FakeSubAgentConfig("PeerReviewer")])
+                msgs = []
+
+                async def _side_effect_a(name, instructions, role):
+                    if role == "FindingsWriter":
+                        assert "heuristics" in instructions, instructions
+                        assert "colombia finding" not in instructions, (
+                            "the scoped evidence blob must not contain the OTHER facet's own "
+                            "finding text -- that's the whole point of scoping it", instructions)
+                        for u in heur_urls:
+                            assert u in instructions, instructions
+                        _IN_MEMORY_FS["findings.md"] += "\n\n" + "\n\n".join(
+                            f"### [Src]({u})\n- heuristic finding." for u in heur_urls)
+                        return "## Result\nAdded heuristics entries\n---"
+                    return "REVIEW: CLEAN\nNo issues found."
+
+                dispatch = AsyncMock(side_effect=_side_effect_a)
+                orig_input = "q"
+                should_retry, new_input = _asyncio.run(run_completion_check(
+                    query="q", current_input=orig_input, run_state=rs, notify=msgs.append,
+                    dispatch_task=dispatch))
+                # NOT asserting `not should_retry` here, unlike the Builder scenario above: fixing
+                # findings.md is not the LAST step in the pipeline (final_report.md still doesn't
+                # exist in this minimal test setup, deliberately), so the very next completion-check
+                # iteration correctly moves on to missing_artifact -- should_retry True here is
+                # expected and correct, not a sign the fix didn't work. What this test verifies is
+                # the DISPATCH shape: exactly one scoped FindingsWriter+PeerReviewer cycle for the
+                # dropped facet, with findings.md genuinely fixed as a result.
+                assert dispatch.call_count == 2, dispatch.call_args_list
+                assert dispatch.call_args_list[0].args[2] == "FindingsWriter", dispatch.call_args_list
+                assert dispatch.call_args_list[1].args[2] == "PeerReviewer", dispatch.call_args_list
+                assert rs.data["completion_check_attempts"][0]["problem"] == "findings_underuses_evidence"
+                assert rs.data["completion_check_attempts"][1]["problem"] == "missing_artifact", (
+                    "findings_underuses_evidence must be genuinely RESOLVED (not re-fired) by the "
+                    "next iteration -- the pipeline should move on to the next real problem, "
+                    "not loop on the same one", rs.data["completion_check_attempts"])
+                assert any("neglected facet" in m for m in msgs), msgs
+                # Staleness marker updated after the per-facet dispatch, same as the generic branch.
+                assert rs.data.get("findings_written_citable_count", 0) > 0, rs.data
+                for u in heur_urls:
+                    assert u in _IN_MEMORY_FS["findings.md"], "heuristics must actually be in findings.md now"
+
+            # (b) two dropped facets (heuristics, extra) out of 3 tasks -> sequential dispatch, ONE
+            # Write->Review->Fix cycle per facet (4 dispatches total), never one combined
+            # instruction covering both, and each scoped instruction never leaks the other
+            # dropped facet's findings either.
+            with tempfile.TemporaryDirectory() as tmpdir_b:
+                extra_urls = [f"https://c.example.co/extra{i}" for i in range(3)]
+                _IN_MEMORY_FS.clear()
+                _IN_MEMORY_FS["findings.md"] = "\n\n".join(f"### [Src]({u})\n- colombia finding." for u in colo_urls)
+                reset_fetched_urls()
+                for u in heur_urls + colo_urls + extra_urls:
+                    record_fetched_url(u, filename=f"sources/{u.rsplit('/', 1)[-1]}.md")
+                rs = RunState(tmpdir_b)
+                run_state_ctx.set(rs)
+                for u in heur_urls:
+                    rs.add_finding(u, "heuristic finding", task_name="heuristics", depth=1)
+                for u in colo_urls:
+                    rs.add_finding(u, "colombia finding", task_name="colombia", depth=1)
+                for u in extra_urls:
+                    rs.add_finding(u, "extra finding", task_name="extra", depth=1)
+                q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5}})
+                available_sub_agents_ctx.set([_FakeSubAgentConfig("FindingsWriter"), _FakeSubAgentConfig("PeerReviewer")])
+                msgs = []
+                writer_calls = []
+
+                async def _side_effect_b(name, instructions, role):
+                    if role == "FindingsWriter":
+                        writer_calls.append(instructions)
+                        if "heuristics" in instructions:
+                            urls, other_text = heur_urls, "extra finding"
+                        elif "extra" in instructions:
+                            urls, other_text = extra_urls, "heuristic finding"
+                        else:
+                            raise AssertionError(f"unexpected FindingsWriter instructions: {instructions}")
+                        assert other_text not in instructions, instructions
+                        assert "colombia finding" not in instructions, instructions
+                        _IN_MEMORY_FS["findings.md"] += "\n\n" + "\n\n".join(
+                            f"### [Src]({u})\n- finding." for u in urls)
+                        return "## Result\nAdded entries\n---"
+                    return "REVIEW: CLEAN\nNo issues found."
+
+                dispatch = AsyncMock(side_effect=_side_effect_b)
+                should_retry, new_input = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append,
+                    dispatch_task=dispatch))
+                # Same non-assertion of `not should_retry` as scenario (a) above, same reason:
+                # final_report.md still doesn't exist in this minimal setup, so the pipeline
+                # correctly moves on to missing_artifact next -- that's expected, not a failure.
+                assert dispatch.call_count == 4, (
+                    "two dropped facets must produce two independent Write->Review->Fix cycles "
+                    "(4 dispatches), not one combined instruction", dispatch.call_args_list)
+                assert len(writer_calls) == 2, writer_calls
+                # 'extra' sorts before 'heuristics' alphabetically -- _findings_facet_coverage's
+                # `dropped` is sorted, and the dispatch loop must preserve that order.
+                assert "extra" in writer_calls[0] and "heuristics" not in writer_calls[0], writer_calls
+                assert "heuristics" in writer_calls[1] and "extra" not in writer_calls[1], writer_calls
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            if _orig_ws_pfw is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws_pfw
+            if _orig_gc_pfw is None:
+                _config.cfg["settings"].pop("grounding_check", None)
+            else:
+                _config.cfg["settings"]["grounding_check"] = _orig_gc_pfw
+            if _orig_uc_pfw is None:
+                _config.cfg["settings"].pop("uneven_coverage_check", None)
+            else:
+                _config.cfg["settings"]["uneven_coverage_check"] = _orig_uc_pfw
+
+    contextvars.copy_context().run(_per_facet_findings_writer_dispatch_scenario)
+
     # --- FindingsWriter Write->Review->Fix dispatch loop (2026-07-14 architecture change: the
     # Planner no longer writes findings.md itself — see _FINDINGS_WRITER_FIXABLE_PROBLEMS /
     # _build_findings_source_material / src/prompts.py's FINDINGS_WRITER_INSTRUCTIONS). Mirrors
