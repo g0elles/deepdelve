@@ -1,6 +1,8 @@
 import httpx
+import ipaddress
 import os
 import re
+import socket
 import asyncio
 import threading
 from bs4 import BeautifulSoup
@@ -9,6 +11,43 @@ from tools.core import with_quota, tool_quotas_ctx, TOOL_ERROR_PREFIX
 from tools.fs import _get_safe_path, _get_workspace_type, _IN_MEMORY_FS
 from utils.run_state import record_fetched_url, task_id_ctx
 from utils.browser_fetch import fetch_via_headless_browser
+
+# SSRF guard (2026-08-02 audit): every URL this module fetches is attacker-influenced -- either
+# a raw web_search/fetch_url_to_workspace argument the model produced from (possibly
+# prompt-injected) page content, or a link resolved out of a page's own content
+# (_looks_like_redirect_stub below). Without this, a malicious page's redirect could point a
+# fetch at a cloud metadata endpoint (169.254.169.254) or an internal host, fully automatically,
+# no LLM tool call required to trigger it.
+def _is_unsafe_fetch_host(hostname: str) -> bool:
+    """True if `hostname` IS, or resolves to, a loopback/link-local/private/reserved/multicast
+    address. Resolves the hostname first (via socket.getaddrinfo) rather than pattern-matching
+    the string, so a DNS name that merely POINTS at an internal address (not just a bare IP
+    literal like 169.254.169.254) is caught the same way -- a bare string check alone would miss
+    that. A DNS failure is not an SSRF risk (nothing to reach) -- let the fetch itself surface
+    that error normally instead of blocking it here."""
+    if not hostname:
+        return True
+    try:
+        ipaddress.ip_address(hostname)
+        addrs = {hostname}
+    except ValueError:
+        try:
+            addrs = {info[4][0] for info in socket.getaddrinfo(hostname, None)}
+        except socket.gaierror:
+            return False
+    for addr in addrs:
+        ip = ipaddress.ip_address(addr)
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+            return True
+    return False
+
+
+def _block_unsafe_request(request: httpx.Request) -> None:
+    """httpx event hook -- fires on the initial request AND on every hop of a real HTTP redirect
+    chain httpx follows internally (follow_redirects=True), so a redirect mid-chain to an
+    internal host is caught too, not just the URL the model/page originally named."""
+    if _is_unsafe_fetch_host(request.url.host):
+        raise httpx.RequestError(f"Blocked unsafe fetch target: {request.url.host}", request=request)
 
 # Low-novelty search streak backstop (2026-07-22): a real live run showed one WebSearcher task
 # fire 14 web_search calls, each a slightly-reworded near-duplicate, chasing a single source that
@@ -249,7 +288,11 @@ def _fetch_raw(url: str, convert_to_md: bool = True, _redirect_depth: int = 0):
     # returns an HTTP 400 block page for it) even though the request itself was otherwise fine —
     # bumped to a current build.
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"}
-    with httpx.stream("GET", url, headers=headers, timeout=30, follow_redirects=True) as resp:
+    # httpx.Client (not the bare httpx.stream shortcut) is required here specifically to plug in
+    # event_hooks -- the SSRF guard above needs to see every redirect hop, not just the URL this
+    # function was originally called with.
+    with httpx.Client(event_hooks={"request": [_block_unsafe_request]}) as client, \
+            client.stream("GET", url, headers=headers, timeout=30, follow_redirects=True) as resp:
         content_length = resp.headers.get("content-length")
         if content_length and content_length.isdigit() and int(content_length) > _MAX_FETCH_BYTES:
             return (f"[ERROR: {url} reports Content-Length {int(content_length):,} bytes, over "
@@ -738,8 +781,7 @@ async def fetch_url_to_workspace(url: str | list, filename: str = "", convert_to
         data, urls_fetched, metadata = await asyncio.to_thread(_fetch_raw, url, convert_to_md)
         return _save_fetched(urls_fetched, filename, data, convert_to_md, metadata=metadata) + list_note
     except Exception as e:
-        import traceback
-        return f"{TOOL_ERROR_PREFIX}Fetch failed: {e}\n\nTraceback:\n{traceback.format_exc()}"
+        return f"{TOOL_ERROR_PREFIX}Fetch failed: {type(e).__name__}: {e}"
 
 
 _DIVERSITY_STOPWORDS = {
@@ -986,8 +1028,7 @@ async def web_search(
             return (f"{TOOL_ERROR_PREFIX}Search timed out after {timeout_s}s with no response — the search "
                     f"layer appears to be hanging, not just slow. This is an environmental issue, "
                     f"not a query problem; try a different query or search backend.")
-        import traceback
-        return f"{TOOL_ERROR_PREFIX}Search failed: {err}\n\nTraceback:\n{''.join(traceback.format_exception(err))}"
+        return f"{TOOL_ERROR_PREFIX}Search failed: {type(err).__name__}: {err}"
     # Zero results counts as a failure: under provider throttling ddgs often returns empty rather
     # than raising, and an all-empty run is indistinguishable from a fabrication-prone one.
     record_search_health(ok=bool(results))
@@ -1070,11 +1111,16 @@ async def verify_url_live(url: str, timeout: float = 5.0) -> bool:
     deterministically by the engine's grounding check (per CYC2002tommy's DOI-verification idea)."""
     def _check():
         try:
+            if _is_unsafe_fetch_host(httpx.URL(url).host):
+                return False
             headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"}
-            resp = httpx.head(url, headers=headers, timeout=timeout, follow_redirects=True)
-            if resp.status_code >= 400:
-                # Some servers reject HEAD; retry with a lightweight GET before giving up.
-                resp = httpx.get(url, headers=headers, timeout=timeout, follow_redirects=True)
+            # httpx.Client (not the bare httpx.head/get shortcuts, neither accepts event_hooks)
+            # so a redirect hop mid-chain is checked too, same as _fetch_raw above.
+            with httpx.Client(event_hooks={"request": [_block_unsafe_request]}) as client:
+                resp = client.head(url, headers=headers, timeout=timeout, follow_redirects=True)
+                if resp.status_code >= 400:
+                    # Some servers reject HEAD; retry with a lightweight GET before giving up.
+                    resp = client.get(url, headers=headers, timeout=timeout, follow_redirects=True)
             return resp.status_code < 400
         except Exception:
             return False

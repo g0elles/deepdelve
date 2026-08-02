@@ -73,6 +73,12 @@ dev = ["ruff"]
 # Xvfb, still runs every other fetch path unaffected — it just falls back to headless, or skips
 # the retry entirely if Playwright itself isn't installed.
 browser = ["playwright>=1.48.0,<2.0.0", "pyvirtualdisplay>=3.0,<4.0"]
+# settings.pdf_engine: "weasyprint" pandoc --pdf-engine option (see config_template.yaml and
+# engine/tui.py::_export_pdf). Optional: the feature is off by default and needs pandoc itself
+# too (a system binary, `apt install pandoc`, not installable via pip) -- this extra only
+# provides the CLI pandoc shells out to when pdf_engine is set to "weasyprint" instead of a
+# system LaTeX engine (xelatex/pdflatex).
+pdf = ["weasyprint>=69.0,<70.0"]
 
 [project.scripts]
 deepdelve = "app:cli_main"

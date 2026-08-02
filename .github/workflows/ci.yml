@@ -27,3 +27,6 @@ jobs:
 
       - name: Structural test suite
         run: python test_structural_checks.py
+
+      - name: Tool-layer test suite
+        run: python test_tools.py

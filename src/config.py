@@ -24,6 +24,12 @@ _DEFAULTS = {
     },
     "settings": {
         "enable_thinking": False,
+        # Crash forensics (2026-08-02 audit): config_template.yaml already sets this True for the
+        # normal first-run path (load_config copies the template, then deep-merges it over these
+        # _DEFAULTS) -- this only matters for the rare fallback where config_template.yaml itself
+        # is missing from the install and _DEFAULTS alone gets written out. Kept in sync with the
+        # template's real default so that edge case doesn't silently leave crash logging off.
+        "enable_session_persistence": True,
         "concurrency": {
             "max_concurrent_tasks": 1
         },

@@ -212,8 +212,7 @@ def read_workspace_file(filename: str, start_line: int = 1, end_line: int = -1) 
         chunk = "\n".join(lines[start - 1:end])
         return f"--- {filename} [Lines {start}-{end} of {total}] ---\n{chunk}"
     except Exception as e:
-        import traceback
-        return f"Error: {e}\n\nTraceback:\n{traceback.format_exc()}"
+        return f"Error: {type(e).__name__}: {e}"
 
 @tool
 @with_quota
@@ -233,8 +232,7 @@ def write_workspace_file(filename: str, content: str) -> str:
             _IN_MEMORY_FS[path] = content
             return f"Wrote '{filename}' to memory."
     except Exception as e:
-        import traceback
-        return f"Error: {e}\n\nTraceback:\n{traceback.format_exc()}"
+        return f"Error: {type(e).__name__}: {e}"
 
 @tool
 @with_quota
@@ -271,8 +269,7 @@ def edit_workspace_file(filename: str, old_string: str, new_string: str, replace
             _IN_MEMORY_FS[path] = new_content
         return f"Edited '{filename}' ({count} replacement{'s' if count != 1 else ''})."
     except Exception as e:
-        import traceback
-        return f"Error: {e}\n\nTraceback:\n{traceback.format_exc()}"
+        return f"Error: {type(e).__name__}: {e}"
 
 @tool
 @with_quota
@@ -334,8 +331,7 @@ def grep_workspace_file(filename: str, pattern: str, context_lines: int = 2) -> 
 
         return "\n".join(out)
     except Exception as e:
-        import traceback
-        return f"{TOOL_ERROR_PREFIX}Grep failed: {e}\n\nTraceback:\n{traceback.format_exc()}"
+        return f"{TOOL_ERROR_PREFIX}Grep failed: {type(e).__name__}: {e}"
 
 @tool
 @with_quota
@@ -354,5 +350,4 @@ def remove_workspace_file(filename: str) -> str:
                 return f"Deleted: {filename}"
         return f"Error: '{filename}' not found."
     except Exception as e:
-        import traceback
-        return f"Error: {e}\n\nTraceback:\n{traceback.format_exc()}"
+        return f"Error: {type(e).__name__}: {e}"

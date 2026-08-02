@@ -21,6 +21,7 @@ import json
 import config
 from agent_framework import Message, Content
 from textual import events
+import hashlib
 import os
 import re
 import time
@@ -66,7 +67,7 @@ _last_log_write = 0.0
 _LOG_WRITE_THROTTLE_SECONDS = 0.5
 
 def _write_log(force: bool = False):
-    if not config.cfg["settings"].get("enable_session_persistence", False):
+    if not config.cfg["settings"].get("enable_session_persistence", True):
         return
 
     global _last_log_write
@@ -668,7 +669,7 @@ class BasicTuiAgent(App):
     #command-list { height: auto; max-height: 15; padding: 0 1; }
     """
 
-    SLASH_COMMANDS = [("/stop", "Stop execution"), ("/new", "New conversation"), ("/exit", "Quit app"), ("/toggle_thinking", "Toggle reasoning trace capability"), ("/toggle_persistence", "Toggle session history saving"), ("/toggle_headless_fetch", "Toggle headless-browser retry for bot-blocked fetches"), ("/depth", "Set research depth: quick|standard|deep"), ("/style", "Set report style: standard|academic|answer"), ("/seed-url", "Queue a URL to pre-fetch before the next run (repeatable)"), ("/config", "Show current configuration"), ("/files", "Browse memory workspace files"), ("/sessions", "List saved sessions"), ("/resume", "Resume a saved session"), ("/resume-run", "Reattach an interrupted research run")]
+    SLASH_COMMANDS = [("/stop", "Stop execution"), ("/new", "New conversation"), ("/exit", "Quit app"), ("/toggle_thinking", "Toggle reasoning trace capability"), ("/toggle_persistence", "Toggle session history saving"), ("/toggle_headless_fetch", "Toggle headless-browser retry for bot-blocked fetches"), ("/depth", "Set research depth: quick|standard|deep"), ("/style", "Set report style: standard|academic|answer"), ("/seed-url", "Queue a URL to pre-fetch before the next run (repeatable)"), ("/seed-doc", "Queue a local file to load before the next run (repeatable)"), ("/config", "Show current configuration"), ("/files", "Browse memory workspace files"), ("/sessions", "List saved sessions"), ("/resume", "Resume a saved session"), ("/resume-run", "Reattach an interrupted research run")]
     def __init__(self, builder, session_to_resume: str = None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.builder = builder
@@ -697,6 +698,8 @@ class BasicTuiAgent(App):
         # equivalent. URLs queued here are fetched once at the start of the next NON-follow-up
         # run_agent call (mirrors run_cli's seed_urls handling) and cleared after use.
         self._pending_seed_urls = []
+        # /seed-doc: TUI equivalent of --seed-doc, same lifecycle as _pending_seed_urls above.
+        self._pending_seed_docs = []
 
     def compose(self) -> ComposeResult:
         yield VerticalScroll(id="chat-container")
@@ -720,8 +723,8 @@ class BasicTuiAgent(App):
         thinking_color = "green" if config.cfg["settings"]["enable_thinking"] else "red"
         memory = "ON" if config.cfg["settings"].get("enable_conversational_memory", False) else "OFF"
         memory_color = "green" if config.cfg["settings"].get("enable_conversational_memory", False) else "red"
-        persistence_val = "ON" if config.cfg["settings"].get("enable_session_persistence", False) else "OFF"
-        persistence_color = "green" if config.cfg["settings"].get("enable_session_persistence", False) else "red"
+        persistence_val = "ON" if config.cfg["settings"].get("enable_session_persistence", True) else "OFF"
+        persistence_color = "green" if config.cfg["settings"].get("enable_session_persistence", True) else "red"
         headless_on = config.cfg["settings"].get("fetch", {}).get("headless_fallback", True)
         headless_fallback = "ON" if headless_on else "OFF"
         headless_fallback_color = "green" if headless_on else "red"
@@ -889,8 +892,19 @@ class BasicTuiAgent(App):
                 self._pending_seed_urls.append(arg)
                 chat.mount(Static(Markdown(f"**System:**\nQueued seed URL ({len(self._pending_seed_urls)} pending): {arg}"), classes="agent-bubble"))
             chat.scroll_end(animate=False)
+        elif query.startswith("/seed-doc"):
+            arg = query[len("/seed-doc"):].strip()
+            chat = self.query_one("#chat-container", VerticalScroll)
+            if not arg:
+                chat.mount(Static(Markdown("**System:**\nUsage: `/seed-doc <path>` (repeatable — queues a local file for the next research run)"), classes="agent-bubble"))
+            elif not os.path.isfile(os.path.expanduser(arg)):
+                chat.mount(Static(Markdown(f"**System:**\nNot a file: `{arg}`"), classes="agent-bubble"))
+            else:
+                self._pending_seed_docs.append(os.path.expanduser(arg))
+                chat.mount(Static(Markdown(f"**System:**\nQueued seed document ({len(self._pending_seed_docs)} pending): {arg}"), classes="agent-bubble"))
+            chat.scroll_end(animate=False)
         elif query == "/toggle_persistence":
-            config.cfg["settings"]["enable_session_persistence"] = not config.cfg["settings"].get("enable_session_persistence", False)
+            config.cfg["settings"]["enable_session_persistence"] = not config.cfg["settings"].get("enable_session_persistence", True)
             config.save_config()
             state = "ON" if config.cfg["settings"]["enable_session_persistence"] else "OFF"
             chat = self.query_one("#chat-container", VerticalScroll)
@@ -1391,6 +1405,24 @@ class BasicTuiAgent(App):
                         + "\n".join(f"- {u}" for u in seeded)
                     )
                 self._pending_seed_urls = []
+            # /seed-doc TUI equivalent of run_cli's --seed-doc handling below: ingest queued local
+            # files once, only at the start of a fresh (non-follow-up) run, same lifecycle as
+            # seed URLs above.
+            if self._pending_seed_docs and not is_followup:
+                seeded_docs = []
+                for p in self._pending_seed_docs:
+                    ok, result = _ingest_local_doc(p)
+                    chat.mount(Static(Markdown(f"**System:**\nSeed document {'loaded' if ok else 'FAILED'}: {p}{'' if ok else f' ({result})'}"), classes="agent-bubble"))
+                    if ok:
+                        seeded_docs.append(result)
+                if seeded_docs:
+                    current_input += (
+                        "\n\nSEED DOCUMENTS (local files provided by the user, already loaded into "
+                        "the workspace — have your Analyzers read these before searching the open "
+                        "web, and reference them as local documents, not URLs):\n"
+                        + "\n".join(f"- {f}" for f in seeded_docs)
+                    )
+                self._pending_seed_docs = []
             has_requests = True
             malformed_retries = 0
             state = {"calls": {}, "current_call_id": None, "current_msg": None}
@@ -1636,6 +1668,12 @@ class BasicTuiAgent(App):
                         has_requests = True
 
             run_state.save()
+            _write_bibliography(run_state)
+            pdf_path, pdf_err = _export_pdf(run_dir_name)
+            if pdf_path:
+                chat.mount(Static(Markdown(f"**System:**\nPDF exported: `{pdf_path}`"), classes="agent-bubble"))
+            elif pdf_err:
+                chat.mount(Static(Markdown(f"**System:**\nPDF export skipped: {pdf_err}"), classes="agent-bubble"))
         except asyncio.CancelledError:
             # /stop (self.workers.cancel_all()) relies on this propagating -- must not be treated
             # as a crash to save-and-swallow.
@@ -1872,13 +1910,123 @@ class BasicTuiAgent(App):
 
 def _slugify_run_dir_name(query: str) -> str:
     """Short, human-readable run folder name instead of a bare unix timestamp — e.g.
-    'grasshopper_optimization_algorithm_used_on_20260710_192335' instead of 'run_1783729333',
-    which gave no hint what a given run's output folder was actually about. Purely deterministic
-    from the query text already available at run start (no LLM call needed)."""
+    'grasshopper_optimization_algorithm_used_on_a1b2c3_20260710_192335' instead of
+    'run_1783729333', which gave no hint what a given run's output folder was actually about.
+    Purely deterministic from the query text already available at run start (no LLM call needed).
+
+    The 6-hex-char hash of the FULL query (not just the truncated slug) is required, not
+    decorative: two different long queries sharing a 50+ char common prefix previously produced
+    IDENTICAL slugs, distinguishable only by the trailing timestamp — confirmed live in
+    research_output/'s own listing (audit, 2026-08-02). The hash makes distinct queries always
+    produce distinct folder names while an identical re-run of the same query still gets the same
+    hash (a useful signal, not noise)."""
     slug = re.sub(r'[^a-z0-9]+', '_', (query or "").lower()).strip('_')
-    slug = re.sub(r'_+', '_', slug)[:50].strip('_') or "query"
+    slug = re.sub(r'_+', '_', slug)[:40].strip('_') or "query"
+    query_hash = hashlib.sha1((query or "").encode("utf-8")).hexdigest()[:6]
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return f"{slug}_{timestamp}"
+    return f"{slug}_{query_hash}_{timestamp}"
+
+
+def _write_bibliography(run_state) -> None:
+    """Write references.bib alongside the final report, once a run has one — best-effort, never
+    raises into the caller (this runs after the run's own real work is already done and saved;
+    a bibliography-generation bug must not turn a successful run into a reported failure). Shared
+    by both run_cli and run_agent (TUI/CLI parity, CLAUDE.md's own rule) since both reach this
+    exact "run finished, artifacts exist" point independently."""
+    try:
+        from tools.fs import get_workspace_file_content, write_workspace_file
+        from utils.run_state import build_bibliography
+        req_artifact = config.get_required_artifact()
+        report_text = get_workspace_file_content(req_artifact)
+        if not report_text:
+            return
+        bib = build_bibliography(report_text, run_state.data.get("fetched_urls") or [])
+        if bib:
+            write_workspace_file.func(filename="references.bib", content=bib)
+    except Exception as e:
+        # Never crash the run over its own bookkeeping, but never lose the failure silently
+        # either — same convention as RunState.save()'s own except branch just above this
+        # function in the same module family (utils/run_state.py).
+        sys.stdout.write(f"\033[93m[System] Bibliography export failed: {e}\033[0m\n")
+
+
+def _ingest_local_doc(path: str) -> tuple[bool, str]:
+    """Copy a user-supplied local file (--seed-doc/`/seed-doc`) into the run's workspace as plain
+    text, so DocumentAnalyzer/DataAnalyzer can read it via the EXISTING read_workspace_file tool —
+    deliberately no new tool exposed to the model. The model never gets an arbitrary-filesystem-
+    read primitive; the engine reads the path (already validated as one the user passed at session
+    start) and hands it over as workspace content, same trust boundary as everything else a
+    sub-agent can already read. Reuses utils.parsers.convert_to_markdown — the same local-file
+    extractor tools/web.py's own PDF-fetch path already relies on — so PDF/DOCX/XLSX/PPTX are
+    handled for free via markitdown, not a second bespoke parser for PDF alone.
+
+    Returns (ok, workspace_filename_or_error)."""
+    if not os.path.isfile(path):
+        return False, f"not a file: {path}"
+    try:
+        if path.lower().endswith((".md", ".txt")):
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                text = f.read()
+        else:
+            from utils.parsers import convert_to_markdown
+            text = convert_to_markdown(path)
+        if not text or not text.strip():
+            return False, f"empty or unreadable: {path}"
+    except Exception as e:
+        return False, str(e)
+
+    from tools.fs import write_workspace_file
+    from tools.web import _slugify_for_filename
+    base = os.path.basename(path)
+    filename = "sources/" + _slugify_for_filename(path, "localdoc") + ".md"
+    header = f"Local-Document: {base}\n(User-provided local file, not fetched from the web.)\n\n"
+    write_workspace_file.func(filename=filename, content=header + text)
+    return True, filename
+
+
+def _export_pdf(run_dir_name: str | None) -> tuple[str | None, str | None]:
+    """Optional PDF export of the final report via `pandoc` (settings.pdf_engine, unset/off by
+    default — needs an external system binary this project can't bundle in pip, see README's
+    install section). Shared by run_cli and run_agent (TUI/CLI parity, CLAUDE.md's own rule).
+    Never raises — mirrors _write_bibliography's contract; a PDF-export failure must not turn a
+    successful research run into a reported failure.
+
+    Returns (pdf_path, error) — at most one is non-None. Both None means "nothing to do" (PDF
+    export off, workspace isn't disk-backed so there's no file for pandoc to point at, or the
+    report doesn't exist yet)."""
+    try:
+        engine = config.cfg.get("settings", {}).get("pdf_engine")
+        if not engine:
+            return None, None
+        from tools.fs import _get_workspace_type
+        if _get_workspace_type() != "disk":
+            return None, None
+        import shutil
+        if not shutil.which("pandoc"):
+            return None, "pandoc not installed — see README's install section"
+        req_artifact = config.get_required_artifact()
+        report_path = os.path.join(os.path.abspath(_current_run_dir(run_dir_name)), req_artifact)
+        if not os.path.exists(report_path):
+            return None, None
+        pdf_path = os.path.splitext(report_path)[0] + ".pdf"
+        import subprocess
+        # weasyprint's CLI (the --pdf-engine pandoc actually shells out to) is a pip
+        # console_script, installed into this interpreter's own venv bin/ -- not on the system
+        # PATH unless the venv was `source`-activated. Prepending it here is what makes
+        # `pdf_engine: weasyprint` work when DeepDelve is simply invoked as
+        # `~/.venvs/deepdelve/bin/python`, the way this project's own docs describe running it,
+        # without requiring the user to separately activate the venv just for this subprocess.
+        env = dict(os.environ)
+        env["PATH"] = os.path.dirname(sys.executable) + os.pathsep + env.get("PATH", "")
+        result = subprocess.run(
+            ["pandoc", report_path, "-o", pdf_path, f"--pdf-engine={engine}"],
+            capture_output=True, text=True, timeout=120, env=env,
+        )
+        if result.returncode == 0 and os.path.exists(pdf_path):
+            return pdf_path, None
+        return None, (result.stderr or "unknown pandoc error").strip()[:300]
+    except Exception as e:
+        return None, str(e)
 
 
 def _current_run_dir(run_dir_name: str | None) -> str:
@@ -2055,7 +2203,7 @@ def _find_last_substantial_text(min_len: int = 200) -> str:
 
 
 async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_id: str = None,
-                  resume_run: str = None, seed_urls: list = None):
+                  resume_run: str = None, seed_urls: list = None, seed_docs: list = None):
     """Run the agent in headless mode, streaming results to stdout."""
     # Python block-buffers stdout by default when it's redirected to a file/pipe (not a real
     # TTY) — confirmed live 2026-07-12: a background-launched headless run kept writing real
@@ -2222,7 +2370,7 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
     memory = "ON" if config.cfg.get("settings", {}).get("enable_conversational_memory", False) else "OFF"
     memory_color = "32" if memory == "ON" else "31"
 
-    persistence_val = "ON" if config.cfg.get("settings", {}).get("enable_session_persistence", False) else "OFF"
+    persistence_val = "ON" if config.cfg.get("settings", {}).get("enable_session_persistence", True) else "OFF"
     persistence_color = "32" if persistence_val == "ON" else "31"
 
     headless_fallback = "ON" if config.cfg.get("settings", {}).get("fetch", {}).get("headless_fallback", True) else "OFF"
@@ -2330,6 +2478,22 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
                     "under sources/ — have your Analyzers read these before searching the open "
                     "web, and cite them like any fetched source):\n"
                     + "\n".join(f"- {u}" for u in seeded)
+                )
+
+        # --seed-doc: TUI/CLI parity with --seed-url above, for local files instead of URLs.
+        if seed_docs:
+            seeded_docs = []
+            for p in seed_docs:
+                ok, result = _ingest_local_doc(p)
+                sys.stdout.write(f"\033[93m[System] Seed document {'loaded' if ok else 'FAILED'}: {p}{'' if ok else f' ({result})'}\033[0m\n")
+                if ok:
+                    seeded_docs.append(result)
+            if seeded_docs:
+                current_input += (
+                    "\n\nSEED DOCUMENTS (local files provided by the user, already loaded into "
+                    "the workspace — have your Analyzers read these before searching the open "
+                    "web, and reference them as local documents, not URLs):\n"
+                    + "\n".join(f"- {f}" for f in seeded_docs)
                 )
 
         malformed_retries = 0
@@ -2516,6 +2680,12 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
                                     run_stream_chars += len(text)
 
         run_state.save()
+        _write_bibliography(run_state)
+        pdf_path, pdf_err = _export_pdf(run_dir_name)
+        if pdf_path:
+            sys.stdout.write(f"\033[1;32mPDF:\033[0m {pdf_path}\n")
+        elif pdf_err:
+            sys.stdout.write(f"\033[93m[System] PDF export skipped: {pdf_err}\033[0m\n")
         _write_log(force=True)
         elapsed = datetime.now() - start_time
         sys.stdout.write(f"\n\n\033[1mTask completed in {elapsed.total_seconds():.1f} seconds.\033[0m\n")
@@ -2578,6 +2748,9 @@ def cli_main(builder):
     parser.add_argument("--seed-url", action="append", default=None, metavar="URL",
                         help="Pre-fetch this URL into the run's sources/ before research starts "
                              "(repeatable). Doesn't consume the agent's fetch quota. Headless mode.")
+    parser.add_argument("--seed-doc", action="append", default=None, metavar="PATH",
+                        help="Load this local file (text/markdown/PDF/DOCX/XLSX/PPTX) into the "
+                             "run's workspace before research starts (repeatable). Headless mode.")
     parser.add_argument("--list-runs", action="store_true",
                         help="List research runs in the workspace dir (report status, date) and exit.")
     args, _ = parser.parse_known_args()
@@ -2637,7 +2810,7 @@ def cli_main(builder):
     if args.prompt_file or args.prompt or args.resume_run:
         asyncio.run(run_cli(builder, prompt=args.prompt, prompt_file=args.prompt_file,
                             session_id=args.resume, resume_run=args.resume_run,
-                            seed_urls=args.seed_url))
+                            seed_urls=args.seed_url, seed_docs=args.seed_doc))
     else:
         BasicTuiAgent(builder, session_to_resume=args.resume).run()
 

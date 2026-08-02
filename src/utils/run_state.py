@@ -1,6 +1,7 @@
 import contextvars
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -125,6 +126,53 @@ def record_fetched_url(url: str, filename: str, stub: Optional[str] = None,
 
 def get_fetched_urls() -> list[dict]:
     return fetched_urls_ctx.get() or []
+
+
+def build_bibliography(report_text: str, fetched_urls: list[dict]) -> str:
+    """BibTeX bibliography of every source `report_text` ACTUALLY cites, cross-referenced against
+    `fetched_urls` only for title metadata. Deliberately NOT built from `fetched_urls` alone: most
+    fetched URLs never make it into the final report (rejected stubs, sources dropped in a
+    quarantine/rewrite cycle), so a bibliography built from "everything fetched" would list
+    sources the report never uses — see the 2026-08-02 audit/plan that motivated this function.
+    Reuses grounding.py's own citation-extraction (the same logic every grounding check already
+    trusts) instead of a second, drifting implementation. Local import: grounding.py imports FROM
+    this module, so importing it back at top level would be circular."""
+    from utils.grounding import extract_cited_urls, parse_academic_references, _urls_prefix_match
+
+    cited = set(extract_cited_urls(report_text or ""))
+    cited |= set(parse_academic_references(report_text or "").values())
+    if not cited:
+        return ""
+
+    def _lookup_title(url: str) -> Optional[str]:
+        for entry in fetched_urls:
+            if entry.get("stub"):
+                continue
+            furl = entry.get("url", "")
+            if furl == url or _urls_prefix_match(url, furl):
+                return entry.get("title")
+        return None
+
+    access_date = time.strftime("%Y-%m-%d")
+    entries = []
+    seen_keys = set()
+    for i, url in enumerate(sorted(cited), start=1):
+        title = _lookup_title(url) or url
+        domain = re.sub(r'^https?://(www\.)?', '', url).split('/')[0]
+        key = re.sub(r'[^a-zA-Z0-9]', '', domain) or "source"
+        key = f"{key}{i}"
+        while key in seen_keys:
+            key += "x"
+        seen_keys.add(key)
+        safe_title = title.replace("{", "").replace("}", "")
+        entries.append(
+            f"@misc{{{key},\n"
+            f"  title = {{{safe_title}}},\n"
+            f"  howpublished = {{\\url{{{url}}}}},\n"
+            f"  note = {{Accessed: {access_date}}}\n"
+            f"}}"
+        )
+    return "\n\n".join(entries) + "\n"
 
 
 def record_search_health(ok: bool) -> None:
@@ -349,6 +397,11 @@ _RESUME_CARRYOVER_KEYS = (
     "query", "findings", "fetched_urls", "completion_check_attempts",
     "search_health", "started_at", "plan", "findings_written_citable_count",
     "task_verification",
+    # no_urls_count (2026-08-02 audit): check_no_urls's own escalation counter
+    # (engine/completion.py) -- without this, a run interrupted after 2+ consecutive no-URL
+    # failures loses the escalated nudge wording on resume and starts back at the mild
+    # first-time message.
+    "no_urls_count",
 )
 
 

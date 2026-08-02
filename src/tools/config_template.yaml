@@ -94,6 +94,14 @@ settings:
   # Orthogonal to --depth (that only changes tool budgets, this changes report SHAPE); set via
   # --style on the CLI or this key directly.
   report_style: standard
+  # Optional PDF export of the final report, alongside references.bib (always generated once a
+  # report cites at least one real source, no config needed). Off (null) by default: needs the
+  # `pandoc` system binary, which this project can't bundle via pip. Set to a pandoc
+  # --pdf-engine value: "weasyprint" (pip-installable, no system TeX needed — `pip install
+  # weasyprint`) or "xelatex"/"pdflatex" (best typesetting, needs a full TeX install, e.g.
+  # `apt install pandoc texlive-xetex`). If pandoc itself isn't found on PATH, export is skipped
+  # with a one-line notice — never hard-fails a run. See engine/tui.py's _export_pdf.
+  pdf_engine: null
   # Which real search PROVIDER answers web_search — invisible to the model, which only ever sees
   # one tool ("web_search") regardless of this setting. "auto" (default) picks the best configured
   # provider by which API key is set below: tavily_api_key > brave_api_key > ddgs (free, no key).

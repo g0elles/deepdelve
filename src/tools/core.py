@@ -15,7 +15,9 @@ from utils.run_state import task_id_ctx
 # next new tool can just as easily invent one more. This constant exists so error-detection code
 # checks for ONE stable marker instead of guessing at wording; every tool's error path should
 # prefix its message with this (see fs.py/data.py/todos.py/web.py for the established call shape:
-# f"{TOOL_ERROR_PREFIX}<what failed>: {e}\n\nTraceback:...").
+# f"{TOOL_ERROR_PREFIX}<what failed>: {type(e).__name__}: {e}"). Deliberately NOT a full
+# traceback (see with_quota's own docstring) -- a traceback leaks local absolute filesystem paths
+# into the model's context, which can end up copied verbatim into a shared report.
 TOOL_ERROR_PREFIX = "Error: "
 
 # --- TOOL QUOTA SYSTEM ---
@@ -133,8 +135,9 @@ def _get_tool_rule(tool_name: str, rule_key: str, default_val: int) -> int:
     return default_val
 
 def with_quota(func):
-    """Decorator to enforce quotas dynamically based on the function's name and surface full diagnostic tracebacks safely."""
-    import traceback
+    """Decorator to enforce quotas dynamically based on the function's name, and surface a
+    caught exception's message (type + str, no full traceback -- see the 2026-08-02 audit note
+    below) back to the model as a normal tool-error string instead of crashing the dispatch."""
     if asyncio.iscoroutinefunction(func):
         @functools.wraps(func)
         async def async_wrapper(*args, **kwargs):
@@ -142,8 +145,13 @@ def with_quota(func):
             if err := check_writer_gate(func.__name__): return err
             try:
                 return await func(*args, **kwargs)
-            except Exception:
-                return f"{TOOL_ERROR_PREFIX}{func.__name__} failed internally.\n\nException Details:\n{traceback.format_exc()}"
+            except Exception as e:
+                # Message + exception TYPE only, no full traceback -- a traceback leaks local
+                # absolute filesystem paths into the model's context, which can end up copied
+                # verbatim into findings.md/final_report.md (2026-08-02 audit). The full
+                # traceback is still available via traceback.format_exc() to anyone reading the
+                # actual server-side logs, just not handed to the model.
+                return f"{TOOL_ERROR_PREFIX}{func.__name__} failed internally: {type(e).__name__}: {e}"
         return async_wrapper
     else:
         @functools.wraps(func)
@@ -152,6 +160,6 @@ def with_quota(func):
             if err := check_writer_gate(func.__name__): return err
             try:
                 return func(*args, **kwargs)
-            except Exception:
-                return f"{TOOL_ERROR_PREFIX}{func.__name__} failed internally.\n\nException Details:\n{traceback.format_exc()}"
+            except Exception as e:
+                return f"{TOOL_ERROR_PREFIX}{func.__name__} failed internally: {type(e).__name__}: {e}"
         return sync_wrapper
