@@ -1922,15 +1922,29 @@ def build_resume_input(query: str, prior_state: dict) -> str:
     findings_txt = (get_workspace_file_content("findings.md") or "").strip()
     files = get_workspace_files()
     stage_note = ""
-    if "findings.md" in files:
+    if "final_report.md" in files:
+        # Root-cause fix (2026-08-01, RESEARCH.md Sec.17e): delegate_tasks is now STRUCTURALLY
+        # disabled in this state (merge_resumed_state pre-exhausts planner_delegate_rounds), not
+        # just discouraged in prose -- live-confirmed a resumed Planner ignored the old "only
+        # delegate for a genuinely missing fact" wording and redelegated anyway, and the two new
+        # tasks it created then starved the fix that already existed for the real problem (see
+        # that section for the full incident). This note now states the hard fact plainly instead
+        # of offering a choice the tool will actually reject.
         stage_note = (
-            " The previous run had ALREADY finished its research phase and produced findings.md"
-            + (" plus a draft final report" if "final_report.md" in files else "")
-            + " — it judged its existing research sufficient to move on. Do NOT re-open broad "
-              "research or re-verify what's already there just because you have budget left. "
-              "Only delegate_tasks for a SPECIFIC fact that is genuinely still missing; if "
-              "nothing is missing, stop delegating immediately so the automatic writer roles can "
-              "finish."
+            " The previous run had ALREADY produced a draft final report from findings.md. "
+            "Further research delegation is DISABLED for this run (any delegate_tasks call will "
+            "be rejected) — if the report is missing something findings.md already covers, the "
+            "automatic writer-fix pipeline will detect and correct that on its own. Do not call "
+            "delegate_tasks; just stop and let the system finalize the report."
+        )
+    elif "findings.md" in files:
+        stage_note = (
+            " The previous run had ALREADY finished its research phase and produced findings.md "
+            "— it judged its existing research sufficient to move on. Do NOT re-open broad "
+            "research or re-verify what's already there just because you have budget left. "
+            "Only delegate_tasks for a SPECIFIC fact that is genuinely still missing; if "
+            "nothing is missing, stop delegating immediately so the automatic writer roles can "
+            "finish."
         )
     parts = [
         "RESUMED RUN: a previous research run on this exact task was interrupted partway "

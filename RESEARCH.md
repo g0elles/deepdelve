@@ -2905,7 +2905,60 @@ increments the tool's GLOBAL `used` count unconditionally before the wrapped fun
 any per-dispatch cap check lives) ever runs, so a global quota unit IS spent by the time either
 cap rejects the call; only the real read/grep work is skipped.
 
-**Not yet live-tested** — implemented and unit-verified only (a shared, dedicated cap test
-mirroring the existing `fetch_url_to_workspace` one, covering both tools sharing one counter, and
-the disabled-for-writer-roles case). Next step: rerun the Lisbon/Mexico retest once more with all
-four of 17a-17d in place together.
+**Live-tested with all four of 17a-17d together**: the retest still scored 0.000 (timed out at
+1800s) but for the first time actually produced a `final_report.md`, and `findings.md` had 13
+real sources — Lisbon AND Mexico both, zero null-summary entries. All four fixes confirmed
+working exactly as designed. But Builder's own first draft covered Mexico only, dropping Lisbon
+entirely, and the run was killed by the timeout the instant Builder finished, before the
+completion-check pipeline ever got a second turn to catch and fix it via the per-facet dispatch
+(17c) built for exactly this case.
+
+### 17e. Resuming didn't help either: a resumed Planner ignored prose guidance, and the pipeline's
+own two-tier structure let an unrelated new problem starve the real fix
+
+Per-user request, resumed the interrupted run directly (`--resume-run`) instead of restarting —
+it should only need to patch the existing report from existing findings, not redo 18 minutes of
+research. It ran for a genuine 24 minutes (1435.8s) and reached a real final verdict, not another
+timeout. But `final_report.md` came out **byte-for-byte identical** to before — still Mexico-only,
+Lisbon still completely absent, despite `findings.md` having 6 clean, real Lisbon sources the
+entire time.
+
+**Root cause, traced directly from `completion_check_attempts`**: `build_resume_input`
+(`src/engine/tui.py`) already told the resumed Planner explicitly, in prose, *"Do NOT re-open
+broad research or re-verify what's already there... Only delegate_tasks for a SPECIFIC fact that
+is genuinely still missing."* The Planner ignored it and redelegated new research for Lisbon rent
+and Mexico visa anyway — both already well-covered in `findings.md`. Those two new tasks then got
+flagged by `check_task_verification_flagged` ("only fabricated/unusable sources") and dominated
+6 of the resumed run's 8 completion-check attempts. `report_underuses_evidence` — the check built
+in 17c's own sibling fix, specifically for a Builder draft dropping a covered facet — **never
+fired once** in the entire 24-minute run. Not because it's broken: `COMPLETION_CHECKS` (where
+`check_task_verification_flagged` lives) always runs to exhaustion before `GROUNDING_CHECKS`
+(where `report_underuses_evidence` lives) is even evaluated at all — a hard two-tier gate, not
+just list-position priority within one list. A structural problem the Planner itself created,
+in a completely unrelated tier, permanently blocked the one fix that would have actually worked.
+
+User's own framing, verbatim: *"We're going for the more structured approach, we cannot just do
+the smaller, we need to cut this from the root."* The smaller fix (stronger prose in
+`build_resume_input`) was explicitly rejected as insufficient, consistent with this whole
+session's own repeated finding that prose-only compliance is unreliable on this model.
+
+**Fixed, structurally**: `merge_resumed_state` (`src/utils/run_state.py`, the single shared choke
+point both `run_cli`'s `--resume-run` and `BasicTuiAgent._resume_run` already funnel through —
+TUI/CLI parity by construction, not by remembering to edit both) now checks whether the required
+artifact (default `final_report.md`) already exists on disk at resume time. If it does,
+`planner_delegate_rounds` is pre-set to `max_planner_delegate_rounds` — the Planner's very FIRST
+`delegate_tasks` call this run is already at cap and gets rejected by the existing
+`_planner_delegate_over_cap` predicate (§15's own fix), before it ever runs. A resumed run with an
+existing report becomes fix-only (Builder/FindingsWriter dispatches via the completion-check
+pipeline) — the Planner structurally cannot reopen research in this state, only the classic
+inject-into-Planner fallback (reached only for a genuinely Planner-only problem, e.g.
+`not_delegated`) could ever hand delegation authority back. New `resumed_with_existing_report`
+flag drives a distinct, accurate rejection message (the generic "you've already run N rounds"
+wording would be misleading here — this is round 0, nothing was actually run) and a rewritten
+`build_resume_input` stage note that states the hard fact plainly instead of offering a choice the
+tool no longer allows. New dedicated tests: `merge_resumed_state`'s gating logic (both the
+report-exists and no-report cases), and the updated stage-note wording. Full suite green.
+
+**Not yet live-tested** — implemented and unit-verified only. Next step: resume the same
+interrupted run once more (or rerun fresh) to confirm the resumed Planner can no longer redelegate
+past an existing report, and that `report_underuses_evidence` actually gets a turn this time.

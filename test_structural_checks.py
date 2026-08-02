@@ -968,6 +968,70 @@ def main():
             else:
                 _config.cfg["settings"]["workspace"] = _orig_ws2
 
+    # --- root-cause fix (2026-08-01, RESEARCH.md Sec.17e): resuming a run whose final_report.md
+    # already exists must structurally disable further delegate_tasks, not just discourage it in
+    # prose -- live-confirmed a resumed Planner ignored the old prose-only wording, redelegated
+    # anyway, and the new tasks it created starved the fix that already existed for the real
+    # problem (report_underuses_evidence never got a turn across 24 minutes and 8 attempts). ---
+    from utils.run_state import merge_resumed_state, RunState as _RunStateResumeTest
+
+    with tempfile.TemporaryDirectory() as tmpdir3:
+        # (a) final_report.md exists -> planner_delegate_rounds pre-set to the cap, flag set.
+        with open(os.path.join(tmpdir3, "final_report.md"), "w", encoding="utf-8") as f:
+            f.write("# Report\nSome content.")
+        rs_a = _RunStateResumeTest(tmpdir3)
+        _orig_cap3 = _config.cfg.get("settings", {}).get("max_planner_delegate_rounds")
+        _config.cfg["settings"]["max_planner_delegate_rounds"] = 4
+        try:
+            merge_resumed_state(rs_a, {"query": "q"})
+            assert rs_a.data.get("resumed_with_existing_report") is True, rs_a.data
+            assert rs_a.data.get("planner_delegate_rounds") == 4, (
+                "planner_delegate_rounds must be pre-set to the configured cap so the very "
+                "FIRST delegate_tasks call this run is already rejected", rs_a.data)
+            from engine.orchestrator import _planner_delegate_over_cap as _pdoc_test
+            assert _pdoc_test(rs_a.data["planner_delegate_rounds"], 4), (
+                "the pre-set value must actually trip the existing cap predicate")
+        finally:
+            if _orig_cap3 is None:
+                _config.cfg["settings"].pop("max_planner_delegate_rounds", None)
+            else:
+                _config.cfg["settings"]["max_planner_delegate_rounds"] = _orig_cap3
+
+    with tempfile.TemporaryDirectory() as tmpdir4:
+        # (b) no final_report.md (e.g. resumed before the report was ever written) -> untouched,
+        # delegation stays available -- this is the "findings.md only" case that legitimately
+        # still needs research, must not be blocked.
+        rs_b = _RunStateResumeTest(tmpdir4)
+        merge_resumed_state(rs_b, {"query": "q"})
+        assert not rs_b.data.get("resumed_with_existing_report"), rs_b.data
+        assert rs_b.data.get("planner_delegate_rounds", 0) == 0, (
+            "no final_report.md on disk -- delegation must remain fully available, same as any "
+            "other resume", rs_b.data)
+
+    # build_resume_input's own stage_note wording for the final_report.md-exists case.
+    with tempfile.TemporaryDirectory() as tmpdir5:
+        with open(os.path.join(tmpdir5, "final_report.md"), "w", encoding="utf-8") as f:
+            f.write("# Report\nSome content.")
+        with open(os.path.join(tmpdir5, "findings.md"), "w", encoding="utf-8") as f:
+            f.write("## Findings\n- x (https://real.example.com/a)")
+        _orig_ws3 = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "disk", "dir": os.path.dirname(tmpdir5), "session_isolation": True}
+        try:
+            def _resume_report_exists_scenario():
+                session_dir_ctx.set(os.path.basename(tmpdir5))
+                text = build_resume_input("q", {"query": "q"})
+                assert "DISABLED for this run" in text, text
+                assert "any delegate_tasks call will be rejected" in text, text
+                # Must NOT contain the old, now-misleading "only delegate for a genuinely missing
+                # fact" framing -- the tool doesn't offer that choice anymore in this state.
+                assert "genuinely still missing" not in text, text
+            contextvars.copy_context().run(_resume_report_exists_scenario)
+        finally:
+            if _orig_ws3 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws3
+
     # --- _scale_resume_quota_pool (2026-07-24 loop fix): a resumed run previously got a FULL
     # fresh research-volume quota on top of whatever the interrupted run already spent -- confirmed
     # live to let a resumed Planner re-delegate the same angle 40+ times without ever running low

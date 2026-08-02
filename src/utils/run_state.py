@@ -357,8 +357,33 @@ def merge_resumed_state(run_state: "RunState", prior_state: dict) -> None:
     run continues the same logical timeline instead of starting from an empty ledger. Shared by
     both engine.tui's interactive /resume-run and headless run_cli's --resume-run — see the
     allowlist's own history above for why this must not be two copies. `resumed_at` is stamped
-    fresh each call so a run resumed more than once shows its most recent resume time."""
+    fresh each call so a run resumed more than once shows its most recent resume time.
+
+    Root-cause fix (2026-08-01, RESEARCH.md Sec.17e): if the required artifact (default
+    final_report.md) already exists on disk at resume time, pre-exhaust
+    planner_delegate_rounds so the Planner's very first delegate_tasks call is already at cap
+    and gets rejected (see engine.orchestrator._planner_delegate_over_cap) -- BEFORE it ever
+    runs. A prior fix (build_resume_input's own stage_note) already told the Planner in prose
+    not to re-open research when a report already exists; live-confirmed this session that a
+    resumed Planner redelegated anyway, on a query where the existing report was missing a
+    whole facet findings.md already covered. The two NEW tasks it created to "fix" this then
+    got flagged with fabricated sources (check_task_verification_flagged), and that
+    COMPLETION_CHECKS-tier problem consumed the entire retry budget across 24 minutes and 8
+    completion-check attempts -- GROUNDING_CHECKS (where report_underuses_evidence, the check
+    actually built to fix a dropped facet, lives) never got a single turn, because
+    COMPLETION_CHECKS always fully exhausts before GROUNDING_CHECKS is even evaluated. Removing
+    the Planner's ABILITY to redelegate in this state removes the opportunity to create a new,
+    unrelated problem that starves the fix that already exists for the real one -- a resumed
+    run with an existing report becomes fix-only (Builder/FindingsWriter dispatches via the
+    completion-check pipeline), never research-reopening. If completion-check's own classic
+    inject-into-Planner path is ever reached anyway (a problem neither writer-fixable nor
+    bespoke-dispatchable), that's the Planner's cue that delegation is genuinely, structurally
+    required, not merely offered as an option it might reach for regardless."""
     for key in _RESUME_CARRYOVER_KEYS:
         if key in prior_state:
             run_state.data[key] = prior_state[key]
     run_state.data["resumed_at"] = time.time()
+    req_artifact = config.cfg.get("settings", {}).get("workspace", {}).get("required_artifact", "final_report.md")
+    if os.path.exists(os.path.join(run_state.run_dir, req_artifact)):
+        run_state.data["planner_delegate_rounds"] = config.cfg.get("settings", {}).get("max_planner_delegate_rounds", 4)
+        run_state.data["resumed_with_existing_report"] = True
