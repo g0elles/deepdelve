@@ -1,0 +1,819 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DeepDelve</title>
+<style>
+  :root {
+    --ink: #12181a;      /* base */
+    --ink-2: #1a2225;    /* raised panel */
+    --paper: #e8e4d9;    /* primary text / card face */
+    --paper-dim: #a8a397;/* secondary text */
+    --line: #33403f;     /* hairline borders */
+    --brass: #c98a3f;    /* primary accent / idle signal */
+    --brass-dim: #7a5a34;
+    --signal: #5fb8a8;   /* active/running state */
+    --rust: #c1613c;     /* error/alert state */
+  }
+  * { box-sizing: border-box; }
+  html { color-scheme: dark; }
+  body {
+    margin: 0; padding: 0 0 5rem; background: var(--ink); color: var(--paper);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  main { max-width: 820px; margin: 0 auto; padding: 0 1.1rem; }
+  a { color: var(--brass); }
+
+  .label {
+    font: 700 11px/1 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    text-transform: uppercase; letter-spacing: 0.11em; color: var(--paper-dim);
+  }
+
+  /* ---- header / signal lamp (the signature element) ---- */
+  header.station {
+    display: flex; align-items: center; gap: 0.6rem;
+    padding: 1.3rem 0 1rem; border-bottom: 1px solid var(--line); margin-bottom: 1.3rem;
+  }
+  .lamp {
+    width: 11px; height: 11px; border-radius: 50%; flex: none;
+    background: var(--brass-dim); box-shadow: 0 0 0 3px rgba(201,138,63,0.12);
+    transition: background 0.4s, box-shadow 0.4s;
+  }
+  .lamp.running {
+    background: var(--signal); box-shadow: 0 0 0 4px rgba(95,184,168,0.22);
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+  .lamp.error {
+    background: var(--rust); box-shadow: 0 0 0 4px rgba(193,97,60,0.22);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.45; }
+    }
+  }
+  h1 {
+    font: 700 1.05rem/1 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    text-transform: uppercase; letter-spacing: 0.14em; margin: 0; color: var(--paper);
+  }
+  header.station .meta { margin-left: auto; text-align: right; }
+  header.station .meta .label { display: block; }
+  header.station .meta .value {
+    font: 12px/1.4 ui-monospace, monospace; color: var(--paper-dim);
+  }
+
+  /* ---- panel-toggle nav ---- */
+  nav.tabs { display: flex; gap: 0.4rem; margin-bottom: 1.4rem; }
+  nav.tabs button {
+    flex: 1; background: var(--ink-2); border: 1px solid var(--line); color: var(--paper-dim);
+    font: 700 12px/1 ui-monospace, monospace; text-transform: uppercase; letter-spacing: 0.08em;
+    padding: 0.65rem 0.5rem; cursor: pointer; transition: color 0.15s, border-color 0.15s;
+  }
+  nav.tabs button:hover { color: var(--paper); }
+  nav.tabs button.active { color: var(--ink); background: var(--brass); border-color: var(--brass); }
+  nav.tabs button:focus-visible, button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
+    outline: 2px solid var(--signal); outline-offset: 2px;
+  }
+
+  .panel { display: none; }
+  .panel.active { display: block; }
+
+  /* ---- panel card (log page) ---- */
+  .card {
+    background: var(--ink-2); border: 1px solid var(--line); padding: 1.1rem;
+  }
+  .card + .card { margin-top: 0.9rem; }
+  p.sub { color: var(--paper-dim); margin: 0 0 1.1rem; font-size: 0.92rem; }
+
+  form { display: flex; flex-direction: column; gap: 0.85rem; }
+  .field { display: flex; flex-direction: column; gap: 0.35rem; }
+  textarea, select, input[type=text], input[type=number], input[type=password], input[type=file] {
+    background: var(--ink); color: var(--paper); border: 1px solid var(--line);
+    padding: 0.6rem 0.65rem; font: 14px/1.4 -apple-system, sans-serif; width: 100%;
+  }
+  textarea { min-height: 5rem; resize: vertical; font: 14px/1.5 -apple-system, sans-serif; }
+  textarea.mono { font: 13px/1.5 ui-monospace, monospace; }
+  input[type=checkbox] { width: 1.1rem; height: 1.1rem; accent-color: var(--brass); }
+  .row { display: flex; gap: 0.75rem; }
+  .row > * { flex: 1; min-width: 0; }
+  @media (max-width: 560px) {
+    .row { flex-direction: column; }
+    main { padding: 0 0.8rem; }
+  }
+
+  button.primary, button.secondary, button.danger, a.secondary {
+    font: 700 12px/1 ui-monospace, monospace; text-transform: uppercase; letter-spacing: 0.06em;
+    padding: 0.7rem 1rem; cursor: pointer; border: 1px solid transparent; text-decoration: none;
+    display: inline-block;
+  }
+  button.primary { background: var(--brass); color: var(--ink); }
+  button.primary:hover { background: #dba055; }
+  button.secondary, a.secondary { background: transparent; color: var(--paper); border-color: var(--line); }
+  button.secondary:hover, a.secondary:hover { border-color: var(--paper-dim); }
+  button.danger { background: transparent; color: var(--rust); border-color: var(--rust); }
+  button.danger:hover { background: rgba(193,97,60,0.12); }
+  button:disabled { opacity: 0.4; cursor: default; }
+  button.small, a.secondary.small { padding: 0.4rem 0.7rem; font-size: 10.5px; }
+
+  /* ---- transmission log ---- */
+  #status { color: var(--paper-dim); font: 12px/1 ui-monospace, monospace; margin: 0.7rem 0 0; text-transform: uppercase; letter-spacing: 0.04em; }
+  #cancel-btn { margin-top: 0.6rem; }
+  #log {
+    background: var(--ink); border: 1px solid var(--line);
+    padding: 0.8rem; height: 320px; overflow-y: auto; font: 13px/1.6 ui-monospace, monospace;
+    white-space: pre-wrap; word-break: break-word; display: none; margin-top: 0.7rem;
+  }
+  #log .line { padding: 0.1rem 0; }
+  #log .tag {
+    display: inline-block; font-size: 10px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.04em; color: var(--brass); border: 1px solid var(--brass-dim);
+    padding: 0.03rem 0.35rem; margin-right: 0.4rem;
+  }
+  #log .line.system { color: var(--paper-dim); font-style: italic; }
+  #log .line.system .tag { color: var(--paper-dim); border-color: var(--line); }
+
+  #results { margin-top: 0.9rem; display: none; gap: 0.5rem; flex-wrap: wrap; }
+  #results a, #results button {
+    color: var(--brass); text-decoration: none; border: 1px solid var(--brass-dim); background: none;
+    padding: 0.45rem 0.8rem; font: 12px/1 ui-monospace, monospace; text-transform: uppercase; letter-spacing: 0.05em;
+    cursor: pointer;
+  }
+  #results a:hover, #results button:hover { background: rgba(201,138,63,0.1); }
+  #followup-box { margin-top: 1rem; display: none; }
+
+  /* ---- run cards ---- */
+  .run-card {
+    border: 1px solid var(--line); padding: 0.8rem 1rem; margin-bottom: 0.6rem;
+    display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; flex-wrap: wrap;
+  }
+  .run-card .query { font-weight: 600; margin-bottom: 0.25rem; overflow-wrap: anywhere; }
+  .run-card .meta { color: var(--paper-dim); font: 11px/1.4 ui-monospace, monospace; }
+  .tagbadge {
+    display: inline-block; font: 700 10px/1 ui-monospace, monospace; text-transform: uppercase;
+    letter-spacing: 0.05em; padding: 0.15rem 0.45rem; margin-left: 0.5rem; border: 1px solid;
+  }
+  .tagbadge.ok { color: var(--signal); border-color: var(--signal); }
+  .tagbadge.no { color: var(--rust); border-color: var(--rust); }
+
+  /* ---- settings form ---- */
+  .settings-section { margin-bottom: 1.2rem; }
+  .settings-section > .label { display: block; margin-bottom: 0.5rem; padding-bottom: 0.3rem; border-bottom: 1px solid var(--line); }
+  .settings-group { margin: 0.6rem 0 0.6rem 0.9rem; padding-left: 0.7rem; border-left: 2px solid var(--line); }
+  .settings-row {
+    display: flex; align-items: center; gap: 0.8rem; padding: 0.4rem 0;
+  }
+  .settings-row label.key {
+    flex: 0 0 auto; min-width: 11rem; font: 12px/1.3 ui-monospace, monospace; color: var(--paper-dim);
+    word-break: break-word;
+  }
+  .settings-row .control { flex: 1; min-width: 0; }
+  .settings-row .control input { width: 100%; }
+  #settings-status { font: 12px/1 ui-monospace, monospace; text-transform: uppercase; letter-spacing: 0.04em; }
+
+  /* ---- report viewer (overlay) ---- */
+  #report-viewer {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 10;
+    padding: 2.5rem 1rem; overflow-y: auto;
+  }
+  #report-viewer.open { display: block; }
+  .report-sheet {
+    max-width: 780px; margin: 0 auto; background: var(--ink-2); border: 1px solid var(--line);
+  }
+  .report-toolbar {
+    display: flex; align-items: center; gap: 0.6rem; padding: 0.8rem 1.1rem; border-bottom: 1px solid var(--line);
+    position: sticky; top: 0; background: var(--ink-2); flex-wrap: wrap;
+  }
+  .report-toolbar .label { flex: 1; }
+  .report-prose { padding: 1.6rem 1.8rem 2.2rem; font-size: 15.5px; line-height: 1.7; }
+  @media (max-width: 560px) { .report-prose { padding: 1.1rem 1.1rem 1.6rem; } }
+  .report-prose h1, .report-prose h2, .report-prose h3 {
+    font: 700 1.05em/1.3 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    text-transform: uppercase; letter-spacing: 0.04em; color: var(--brass);
+    margin: 1.6em 0 0.6em;
+  }
+  .report-prose h1:first-child, .report-prose h2:first-child, .report-prose h3:first-child { margin-top: 0; }
+  .report-prose p { margin: 0 0 1em; }
+  .report-prose a { color: var(--signal); }
+  .report-prose strong { color: var(--paper); }
+  .report-prose ul, .report-prose ol { margin: 0 0 1em; padding-left: 1.4em; }
+  .report-prose li { margin-bottom: 0.35em; }
+  .report-prose blockquote {
+    margin: 0 0 1em; padding: 0.6em 1em; border-left: 3px solid var(--brass);
+    background: rgba(201,138,63,0.08); color: var(--paper-dim);
+  }
+  .report-prose code {
+    font: 0.88em ui-monospace, monospace; background: var(--ink); padding: 0.1em 0.35em; border: 1px solid var(--line);
+  }
+  .report-prose table { border-collapse: collapse; width: 100%; margin: 0 0 1.2em; font-size: 0.92em; }
+  .report-prose th, .report-prose td { border: 1px solid var(--line); padding: 0.5em 0.7em; text-align: left; }
+  .report-prose th { color: var(--brass); font-weight: 700; }
+  .report-prose hr { border: none; border-top: 1px solid var(--line); margin: 1.6em 0; }
+</style>
+</head>
+<body>
+<main>
+  <header class="station">
+    <span class="lamp" id="lamp"></span>
+    <h1>DeepDelve</h1>
+    <div class="meta">
+      <span class="label">Station</span>
+      <span class="value" id="station-endpoint">connecting...</span>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button data-tab="research" class="active">Research</button>
+    <button data-tab="runs">Runs</button>
+    <button data-tab="settings">Settings</button>
+  </nav>
+
+  <section id="panel-research" class="panel active">
+    <div class="card">
+      <form id="research-form">
+        <div class="field">
+          <span class="label">Query</span>
+          <textarea id="query" placeholder="What do you want researched?" required></textarea>
+        </div>
+        <div class="row">
+          <div class="field">
+            <span class="label">Depth</span>
+            <select id="depth">
+              <option value="">Standard (default)</option>
+              <option value="quick">Quick</option>
+              <option value="deep">Deep</option>
+            </select>
+          </div>
+          <div class="field">
+            <span class="label">Style</span>
+            <select id="style">
+              <option value="">Standard (default)</option>
+              <option value="academic">Academic</option>
+              <option value="answer">Answer</option>
+            </select>
+          </div>
+        </div>
+        <div class="field">
+          <span class="label">Attach local files (optional)</span>
+          <input type="file" id="files" multiple>
+        </div>
+        <button type="submit" class="primary" id="submit-btn">Start research</button>
+      </form>
+
+      <div id="status"></div>
+      <button type="button" class="danger small" id="cancel-btn" style="display:none;">Cancel run</button>
+      <div id="log"></div>
+      <div id="results"></div>
+
+      <div id="followup-box">
+        <form id="followup-form">
+          <div class="field">
+            <span class="label">Follow-up</span>
+            <textarea id="followup-query" placeholder="Ask a follow-up about this run..." required></textarea>
+          </div>
+          <button type="submit" class="secondary">Ask follow-up</button>
+        </form>
+      </div>
+    </div>
+  </section>
+
+  <section id="panel-runs" class="panel">
+    <div class="card">
+      <button type="button" class="secondary small" id="refresh-runs">Refresh</button>
+      <div id="runs-list" style="margin-top:0.9rem;"></div>
+    </div>
+  </section>
+
+  <section id="panel-settings" class="panel">
+    <div class="card">
+      <p class="sub">Every setting DeepDelve reads, editable directly. Secrets show as <strong>set — leave blank to keep</strong>; type a new value to replace one.</p>
+      <div id="settings-form"></div>
+      <div class="row" style="margin-top:0.9rem; align-items:center;">
+        <button type="button" class="primary" id="save-settings" style="flex:none;">Save settings</button>
+        <span id="settings-status"></span>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div id="report-viewer">
+  <div class="report-sheet">
+    <div class="report-toolbar">
+      <span class="label" id="report-viewer-title">Report</span>
+      <a id="report-pdf-link" class="secondary small" style="display:none;" target="_blank" rel="noopener">Open PDF</a>
+      <a id="report-bib-link" class="secondary small" style="display:none;">Bibliography</a>
+      <a id="report-raw-link" class="secondary small">Raw markdown</a>
+      <button type="button" class="secondary small" id="report-viewer-close">Close</button>
+    </div>
+    <div class="report-prose" id="report-prose">Loading...</div>
+  </div>
+</div>
+
+<script>
+const $ = (sel) => document.querySelector(sel);
+
+// ---- auth ----
+function apiPassword() { return localStorage.getItem("dd_pw") || ""; }
+function withAuth(url) {
+  const pw = apiPassword();
+  if (!pw) return url;
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}pw=${encodeURIComponent(pw)}`;
+}
+async function api(path, opts = {}) {
+  opts.headers = opts.headers || {};
+  const pw = apiPassword();
+  if (pw) opts.headers["X-API-Password"] = pw;
+  let res = await fetch(path, opts);
+  if (res.status === 401) {
+    const entered = prompt("This DeepDelve instance requires a password:");
+    if (entered) {
+      localStorage.setItem("dd_pw", entered);
+      opts.headers["X-API-Password"] = entered;
+      res = await fetch(path, opts);
+    }
+  }
+  return res;
+}
+
+// ---- signal lamp ----
+const lampEl = $("#lamp");
+function setLamp(state) { // "idle" | "running" | "error"
+  lampEl.className = "lamp" + (state === "idle" ? "" : " " + state);
+}
+
+// ---- tabs ----
+document.querySelectorAll("nav.tabs button").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll("nav.tabs button").forEach(b => b.classList.remove("active"));
+    document.querySelectorAll(".panel").forEach(p => p.classList.remove("active"));
+    btn.classList.add("active");
+    $(`#panel-${btn.dataset.tab}`).classList.add("active");
+    if (btn.dataset.tab === "runs") loadRuns();
+    if (btn.dataset.tab === "settings") loadSettings();
+  });
+});
+
+// ---- research form ----
+const form = $("#research-form");
+const logEl = $("#log");
+const statusEl = $("#status");
+const resultsEl = $("#results");
+const submitBtn = $("#submit-btn");
+const cancelBtn = $("#cancel-btn");
+const followupBox = $("#followup-box");
+let currentRunId = null;
+let currentSource = null;
+
+function escapeHtml(s) {
+  return (s || "").replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+}
+
+// ---- report rendering: a small, dependency-free markdown->HTML subset, not a CDN library ----
+// DeepDelve's own reports use a narrow, predictable markdown dialect (see prompts.py's citation
+// format instructions: "- **[Title](URL)**" bullets, occasional headings/tables/blockquotes for
+// AUTO-RECOVERED-DRAFT notices) -- covers exactly that shape rather than pulling in a general
+// CommonMark parser this local-first tool has no real need for.
+function inlineMd(text) {
+  let out = escapeHtml(text);
+  out = out.replace(/`([^`]+)`/g, "<code>$1</code>");
+  out = out.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  out = out.replace(/(?<![\w*])\*([^*\n]+)\*(?!\w)/g, "<em>$1</em>");
+  out = out.replace(/(?<![\w_])_([^_\n]+)_(?!\w)/g, "<em>$1</em>");
+  return out;
+}
+
+function mdToHtml(md) {
+  const lines = (md || "").replace(/\r\n/g, "\n").split("\n");
+  const out = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+
+    if (/^\s*$/.test(line)) { i++; continue; }
+
+    const heading = line.match(/^(#{1,6})\s+(.*)$/);
+    if (heading) {
+      const level = Math.min(heading[1].length, 3); // report bodies never need h4-6 visually
+      out.push(`<h${level}>${inlineMd(heading[2])}</h${level}>`);
+      i++; continue;
+    }
+
+    if (/^-{3,}\s*$/.test(line)) { out.push("<hr>"); i++; continue; }
+
+    if (/^\s*>/.test(line)) {
+      const buf = [];
+      while (i < lines.length && /^\s*>/.test(lines[i])) {
+        buf.push(lines[i].replace(/^\s*>\s?/, "")); i++;
+      }
+      out.push(`<blockquote>${buf.map(inlineMd).join("<br>")}</blockquote>`);
+      continue;
+    }
+
+    if (/^\s*\|.*\|\s*$/.test(line) && lines[i + 1] && /^\s*\|?[\s:-]+\|[\s|:-]*$/.test(lines[i + 1])) {
+      const cells = (row) => row.trim().replace(/^\||\|$/g, "").split("|").map(c => c.trim());
+      const head = cells(line);
+      i += 2;
+      const rows = [];
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) { rows.push(cells(lines[i])); i++; }
+      out.push("<table><thead><tr>" + head.map(c => `<th>${inlineMd(c)}</th>`).join("") + "</tr></thead><tbody>"
+        + rows.map(r => "<tr>" + r.map(c => `<td>${inlineMd(c)}</td>`).join("") + "</tr>").join("") + "</tbody></table>");
+      continue;
+    }
+
+    if (/^\s*([-*]|\d+\.)\s+/.test(line)) {
+      const ordered = /^\s*\d+\.\s+/.test(line);
+      const tag = ordered ? "ol" : "ul";
+      const items = [];
+      while (i < lines.length && new RegExp(ordered ? "^\\s*\\d+\\.\\s+" : "^\\s*[-*]\\s+").test(lines[i])) {
+        items.push(lines[i].replace(ordered ? /^\s*\d+\.\s+/ : /^\s*[-*]\s+/, "")); i++;
+      }
+      out.push(`<${tag}>` + items.map(it => `<li>${inlineMd(it)}</li>`).join("") + `</${tag}>`);
+      continue;
+    }
+
+    const para = [];
+    while (i < lines.length && !/^\s*$/.test(lines[i]) && !/^(#{1,6})\s+/.test(lines[i])
+        && !/^\s*>/.test(lines[i]) && !/^\s*([-*]|\d+\.)\s+/.test(lines[i]) && !/^-{3,}\s*$/.test(lines[i])) {
+      para.push(lines[i]); i++;
+    }
+    out.push(`<p>${para.map(inlineMd).join(" ")}</p>`);
+  }
+  return out.join("\n");
+}
+
+async function openReportViewer(runId) {
+  const overlay = $("#report-viewer");
+  const prose = $("#report-prose");
+  $("#report-viewer-title").textContent = runId;
+  prose.textContent = "Loading...";
+  overlay.classList.add("open");
+
+  const rawUrl = `/research/${runId}/report`;
+  $("#report-raw-link").href = withAuth(rawUrl);
+
+  const pdfLink = $("#report-pdf-link");
+  pdfLink.style.display = (await artifactExists(runId, "pdf")) ? "inline-block" : "none";
+  pdfLink.href = withAuth(`/research/${runId}/pdf`);
+
+  const bibLink = $("#report-bib-link");
+  bibLink.style.display = (await artifactExists(runId, "bib")) ? "inline-block" : "none";
+  bibLink.href = withAuth(`/research/${runId}/bib`);
+
+  const res = await api(withAuth(rawUrl));
+  if (!res.ok) { prose.textContent = "Could not load report."; return; }
+  const md = await res.text();
+  prose.innerHTML = mdToHtml(md);
+}
+$("#report-viewer-close").addEventListener("click", () => $("#report-viewer").classList.remove("open"));
+$("#report-viewer").addEventListener("click", (e) => { if (e.target.id === "report-viewer") e.currentTarget.classList.remove("open"); });
+
+function appendLog(event) {
+  const line = document.createElement("div");
+  if (event.type === "text") {
+    line.className = "line";
+    line.innerHTML = `<span class="tag">${escapeHtml(event.agent)}</span>${escapeHtml(event.text)}`;
+  } else if (event.type === "tool_call") {
+    line.className = "line";
+    line.innerHTML = `<span class="tag">${escapeHtml(event.agent)}</span>calling ${escapeHtml(event.name || "")}...`;
+  } else if (event.type === "tool_result") {
+    return;
+  } else if (event.type === "system") {
+    line.className = "line system";
+    line.innerHTML = `<span class="tag">station</span>${escapeHtml(event.text || "")}`;
+  } else {
+    return;
+  }
+  logEl.appendChild(line);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+async function artifactExists(runId, kind) {
+  const res = await api(withAuth(`/research/${runId}/${kind}`), { method: "HEAD" });
+  return res.ok;
+}
+
+async function linkIfExists(runId, kind, label) {
+  if (kind === "report") {
+    // The report is VIEWED (rendered in-app), not downloaded raw -- see openReportViewer.
+    if (await artifactExists(runId, "report")) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "secondary";
+      btn.textContent = label;
+      btn.addEventListener("click", () => openReportViewer(runId));
+      resultsEl.appendChild(btn);
+    }
+    return;
+  }
+  if (await artifactExists(runId, kind)) {
+    const a = document.createElement("a");
+    a.href = withAuth(`/research/${runId}/${kind}`);
+    a.target = kind === "pdf" ? "_blank" : "";
+    a.rel = "noopener";
+    a.textContent = label;
+    resultsEl.appendChild(a);
+  }
+}
+
+// label is what the user actually recognizes (the query they typed) -- the run_id is an
+// internal folder-name slug (e.g. "i_want_documentation_on_heuristic_..._20260731_140130")
+// that must never be the primary thing shown as status text (confirmed live, 2026-08-02: it's
+// meaningless to read and looks like a bug even when the underlying cancel/resume/etc. worked
+// correctly). Still available via the status line's title attribute for anyone who wants it.
+function watchStream(runId, label, { onDone } = {}) {
+  currentRunId = runId;
+  if (currentSource) currentSource.close();
+  setLamp("running");
+  const setStatus = (text) => { statusEl.textContent = text; statusEl.title = `run: ${runId}`; };
+  const source = new EventSource(withAuth(`/research/${runId}/stream`));
+  currentSource = source;
+  source.onmessage = async (msg) => {
+    const event = JSON.parse(msg.data);
+    if (event.type === "done") {
+      setStatus(`${label} — ${event.status}`);
+      setLamp(event.status === "failed" ? "error" : "idle");
+      source.close();
+      submitBtn.disabled = false;
+      cancelBtn.style.display = "none";
+      resultsEl.style.display = "flex";
+      await linkIfExists(runId, "report", "Report (.md)");
+      await linkIfExists(runId, "bib", "Bibliography (.bib)");
+      await linkIfExists(runId, "pdf", "PDF");
+      if (event.status === "done") followupBox.style.display = "block";
+      if (onDone) onDone(event.status);
+      return;
+    }
+    setStatus(`${label} — running`);
+    appendLog(event);
+  };
+  source.onerror = () => {
+    setStatus(`${label} — connection lost`);
+    setLamp("error");
+    source.close();
+    submitBtn.disabled = false;
+    cancelBtn.style.display = "none";
+  };
+}
+
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  submitBtn.disabled = true;
+  logEl.style.display = "block";
+  logEl.textContent = "";
+  resultsEl.style.display = "none";
+  resultsEl.innerHTML = "";
+  followupBox.style.display = "none";
+  statusEl.textContent = "Submitting...";
+
+  const queryText = $("#query").value;
+  const fd = new FormData();
+  fd.append("query", queryText);
+  const depth = $("#depth").value;
+  const style = $("#style").value;
+  if (depth) fd.append("depth", depth);
+  if (style) fd.append("style", style);
+  for (const f of $("#files").files) fd.append("files", f);
+
+  let run_id;
+  try {
+    const res = await api("/research", { method: "POST", body: fd });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      statusEl.textContent = `Error: ${err.detail || res.statusText}`;
+      submitBtn.disabled = false;
+      return;
+    }
+    run_id = (await res.json()).run_id;
+  } catch (err) {
+    statusEl.textContent = `Error: ${err}`;
+    submitBtn.disabled = false;
+    return;
+  }
+
+  statusEl.textContent = `${queryText} — queued`;
+  cancelBtn.style.display = "inline-block";
+  watchStream(run_id, queryText);
+});
+
+cancelBtn.addEventListener("click", async () => {
+  if (!currentRunId) return;
+  await api(`/research/${currentRunId}/cancel`, { method: "POST" });
+});
+
+$("#followup-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (!currentRunId) return;
+  const q = $("#followup-query").value;
+  const fd = new FormData();
+  fd.append("query", q);
+  const res = await api(`/research/${currentRunId}/followup`, { method: "POST", body: fd });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    statusEl.textContent = `Error: ${err.detail || res.statusText}`;
+    return;
+  }
+  $("#followup-query").value = "";
+  logEl.textContent = "";
+  resultsEl.style.display = "none";
+  followupBox.style.display = "none";
+  submitBtn.disabled = true;
+  cancelBtn.style.display = "inline-block";
+  watchStream(currentRunId, q);
+});
+
+// ---- runs tab ----
+async function loadRuns() {
+  const listEl = $("#runs-list");
+  listEl.innerHTML = `<span class="label">Loading...</span>`;
+  const res = await api("/runs");
+  if (!res.ok) { listEl.innerHTML = `<span class="label">Failed to load runs.</span>`; return; }
+  const runs = await res.json();
+  listEl.innerHTML = "";
+  if (!runs.length) { listEl.innerHTML = `<span class="label">No runs yet.</span>`; return; }
+  for (const run of runs) {
+    const card = document.createElement("div");
+    card.className = "run-card";
+    const badge = run.has_report
+      ? `<span class="tagbadge ok">report</span>` : `<span class="tagbadge no">no report</span>`;
+    const info = document.createElement("div");
+    info.innerHTML = `
+      <div class="query">${escapeHtml(run.query || run.run_id)}${badge}</div>
+      <div class="meta">${new Date(run.timestamp).toLocaleString()} — ${escapeHtml(run.run_id)}</div>
+    `;
+    card.appendChild(info);
+    const actions = document.createElement("div");
+    if (run.has_report) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = "View report";
+      btn.className = "secondary small";
+      btn.addEventListener("click", () => openReportViewer(run.run_id));
+      actions.appendChild(btn);
+    } else {
+      const btn = document.createElement("button");
+      btn.textContent = "Resume";
+      btn.className = "secondary small";
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        const res2 = await api(`/research/${run.run_id}/resume`, { method: "POST" });
+        if (!res2.ok) {
+          const err = await res2.json().catch(() => ({}));
+          alert(`Could not resume: ${err.detail || res2.statusText}`);
+          btn.disabled = false;
+          return;
+        }
+        document.querySelector('nav.tabs button[data-tab="research"]').click();
+        logEl.style.display = "block";
+        logEl.textContent = "";
+        resultsEl.style.display = "none";
+        followupBox.style.display = "none";
+        submitBtn.disabled = true;
+        cancelBtn.style.display = "inline-block";
+        watchStream(run.run_id, run.query || run.run_id);
+      });
+      actions.appendChild(btn);
+    }
+    card.appendChild(actions);
+    listEl.appendChild(card);
+  }
+}
+$("#refresh-runs").addEventListener("click", loadRuns);
+
+// ---- settings tab: a real form generated from the config's own shape, not a JSON blob ----
+const SECRET_SENTINEL = "***set***";
+const formEl = $("#settings-form");
+
+function humanizeKey(key) {
+  return key.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function renderSettingsValue(container, path, value) {
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    const group = document.createElement("div");
+    group.className = "settings-group";
+    for (const [k, v] of Object.entries(value)) {
+      const label = document.createElement("div");
+      label.className = "label";
+      label.style.margin = "0.5rem 0 0.1rem";
+      label.textContent = humanizeKey(k);
+      group.appendChild(label);
+      renderSettingsValue(group, [...path, k], v);
+    }
+    container.appendChild(group);
+    return;
+  }
+
+  const row = document.createElement("div");
+  row.className = "settings-row";
+  const label = document.createElement("label");
+  label.className = "key";
+  label.textContent = humanizeKey(path[path.length - 1]);
+  row.appendChild(label);
+
+  const control = document.createElement("div");
+  control.className = "control";
+  const isSecret = value === SECRET_SENTINEL;
+  let input;
+  if (typeof value === "boolean") {
+    input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = value;
+    input.dataset.type = "boolean";
+  } else if (typeof value === "number") {
+    input = document.createElement("input");
+    input.type = "number";
+    input.value = value;
+    input.dataset.type = "number";
+  } else if (isSecret) {
+    input = document.createElement("input");
+    input.type = "password";
+    input.placeholder = "set — leave blank to keep";
+    input.dataset.type = "secret";
+  } else if (Array.isArray(value)) {
+    input = document.createElement("input");
+    input.type = "text";
+    input.value = JSON.stringify(value);
+    input.dataset.type = "json";
+  } else {
+    input = document.createElement("input");
+    input.type = "text";
+    input.value = value === null ? "" : String(value);
+    input.dataset.type = "string";
+  }
+  input.dataset.path = JSON.stringify(path);
+  control.appendChild(input);
+  row.appendChild(control);
+  container.appendChild(row);
+}
+
+async function loadSettings() {
+  formEl.innerHTML = `<span class="label">Loading...</span>`;
+  const res = await api("/settings");
+  if (!res.ok) { formEl.innerHTML = `<span class="label">Failed to load settings.</span>`; return; }
+  const data = await res.json();
+  formEl.innerHTML = "";
+  for (const [section, values] of Object.entries(data)) {
+    const wrap = document.createElement("div");
+    wrap.className = "settings-section";
+    const label = document.createElement("span");
+    label.className = "label";
+    label.textContent = humanizeKey(section);
+    wrap.appendChild(label);
+    renderSettingsValue(wrap, [section], values);
+    formEl.appendChild(wrap);
+  }
+
+  // Station header readout, sourced from the same response.
+  const model = data.api?.openai_model || "unknown model";
+  const endpoint = data.api?.openai_base_url || "";
+  $("#station-endpoint").textContent = `${model}`;
+  $("#station-endpoint").title = endpoint;
+}
+
+function setDeep(obj, path, value) {
+  let node = obj;
+  for (let i = 0; i < path.length - 1; i++) {
+    if (typeof node[path[i]] !== "object" || node[path[i]] === null) node[path[i]] = {};
+    node = node[path[i]];
+  }
+  node[path[path.length - 1]] = value;
+}
+
+$("#save-settings").addEventListener("click", async () => {
+  const overrides = {};
+  formEl.querySelectorAll("input[data-path]").forEach(input => {
+    const path = JSON.parse(input.dataset.path);
+    const type = input.dataset.type;
+    if (type === "secret" && input.value === "") return; // blank = keep existing, don't send
+    let value;
+    if (type === "boolean") value = input.checked;
+    else if (type === "number") value = input.value === "" ? null : Number(input.value);
+    else if (type === "json") {
+      try { value = JSON.parse(input.value); } catch { value = input.value; }
+    } else if (type === "secret") value = input.value;
+    else value = input.value === "" ? null : input.value;
+    setDeep(overrides, path, value);
+  });
+
+  const res = await api("/settings", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(overrides),
+  });
+  const statusOut = $("#settings-status");
+  if (res.ok) {
+    statusOut.style.color = "var(--signal)";
+    statusOut.textContent = "Saved.";
+    loadSettings();
+  } else {
+    const err = await res.json().catch(() => ({}));
+    statusOut.style.color = "var(--rust)";
+    statusOut.textContent = `Error: ${err.detail || res.statusText}`;
+  }
+});
+
+// Populate the station readout on load without requiring the Settings tab to be opened first.
+loadSettings();
+</script>
+</body>
+</html>

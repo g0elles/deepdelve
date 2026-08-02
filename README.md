@@ -205,13 +205,32 @@ python src/app.py --prompt "..." --auto-approve          # headless
 python src/app.py --prompt "..." --depth deep            # quota/search/retry presets: quick|standard|deep
 python src/app.py --prompt "..." --style academic        # literature-review paper shape + (Author, Year) citations
 python src/app.py --prompt "..." --seed-url https://...  # pre-fetch known-good sources (repeatable)
+python src/app.py --prompt "..." --seed-doc ./notes.pdf  # load a local file (PDF/DOCX/XLSX/PPTX/txt/md) into the run (repeatable)
 python src/app.py --resume-run <run_folder>              # reattach an interrupted run, fresh budget
 python src/app.py --list-runs                            # workspace runs + report status
 ```
 
 Headless runs are honest about failure: a pre-run search-health probe aborts in seconds with `ENVIRONMENT UNHEALTHY` (exit 1) instead of burning a doomed 20-minute run; a crashed run exits 1 and still saves forensics; every run ends with a finish-line summary (`Report: <path>` or `NOT WRITTEN`, sources fetched, search failures). `_run_state.json` is written from run start and updated on every fetch/search event, so even a killed run leaves a scoreable record. `settings.max_run_minutes` (default 45) cuts a runaway run at the turn boundary; labeling and salvage still run, so it ends with an explicit outcome.
 
-In the TUI, the first message of a conversation gets a one-shot intake check (`clarify_before_research`): the model either replies CLEAR and proceeds or asks up to 3 scoping questions first (fail-open, and headless runs never ask). Follow-up messages in the same conversation reuse the run's workspace and fetched-URL state; once a report exists, follow-ups skip the completion check (Q&A mode).
+In the TUI, the first message of a conversation gets a one-shot intake check (`clarify_before_research`): the model either replies CLEAR and proceeds or asks up to 3 scoping questions first (fail-open, and headless runs never ask). Follow-up messages in the same conversation reuse the run's workspace and fetched-URL state; once a report exists, follow-ups skip the completion check (Q&A mode). `/seed-doc` is the TUI slash-command equivalent of `--seed-doc`.
+
+**Every run's output folder** gets, alongside `final_report.md`: `references.bib` (BibTeX, one entry per URL the report ACTUALLY cites — not every source fetched, see `utils/run_state.py::build_bibliography`), always generated once the report cites at least one real source, and optionally `final_report.pdf` if `settings.pdf_engine` is set (off by default, needs the external `pandoc` binary — see below).
+
+### 4. Optional: HTTP API + web UI
+
+`src/api.py` (FastAPI) is an alternative surface to the TUI/CLI — a local HTTP server exposing the same research engine, plus a minimal web UI (`src/static/index.html`) for submitting queries, browsing past runs (with resume), asking follow-ups, and editing settings from a browser. Not installed by default:
+
+```bash
+pip install -e ".[api]"
+deepdelve-api                          # binds 127.0.0.1:8420 by default
+deepdelve-api --host 0.0.0.0 --port 8420 --i-understand-the-risk   # LAN/phone access
+```
+
+Then open `http://127.0.0.1:8420/` (or your machine's LAN IP if bound non-loopback). Endpoints: `POST /research` (start, multipart for file uploads), `GET /research/{id}/status|stream|report|bib|pdf`, `POST /research/{id}/resume|followup|cancel`, `GET /runs`, `GET`/`POST /settings`.
+
+**Concurrency**: one research run at a time, process-wide (an in-memory FIFO queue) — `orchestrator.py`'s conversational-memory session and `tui.py`'s session-log state are module-level globals, not per-request-safe, so the API deliberately never runs two jobs concurrently rather than risking cross-run state corruption. Submitting while one is in flight queues it, it doesn't reject or run alongside.
+
+**Security**: no auth by default, matching the TUI/CLI's local-single-user posture — binding a non-loopback host requires the explicit `--i-understand-the-risk` flag. If you do expose it (e.g. for phone access on your LAN), set `settings.api_password` first: every request except the static page itself then requires a matching `X-API-Password` header (the web UI prompts for it automatically and remembers it). The settings editor can read and write your full config, API keys included — treat that endpoint accordingly on a shared network.
 
 ## Config highlights (`config_template.yaml`)
 
@@ -230,6 +249,8 @@ In the TUI, the first message of a conversation gets a one-shot intake check (`c
 - `settings.permissions`: per-tool approval gate (`<tool_name>: require_approval`). Defaults to gating `remove_workspace_file`, since deleting a file is the one destructive workspace action.
 - `settings.enable_conversational_memory` / `settings.enable_session_persistence`: whether follow-up messages in the same TUI conversation reuse prior context, and whether a session survives a restart (`~/.deepdelve/sessions/session_<id>.json`).
 - `settings.mcp_servers`: wire in external MCP tools (e.g. Semantic Scholar, Brave Search), scoped per sub-agent. See the file's inline comments for ready-to-uncomment examples.
+- `settings.pdf_engine`: off (`null`) by default. Set to `"weasyprint"` (`pip install -e ".[pdf]"`, no system TeX needed) or `"xelatex"`/`"pdflatex"` (real LaTeX typesetting, needs a full TeX install) to also produce `final_report.pdf` — needs the `pandoc` system binary either way (`apt install pandoc` or equivalent); skipped with a one-line notice, not a hard failure, if pandoc isn't on `PATH`.
+- `settings.api_password`: unset by default (no auth). Only relevant if you run `src/api.py`'s optional HTTP API/web UI on a non-loopback host — see "Optional: HTTP API + web UI" above.
 - `settings.specialist_model` (+ `settings.specialist_base_url` for a specialist on a different endpoint, e.g. a translation proxy or a second local server): optional second model, used only for the leaf specialist roles (WebSearcher/AcademicSearcher/DocumentAnalyzer/DataAnalyzer) while `api.openai_model` stays reserved for Planner/Builder/FindingsWriter/PeerReviewer. Unset by default. A live A/B (`gpt-oss:20b` + `qwen3:4b`) found this pairing 4.2x slower and lower-quality than a single model on this hardware. Two MiniCPM candidates were also tried and discarded here: `MiniCPM4-MCP` (needed a custom translation proxy for its non-OpenAI tool-call format, infrastructure kept but the model itself not viable) and `MiniCPM5-1B` (tested in both Ollama's unintentional think-mode — Ollama doesn't evaluate the model's real chat template, a documented gap shared by MLX/LM Studio — and genuine nothink mode via a real vLLM server; the properly-configured nothink run produced a citation-traced hallucination worse than the think-mode run, discarded). Full trial history for all of these in `ROADMAP.md`'s bake-off log; kept as a config option for a smaller/faster specialist model or different hardware where two models can coexist in VRAM without reload thrashing.
 
 ## Eval Harness

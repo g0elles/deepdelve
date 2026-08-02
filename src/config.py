@@ -143,5 +143,32 @@ def save_config() -> None:
     with open(_CONFIG_PATH, "w") as f:
         yaml.dump(save_data, f, default_flow_style=False, sort_keys=False)
 
+
+def save_full_config(overrides: dict) -> None:
+    """Full-config persistence for src/api.py's settings CRUD (`POST /settings`) — deliberately
+    separate from save_config()'s narrow _PERSISTABLE_SETTINGS_KEYS allowlist above, not a
+    widened version of it. That allowlist exists to stop an EPHEMERAL CLI/env override from
+    silently becoming a permanent default (the 2026-07-12 incident its own docstring describes).
+    An explicit POST to a dedicated settings form is the opposite case: deliberate user intent to
+    change the default, not an accidental side effect of some unrelated flag — the API's own
+    caller is trusted to mean what it sends, same as this project's user directly hand-editing
+    config.yaml already is. Still merges onto the on-disk snapshot (_file_cfg), not the live
+    `cfg`, for the same reason save_config() does: never persist a transient env-var/CLI-preset
+    mutation that happens to be live in this particular process right now."""
+    global cfg, _file_cfg
+    save_data = _deep_merge(_file_cfg, overrides)
+    with open(_CONFIG_PATH, "w") as f:
+        yaml.dump(save_data, f, default_flow_style=False, sort_keys=False)
+    _file_cfg = copy.deepcopy(save_data)
+    cfg = _deep_merge(_DEFAULTS, save_data)
+    # Re-apply load_config()'s own tilde/{APP_NAME} workspace-dir expansion -- cfg was just
+    # rebuilt from scratch above, so without this settings.workspace.dir would revert to the
+    # unexpanded template value until the next process restart.
+    if "settings" in cfg and "workspace" in cfg["settings"]:
+        ws = cfg["settings"]["workspace"]
+        if "dir" in ws and isinstance(ws["dir"], str):
+            dir_str = ws["dir"].replace("{APP_NAME}", APP_NAME)
+            ws["dir"] = os.path.abspath(os.path.expanduser(dir_str))
+
 # Auto-initialize on import so it's globally available
 load_config()

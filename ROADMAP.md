@@ -2546,6 +2546,89 @@ tried, twice, not merely proposed):
 ## Completed
 
 
+- **Output/export feature gaps + optional HTTP API/web UI — IMPLEMENTED and live-verified,
+  2026-08-02.** Scoped from a purpose-vs-built-feature gap check (not a code audit): research
+  inputs were web-only, output was markdown-only, no programmatic API existed, and
+  `research_output/` folder names collided for long queries sharing a prefix. Full plan in
+  `~/.claude/plans/cosmic-growing-canyon.md`; session-by-session detail in
+  `session_status/2026-08-02*.md` (archived).
+  - **Folder-name collisions** — `_slugify_run_dir_name` (`engine/tui.py`) now appends a 6-hex
+    sha1 hash of the FULL query, not just its truncated slug.
+  - **`references.bib`** — `utils/run_state.py::build_bibliography`, built from what
+    `final_report.md` ACTUALLY cites (`grounding.py`'s own `extract_cited_urls`/
+    `parse_academic_references` — the same logic every grounding check already trusts), not the
+    raw fetched-URL list. A bibliography from "everything fetched" would list sources the report
+    never used — caught and corrected before implementation, not after.
+  - **`--seed-doc`/`/seed-doc`** — local document ingestion (PDF/DOCX/XLSX/PPTX/txt/md via
+    `utils.parsers.convert_to_markdown`, the same extractor `tools/web.py`'s PDF-fetch path
+    already uses), mirrors the existing `--seed-url` pattern exactly. Deliberately no new tool
+    exposed to the model — the engine loads the file into the workspace, `read_workspace_file`
+    (already exists) is all a sub-agent needs.
+  - **`settings.pdf_engine`** — optional `final_report.pdf` via `pandoc` (external binary, not
+    pip-installable), `weasyprint` or system LaTeX as the engine. Real bug found and fixed:
+    pandoc's `--pdf-engine=weasyprint` shells out to the `weasyprint` CLI, which lives in the
+    venv's `bin/`, not the system PATH when invoked as `~/.venvs/deepdelve/bin/python` directly —
+    fixed by prepending `os.path.dirname(sys.executable)` to the subprocess env's PATH.
+  - **`src/api.py` + `src/static/index.html`** — optional FastAPI HTTP API + web UI (Research/
+    Runs/Settings), `pip install -e ".[api]"`, `deepdelve-api` console script. Key finding before
+    writing any code: `orchestrator.py`'s `_session` and `tui.py`'s session-log state are
+    module-level globals, not contextvars — two truly concurrent runs in one process would
+    corrupt each other's state. Fixed by design: one in-process FIFO job queue, one worker
+    coroutine, always single-flight. Deliberately a THIRD copy of `run_cli`/`run_agent`'s
+    orchestration shape (reusing the same lower-level primitives), not a fourth shared
+    abstraction — extracting one now would mean touching the two already-shipped entry points as
+    a side effect of an unrelated change (same reasoning as the `run_cli`/`BasicTuiAgent`
+    unification item below, which stays its own separate task).
+    - Endpoints: `POST /research` (multipart, file uploads reuse `--seed-doc`'s
+      `_ingest_local_doc`), `GET /research/{id}/status|stream|report|bib|pdf`,
+      `POST /research/{id}/resume|followup|cancel`, `GET /runs`, `GET`/`POST /settings`.
+    - **Follow-up design correction, caught before implementation**: originally planned to lean
+      on `orchestrator_module._session` surviving in memory between a run and its follow-up — but
+      the shared queue can run an unrelated job in between, silently clobbering it via that job's
+      own session reset. Fixed by persisting `session.to_dict()` to `<run_dir>/_agent_session.json`
+      per-run (reusing the existing `AgentSession.to_dict()`/`from_dict()` mechanism `--resume
+      <session_id>` already uses for a different purpose) instead of trusting the global.
+    - **Real bug found live, not just written and assumed correct**: `/followup`'s first version
+      ran the FULL completion-check/artifact-rewrite pipeline against a follow-up question, same
+      as a fresh run — confirmed this rewrites `findings.md` repeatedly (3 rejected attempts) and
+      never touches `final_report.md`, because the pipeline doesn't understand a follow-up is a
+      narrower ask than the original query. Root cause: missed that `tui.py`'s own
+      `run_agent`/`is_followup` branch deliberately sets `skip_completion_check = True` once the
+      required artifact already exists (a follow-up is Q&A over existing research, not a report
+      rewrite) — fixed by mirroring that exact condition in `api.py::_run_research`.
+    - **Two more real bugs found live during the frontend pass**: (1) `_artifact_path` gated
+      report/bib/pdf routes on `run_id in _jobs` (in-memory, this-process-lifetime only) — any run
+      from a prior server process, or never touched by this API instance at all (started via
+      TUI/CLI), 404'd with a misleading "Unknown run_id" despite having real artifacts on disk;
+      fixed to check the workspace directory directly, same fix already applied to `/followup`.
+      (2) FastAPI doesn't auto-add HEAD support to a `@app.get` route — every "does this artifact
+      exist" check in the frontend used `fetch(..., {method:"HEAD"})` specifically to avoid
+      downloading full content just to check presence, and all of them silently 405'd, so no
+      Report/Bibliography/PDF button ever appeared; fixed via `@app.api_route(...,
+      methods=["GET","HEAD"])`.
+    - **`settings.api_password`** — unset by default (no auth, matches the loopback-only-by-
+      default posture); added specifically because full settings CRUD (API keys included) +
+      user-requested LAN/phone access together raised the stakes enough to warrant it. Layered on
+      top of, not instead of, the `--i-understand-the-risk` non-loopback bind guard.
+    - **Web UI**: no CDN/build step (a small dependency-free markdown→HTML renderer for the report
+      viewer, not a general CommonMark library — this project's own report dialect is narrow and
+      predictable), settings rendered as a real generated form from the config's own shape (not a
+      raw JSON textarea), a signal-lamp status indicator as the one deliberate animated element
+      (reduced-motion respected). Status text shows the user's actual query, never the internal
+      run-id slug (`i_want_documentation_on_heuristic_..._20260731_140130` is not something a
+      user recognizes — caught live after a resume+cancel left it as the only visible status).
+      Mobile-responsive layout built to spec but not visually verified in this session (no browser
+      automation tool available) — check on an actual phone before treating that part as done.
+  - Also folded in, same session: all 5 findings from an earlier 3-agent audit (security/
+    correctness/production-readiness) — SSRF guard on outbound fetches (`tools/web.py`, an
+    `httpx` event hook checking every request's real resolved target, including mid-redirect-
+    chain hops, against loopback/link-local/private/reserved ranges), `no_urls_count` resume-
+    carryover gap, traceback-leakage trim across `tools/core.py`/`web.py`/`fs.py` (exception
+    type+message only, no local filesystem paths handed to the model), `enable_session_
+    persistence`'s `_DEFAULTS` fallback fixed to match `config_template.yaml`'s real default, and
+    a new `test_tools.py` (same flat assert-based convention as `test_structural_checks.py`,
+    wired into CI) pinning the SSRF guard plus several previously-untested pure-logic functions.
+
 - **Completion-check starvation bug class: 8 real instances found and fixed, then replaced with one
   shared structural mechanism — IMPLEMENTED and live-verified 2026-07-31.** Started as an Ornith-
   1.0-9B re-test (see MODELS.md's Ornith entry), but the same night's investigation surfaced the

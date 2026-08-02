@@ -347,6 +347,13 @@ settings:
     remove_workspace_file: require_approval
   enable_conversational_memory: true
   enable_session_persistence: true
+  # src/api.py's optional HTTP API + web UI: unset (default) = no auth, matching the API's
+  # loopback-only-by-default posture (see api.py's --i-understand-the-risk guard for binding
+  # anywhere else). Set this to require a matching X-API-Password header (or ?pw= for the SSE
+  # stream endpoint, which can't set custom headers) on every request except the static UI itself
+  # -- worth setting once you bind a non-loopback host (e.g. for LAN/phone access), since the API
+  # now also supports full settings edits (api.py's /settings, including API keys).
+  api_password: null
   workspace:
     type: disk
     dir: "./research_output"

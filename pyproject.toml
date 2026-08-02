@@ -79,9 +79,16 @@ browser = ["playwright>=1.48.0,<2.0.0", "pyvirtualdisplay>=3.0,<4.0"]
 # provides the CLI pandoc shells out to when pdf_engine is set to "weasyprint" instead of a
 # system LaTeX engine (xelatex/pdflatex).
 pdf = ["weasyprint>=69.0,<70.0"]
+# src/api.py: optional HTTP API + minimal web UI, an alternative surface to the TUI/CLI. Already
+# present transitively via agent-framework (confirmed importable in this project's venv without
+# any new install) -- declared explicitly here rather than relying on that silently, same
+# reasoning as this file's own pydantic comment above (a transitive dependency is fragile to
+# depend on without declaring it).
+api = ["fastapi>=0.138.0,<1.0.0", "uvicorn>=0.51.0,<1.0.0", "python-multipart>=0.0.32,<1.0.0"]
 
 [project.scripts]
 deepdelve = "app:cli_main"
+deepdelve-api = "api:main"
 
 # src-layout, but rooted so the installed package tree matches the bare top-level imports used
 # throughout the codebase (`import config`, `from tools import ...`, `from engine.tui import
@@ -95,16 +102,19 @@ deepdelve = "app:cli_main"
 # unchanged. Second full audit, 2026-07-12, item 5.
 [tool.setuptools]
 package-dir = {"" = "src"}
-packages = ["tools", "engine", "utils"]
-py-modules = ["app", "config", "prompts"]
+packages = ["tools", "engine", "utils", "static"]
+py-modules = ["app", "config", "prompts", "api"]
 
 # config.py's load_config() locates the bundled template via os.path.join(os.path.dirname(
 # __file__), "tools", "config_template.yaml") — it lives inside the real "tools" package (moved
 # there from directly under src/) specifically so package-data can bundle it: py-modules (loose
 # top-level files like config.py itself, no __init__.py) aren't covered by
-# [tool.setuptools.package-data], which only attaches data files to actual packages.
+# [tool.setuptools.package-data], which only attaches data files to actual packages. api.py's own
+# static/index.html (the web UI) needed the identical treatment — "static" is a real package
+# (empty __init__.py, added same day as api.py) for exactly this reason, not a loose src/ dir.
 [tool.setuptools.package-data]
 tools = ["config_template.yaml"]
+static = ["index.html"]
 
 # Pragmatic rule set, not maximal (second full audit, 2026-07-12): pure pyflakes (F) — unused
 # imports/variables, undefined names, duplicate dict keys — catches real dead-code issues (the
