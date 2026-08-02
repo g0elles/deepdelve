@@ -3088,3 +3088,68 @@ pushing this time, after 17e/17f's own CI break from an unrelated f-string lint 
 **Not yet live-tested** — implemented and unit-verified only. Next: a fresh run or resume hitting
 this exact dedup-collision shape again would confirm the corrected message actually gets the model
 to delegate with the filename instead of looping.
+
+### 17h. Raising the eval timeout to match `max_run_minutes` surfaced a DIFFERENT starvation bug:
+`check_task_verification_flagged` can block `check_missing_artifact` from ever dispatching Builder
+
+Two live tests on a fresh sprint/volcano run (a different topic from the Lisbon/Mexico query this
+whole session otherwise hammered), triggered by the observation that every run today had hit its
+external timeout — worth checking whether 1800s was actually enough, separate from any code bug.
+
+**First test** (`--timeout 1800`, unchanged): scored 0.800, same shape as every other run today —
+both facets covered, genuinely well-grounded content, external timeout hit before a final
+completion-check pass could run. The specific dead-end-message collision 17g fixes never
+reproduced (`_find_sibling_fetch` never fired) — still unconfirmed live, unit-tested only.
+
+**Second test, the actual finding**: noticed the agent's own `max_run_minutes` (45, i.e. 2700s) is
+LONGER than the eval harness's own `--timeout` flag (1800s, a hard external subprocess kill) —
+every "timeout" seen today was the harness killing the process 15 minutes before the agent's own
+graceful-stop logic (`completion.py`'s `budget_deadline`) ever got a chance to run. Reran the same
+query with `--timeout 2760` (exceeding `max_run_minutes`). The process genuinely finished on its
+own this time — 2198.3s, well under the new ceiling, no hard kill. But it scored **0.000**, and
+`final_report.md` turned out to be a salvaged narration (`_salvage_narrated_report`'s own explicit
+banner: *"AUTO-RECOVERED DRAFT... has NOT passed the grounding check... UNVERIFIED"*) — the
+Planner narrated its own progress as chat text, never wrote a real report. So the honest
+correction: the timeout was never the actual bottleneck for this run. It didn't get cut off early;
+it genuinely exhausted its own budget and gave up.
+
+**Root cause, read directly from `_run_state.json`'s `completion_check_attempts`**:
+```
+0 task_verification_flagged
+1 task_verification_flagged
+2 task_verification_flagged
+3 missing_findings
+4 task_verification_flagged
+5 task_verification_flagged
+6 task_verification_flagged
+```
+`findings.md` genuinely exists (2,204 bytes, real content — `missing_findings` correctly resolved
+at attempt 3). But `final_report.md` was **never once attempted** — `check_missing_artifact`
+(`COMPLETION_CHECKS`, position 8, the check that would dispatch Builder to actually write the
+report) never fired, not once, because `check_task_verification_flagged` (position 3, well above
+it) kept winning first-match on 6 of 7 attempts. This is the SAME starvation shape 17f already
+fixed — but WITHIN `COMPLETION_CHECKS` this time, not cross-tier, and for a DIFFERENT pair
+(`task_verification_flagged` blocking `missing_artifact`, not blocking `report_underuses_evidence`
+in `GROUNDING_CHECKS`). `check_task_verification_flagged` IS correctly `_capped()` (confirmed
+2026-08-01, §1's own invariant) — but `missing_findings` interrupting the streak at attempt 3
+isn't in that check's own skip-list (`_tvf_skip = {"untracked_delegation"}`), so it reset the
+consecutive-occurrence count; the NEW streak (attempts 4-6) only reached 3 by the time the run's
+own `planner_delegate_rounds`/global `delegate_tasks` quota caps forced a full stop — one attempt
+short of `check_task_verification_flagged`'s own cap threshold silencing it and letting the scan
+finally reach `check_missing_artifact`. `planner_delegate_rounds` confirmed hit exactly 4 (the
+configured cap) in this run's own `_run_state.json` — that cap worked exactly as designed; the
+Planner correctly stopped delegating once capped. The problem is entirely upstream of that: the
+Planner spent its ENTIRE round/quota budget re-verifying one persistently-flagged task before ever
+reaching the point where Builder could be dispatched at all.
+
+**Not yet fixed** — diagnosed and documented only, per explicit "document it and stop for today"
+direction. Two candidate fix shapes, not scoped: (1) the narrowest, most consistent-with-today's-
+other-fixes option — give `check_missing_artifact` (and arguably `check_findings_underuses_
+evidence`, `check_missing_findings`'s own siblings that also sit below `task_verification_flagged`
+in the same list) a `_yield_to_starved_check`-style protection the same way 17f did across the
+GROUNDING_CHECKS boundary, applied WITHIN `COMPLETION_CHECKS` this time; (2) reconsider whether
+`missing_findings` firing mid-streak SHOULD reset `task_verification_flagged`'s own escalation
+counter at all — arguably a genuinely different, unrelated problem resolving in between doesn't
+mean the ORIGINAL flagged-task problem got any less stuck, so resetting its streak may itself be
+the more precise bug to fix, upstream of needing option (1) at all. Worth investigating both
+before picking one, not assuming (1) is right just because it mirrors 17f most closely.
