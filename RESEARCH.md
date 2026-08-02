@@ -3021,5 +3021,23 @@ correctly, and the fix lands — while the still-unresolved `task_verification_f
 correctly continues to get addressed in later iterations too, not silently dropped. Full suite
 green.
 
-**Not yet live-tested** — implemented and unit-verified only. Next: resume the same interrupted
-run a third time to confirm Lisbon finally makes it into the report.
+**Live-tested — the multi-facet abandonment bug is fixed.** Resumed the same interrupted run a
+third time (2119.1s, a real full run). For the first time across every attempt this whole session
+— multiple fresh runs, three resumes — `final_report.md` covers **all four facets**: Mexico visa
+requirements/costs, Mexico City rent, Portugal D8 visa, and Lisbon central rent. Also fixed a CI
+break along the way: the new resume-block rejection message (17e) had every line prefixed `f"..."`
+with no actual interpolation anywhere in it, tripping `ruff`'s F541 — caught by CI on both of the
+last two pushes, fixed in a follow-up commit, confirmed clean both locally (`ruff check .`) and
+via `gh run watch` on the resulting CI run.
+
+**Not a clean pass, and the run's own verdict says so honestly** — this is the structural fix
+working, not a claim the report is fully trustworthy. Final verdict: *"Retry budget exhausted with
+an unresolved issue (task_verification_flagged)... treat its claims as unconfirmed."* Specifically
+flagged, unresolved: `stub_source` on `housinganywhere.com` (the exact URL backing the report's
+Lisbon rent figure, corroborated in the report only by a low-quality "Facebook Group Post"
+citation); `claim_unsupported` on the Consulmex PDF (one Mexico visa requirement claim doesn't
+match that source's actual content); and `task_verification_flagged` itself remains open for
+`Lisbon_CentralApartment_RentalCost_BaixaChiado`/`Mexico_DigitalNomadVisa_RelocatemeSummary`. The
+bug this whole 17a-17f chain targeted — a whole facet silently vanishing with nothing anywhere
+able to see or fix it — is confirmed fixed. Ordinary, already-flagged, per-claim grounding quality
+issues are a separate, correctly-surfaced-not-hidden concern, not evidence the fix didn't work.
