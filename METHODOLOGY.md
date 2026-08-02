@@ -57,19 +57,37 @@ the capability that would let it be ignored instead.
 ## 3. The verification layer — the actual methodological contribution
 
 This is the part `RESEARCH.md` §9/§9a's dedicated prior-art survey concludes has no found precedent
-combining all of its pieces, anywhere — industry or academic. It is not one mechanism but five,
+combining all of its pieces, anywhere — industry or academic. It is not one mechanism but six,
 each independently precedented (per §9/§9a's own sourced findings) but assembled and hardened
 together in a way nothing else surveyed was:
 
 ### 3.1 A priority-ordered bank of structural checks, not an LLM judge
 
-`src/engine/completion.py` runs 23 independent, pure-function checks (`COMPLETION_CHECKS` then
+`src/engine/completion.py` runs 25 independent, pure-function checks (`COMPLETION_CHECKS` then
 `GROUNDING_CHECKS`, first-match-wins, exactly one `Verdict` per attempt — full mechanics in
 `ARCHITECTURE.md` §1). Each targets one specific, previously *observed* failure mode against
 ground-truth run state — not a generic taxonomy classification, a concrete incident with a concrete
-fix. A **starvation guard** (`_yield_to_starved_check`) gives a deliberately low-priority check one
-extra probe if a higher-priority problem has recurred without progress for two attempts running, so
-one recurring problem can't permanently crowd out a check for something unrelated.
+fix.
+
+**Starvation prevention, generalized 2026-07-31 after this exact bug shape recurred eight times.**
+The mechanism this subsection originally described (`_yield_to_starved_check` giving one
+specific low-priority check a probe after a fixed attempt count) was a per-instance patch, not a
+structural fix — and it kept needing to be re-applied: a first-match-wins priority queue lets any
+check near the top permanently starve everything below it for a run's entire retry budget if it
+keeps re-firing on unchanged state, and eight separate real incidents hit this before it got a
+shared mechanism instead of a ninth patch. The generalized fix (`_consecutive_occurrences`,
+`_capped`, `CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD`, `_yield_to_starved_check`,
+`_STARVATION_YIELD_TARGETS`+`_apply_starvation_yield` — all `completion.py`, full mechanics
+`ARCHITECTURE.md` §1) requires every non-self-resolving, non-self-clearing check to cap its own
+consecutive-firing count via one shared helper, pinned by a standing audit test that fails CI if a
+new check skips it. Grounded in prior art that predates this project (not invented for it, per
+`ARCHITECTURE.md` §1's own citations): OS scheduler **aging** (a starvation counter forcing a
+lower-priority task to get a turn past a threshold) and the **circuit breaker** pattern (Nygard,
+*Release It!* — stop retrying a failing path after N attempts rather than hammering it forever).
+The methodological lesson, not just the mechanism: **a structural fix that requires a test to
+enforce compliance beats a structural fix that trusts every future check author to remember the
+convention** — two of the eight incidents were caught by the audit test before ever causing a live
+failure, not after.
 
 ### 3.2 Fresh-context, independent review — not same-context self-critique
 
@@ -121,6 +139,37 @@ exist (`_is_citable_finding`), rather than trusting a new Planner-authored field
 VERIMAP's real contribution — a task has its own checkable, independently-retriable verification
 state — while dropping the part of its mechanism that this project's own hard-won lesson argues
 against.
+
+### 3.6 Fresh-context PRODUCTION per facet, not just fresh-context review
+
+§3.2 established fresh-context review as necessary; a full marathon investigation (2026-08-01,
+`RESEARCH.md` §16-17, `ROADMAP.md` History) found it insufficient on its own for a distinct failure
+shape: a report mechanically passing every grounding check while still silently answering only
+~1/3 of a multi-facet query, because the missing facets were never fabricated, just never
+produced. Ruled out first, not assumed: stale sub-agent context (`_run_single_task` constructs a
+genuinely fresh dispatch client per call, confirmed by reading it, not inferred). The literature
+review done *before* attempting a fix (per this project's own standing rule) named the actual
+mechanism — the **self-correction blind spot** (Kamoi et al., arXiv:2406.01297: models are
+measurably worse at correcting errors in their OWN prior output than the identical error framed as
+external input, ~64.5% of self-generated errors survive self-checking across 14 open models) — and
+a first, smaller fix informed by that same literature (an explicit `edit_workspace_file` directive
+naming exactly what to add, Song's Cross-Context Review framing, arXiv:2603.12123) was tried and
+**live-tested to a clean negative result** before escalating: the directive changed which tool
+Builder called, not what it produced — the citation ratio stayed frozen, and by the run's end the
+report had gone from covering ~1/3 of the query to covering 0% of one whole facet, despite an
+explicit "do not touch any other part of the report" instruction. That negative result is itself
+methodologically load-bearing: it confirmed the failure was the self-correction blind spot
+specifically (a model re-examining and "fixing" its own prior draft), not a tool-choice or wording
+gap, before the larger architectural fix was justified. The fix that then worked: dispatch Builder
+once **per** under-represented facet, each a genuinely independent, externally-scoped production
+call in the Cross-Context Review sense (not just review), against only that facet's own real
+findings — extending §3.2's "review must be fresh-context" principle to "production must be too,
+once a single generation call is asked to hold more independent facets than it reliably can at
+once." A second literature match, found during scoping rather than after: Xu et al.'s **aggregator
+noise** framing (arXiv:2506.16411) — individual facts correct, a merge/synthesis step drops whole
+clusters — named which of three distinct long-context failure modes this was, and confirmed
+hierarchical decomposition (what per-facet dispatch is a form of) as the literature's standard
+mitigation for that specific mode, not a guess at one of three.
 
 ## 4. Recurring design principles, evidenced
 
@@ -218,11 +267,17 @@ claim.
   mitigates the consequence; it does not explain or fix why a fresh dispatch sometimes returns
   nothing at all. Frequency is still unknown — not re-observed as often on some runs as others.
 - **The per-task verification ledger (§3.5) still only produces one whole-run `Verdict` per
-  completion-check attempt.** A flagged task's directive names it specifically, but redelegating it
+  completion-check attempt** — a flagged task's directive names it specifically, but redelegating it
   still routes back through the Planner's own turn rather than an independent, bypassing dispatch.
-  The deeper version of this fix (VERIMAP Phase 2, `ROADMAP.md` Pending) is deliberately deferred
-  until real ledger data from more live runs shows whether the current directive-only fix is
-  actually sufficient in practice.
+  **Update, 2026-07-29: the deeper version (VERIMAP Phase 2) was scoped, evaluated against real
+  data, and formally closed as a no-go**, not left open pending more data — an audit of every real
+  run where the ledger flag actually fired found zero clean, unconfounded cases of the same task
+  recurring 3+ times under a normal retry budget with the directive-only fix genuinely failing to
+  resolve it; every observed recurrence traced to an already-fixed, independent root cause instead
+  (quota exhaustion, a stale-task-rename loop). The directive-only version is the settled answer
+  unless a future clean run reopens it under that same specific trigger (`ROADMAP.md`'s own
+  Completed entry for the full evidence trail) — not an open question this document should keep
+  describing as unresolved.
 - **The verification layer is reactive, not proactive, at its foundation.** Every check here fires
   after a problem has already been generated, catching it before it reaches the next stage — not
   preventing the underlying model from generating it in the first place. This is a deliberate
