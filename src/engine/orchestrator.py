@@ -1407,12 +1407,12 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                 # IS round 0, nothing was actually run. A distinct, accurate message instead.
                 if _rs_for_cap and _rs_for_cap.data.get("resumed_with_existing_report"):
                     return (
-                        f"Error: delegate_tasks call rejected — this is a resumed run and a report "
-                        f"already exists. Further research delegation is disabled for resumed runs "
-                        f"with an existing report: if the report is missing something findings.md "
-                        f"already covers, that is a writer-role fix the automatic pipeline will "
-                        f"apply on its own, not a research gap. Stop delegating and let the system "
-                        f"finalize the report from what has already been researched."
+                        "Error: delegate_tasks call rejected — this is a resumed run and a report "
+                        "already exists. Further research delegation is disabled for resumed runs "
+                        "with an existing report: if the report is missing something findings.md "
+                        "already covers, that is a writer-role fix the automatic pipeline will "
+                        "apply on its own, not a research gap. Stop delegating and let the system "
+                        "finalize the report from what has already been researched."
                     )
                 return (
                     f"Error: delegate_tasks call rejected — you have already run {_planner_rounds} "
