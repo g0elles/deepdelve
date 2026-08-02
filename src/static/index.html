@@ -133,6 +133,40 @@
   #log .line.system { color: var(--paper-dim); font-style: italic; }
   #log .line.system .tag { color: var(--paper-dim); border-color: var(--line); }
 
+  /* ---- per-agent run timeline (see appendLog's own comment for why) ---- */
+  .run-item { border: 1px solid var(--line); margin-bottom: 0.4rem; }
+  .run-item-header {
+    display: flex; align-items: center; gap: 0.5rem; width: 100%; background: none; border: none;
+    color: var(--paper); font: 12px/1 ui-monospace, monospace; text-transform: uppercase;
+    letter-spacing: 0.04em; padding: 0.5rem 0.6rem; cursor: pointer;
+  }
+  .run-item-header:hover { background: rgba(255,255,255,0.03); }
+  .run-name { flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .run-chevron { color: var(--paper-dim); font-size: 10px; }
+  .run-icon { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+  .run-icon.running { background: var(--brass); box-shadow: 0 0 0 3px rgba(201,138,63,0.18); }
+  @media (prefers-reduced-motion: no-preference) {
+    .run-icon.running { animation: pulse 1.4s ease-in-out infinite; }
+  }
+  .run-icon.done { background: var(--signal); box-shadow: 0 0 0 3px rgba(95,184,168,0.15); }
+  .run-body {
+    padding: 0 0.7rem 0.6rem 1.8rem; font: 13px/1.6 -apple-system, sans-serif;
+    color: var(--paper-dim); border-top: 1px solid var(--line);
+  }
+  .run-text { padding-top: 0.5rem; color: var(--paper); }
+  .run-tool-call {
+    font: 11px/1 ui-monospace, monospace; color: var(--brass); text-transform: uppercase;
+    letter-spacing: 0.03em; padding-top: 0.55rem;
+  }
+  .run-cursor {
+    display: inline-block; width: 6px; height: 1em; margin-left: 2px; vertical-align: text-bottom;
+    background: var(--brass);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .run-cursor { animation: cursor-blink 0.9s step-end infinite; }
+  }
+  @keyframes cursor-blink { 50% { opacity: 0; } }
+
   #results { margin-top: 0.9rem; display: none; gap: 0.5rem; flex-wrap: wrap; }
   #results a, #results button {
     color: var(--brass); text-decoration: none; border: 1px solid var(--brass-dim); background: none;
@@ -155,6 +189,7 @@
   }
   .tagbadge.ok { color: var(--signal); border-color: var(--signal); }
   .tagbadge.no { color: var(--rust); border-color: var(--rust); }
+  .tagbadge.running { color: var(--brass); border-color: var(--brass); }
 
   /* ---- settings form ---- */
   .settings-section { margin-bottom: 1.2rem; }
@@ -209,6 +244,21 @@
   .report-prose th, .report-prose td { border: 1px solid var(--line); padding: 0.5em 0.7em; text-align: left; }
   .report-prose th { color: var(--brass); font-weight: 700; }
   .report-prose hr { border: none; border-top: 1px solid var(--line); margin: 1.6em 0; }
+  .report-prose h3 { margin-top: 2em; }
+  .source-cards { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 0.8rem; }
+  .source-card {
+    display: flex; align-items: center; gap: 0.6rem; width: 220px; text-decoration: none;
+    border: 1px solid var(--line); background: var(--ink); padding: 0.6rem 0.7rem;
+    transition: border-color 0.15s;
+  }
+  .source-card:hover { border-color: var(--brass-dim); }
+  .source-avatar {
+    flex: none; width: 30px; height: 30px; display: flex; align-items: center; justify-content: center;
+    background: var(--brass-dim); color: var(--paper); font: 700 13px/1 ui-monospace, monospace;
+  }
+  .source-domain {
+    color: var(--paper-dim); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
 </style>
 </head>
 <body>
@@ -362,8 +412,19 @@ const resultsEl = $("#results");
 const submitBtn = $("#submit-btn");
 const cancelBtn = $("#cancel-btn");
 const followupBox = $("#followup-box");
+const formInputs = [$("#query"), $("#depth"), $("#style"), $("#files")];
 let currentRunId = null;
 let currentSource = null;
+
+// A run in flight must lock the WHOLE form, not just the submit button -- confirmed live,
+// 2026-08-02, this was missing: query/depth/style/files stayed editable while a run was already
+// running, which is confusing (looks editable, does nothing until a NEW submit, which the
+// disabled button blocks anyway). Matches the pattern GPT Researcher's own frontend uses
+// (components/research/ResearchContent.tsx: disabled={loading} on every input, not just submit).
+function setFormBusy(busy) {
+  submitBtn.disabled = busy;
+  formInputs.forEach(el => { el.disabled = busy; });
+}
 
 function escapeHtml(s) {
   return (s || "").replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
@@ -443,6 +504,39 @@ function mdToHtml(md) {
   return out.join("\n");
 }
 
+// A scannable "Sources" card grid at the end of the rendered report -- adapted from GPT
+// Researcher's own SourceCard.tsx (checked directly, 2026-08-02), minus its Google favicon-
+// service call: fetching a third party's favicon for every citation is a real per-view network
+// request to an external host, which conflicts with this being a local-first tool that otherwise
+// makes zero outbound calls of its own. A plain domain-initial avatar gets the same "visually
+// scannable, not just a wall of links" benefit without it. Deliberately ADDS to whatever inline/
+// "## Sources" list the report's own markdown already has, rather than trying to detect and
+// suppress it -- some redundancy between inline citations and a distinct sources grid is normal
+// (the same shape a paper's own References list has alongside its in-text citations).
+function extractCitedUrls(md) {
+  const matches = (md || "").match(/https?:\/\/[^\s\])"'>]+/g) || [];
+  const seen = new Set();
+  const urls = [];
+  for (let u of matches) {
+    u = u.replace(/[.,;:!?]+$/, "");
+    if (!seen.has(u)) { seen.add(u); urls.push(u); }
+  }
+  return urls;
+}
+
+function renderSourceCards(urls) {
+  if (!urls.length) return "";
+  const cards = urls.map(u => {
+    let domain = u;
+    try { domain = new URL(u).hostname.replace(/^www\./, ""); } catch { /* keep full url */ }
+    const initial = escapeHtml((domain[0] || "?").toUpperCase());
+    return `<a class="source-card" href="${escapeHtml(u)}" target="_blank" rel="noopener">`
+      + `<span class="source-avatar">${initial}</span>`
+      + `<span class="source-domain" title="${escapeHtml(u)}">${escapeHtml(domain)}</span></a>`;
+  }).join("");
+  return `<h3>Sources</h3><div class="source-cards">${cards}</div>`;
+}
+
 async function openReportViewer(runId) {
   const overlay = $("#report-viewer");
   const prose = $("#report-prose");
@@ -464,28 +558,123 @@ async function openReportViewer(runId) {
   const res = await api(withAuth(rawUrl));
   if (!res.ok) { prose.textContent = "Could not load report."; return; }
   const md = await res.text();
-  prose.innerHTML = mdToHtml(md);
+  prose.innerHTML = mdToHtml(md) + renderSourceCards(extractCitedUrls(md));
 }
 $("#report-viewer-close").addEventListener("click", () => $("#report-viewer").classList.remove("open"));
 $("#report-viewer").addEventListener("click", (e) => { if (e.target.id === "report-viewer") e.currentTarget.classList.remove("open"); });
 
-function appendLog(event) {
+// Per-agent-run timeline, not a flat interleaved stream -- adapted from Microsoft Agent
+// Framework's own DevUI reference app (packages/devui/frontend, checked directly 2026-08-02:
+// execution-timeline.tsx groups every executor's activity into its own collapsible entry with a
+// running/completed/failed status icon, exactly the shape DeepDelve's real dispatch hierarchy
+// already has -- one entry per Searcher/Analyzer/Writer/Reviewer dispatch). A flat scrolling log
+// tagging every line with a repeated agent name (this project's first attempt) doesn't reflect
+// that structure and reads as noise once more than one or two sub-agents have run. Text within
+// one run still accumulates onto one growing paragraph (the token-spam fix from earlier this
+// session), now scoped per-run instead of globally.
+const agentRuns = new Map(); // agent name -> {item, icon, body, lastTextEl, cursorEl, state}
+let activeRunAgent = null;
+
+function collapseRun(rec) {
+  rec.body.style.display = "none";
+  rec.item.querySelector(".run-chevron").textContent = "▸";
+}
+function expandRun(rec) {
+  rec.body.style.display = "block";
+  rec.item.querySelector(".run-chevron").textContent = "▾";
+}
+
+function getOrCreateAgentRun(agent) {
+  let rec = agentRuns.get(agent);
+  if (rec) return rec;
+
+  // Focus follows activity: collapse whatever was previously active so the log doesn't grow
+  // into one long page -- the newest run is the one worth looking at by default.
+  if (activeRunAgent) {
+    const prev = agentRuns.get(activeRunAgent);
+    if (prev) collapseRun(prev);
+  }
+
+  const item = document.createElement("div");
+  item.className = "run-item";
+  const header = document.createElement("button");
+  header.type = "button";
+  header.className = "run-item-header";
+  header.innerHTML = `<span class="run-icon running"></span><span class="run-name"></span><span class="run-chevron">▾</span>`;
+  header.querySelector(".run-name").textContent = agent;
+  const body = document.createElement("div");
+  body.className = "run-body";
+  header.addEventListener("click", () => {
+    const open = body.style.display !== "none";
+    if (open) collapseRun(rec); else expandRun(rec);
+  });
+  item.appendChild(header);
+  item.appendChild(body);
+  logEl.appendChild(item);
+
+  rec = { item, icon: header.querySelector(".run-icon"), body, lastTextEl: null, cursorEl: null, state: "running" };
+  agentRuns.set(agent, rec);
+  activeRunAgent = agent;
+  return rec;
+}
+
+function finishRun(agent) {
+  const rec = agentRuns.get(agent);
+  if (!rec) return;
+  rec.state = "done";
+  rec.icon.className = "run-icon done";
+  if (rec.cursorEl) { rec.cursorEl.remove(); rec.cursorEl = null; }
+  collapseRun(rec);
+}
+
+function appendRunText(rec, text) {
+  if (rec.cursorEl) rec.cursorEl.remove();
+  if (!rec.lastTextEl) {
+    rec.lastTextEl = document.createElement("div");
+    rec.lastTextEl.className = "run-text";
+    rec.body.appendChild(rec.lastTextEl);
+  }
+  rec.lastTextEl.appendChild(document.createTextNode(text));
+  rec.cursorEl = document.createElement("span");
+  rec.cursorEl.className = "run-cursor";
+  rec.lastTextEl.appendChild(rec.cursorEl);
+}
+
+function appendStationLine(text) {
   const line = document.createElement("div");
-  if (event.type === "text") {
-    line.className = "line";
-    line.innerHTML = `<span class="tag">${escapeHtml(event.agent)}</span>${escapeHtml(event.text)}`;
-  } else if (event.type === "tool_call") {
-    line.className = "line";
-    line.innerHTML = `<span class="tag">${escapeHtml(event.agent)}</span>calling ${escapeHtml(event.name || "")}...`;
-  } else if (event.type === "tool_result") {
-    return;
-  } else if (event.type === "system") {
-    line.className = "line system";
-    line.innerHTML = `<span class="tag">station</span>${escapeHtml(event.text || "")}`;
-  } else {
+  line.className = "line system";
+  line.innerHTML = `<span class="tag">station</span>${escapeHtml(text || "")}`;
+  logEl.appendChild(line);
+}
+
+function appendLog(event) {
+  if (event.type === "system" && !event.agent) {
+    // A run-level notice (completion-check nudges, PDF export status, seed-doc/url loading) --
+    // not tied to any one sub-agent's dispatch, so it doesn't belong inside a collapsible run.
+    appendStationLine(event.text);
+    logEl.scrollTop = logEl.scrollHeight;
     return;
   }
-  logEl.appendChild(line);
+  if (event.type === "system" && event.agent) {
+    // api_subagent_callback's is_done signal ("Finished.") -- the status icon flipping to done
+    // already says this, printing the word too would just be noise.
+    finishRun(event.agent);
+    return;
+  }
+
+  const rec = getOrCreateAgentRun(event.agent);
+  if (event.type === "text") {
+    appendRunText(rec, event.text);
+  } else if (event.type === "tool_call") {
+    if (rec.cursorEl) { rec.cursorEl.remove(); rec.cursorEl = null; }
+    rec.lastTextEl = null; // a tool call breaks the current paragraph; next text starts a new one
+    const chip = document.createElement("div");
+    chip.className = "run-tool-call";
+    chip.textContent = `calling ${event.name || "tool"}...`;
+    rec.body.appendChild(chip);
+  } else {
+    return; // tool_result: too verbose for the timeline view, available via the raw session log
+  }
   logEl.scrollTop = logEl.scrollHeight;
 }
 
@@ -522,9 +711,27 @@ async function linkIfExists(runId, kind, label) {
 // that must never be the primary thing shown as status text (confirmed live, 2026-08-02: it's
 // meaningless to read and looks like a bug even when the underlying cancel/resume/etc. worked
 // correctly). Still available via the status line's title attribute for anyone who wants it.
+// Shared entry point for "start watching this run in the Research tab" -- used by a fresh
+// submit, a follow-up, a Runs-tab resume, AND on-load reconnection to whatever's already in
+// flight (see the bottom of this script). Resetting the log/results view here, not at each call
+// site individually, is what makes the on-load reconnect path behave identically to a resume
+// click instead of needing its own copy of this sequence.
+function attachToRun(runId, label) {
+  logEl.style.display = "block";
+  logEl.textContent = "";
+  resultsEl.style.display = "none";
+  resultsEl.innerHTML = "";
+  followupBox.style.display = "none";
+  setFormBusy(true);
+  cancelBtn.style.display = "inline-block";
+  watchStream(runId, label);
+}
+
 function watchStream(runId, label, { onDone } = {}) {
   currentRunId = runId;
   if (currentSource) currentSource.close();
+  agentRuns.clear();
+  activeRunAgent = null;
   setLamp("running");
   const setStatus = (text) => { statusEl.textContent = text; statusEl.title = `run: ${runId}`; };
   const source = new EventSource(withAuth(`/research/${runId}/stream`));
@@ -535,7 +742,7 @@ function watchStream(runId, label, { onDone } = {}) {
       setStatus(`${label} — ${event.status}`);
       setLamp(event.status === "failed" ? "error" : "idle");
       source.close();
-      submitBtn.disabled = false;
+      setFormBusy(false);
       cancelBtn.style.display = "none";
       resultsEl.style.display = "flex";
       await linkIfExists(runId, "report", "Report (.md)");
@@ -552,19 +759,14 @@ function watchStream(runId, label, { onDone } = {}) {
     setStatus(`${label} — connection lost`);
     setLamp("error");
     source.close();
-    submitBtn.disabled = false;
+    setFormBusy(false);
     cancelBtn.style.display = "none";
   };
 }
 
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
-  submitBtn.disabled = true;
-  logEl.style.display = "block";
-  logEl.textContent = "";
-  resultsEl.style.display = "none";
-  resultsEl.innerHTML = "";
-  followupBox.style.display = "none";
+  setFormBusy(true); // lock immediately, before the request even lands, so a double-click can't fire twice
   statusEl.textContent = "Submitting...";
 
   const queryText = $("#query").value;
@@ -582,19 +784,18 @@ form.addEventListener("submit", async (e) => {
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       statusEl.textContent = `Error: ${err.detail || res.statusText}`;
-      submitBtn.disabled = false;
+      setFormBusy(false);
       return;
     }
     run_id = (await res.json()).run_id;
   } catch (err) {
     statusEl.textContent = `Error: ${err}`;
-    submitBtn.disabled = false;
+    setFormBusy(false);
     return;
   }
 
+  attachToRun(run_id, queryText);
   statusEl.textContent = `${queryText} — queued`;
-  cancelBtn.style.display = "inline-block";
-  watchStream(run_id, queryText);
 });
 
 cancelBtn.addEventListener("click", async () => {
@@ -615,15 +816,31 @@ $("#followup-form").addEventListener("submit", async (e) => {
     return;
   }
   $("#followup-query").value = "";
-  logEl.textContent = "";
-  resultsEl.style.display = "none";
-  followupBox.style.display = "none";
-  submitBtn.disabled = true;
-  cancelBtn.style.display = "inline-block";
-  watchStream(currentRunId, q);
+  attachToRun(currentRunId, q);
 });
 
 // ---- runs tab ----
+// run.status comes from the backend's in-memory _jobs (queued/running/done/failed/cancelled), or
+// null if this server process never touched it (an old run, or one from a prior process
+// lifetime -- see api.py's own comment on why /followup and /resume both treat that the same
+// way: not "still running" just because nobody's watching). has_report is a raw disk check and
+// says NOTHING about whether the file is stable -- while a run is actively queued/running, its
+// final_report.md can exist on disk mid-rewrite (a Builder retry cycle overwrites it more than
+// once before the run actually finishes). Both gaps were real, confirmed live 2026-08-02: a
+// currently-running run showed an enabled "Resume" button (clicking it while it's still going is
+// exactly the double-dispatch the backend's own 409 guard exists to prevent, but the button
+// should never have offered it in the first place), and "View report" could appear for a report
+// that was about to be overwritten again.
+function runStatusInfo(run) {
+  if (run.status === "running" || run.status === "queued") {
+    return { label: run.status, badgeClass: "running" };
+  }
+  if (run.status === "failed") return { label: "failed", badgeClass: "no" };
+  if (run.status === "cancelled") return { label: "cancelled", badgeClass: "no" };
+  if (run.has_report) return { label: "report", badgeClass: "ok" };
+  return { label: "no report", badgeClass: "no" };
+}
+
 async function loadRuns() {
   const listEl = $("#runs-list");
   listEl.innerHTML = `<span class="label">Loading...</span>`;
@@ -633,18 +850,32 @@ async function loadRuns() {
   listEl.innerHTML = "";
   if (!runs.length) { listEl.innerHTML = `<span class="label">No runs yet.</span>`; return; }
   for (const run of runs) {
+    const isActive = run.status === "running" || run.status === "queued";
+    const { label, badgeClass } = runStatusInfo(run);
     const card = document.createElement("div");
     card.className = "run-card";
-    const badge = run.has_report
-      ? `<span class="tagbadge ok">report</span>` : `<span class="tagbadge no">no report</span>`;
     const info = document.createElement("div");
     info.innerHTML = `
-      <div class="query">${escapeHtml(run.query || run.run_id)}${badge}</div>
+      <div class="query">${escapeHtml(run.query || run.run_id)}<span class="tagbadge ${badgeClass}">${label}</span></div>
       <div class="meta">${new Date(run.timestamp).toLocaleString()} — ${escapeHtml(run.run_id)}</div>
     `;
     card.appendChild(info);
     const actions = document.createElement("div");
-    if (run.has_report) {
+
+    if (isActive) {
+      // Never "Resume" while it's already running -- that's the exact double-dispatch the
+      // backend's 409 guard exists to reject; reattaching to what's already live is the only
+      // correct action here.
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = "View progress";
+      btn.className = "secondary small";
+      btn.addEventListener("click", () => {
+        document.querySelector('nav.tabs button[data-tab="research"]').click();
+        attachToRun(run.run_id, run.query || run.run_id);
+      });
+      actions.appendChild(btn);
+    } else if (run.has_report) {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.textContent = "View report";
@@ -665,13 +896,7 @@ async function loadRuns() {
           return;
         }
         document.querySelector('nav.tabs button[data-tab="research"]').click();
-        logEl.style.display = "block";
-        logEl.textContent = "";
-        resultsEl.style.display = "none";
-        followupBox.style.display = "none";
-        submitBtn.disabled = true;
-        cancelBtn.style.display = "inline-block";
-        watchStream(run.run_id, run.query || run.run_id);
+        attachToRun(run.run_id, run.query || run.run_id);
       });
       actions.appendChild(btn);
     }
@@ -814,6 +1039,21 @@ $("#save-settings").addEventListener("click", async () => {
 
 // Populate the station readout on load without requiring the Settings tab to be opened first.
 loadSettings();
+
+// Reattach to whatever's already in flight, if anything -- a page reload (or a run started/
+// resumed from outside this browser tab entirely, e.g. via curl) previously left the Research
+// tab showing an idle form with no indication a run was still going (confirmed live, 2026-08-02).
+// The transmission log won't replay history from before this page loaded -- the backend's
+// per-run event queue is drained as it's read, there's nothing to replay -- but the run itself,
+// its live cancel button, and its eventual report ARE all real and reachable from here.
+(async () => {
+  const res = await api("/active");
+  if (!res.ok) return;
+  const { run_id, query } = await res.json();
+  if (!run_id) return;
+  document.querySelector('nav.tabs button[data-tab="research"]').click();
+  attachToRun(run_id, query || run_id);
+})();
 </script>
 </body>
 </html>

@@ -328,7 +328,7 @@ async def start_research(
         tmp.close()
         seed_doc_paths.append(tmp.name)
 
-    _jobs[run_id] = {"status": "queued", "queue": asyncio.Queue(), "error": None, "task": None}
+    _jobs[run_id] = {"status": "queued", "queue": asyncio.Queue(), "error": None, "task": None, "query": query}
     await _job_queue.put((run_id, query, {
         "mode": "fresh", "depth": depth, "style": style,
         "seed_urls": seed_urls, "seed_doc_paths": seed_doc_paths,
@@ -349,7 +349,7 @@ async def resume_research(run_id: str):
     if not query:
         raise HTTPException(400, f"Run {run_id} recorded no query -- cannot resume automatically.")
 
-    _jobs[resolved_run_id] = {"status": "queued", "queue": asyncio.Queue(), "error": None, "task": None}
+    _jobs[resolved_run_id] = {"status": "queued", "queue": asyncio.Queue(), "error": None, "task": None, "query": query}
     await _job_queue.put((resolved_run_id, query, {"mode": "resume", "prior_state": prior_state}))
     return {"run_id": resolved_run_id, "status": "queued"}
 
@@ -367,7 +367,7 @@ async def followup_research(run_id: str, query: str = Form(...)):
     if prior_job is not None and prior_job["status"] in ("queued", "running"):
         raise HTTPException(400, f"Run {run_id} must be finished before a follow-up (status: {prior_job['status']})")
 
-    _jobs[run_id] = {"status": "queued", "queue": asyncio.Queue(), "error": None, "task": None}
+    _jobs[run_id] = {"status": "queued", "queue": asyncio.Queue(), "error": None, "task": None, "query": query}
     await _job_queue.put((run_id, query, {"mode": "followup"}))
     return {"run_id": run_id, "status": "queued"}
 
@@ -390,6 +390,19 @@ async def research_status(run_id: str):
     if job is None:
         raise HTTPException(404, "Unknown run_id")
     return {"status": job["status"], "error": job["error"]}
+
+
+@app.get("/active")
+async def active_research():
+    # The single-worker-queue design (see module docstring) means at most one run is ever
+    # "queued" or "running" at a time process-wide, so this is unambiguous. Lets the frontend
+    # discover and reattach to an in-flight run on page load -- confirmed live, 2026-08-02, this
+    # was missing entirely: a resume triggered from outside the browser (or just a page reload
+    # mid-run) left the UI showing an idle form with no way to tell a run was still going.
+    for run_id, job in _jobs.items():
+        if job["status"] in ("queued", "running"):
+            return {"run_id": run_id, "query": job.get("query", run_id)}
+    return {"run_id": None}
 
 
 @app.get("/runs")
