@@ -103,6 +103,31 @@ def main():
     assert not _specialist_fetch_over_cap(current_count=0, cap=5), (
         "a task's very first fetch must always be allowed")
 
+    # --- _find_sibling_fetch (2026-08-01, RESEARCH.md Sec.17g): delegate_tasks' own Analyzer-URL
+    # validation used to give the SAME "call fetch_url_to_workspace yourself first" advice whether
+    # a URL was never fetched by anyone this run, or already fetched by a DIFFERENT task -- the
+    # second case is a dead end (fetch_url_to_workspace's own cross-task dedup will just reject
+    # that retry too), confirmed live to burn a task's entire delegate_tasks quota (5-9 calls)
+    # retrying the identical rejected shape before giving up and narrating fabricated findings
+    # from search-snippet text alone. This is the lookup that lets the rejection message tell the
+    # two cases apart and give accurate advice. ---
+    from engine.orchestrator import _find_sibling_fetch
+    _fetched = [
+        {"url": "https://example.co/a", "filename": "sources/a.md"},
+        {"url": "https://example.co/b/", "filename": "sources/b.md"},  # trailing slash on record
+    ]
+    assert _find_sibling_fetch("https://example.co/a", _fetched) == _fetched[0], (
+        "an exact match (modulo trailing slash) must resolve to its real saved filename")
+    assert _find_sibling_fetch("https://example.co/a/", _fetched) == _fetched[0], (
+        "the LOOKED-UP url's own trailing slash must not prevent a match either")
+    assert _find_sibling_fetch("https://example.co/b?utm_source=x", _fetched) == _fetched[1], (
+        "a real prefix-match variant (redirect/query-string drift) must still resolve")
+    assert _find_sibling_fetch("https://example.co/never-fetched", _fetched) is None, (
+        "a URL nobody has fetched this run must return None -- the ORIGINAL 'call "
+        "fetch_url_to_workspace yourself first' advice is correct for this case, not a trap")
+    assert _find_sibling_fetch("https://example.co/a", []) is None, (
+        "an empty fetched-urls list (nothing fetched at all yet) must not crash or false-match")
+
     # --- analyzer per-dispatch read/grep cap (2026-08-01, third instance of the same recurring
     # shape as the two caps above -- RESEARCH.md Sec.16: one Analyzer dispatch burned 34-40 of the
     # shared, whole-run grep_workspace_file quota chasing a hard document, starving every OTHER

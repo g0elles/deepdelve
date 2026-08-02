@@ -3041,3 +3041,50 @@ match that source's actual content); and `task_verification_flagged` itself rema
 bug this whole 17a-17f chain targeted — a whole facet silently vanishing with nothing anywhere
 able to see or fix it — is confirmed fixed. Ordinary, already-flagged, per-claim grounding quality
 issues are a separate, correctly-surfaced-not-hidden concern, not evidence the fix didn't work.
+
+### 17g. Why those two specific tasks never produced a real source: not a quality problem, a
+dead-end error message
+
+Per user's follow-up request to investigate WHY `Lisbon_CentralApartment_RentalCost_BaixaChiado`
+and `Mexico_DigitalNomadVisa_RelocatemeSummary` specifically kept producing fabricated/unusable
+sources across every retry (the two tasks `task_verification_flagged` still had open in 17f's own
+live-test verdict). Read the raw persisted session transcript directly
+(`~/.deepdelve/sessions/session_72e58d6e-*.json`, `ui_events` — has full tool-call arguments,
+unlike the eval harness's own `agent_stdout.log`, which only logs tool NAMES).
+
+Both tasks hit the identical pattern: `web_search` surfaced a promising URL in a snippet;
+`delegate_tasks` was called to send an Analyzer to read it; a real, deliberate existing check
+(`orchestrator.py`'s Analyzer-URL validation, `delegation_tasks`'s own closure) correctly rejected
+it — an Analyzer may only be told to read a URL the CALLING task itself actually fetched, scoped
+to `task_fetched_urls_ctx`, not the whole run. That invariant is sound in general. But in both
+these cases, the URL HAD already been fetched — by a *different* task earlier in the same run.
+`fetch_url_to_workspace`'s own cross-task dedup then rejects a fresh fetch attempt ("Already
+fetched this run — see workspace file X"). The rejection message's own advice — *"call
+fetch_url_to_workspace on it yourself first, THEN delegate with the real saved filename"* — is
+flatly wrong in this specific situation: that fetch attempt is guaranteed to hit the dedup wall
+again. The model had no way out: URL path rejected, suggested fix path also a dead end.
+
+**Consequence, read directly from the transcript**: both tasks burned their entire `delegate_tasks`
+quota (5 and 9 calls respectively) retrying the IDENTICAL rejected shape — never once trying the
+filename instead — then gave up and narrated a "findings" summary straight from the original
+search-snippet text, never a real, verified read of the actual fetched file.
+`check_task_verification_flagged` then correctly caught that narration as fabricated — which is
+exactly right; the finding genuinely wasn't grounded in anything read. **This was never a source-
+quality problem** — the source (e.g. `globallawexperts.com`, `relocateme.substack.com`) may have
+been perfectly fine; the model just could never get a working Analyzer dispatch through to read it.
+
+**Fixed**: new pure `_find_sibling_fetch(url, fetched_urls)` (`src/engine/orchestrator.py`, next to
+`_planner_delegate_over_cap`) looks up `get_fetched_urls()` (the SAME whole-run registry
+`fetch_url_to_workspace`'s own dedup already trusts) for the rejected URL. The Analyzer-URL
+validation's error message now distinguishes two genuinely different cases: nobody has fetched
+this URL yet (original advice — fetch it yourself first — is correct, unchanged) vs. a sibling
+task already fetched it (new message: names the real saved filename directly, explicitly says NOT
+to retry `fetch_url_to_workspace`, since that's the exact dead end just traced). New dedicated
+unit test for `_find_sibling_fetch` (exact match with trailing-slash normalization, a real
+prefix-match/redirect-variant case, the never-fetched case correctly returning `None`, and an
+empty registry not crashing). Full suite green, `ruff check .` clean (checked locally before
+pushing this time, after 17e/17f's own CI break from an unrelated f-string lint issue).
+
+**Not yet live-tested** — implemented and unit-verified only. Next: a fresh run or resume hitting
+this exact dedup-collision shape again would confirm the corrected message actually gets the model
+to delegate with the filename instead of looping.

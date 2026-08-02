@@ -313,6 +313,33 @@ def _planner_delegate_over_cap(current_count: int, cap: int) -> bool:
     return current_count >= cap
 
 
+def _find_sibling_fetch(url: str, fetched_urls: list) -> Optional[dict]:
+    """Does `url` already exist in `fetched_urls` (get_utils.run_state.get_fetched_urls()'s
+    whole-run registry -- the SAME one fetch_url_to_workspace's own cross-task dedup check
+    already trusts), fetched by some OTHER task this run? Returns that entry (with its real
+    saved `filename`) if so, else None.
+
+    Exists to fix a dead-end trap in delegate_tasks' own Analyzer-URL validation, confirmed live
+    2026-08-01 (RESEARCH.md Sec.17g): when a task instructs an Analyzer to read a URL it didn't
+    fetch itself, the validation's own advice ("call fetch_url_to_workspace yourself first") is
+    WRONG, not just unhelpful, if a SIBLING task already fetched that exact URL this run --
+    fetch_url_to_workspace's dedup check will just reject that retry too, and the model has no
+    way out. Confirmed live: two tasks each burned their entire delegate_tasks quota (5-9 calls)
+    retrying the identical rejected shape, never once trying the real filename instead, then
+    narrated a findings summary from search-snippet text alone -- exactly what check_task_
+    verification_flagged then correctly caught as fabricated. Distinguishing "never fetched by
+    anyone" from "fetched by a sibling, here's the real filename" lets the rejection message give
+    accurate, actionable advice in both cases instead of routing the second one back into the
+    trap."""
+    from utils.grounding import _urls_prefix_match
+    target = url.rstrip("/")
+    for entry in fetched_urls:
+        entry_url = (entry.get("url") or "").rstrip("/")
+        if entry_url == target or _urls_prefix_match(target, entry_url):
+            return entry
+    return None
+
+
 def _get_quota_format_vars() -> dict:
     """Extract all quotas from config as {tool_name_quota: int} format variables.
 
@@ -1539,15 +1566,32 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                         and not any(_urls_prefix_match(u.rstrip("/"), f) for f in own_fetched)
                     ]
                     if unfetched:
-                        errors.append(
-                            f"Task {i} ({t.get('task_name')!r}): instructs {t.get('agent_id')} to "
-                            f"read {unfetched[0]!r}, but that URL was never actually fetched this "
-                            f"task — it looks like it came from a search-result snippet, not a real "
-                            f"fetch_url_to_workspace call. {t.get('agent_id')} can only read files "
-                            f"you actually fetched; if this source matters, call "
-                            f"fetch_url_to_workspace on it yourself first, THEN delegate the "
-                            f"analysis with the real saved filename."
-                        )
+                        # See _find_sibling_fetch's own docstring for why this distinction exists
+                        # (RESEARCH.md Sec.17g) -- the generic advice below is WRONG, not just
+                        # unhelpful, when a sibling task already fetched this exact URL.
+                        from utils.run_state import get_fetched_urls
+                        u0 = unfetched[0]
+                        already = _find_sibling_fetch(u0, get_fetched_urls())
+                        if already:
+                            errors.append(
+                                f"Task {i} ({t.get('task_name')!r}): instructs {t.get('agent_id')} "
+                                f"to read {u0!r} — that URL was already fetched by a DIFFERENT task "
+                                f"this run (not this one), saved as {already.get('filename')!r}. Do "
+                                f"NOT call fetch_url_to_workspace on it again — it will just tell "
+                                f"you it's already fetched, which wastes a call and gets you no "
+                                f"further. Delegate {t.get('agent_id')} with the real saved "
+                                f"filename directly ({already.get('filename')!r}), not the URL."
+                            )
+                        else:
+                            errors.append(
+                                f"Task {i} ({t.get('task_name')!r}): instructs {t.get('agent_id')} to "
+                                f"read {u0!r}, but that URL was never actually fetched this "
+                                f"task — it looks like it came from a search-result snippet, not a real "
+                                f"fetch_url_to_workspace call. {t.get('agent_id')} can only read files "
+                                f"you actually fetched; if this source matters, call "
+                                f"fetch_url_to_workspace on it yourself first, THEN delegate the "
+                                f"analysis with the real saved filename."
+                            )
                         continue
                 # Sibling bug to the unfetched-URL check above, confirmed live in the SAME
                 # benchmark run (2026-07-19): the URL WAS genuinely fetched, but the Searcher
