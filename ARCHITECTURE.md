@@ -324,13 +324,61 @@ to behave differently on a fresh run vs. a resumed one? Check both `run_cli`'s r
 `BasicTuiAgent._resume_run`/`run_agent` — per this project's own TUI/CLI-parity rule (`CLAUDE.md`),
 a fix in one without the other is an incomplete fix, not a smaller one.
 
-## 5. Quick-reference: "I'm adding X, what do I need to check?"
+## 5. A third dispatch surface (`src/api.py`) and the module-globals it can't touch concurrently
+
+**Where**: `src/api.py`, added 2026-08-02 as an optional FastAPI HTTP API + web UI, alongside
+`run_cli`/`run_agent` (`src/engine/tui.py`).
+
+**The landmine, found before writing any of it, not after**: `src/engine/orchestrator.py`'s
+`_session` (conversational-memory cache, mutated inside `create_local_agent`) and `src/engine/
+tui.py`'s `_session_events`/`_current_session_id`/`_current_call_by_source`/
+`_current_text_by_source` (mutated by `log_stream_content`/`log_prompt`, used for the persisted
+`~/.deepdelve/sessions/session_*.json` log) are module-level **globals**, not
+`contextvars.ContextVar`s — confirmed by reading `create_local_agent`'s and `log_stream_content`'s
+actual bodies, not assumed. Every OTHER piece of per-run state in this codebase already is a real
+contextvar (`tool_quotas_ctx`, `session_dir_ctx`, `run_state_ctx`, `fetched_urls_ctx`, etc.) —
+these five are the sole exception, a real gap that only matters once something tries to run two
+research turns *concurrently in one process*, which `run_cli` (one-shot per process) and
+`run_agent` (one interactive user, one turn at a time) both structurally never do. `api.py` is the
+first surface that even could: it's a long-running server that could in principle serve many
+callers.
+
+**Design consequence, not a workaround bolted on after**: `api.py` never touches
+`_session_events`/`_current_session_id`/etc. at all (a fourth accidental writer would only compound
+the problem) and runs research jobs through a single in-process FIFO queue + one worker coroutine
+— always single-flight, by construction, not by a lock added defensively. If a future feature
+needs real concurrent multi-run execution, the fix is making those five globals contextvars (or an
+equivalent per-run registry), not adding a second queue or a mutex around the existing ones.
+
+**A second, narrower instance of the same class of gap**: `api.py`'s `/research/{id}/followup`
+originally assumed `orchestrator_module._session` would still hold the right conversation when the
+follow-up ran — wrong, because the shared queue can run an unrelated job in between, and that
+job's own session reset silently clobbers it. Fixed by persisting `session.to_dict()` to
+`<run_dir>/_agent_session.json` per-run (reusing the same `AgentSession.to_dict()`/`from_dict()`
+mechanism `--resume <session_id>` already relies on for a different purpose — see §4) instead of
+trusting the global to have survived. **Checklist for anything that needs "the same conversation
+across two separate calls" outside of `run_cli`/`run_agent`'s own single-process-per-invocation
+shape**: don't reach for `orchestrator_module._session` directly: persist and reload explicitly.
+
+**`skip_completion_check` (`run_agent`'s `is_followup` branch, `tui.py`) has an exact precedent
+`api.py` had to mirror, not reinvent**: a follow-up in a conversation whose report already exists
+is Q&A over existing research, not a new research run — the artifact/grounding contract was
+already enforced when the report was first produced, so the full completion-check/artifact-rewrite
+pipeline must NOT run again. Missing this (an early version of `api.py`'s own `/followup`) makes a
+follow-up question repeatedly reject `findings.md` rewrites and never touch `final_report.md` at
+all, confirmed live 2026-08-02. **Checklist for a new follow-up-shaped dispatch anywhere**: `mode
+== "followup" and config.get_required_artifact() in get_workspace_files()` is the exact condition
+that must gate whether the full completion-check loop runs — copy the condition, don't approximate
+it.
+
+## 6. Quick-reference: "I'm adding X, what do I need to check?"
 
 | Adding... | Check these |
 |---|---|
 | A new completion-check problem | §1's four-tuple checklist + verdict-matrix test row |
 | A new `run_state.data` key that should survive `--resume-run` | §3: both resume-carryover tuples (`run_cli`, `_resume_run`) |
 | A new sub-agent dispatch role | Does its first message look like FindingsWriter's (one big self-contained blob) or like everyone else's (built up turn-by-turn)? → §2's compaction-exclusion question. Does it need `write_workspace_file` gated behind something else? → `writer_gate_ctx` pattern. |
+| A new entry point that dispatches research turns (beyond `run_cli`/`run_agent`) | §5: does it run turns concurrently in one process? The five module-level globals (`_session` and `tui.py`'s session-log state) are NOT contextvar-safe — either guarantee single-flight (the route `api.py` took) or make those globals contextvars first. Does it need follow-up/same-conversation continuation? → persist `AgentSession.to_dict()` per-run, don't trust the global to survive between calls. Does it need "Q&A on an existing report" semantics? → mirror `skip_completion_check`'s exact condition, don't approximate it. |
 | A new config key under `settings.*` | `config_template.yaml` (documented default) AND confirm it's read with a safe `.get(..., default)` — this project's convention is "absent in the live `~/.deepdelve/config.yaml` is fine," never require a live-config edit for a new default-on feature |
 | Anything that changes behavior based on "how far has this run gotten" | §4: both `run_cli` and the TUI's resume/follow-up paths |
 | A new tool result shape or error format | `CLAUDE.md`'s own blast-radius rule: the TUI's `ToolCallWidget` rendering, `log_stream_content`'s persisted event log, `utils/grounding.py`'s citation/error detection |
@@ -341,7 +389,7 @@ a fix in one without the other is an incomplete fix, not a smaller one.
 This table is not exhaustive by construction — it's the set of landmines this project has actually
 stepped on. When you find a new one, add a row here instead of just fixing the instance.
 
-## 6. Serving endpoint: OpenAI-compat vs. Ollama's native API
+## 7. Serving endpoint: OpenAI-compat vs. Ollama's native API
 
 **Where**: `src/engine/orchestrator.py`'s `_get_default_options()`, `config.cfg["api"]["openai_base_url"]`.
 
