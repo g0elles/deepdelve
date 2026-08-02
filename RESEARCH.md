@@ -2959,6 +2959,67 @@ wording would be misleading here — this is round 0, nothing was actually run) 
 tool no longer allows. New dedicated tests: `merge_resumed_state`'s gating logic (both the
 report-exists and no-report cases), and the updated stage-note wording. Full suite green.
 
-**Not yet live-tested** — implemented and unit-verified only. Next step: resume the same
-interrupted run once more (or rerun fresh) to confirm the resumed Planner can no longer redelegate
-past an existing report, and that `report_underuses_evidence` actually gets a turn this time.
+**Live-tested**: resumed the same interrupted run a second time. Confirmed working exactly as
+designed — the Planner never called `delegate_tasks` once, responding to every completion-check
+nudge with "Understood, no further delegation will be performed" and stopping. Run finished in
+**67 seconds** (down from 1435.8s the first resume attempt). But `final_report.md` came out
+byte-for-byte identical yet again — still Mexico-only, Lisbon still absent — for a reason 17e
+didn't touch: `task_verification` (the ledger flagging two tasks as fabricated) is itself carried
+over on resume via `_RESUME_CARRYOVER_KEYS`, so `check_task_verification_flagged` fired
+immediately on attempt 1 regardless of whether the Planner delegated anything new, and dominated
+6 of 7 completion-check attempts again — same structural cause as 17e's own incident, just with
+the trigger now pre-existing instead of self-created.
+
+### 17f. The two-tier gate itself: GROUNDING_CHECKS structurally never runs while ANYTHING in
+COMPLETION_CHECKS keeps recurring, old or new
+
+Per user's explicit direction ("go into that" — the deeper architectural cause, not another
+targeted patch): `run_completion_check` only ever evaluates `GROUNDING_CHECKS` when
+`COMPLETION_CHECKS`'s own scan returns `None` for every check in the list
+(`verdict = next(... for check in COMPLETION_CHECKS ...); if verdict is None and grounding_check
+enabled: ... GROUNDING_CHECKS scan`). This is a hard two-tier gate, not just first-match priority
+within one list — as long as ANY `COMPLETION_CHECKS` problem keeps returning non-`None`,
+`GROUNDING_CHECKS` (where `report_underuses_evidence` lives) never gets evaluated at all, no
+matter how many attempts pass. 17e's own capping/yield mechanisms all worked exactly as designed
+in the second resume — `check_task_verification_flagged` is correctly `_capped()`, and the
+existing `_yield_to_starved_check(verdict, ctx, check_untracked_delegation, ...)` correctly
+protected that one specific sibling — the gate itself was simply never built to let a
+`GROUNDING_CHECKS` check interrupt a recurring `COMPLETION_CHECKS` one.
+
+**Fixed**: reused the EXISTING generic `_yield_to_starved_check` mechanism unchanged (the same
+function already protecting `check_untracked_delegation`, which takes any `starved_check` callable
+and doesn't care which list it nominally belongs to) — added one more call right after the
+existing one, targeting `check_report_underuses_evidence` directly, applied to the
+`COMPLETION_CHECKS` verdict before the tier gate is even evaluated:
+
+```python
+verdict = next((v for check in COMPLETION_CHECKS if (v := check(ctx)) is not None), None)
+verdict = _yield_to_starved_check(verdict, ctx, check_untracked_delegation, never_final_blocker=True)
+if verdict is not None and grounding_check.enabled:
+    verdict = _yield_to_starved_check(verdict, ctx, check_report_underuses_evidence)
+```
+
+`check_report_underuses_evidence` doesn't itself depend on `ctx.grounding_problem` (it reads
+`ctx.content`/`run_state.data["findings"]` directly via `_facet_coverage`, unlike the citation-
+accuracy checks that key off `real_grounding_problem()`), so it's safe to probe before the normal
+`GROUNDING_CHECKS` scan even runs — gated on `grounding_check.enabled` anyway, for consistency with
+the master switch. `never_final_blocker` deliberately left at its default `False`, unlike
+`check_untracked_delegation`'s usage: a real dropped-facet problem winning as the run's terminal
+reported blocker is correct, not something to protect against. `_yield_to_starved_check` itself
+was already proven safe to call speculatively (pure reads, no side effects) — reusing it here adds
+no new risk class, just a new call site.
+
+New dedicated end-to-end test (not just the already-covered helper): a task genuinely flagged by
+`check_task_verification_flagged` (a real http source_url carrying a `[SYSTEM VERIFICATION
+WARNING...]` marker, so `check_thin_coverage` — a HIGHER-priority sibling that only cares whether
+a task has any real URL at all — stays quiet, isolating the check actually under test) alongside a
+genuinely dropped facet (`report_underuses_evidence`'s own trigger, requiring `min_tasks>=2` real
+covered tasks in `by_task` to even evaluate — a first attempt at this test used only one covered
+task and silently never fired, caught by an assertion failure showing `task_verification_flagged`
+winning instead). Confirms `report_underuses_evidence` gets a real turn, dispatches Builder scoped
+correctly, and the fix lands — while the still-unresolved `task_verification_flagged` problem
+correctly continues to get addressed in later iterations too, not silently dropped. Full suite
+green.
+
+**Not yet live-tested** — implemented and unit-verified only. Next: resume the same interrupted
+run a third time to confirm Lisbon finally makes it into the report.

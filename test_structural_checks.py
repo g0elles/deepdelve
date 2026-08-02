@@ -4096,6 +4096,130 @@ def main():
 
     contextvars.copy_context().run(_per_facet_builder_dispatch_scenario)
 
+    # --- Cross-TIER starvation yield (2026-08-01, RESEARCH.md Sec.17f): GROUNDING_CHECKS is only
+    # ever evaluated when COMPLETION_CHECKS returns None for the WHOLE scan -- a hard two-tier
+    # gate, not just first-match priority within one list. Live-confirmed: a resumed run's
+    # check_task_verification_flagged (COMPLETION_CHECKS) recurred for 6 of 8 attempts on a real,
+    # still-unresolved problem, and report_underuses_evidence (GROUNDING_CHECKS, built specifically
+    # to catch a Builder draft dropping a covered facet) never got evaluated ONCE in the entire
+    # run. run_completion_check must give report_underuses_evidence one direct probe (via the
+    # EXISTING generic _yield_to_starved_check mechanism, already protecting
+    # check_untracked_delegation the same way) once the CURRENT COMPLETION_CHECKS winner has
+    # recurred _STARVATION_SKIP_THRESHOLD times, regardless of which COMPLETION_CHECKS problem is
+    # winning. ---
+    def _cross_tier_starvation_yield_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        from tools.core import tool_quotas_ctx as q_ctx
+        from unittest.mock import AsyncMock
+        from engine.orchestrator import available_sub_agents_ctx
+
+        class _FakeSubAgentConfig:
+            def __init__(self, name):
+                self.name = name
+
+        _orig_ws_ct = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
+        _orig_gc_ct = _config.cfg.get("settings", {}).get("grounding_check")
+        _config.cfg["settings"]["grounding_check"] = {"nli_verify": False, "topical_relevance_check": False}
+        _orig_uc_ct = _config.cfg.get("settings", {}).get("uneven_coverage_check")
+        _config.cfg["settings"]["uneven_coverage_check"] = {"enabled": False}
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            _IN_MEMORY_FS.clear()
+            reset_fetched_urls()
+            # Task A: a real, citable, DROPPED-from-report facet (report_underuses_evidence's own
+            # trigger condition). Task C (colombia): a second real, citable, COVERED task -- needed
+            # because check_report_underuses_evidence requires min_tasks>=2 real covered tasks in
+            # by_task before it evaluates at all (a single-task by_task can't distinguish "dropped"
+            # from "there was only ever one thing to cite").
+            heur_urls = ["https://a.example.co/heur1", "https://a.example.co/heur2"]
+            colo_urls = ["https://c.example.co/colo1", "https://c.example.co/colo2"]
+            for u in heur_urls + colo_urls:
+                record_fetched_url(u, filename=f"sources/{u.rsplit('/', 1)[-1]}.md")
+            findings_md = "\n\n".join(f"### [Src]({u})\n- real finding." for u in heur_urls + colo_urls)
+            _IN_MEMORY_FS["findings.md"] = findings_md
+            # Report drops heuristics entirely, cites only colombia.
+            _IN_MEMORY_FS["final_report.md"] = "\n".join(f"- dato. [Src]({u})" for u in colo_urls)
+
+            with tempfile.TemporaryDirectory() as tmpdir_ct:
+                rs = RunState(tmpdir_ct)
+                run_state_ctx.set(rs)
+                for u in heur_urls:
+                    rs.add_finding(u, "heuristic finding", task_name="heuristics", depth=1)
+                for u in colo_urls:
+                    rs.add_finding(u, "colombia finding", task_name="colombia", depth=1)
+                # Task B: a genuinely FLAGGED task -- a REAL http source_url (so check_thin_coverage,
+                # which sits ABOVE task_verification_flagged in COMPLETION_CHECKS and only cares
+                # whether a task has ANY real URL, stays quiet) but a summary carrying a SYSTEM
+                # VERIFICATION WARNING marker, which _is_citable_finding specifically excludes --
+                # this isolates task_verification_flagged as the actual COMPLETION_CHECKS winner,
+                # not a different, higher-priority sibling check.
+                rs.add_finding(
+                    "https://flagged.example.co/page",
+                    "[SYSTEM VERIFICATION WARNING: this summary cites 'X', which does not match "
+                    "the source URL you were actually given to analyze.]",
+                    task_name="flagged_task", depth=1,
+                )
+                q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5}})
+                available_sub_agents_ctx.set([_FakeSubAgentConfig("Builder"), _FakeSubAgentConfig("PeerReviewer")])
+
+                # Pre-seed 2 consecutive prior attempts already recording task_verification_flagged
+                # -- _STARVATION_SKIP_THRESHOLD (2) worth of history, so THIS call's own yield check
+                # is already past the skip threshold.
+                rs.record_attempt(0, "task_verification_flagged", 2)
+                rs.record_attempt(1, "task_verification_flagged", 2)
+                rs.attempt = 2
+
+                async def _side_effect_ct(name, instructions, role):
+                    if role == "Builder":
+                        assert "heuristics" in instructions, instructions
+                        _IN_MEMORY_FS["final_report.md"] += "\n" + "\n".join(
+                            f"- dato. [Src]({u})" for u in heur_urls)
+                        return "## Result\nAdded heuristics section\n---"
+                    return "REVIEW: CLEAN\nNo issues found."
+
+                dispatch = AsyncMock(side_effect=_side_effect_ct)
+                msgs = []
+                should_retry, _ = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append,
+                    dispatch_task=dispatch))
+                recorded_problems = [a["problem"] for a in rs.data["completion_check_attempts"]]
+                # report_underuses_evidence must have won a turn and been genuinely dispatched
+                # (Builder called, scoped to heuristics, and cleanly reviewed) somewhere in this
+                # run -- NOT necessarily the LAST recorded problem, since _dispatch_per_facet_
+                # builder_fix chains straight into the next completion-check iteration rather than
+                # returning, and that next iteration correctly goes on to address the STILL-
+                # unresolved flagged_task afterward. The point being tested is that GROUNDING_CHECKS
+                # got a turn at all, not that it's the run's final word.
+                assert "report_underuses_evidence" in recorded_problems, (
+                    "after task_verification_flagged recurred past the starvation threshold, "
+                    "report_underuses_evidence must get a direct probe and win if it has something "
+                    "real to report -- GROUNDING_CHECKS must not be starved forever just because "
+                    "COMPLETION_CHECKS keeps returning non-None", recorded_problems, msgs)
+                assert any(
+                    call.args[2] == "Builder" and "heuristics" in call.args[1]
+                    for call in dispatch.call_args_list
+                ), dispatch.call_args_list
+                assert any("dispatching Builder once per neglected facet" in m for m in msgs), msgs
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            if _orig_ws_ct is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws_ct
+            if _orig_gc_ct is None:
+                _config.cfg["settings"].pop("grounding_check", None)
+            else:
+                _config.cfg["settings"]["grounding_check"] = _orig_gc_ct
+            if _orig_uc_ct is None:
+                _config.cfg["settings"].pop("uneven_coverage_check", None)
+            else:
+                _config.cfg["settings"]["uneven_coverage_check"] = _orig_uc_ct
+
+    contextvars.copy_context().run(_cross_tier_starvation_yield_scenario)
+
     # --- Per-facet FindingsWriter dispatch for findings_underuses_evidence (2026-08-01): the
     # combined-instruction version (routed through _FINDINGS_WRITER_FIXABLE_PROBLEMS until this
     # fix) got the same live-confirmed negative result as report_underuses_evidence's own Builder-

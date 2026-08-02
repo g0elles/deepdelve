@@ -2865,6 +2865,28 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
             # attempt is never recognized as a success (it just falls through silently).
             verdict = next((v for check in COMPLETION_CHECKS if (v := check(ctx)) is not None), None)
             verdict = _yield_to_starved_check(verdict, ctx, check_untracked_delegation, never_final_blocker=True)
+            # Cross-TIER starvation, not just within-list (2026-08-01, RESEARCH.md Sec.17f):
+            # GROUNDING_CHECKS is only ever evaluated at all when COMPLETION_CHECKS returns None
+            # for the whole scan below -- a hard two-tier gate, not just first-match priority
+            # within one list. Live-confirmed: a resumed run's check_task_verification_flagged
+            # (COMPLETION_CHECKS) recurred for 6 of 8 attempts on a genuinely real, still-unresolved
+            # problem -- not a bug, _capped()/_yield_to_starved_check above both worked as designed
+            # -- and report_underuses_evidence (GROUNDING_CHECKS, built specifically to catch a
+            # Builder draft dropping a covered facet) never got evaluated ONCE in the entire run, no
+            # matter how many attempts passed, because GROUNDING_CHECKS structurally never got a
+            # turn while ANYTHING in COMPLETION_CHECKS kept returning non-None -- old, carried-over,
+            # or brand new, it doesn't matter which. Reuses _yield_to_starved_check unchanged (same
+            # mechanism already protecting check_untracked_delegation above, generic regardless of
+            # which COMPLETION_CHECKS problem is currently winning) rather than a new bespoke
+            # cross-tier mechanism. never_final_blocker=False (the default): unlike
+            # check_untracked_delegation, a real dropped-facet problem winning as the run's
+            # terminal reported blocker is correct, not something to protect against. Gated on
+            # grounding_check.enabled for the same reason the real GROUNDING_CHECKS scan below is —
+            # report_underuses_evidence only conceptually belongs to that tier by list membership,
+            # it doesn't itself require ctx.grounding_problem, so it would otherwise bypass the
+            # master switch entirely.
+            if verdict is not None and config.cfg.get("settings", {}).get("grounding_check", {}).get("enabled", True):
+                verdict = _yield_to_starved_check(verdict, ctx, check_report_underuses_evidence)
             if verdict is not None:
                 verdict = _with_other_problems_addendum(verdict, ctx, COMPLETION_CHECKS)
             # grounding_check.enabled is the section's master switch — before this guard it was a
