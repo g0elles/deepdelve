@@ -231,6 +231,20 @@ async def _run_research(run_id: str, query: str, opts: dict, events: asyncio.Que
         run_stream_chars = 0
         has_requests = True
 
+        # Every turn's full Planner text, oldest first -- NOT just the current turn's turn_text.
+        # tui.py's own _find_last_substantial_text exists specifically because passing only the
+        # immediately-preceding turn's text to the final-verdict salvage loses a genuinely good
+        # narrated report from an EARLIER turn when a later retry's turn (e.g. one that's pure
+        # tool calls, or a short "quota exhausted, stopping" acknowledgment) produces little or no
+        # text of its own -- confirmed as a real bug there against a live session log. This
+        # function never had the equivalent: it only ever passed the CURRENT turn_text as
+        # last_assistant_text, with no find_substantial_text callback at all, so it silently
+        # inherited the same already-fixed-elsewhere bug. Confirmed live 2026-08-02: a run whose
+        # Planner narrated a long, real synthesis several turns before quota exhaustion ended with
+        # zero files written at all, because the actual final turn was short and there was nothing
+        # else to fall back to.
+        planner_text_history = []
+
         while has_requests:
             has_requests = False
             user_input_requests = []
@@ -246,6 +260,9 @@ async def _run_research(run_id: str, query: str, opts: dict, events: asyncio.Que
                     elif hasattr(c, "function_call") and c.function_call is not None:
                         user_input_requests.append(c)
 
+            if turn_text:
+                planner_text_history.append(turn_text)
+
             if user_input_requests:
                 has_requests = True
                 new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
@@ -259,6 +276,23 @@ async def _run_research(run_id: str, query: str, opts: dict, events: asyncio.Que
 
             def _api_notify(msg: str):
                 asyncio.create_task(events.put({"type": "system", "text": msg}))
+                # api.py has no persisted session-transcript equivalent to tui.py's
+                # ~/.deepdelve/sessions/session_*.json -- an event only ever reaches whoever
+                # happens to have an SSE connection open at that exact moment, and is gone once
+                # drained. That made a real incident (2026-08-02: a run ended with zero artifacts
+                # and no one watching live) impossible to post-mortem after the fact. These are
+                # exactly the completion-check's own diagnostic messages (retry-budget-exhausted,
+                # quarantine-restore, salvage notices) -- capped small since _run_state.json is
+                # already written frequently and this must not make it meaningfully bigger.
+                log = run_state.data.setdefault("_notify_log", [])
+                log.append(msg)
+                del log[:-20]
+
+            def _find_substantial_text(min_len: int = 200) -> str:
+                for text in reversed(planner_text_history):
+                    if len(text.strip()) >= min_len:
+                        return text.strip()
+                return ""
 
             # Simpler than run_cli's own two-stage nudge-then-cutoff for the same setting
             # (context_budget_chars) -- a blunt cutoff straight to the completion-check's final
@@ -273,7 +307,7 @@ async def _run_research(run_id: str, query: str, opts: dict, events: asyncio.Que
             should_continue, current_input = await run_completion_check(
                 query=query, current_input=current_input, run_state=run_state, notify=_api_notify,
                 last_assistant_text=turn_text, dispatch_task=dispatch_task,
-                budget_deadline=budget_deadline,
+                budget_deadline=budget_deadline, find_substantial_text=_find_substantial_text,
             )
             if should_continue:
                 has_requests = True
