@@ -17,6 +17,13 @@ api:
   # tool-calling turns even with enable_thinking:false, while the native endpoint suppresses it
   # cleanly in the identical scenario. When set to "ollama", openai_base_url can keep its existing
   # /v1 suffix — _build_client strips it automatically.
+  # "openai_hosted" (2026-08-04): for a REAL hosted frontier API (DeepSeek, and whatever's tested
+  # next) as opposed to local/self-hosted OpenAI-compat serving. "openai"'s thinking-mode control
+  # (chat_template_kwargs + reasoning_effort="none") is a vLLM/local-serving convention a real
+  # hosted API silently ignores, leaving thinking mode stuck at that provider's own default —
+  # confirmed live against DeepSeek (thinking defaults ON at effort "high" there). This backend
+  # skips that local-serving dance entirely and looks up the provider's OWN documented thinking
+  # toggle from orchestrator.py's _HOSTED_PROVIDER_THINKING_EXTRA_BODY, keyed by openai_base_url.
   backend: openai
 settings:
   enable_thinking: false

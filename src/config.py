@@ -111,6 +111,8 @@ def load_config() -> dict:
         cfg["api"]["openai_base_url"] = os.environ["OPENAI_API_BASE"]
     if os.environ.get("OPENAI_MODEL"):
         cfg["api"]["openai_model"] = os.environ["OPENAI_MODEL"]
+    if os.environ.get("OPENAI_API_BACKEND"):
+        cfg["api"]["backend"] = os.environ["OPENAI_API_BACKEND"]
 
     return cfg
 

@@ -88,7 +88,56 @@ concluded verdict, which is the actual complaint. Going forward, a candidate is 
 
 ## History
 
-### 2026-07-29 (latest): "no proper report despite solid findings" investigated end-to-end — one real coverage gap fixed, one real check-priority-shadowing bug fixed, both live-verified
+### 2026-08-04 (latest): First hosted frontier-model test (`deepseek-v4-flash`/`deepseek-v4-pro`) — DISQUALIFIED, but two real cross-cutting harness bugs found and fixed along the way
+
+First-ever hosted (non-local) model tested against this project's real pipeline, via `src/api.py` +
+web UI and the headless `eval/evaluate.py` harness. 4 total runs (2x flash via web UI, 1x flash
+headless CLI, 1x pro headless CLI) against `eval/dataset.jsonl`'s complex-difficulty Colombia B2B
+item — DeepSeek's own thinking-mode/tool-calling docs (api-docs.deepseek.com/guides/thinking_mode,
+/guides/tool_calls) were read directly before any config change, not assumed from memory, after an
+initial wrong guess at DeepSeek's current model names (`deepseek-chat`/`deepseek-reasoner`, both
+stale — current models are `deepseek-v4-flash`/`deepseek-v4-pro`) was caught and corrected via the
+real pricing docs first.
+
+**Two real, reusable harness bugs found and fixed, both worth more than this one model's own
+verdict:**
+1. **`api.backend: "openai_hosted"`** (`src/engine/orchestrator.py`'s `_get_default_options` +
+   new `_HOSTED_PROVIDER_THINKING_EXTRA_BODY` provider map, `src/config.py`'s new
+   `OPENAI_API_BACKEND` env overlay): the existing `"openai"` backend's thinking-mode control
+   (`chat_template_kwargs` + `reasoning_effort:"none"`) is a vLLM/local-serving convention a real
+   hosted API just silently ignores — confirmed live that DeepSeek defaulted to thinking ON at
+   effort `high` regardless, and that `chat_template_kwargs` is meaningless to its API at all.
+   `"openai_hosted"` looks up each hosted provider's own documented convention instead, keyed by
+   `openai_base_url`. Confirmed fixed via `_agent_session.json` showing zero `reasoning_content`
+   occurrences post-change — but this alone did NOT fix DeepSeek's failure, isolating that its
+   narration is verbose-as-content, not leaked hidden reasoning.
+2. **`check_task_verification_flagged` guardrail-starvation bug in `src/api.py`** (its
+   `context_budget_chars` cutoff, was an unconditional `run_state.attempt = 10**6` force-jump):
+   confirmed live that a verbose model can blow the same 50000-char budget `gpt-oss:20b` never
+   approaches, before the run's FIRST completion-check attempt even happens — giving a check that
+   was actively working (verified-task count improving run-over-run) literally zero real retries
+   before salvage. `api.py`'s own code comment had explicitly, deliberately chosen this blunter
+   behavior over `run_cli`'s existing two-stage nudge-then-cutoff for shared-queue-protection
+   reasons; brought to parity anyway since one bounded extra wrap-up turn doesn't meaningfully
+   weaken that protection and the alternative (a guardrail that can never fire) is worse. Verified
+   the fix works: a subsequent run's `completion_check_attempts` showed real numbered attempts
+   (`0,1,2,3`) with `task_verification_flagged` correctly escalating and yielding to
+   `missing_findings` per its own documented 3-strike design, instead of jumping straight to the
+   `1_000_000` sentinel with zero attempts like both pre-fix runs did.
+
+**With both fixed, DeepSeek still failed — root cause is genuine model unreliability.** Score:
+0.2/1.0 (flash), 0.0/1.0 (pro, worse despite ~3x the price) vs. `gpt-oss:20b`'s 0.7/1.0 baseline,
+same rubric. The real, confirmed cause: DeepSeek **re-fabricates the same citations on redo** —
+`check_task_verification_flagged` correctly refused to let the run advance to the check that
+dispatches the real `FindingsWriter`/`Builder` writer roles, because the SAME flagged task names
+recurred across retry attempts instead of resolving (confirmed via `subagent_invocations`: zero
+`Builder`/`FindingsWriter` dispatches in the run that reached this state). Not disqualified for:
+tool-calling mechanics (clean in 3/4 runs) or "no write access" confusion (the Planner role
+genuinely has no `write_workspace_file` tool by design — DeepSeek's own statement to that effect
+was accurate, not hallucinated). Full verdict and evidence trail in `MODELS.md`'s new "Hosted"
+section entry.
+
+### 2026-07-29: "no proper report despite solid findings" investigated end-to-end — one real coverage gap fixed, one real check-priority-shadowing bug fixed, both live-verified
 
 User pushed back on the earlier 2026-07-29 completion-check cleanup session's own diagnosis that
 the findings/report-writing stage wasn't structurally overwhelming models, insisting on a fresh,

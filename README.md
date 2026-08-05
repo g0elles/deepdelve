@@ -133,6 +133,8 @@ DeepDelve talks to any **OpenAI-compatible chat-completions endpoint**. It isn't
    export OPENAI_MODEL="gpt-4.1"
    export OPENAI_API_KEY="sk-..."     # required by real providers; defaults to "dummy" for
                                        # unauthenticated local servers (Ollama, LM Studio, vLLM, etc.)
+   export OPENAI_API_BACKEND="openai_hosted"   # only for a real hosted frontier API — see
+                                                # api.backend below; omit for local/self-hosted
    python src/app.py
    ```
 3. **A separate config file entirely** via `--config`/`-c`:
@@ -150,6 +152,16 @@ Ollama's OpenAI-compat shim, not something a config value can fix on that path. 
 can keep its existing `/v1` suffix when switching — it's stripped automatically. Only meaningful
 when actually running against Ollama; irrelevant for other OpenAI-compatible providers (vLLM,
 LM Studio, real OpenAI, etc.), which stay on the default `"openai"` backend.
+
+**`api.backend: "openai_hosted"`** (added 2026-08-04): for a real **hosted frontier API**
+(DeepSeek, and whatever gets tested next) as opposed to local/self-hosted OpenAI-compat serving.
+The default `"openai"` backend's thinking-mode control (`chat_template_kwargs` +
+`reasoning_effort: "none"`) is a vLLM/local-serving convention — confirmed live against DeepSeek
+that a real hosted API just silently ignores both fields, leaving thinking mode stuck at that
+provider's own default (DeepSeek: ON, effort `"high"`). `"openai_hosted"` skips that local-serving
+dance entirely and looks up each provider's own documented thinking-mode toggle instead
+(`orchestrator.py`'s `_HOSTED_PROVIDER_THINKING_EXTRA_BODY`, keyed by a substring of
+`openai_base_url` — add an entry there, not a new backend value, for the next hosted provider).
 
 This works for any local server that speaks the OpenAI chat-completions API (Ollama, LM Studio, vLLM, llama.cpp's server, text-generation-webui) or any hosted provider that does (OpenAI itself, OpenRouter, Together, Groq, etc.). Just set the base URL, model name, and API key accordingly. The one hard requirement, regardless of provider, is real structured tool-calling support (see below): this agent is 100% tool-call driven, and a model/endpoint that only narrates JSON as text will not work.
 

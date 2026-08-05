@@ -378,8 +378,26 @@ def _safe_format(template: str, **kwargs) -> str:
             return '{' + key + '}'
     return template.format_map(_SafeDict(**kwargs))
 
+
+# api.backend: "openai_hosted" (2026-08-04) -- real hosted frontier APIs (DeepSeek, and whatever's
+# tested next), each with their OWN documented thinking-mode convention, none of which are the
+# vLLM-flavored chat_template_kwargs/reasoning_effort="none" dance _get_default_options otherwise
+# sends. That dance was built and validated against local/self-hosted OpenAI-compat serving
+# (Ollama, vLLM, LM Studio) -- confirmed live 2026-08-04 that a real hosted API just silently
+# ignores both fields (chat_template_kwargs is meaningless to it; reasoning_effort="none" isn't a
+# documented value), leaving thinking mode stuck at whatever that provider defaults to. Keyed by a
+# substring of api.openai_base_url; add an entry here, not a new branch, for the next provider.
+_HOSTED_PROVIDER_THINKING_EXTRA_BODY = {
+    # DeepSeek (api-docs.deepseek.com/guides/thinking_mode): thinking defaults ON at effort
+    # "high"; confirmed as the root cause of a live run's excessive narration AND an unrelated
+    # context_budget_chars cutoff that preempted a completion-check retry mid-fix.
+    "api.deepseek.com": {"thinking": {"type": "disabled"}},
+}
+
+
 def _get_default_options():
     options = {"temperature": config.cfg.get("settings", {}).get("temperature", 0.0)}
+    backend = config.cfg.get("api", {}).get("backend", "openai")
     # api.backend: "ollama" (2026-07-28) -- OllamaChatOptions has a genuine, already-correctly-
     # implemented `think: bool` field (agent_framework_ollama's _chat_client.py maps it straight
     # onto the native /api/chat request and separates response.message.thinking into its own
@@ -387,8 +405,16 @@ def _get_default_options():
     # applies here -- that whole mechanism only exists because the OpenAI-compat endpoint has no
     # equivalent first-class option, which is exactly why RESEARCH.md §14e found it leaks
     # reasoning back in on tool-calling turns even with enable_thinking:false.
-    if config.cfg.get("api", {}).get("backend", "openai") == "ollama":
+    if backend == "ollama":
         options["think"] = config.cfg.get("settings", {}).get("enable_thinking", False)
+        return options
+    if backend == "openai_hosted":
+        if not config.cfg["settings"].get("enable_thinking", False):
+            base_url = config.cfg.get("api", {}).get("openai_base_url", "")
+            for marker, extra_body in _HOSTED_PROVIDER_THINKING_EXTRA_BODY.items():
+                if marker in base_url:
+                    options["extra_body"] = extra_body
+                    break
         return options
     # settings.skip_chat_template_kwargs (2026-07-26): vLLM's native Mistral tokenizer mode
     # unconditionally rejects any request where chat_template_kwargs is present at all --
@@ -404,8 +430,9 @@ def _get_default_options():
     # unreliable) -- set this explicitly per config, same philosophy as settings.specialist_model.
     if config.cfg.get("settings", {}).get("skip_chat_template_kwargs", False):
         return options
+    base_url = config.cfg.get("api", {}).get("openai_base_url", "")
     # OpenAI's official API rejects "chat_template_kwargs"
-    if "api.openai.com" not in config.cfg.get("api", {}).get("openai_base_url", ""):
+    if "api.openai.com" not in base_url:
         enable_thinking = config.cfg["settings"].get("enable_thinking", False)
         extra_body = {"chat_template_kwargs": {"enable_thinking": enable_thinking}}
         if not enable_thinking:

@@ -332,6 +332,45 @@ model's actual capability was ever cleanly tested, per Model Evaluation Standard
 - **Verdict**: Best discovery quality of anything tried, but the free-tier quota wall kills a
   multi-agent run at ~10 min. Needs a paid endpoint; this project is local-only for now.
 
+### `deepseek-v4-flash` / `deepseek-v4-pro` (DeepSeek hosted API)
+- **Size/VRAM**: N/A (hosted API)
+- **Best result**: 0.2/1.0 (flash, llama_judge, Colombia B2B complex item); 0.0/1.0 (pro, same
+  item) — both well below `gpt-oss:20b`'s 0.7/1.0 baseline on the same rubric.
+- **Verdict**: **Disqualified, both variants** (2026-08-04, 4 total runs: 2x flash via web
+  UI/`src/api.py`, 1x flash headless CLI, 1x pro headless CLI — clears the Model Evaluation
+  Standard's 2+-run bar for a discard claim). Root cause is genuine model unreliability, not
+  infra, confirmed only after two real harness bugs found along the way were fixed first:
+  1. **`api.backend: "openai_hosted"` added** (`src/engine/orchestrator.py`'s
+     `_get_default_options`/`_HOSTED_PROVIDER_THINKING_EXTRA_BODY`) — the existing `"openai"`
+     backend's thinking-mode control (`chat_template_kwargs` + `reasoning_effort:"none"`) is a
+     vLLM/local-serving convention DeepSeek's hosted API silently ignores, leaving thinking mode
+     stuck at its own default (ON, effort `high`, per api-docs.deepseek.com/guides/thinking_mode).
+     Confirmed via `_agent_session.json` (zero `reasoning_content` occurrences post-fix) that this
+     genuinely disabled thinking — but it did NOT fix the failure (near-identical outcome/timing
+     before and after), so verbose narration-as-content, not hidden reasoning, was the real driver
+     of the next bug.
+  2. **`check_task_verification_flagged` guardrail starvation fixed** (`src/api.py`'s
+     `context_budget_chars` cutoff, `~L297-334`): the old unconditional force-jump to the
+     terminal/salvage branch gave this check ZERO real retry attempts before cutting the run off
+     — DeepSeek's narration volume alone blew the same 50000-char budget `gpt-oss:20b` never
+     approaches. Brought to parity with `run_cli`'s existing two-stage nudge-then-cutoff (one
+     wrap-up turn before the hard cutoff, not before).
+  3. **With both fixed, the model still failed** — and confirmed via `subagent_invocations` that
+     the reason is structural to the model's own behavior, not the harness: DeepSeek
+     **re-fabricates the same citations on redo**. `check_task_verification_flagged` correctly
+     never let the run advance to `check_missing_findings` (which dispatches the real
+     `FindingsWriter`/`Builder` writer roles) because the SAME flagged task names kept recurring
+     across retry attempts instead of resolving — a genuine reliability failure (repeatedly citing
+     sources that don't match anything actually fetched, despite 32-51 real fetched sources
+     sitting unused each run), not a config or budget artifact. `deepseek-v4-pro` scored WORSE
+     than flash despite ~3x the price, ruling out "just use the bigger model" as a fix.
+  - **Not disqualified for**: tool-calling mechanics themselves (zero tool-call schema errors in
+    3 of 4 runs; the 4th run's 37 tool errors were sub-agents passing task names instead of
+    filenames to `read_workspace_file`, a separate argument-binding weakness worth naming but not
+    the deciding factor) or "doesn't have write access" confusion (the Planner role genuinely has
+    no `write_workspace_file` tool by design — DeepSeek's own statement to that effect was
+    accurate, not a hallucination; it just never earned its way to the role that does have it).
+
 ---
 
 ## Cross-cutting notes

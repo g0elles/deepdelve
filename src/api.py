@@ -229,6 +229,7 @@ async def _run_research(run_id: str, query: str, opts: dict, events: asyncio.Que
         from engine.orchestrator import get_context_budget
         context_budget = get_context_budget()
         run_stream_chars = 0
+        budget_nudged = False
         has_requests = True
 
         # Every turn's full Planner text, oldest first -- NOT just the current turn's turn_text.
@@ -294,14 +295,37 @@ async def _run_research(run_id: str, query: str, opts: dict, events: asyncio.Que
                         return text.strip()
                 return ""
 
-            # Simpler than run_cli's own two-stage nudge-then-cutoff for the same setting
-            # (context_budget_chars) -- a blunt cutoff straight to the completion-check's final
-            # verdict path, not a wrap-up turn first. Proportionate for a v1 API server: this
-            # queue can hold other users' jobs waiting behind this one, so protecting shared
-            # resources matters more here than giving one run's Planner one more turn to wrap up
-            # gracefully -- a real cut, not a missing feature.
-            if (budget_deadline and time.monotonic() > budget_deadline) or \
-                    (context_budget and run_stream_chars > context_budget):
+            # Two-stage nudge-then-cutoff for context_budget_chars, matching run_cli's own
+            # mechanism (tui.py's run_agent) instead of a blunt one-shot cutoff (2026-08-04):
+            # confirmed live against a verbose hosted model (DeepSeek-V4-Flash) that the old
+            # unconditional force-jump gave check_task_verification_flagged's own correctly-
+            # firing redo directive ZERO real completion-check attempts before salvage -- the
+            # budget blew before the Planner's first completion-check-eligible turn even
+            # happened, so a check that was actively working (verified-task count improved
+            # run-over-run) never got a chance to act. One bounded wrap-up turn (not unbounded --
+            # a SECOND overshoot still forces the hard cutoff) costs at most one extra Planner
+            # turn, which does not meaningfully weaken the shared-queue protection the original
+            # blunt-cutoff comment was protecting against.
+            if context_budget and run_stream_chars > context_budget:
+                if not budget_nudged:
+                    budget_nudged = True
+                    run_stream_chars = 0
+                    req_artifact = config.get_required_artifact()
+                    endgame = (
+                        f"SYSTEM: you have reached your context budget for this run. Do NOT call "
+                        f"delegate_tasks or any research tool again. Write findings.md (if missing) "
+                        f"and '{req_artifact}' RIGHT NOW from the delegated results you already "
+                        f"have, then stop. An incomplete but grounded report now beats a truncated "
+                        f"context."
+                    )
+                    await events.put({"type": "system", "text": "Context budget reached — forcing wrap-up turn."})
+                    new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
+                    new_inputs.append(Message("user", [{"type": "text", "text": endgame}]))
+                    current_input = new_inputs
+                    has_requests = True
+                    continue
+                run_state.attempt = 10**6
+            elif budget_deadline and time.monotonic() > budget_deadline:
                 run_state.attempt = 10**6
 
             should_continue, current_input = await run_completion_check(
