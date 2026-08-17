@@ -1615,7 +1615,8 @@ def _ensure_reader_quota_headroom(pool: dict, needed: int = 2) -> None:
 
 async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artifact: str,
                                        write_instructions: str, attempt: int, notify,
-                                       deterministic_fallback: Optional[str] = None) -> None:
+                                       deterministic_fallback: Optional[str] = None,
+                                       recommended_tool: str = "write_workspace_file") -> None:
     """Write -> Review -> Fix, all fresh-context sub-agent dispatches, none of which touch the
     Planner's own conversation. Shared by both writer roles that exist for exactly this reason —
     Builder (writes/fixes final_report.md from findings.md) and FindingsWriter (writes/fixes
@@ -1659,8 +1660,16 @@ async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artif
     # tools/core.py. Builder is deliberately never gated; its instructions correctly require
     # reading findings.md FIRST. Fresh per dispatch (write_done always starts False) and reset in
     # a finally so a gate never leaks into a sibling dispatch (PeerReviewer's read below, or a
-    # later run) if this one raises.
-    gate_token = writer_gate_ctx.set({"write_done": False}) if writer_role == "FindingsWriter" else None
+    # later run) if this one raises. `recommended_tool` (2026-08-16 live incident, see check_
+    # writer_gate's own docstring): the gate's block message must name whichever tool THIS
+    # dispatch's own instructions actually told the model to use -- a per-facet ADD-ONLY dispatch
+    # (recommended_tool="edit_workspace_file") whose block message still said "call
+    # write_workspace_file now" left the model with no correct next step at all; confirmed live, it
+    # just kept retrying blocked reads a few times then gave up with nothing written, rather than
+    # trying the tool its own instructions actually named.
+    gate_token = writer_gate_ctx.set(
+        {"write_done": False, "recommended_tool": recommended_tool, "target_file": req_artifact}
+    ) if writer_role == "FindingsWriter" else None
     try:
         write_result = await dispatch_task(f"{writer_role}Fix_attempt{attempt + 1}", write_instructions, writer_role)
     finally:
@@ -1713,7 +1722,9 @@ async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artif
                 f"**System ({attempt + 1}):** {writer_role} returned nothing usable for "
                 f"`{req_artifact}` — retrying once immediately before giving up."
             )
-            retry_gate_token = writer_gate_ctx.set({"write_done": False}) if writer_role == "FindingsWriter" else None
+            retry_gate_token = writer_gate_ctx.set(
+                {"write_done": False, "recommended_tool": recommended_tool, "target_file": req_artifact}
+            ) if writer_role == "FindingsWriter" else None
             try:
                 write_result = await dispatch_task(
                     f"{writer_role}Fix_attempt{attempt + 1}_retry", write_instructions, writer_role)
@@ -1839,7 +1850,9 @@ async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artif
         f"--- YOUR ORIGINAL TASK INSTRUCTIONS AND SOURCE MATERIAL (unchanged) ---\n{write_instructions}"
         f"{think_tool_note}"
     )
-    gate_token = writer_gate_ctx.set({"write_done": False}) if writer_role == "FindingsWriter" else None
+    gate_token = writer_gate_ctx.set(
+        {"write_done": False, "recommended_tool": recommended_tool, "target_file": req_artifact}
+    ) if writer_role == "FindingsWriter" else None
     try:
         await dispatch_task(f"{writer_role}Fix_attempt{attempt + 1}_reviewed", fix_instructions, writer_role)
     finally:
@@ -1937,7 +1950,8 @@ async def _dispatch_per_facet_findings_writer_fix(dispatch_task, dropped: list, 
         )
         instructions = f"{write_directive}\n\n{scoped_material}\n\nWrite the corrected file now via edit_workspace_file."
         try:
-            await _dispatch_writer_review_fix(dispatch_task, "FindingsWriter", "findings.md", instructions, attempt, notify)
+            await _dispatch_writer_review_fix(dispatch_task, "FindingsWriter", "findings.md", instructions, attempt, notify,
+                                               recommended_tool="edit_workspace_file")
         except Exception:
             notify(f"**System ({attempt + 1}):** FindingsWriter dispatch for facet '{name}' failed — continuing with remaining facets.")
 

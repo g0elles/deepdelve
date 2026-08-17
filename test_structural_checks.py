@@ -6973,6 +6973,85 @@ def main():
 
     contextvars.copy_context().run(_writer_gate_edit_satisfies_scenario)
 
+    # --- writer_gate_ctx: recommended_tool controls the block message's own wording (2026-08-16
+    # follow-up incident): fixing WHICH tool satisfies the gate wasn't enough on its own -- the
+    # block message the model actually SEES still hardcoded "call write_workspace_file now" even
+    # for a per-facet dispatch whose own instructions said to use edit_workspace_file. Confirmed
+    # live: rather than following either the (wrong) block message or its own (right) instructions,
+    # the model just kept retrying blocked reads a few times, then gave up with NOTHING written for
+    # that facet -- worse than the original overwrite risk. The block message must name whichever
+    # tool THIS dispatch's own instructions actually told the model to use. ---
+    def _writer_gate_recommended_tool_scenario():
+        from tools import writer_gate_ctx
+        from tools.fs import read_workspace_file, write_workspace_file
+
+        write_workspace_file("findings.md", "### [T](https://x.com)\n- a finding")
+
+        # Default (no recommended_tool set) -- classic two-pass full-write case, unchanged wording.
+        token = writer_gate_ctx.set({"write_done": False})
+        try:
+            blocked = read_workspace_file("findings.md")
+            assert "write_workspace_file" in blocked, blocked
+        finally:
+            writer_gate_ctx.reset(token)
+
+        # Per-facet case -- block message must name edit_workspace_file, not write_workspace_file.
+        token2 = writer_gate_ctx.set({"write_done": False, "recommended_tool": "edit_workspace_file"})
+        try:
+            blocked2 = read_workspace_file("findings.md")
+            assert "edit_workspace_file" in blocked2, blocked2
+            assert "call write_workspace_file now" not in blocked2, (
+                "a per-facet dispatch's own block message must not point the model at the tool "
+                "its own instructions told it NOT to use", blocked2)
+        finally:
+            writer_gate_ctx.reset(token2)
+
+    contextvars.copy_context().run(_writer_gate_recommended_tool_scenario)
+
+    # --- writer_gate_ctx: reading the gate's OWN target file is exempt from the block entirely
+    # (2026-08-16 follow-up incident, the actual deadlock root cause): edit_workspace_file requires
+    # an EXACT existing substring as its anchor, but a per-facet dispatch's fresh context has never
+    # seen findings.md's current content -- it structurally CANNOT produce a valid old_string
+    # without reading the file first, and the gate (even after the recommended_tool fix above)
+    # still refused that read, since the block applied to ALL reads regardless of which file. This
+    # was live-confirmed as a real dead end, not a theoretical one: three separate per-facet
+    # dispatches in one run each tried read_workspace_file a few times, got blocked every time,
+    # and gave up with NOTHING written for their facet -- not even a failed edit attempt, just
+    # silence. Reading the target file must be allowed; reading anything ELSE (a raw source under
+    # sources/) must still block exactly as before, or this reopens the ORIGINAL 2026-07-22 bug
+    # this gate exists to prevent (abandoning the compiled evidence to go hand-read sources). ---
+    def _writer_gate_target_file_exempt_scenario():
+        from tools import writer_gate_ctx
+        from tools.fs import read_workspace_file, write_workspace_file, edit_workspace_file
+
+        write_workspace_file("findings.md", "### [Existing](https://x.com)\n- existing finding")
+        write_workspace_file("sources/other_source.md", "raw source content, not the compiled evidence")
+
+        token = writer_gate_ctx.set({
+            "write_done": False, "recommended_tool": "edit_workspace_file", "target_file": "findings.md",
+        })
+        try:
+            # Reading a DIFFERENT file (a raw source, not the target) must still block, BEFORE any
+            # write/edit has happened -- the exemption is scoped to the target file only, checked
+            # first since satisfying the gate below would unblock everything afterward anyway.
+            other_blocked = read_workspace_file("sources/other_source.md")
+            assert other_blocked.startswith("Error:") and "edit_workspace_file" in other_blocked, other_blocked
+
+            # Reading the target file (to find a real edit anchor) must be allowed.
+            unblocked = read_workspace_file("findings.md")
+            assert "Error" not in unblocked or "not found" not in unblocked.lower(), unblocked
+            assert "existing finding" in unblocked, unblocked
+
+            # A subsequent real edit, anchored on content only visible via that now-permitted
+            # read, must succeed -- this is the actual deadlock this fix resolves.
+            result = edit_workspace_file(
+                "findings.md", "- existing finding", "- existing finding\n- a NEW facet's finding")
+            assert "Error" not in result, result
+        finally:
+            writer_gate_ctx.reset(token)
+
+    contextvars.copy_context().run(_writer_gate_target_file_exempt_scenario)
+
     # --- low-novelty search-streak backstop (2026-07-22): a real live run showed one WebSearcher
     # task fire 14 near-duplicate web_search calls (each worded differently, so the existing
     # exact-repeat <Anti-Looping> rule never caught it), fetching only 3 URLs the whole time.

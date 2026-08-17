@@ -100,31 +100,46 @@ def check_quota(tool_name: str) -> str | None:
 # reading findings.md FIRST, so Builder must never be gated by this.
 writer_gate_ctx = contextvars.ContextVar('writer_gate_ctx', default=None)
 
-def check_writer_gate(tool_name: str) -> str | None:
+def check_writer_gate(tool_name: str, filename: str | None = None) -> str | None:
     """Blocks read_workspace_file/grep_workspace_file until the active gate's write_workspace_file
     (or edit_workspace_file -- see below) call has happened. No-op (returns None) unless a caller
-    armed the gate via writer_gate_ctx.set for this specific dispatch."""
+    armed the gate via writer_gate_ctx.set for this specific dispatch.
+
+    `filename` (2026-08-16 follow-up incident): a read/grep of the GATE'S OWN target file (e.g.
+    findings.md, for a per-facet ADD-ONLY dispatch) is exempt from the block entirely -- it's the
+    only way `edit_workspace_file` can ever get a valid `old_string` anchor for a file the
+    dispatch's fresh context has never seen, and it is categorically NOT the "abandon the compiled
+    evidence to go hunt raw source files instead" case this gate exists to prevent. Without this
+    exemption the gate was a real, live-confirmed deadlock: the per-facet dispatch's own
+    instructions say to use edit_workspace_file, but it structurally cannot find a valid anchor
+    without reading the target file first, and the gate refused every such read -- the model just
+    retried a few blocked reads, then gave up with NOTHING written for that facet at all. Reads of
+    any OTHER file (a raw source under sources/) still block exactly as before."""
     gate = writer_gate_ctx.get()
     if not gate or gate.get("write_done"):
         return None
+    target_file = gate.get("target_file")
+    if tool_name in ("read_workspace_file", "grep_workspace_file") and target_file and filename == target_file:
+        return None
+    # recommended_tool (2026-08-16 follow-up incident, see _dispatch_writer_review_fix's own
+    # docstring): edit_workspace_file satisfying the gate (below) isn't enough on its own if the
+    # BLOCK MESSAGE still hardcodes "write_workspace_file" -- a per-facet ADD-ONLY dispatch, told
+    # by its own instructions to use edit_workspace_file, hit this message, was pointed at the
+    # WRONG tool, and confirmed live: rather than either following the (wrong) advice or its own
+    # (right) instructions, it just kept retrying blocked reads a few times, then gave up with
+    # NOTHING written for that facet at all -- worse than the original overwrite risk, not better.
+    # Each dispatch site names its own real tool via recommended_tool; defaults to
+    # write_workspace_file for the original two-pass full-write case.
+    recommended_tool = gate.get("recommended_tool") or "write_workspace_file"
     if tool_name in ("read_workspace_file", "grep_workspace_file"):
         return (
             "Error: write your first complete findings.md from the evidence base in your task "
-            "instructions BEFORE reading any source file directly -- call write_workspace_file "
+            f"instructions BEFORE reading any source file directly -- call {recommended_tool} "
             "now. Raw source files are only for enrichment AFTER that first write."
         )
-    # edit_workspace_file also satisfies the gate (2026-08-16 live incident): this gate is armed
-    # for EVERY FindingsWriter dispatch, including _dispatch_per_facet_findings_writer_fix's
-    # ADD-ONLY corrective passes, whose own instructions explicitly say "use edit_workspace_file
-    # ... do not rewrite or touch any other part of the file" -- findings.md already exists at
-    # that point, so reading it first to find an anchor for the edit is legitimate, not the
-    # "raw source file" case this gate exists to block. Confirmed live: with only
-    # write_workspace_file satisfying the gate, a per-facet dispatch trying to read findings.md
-    # before editing it hit this exact error 20 times in one run, and its hardcoded wording
-    # ("call write_workspace_file now") actively steered the model toward a full-file overwrite --
-    # destroying every OTHER facet a prior per-facet round had already correctly added. That
-    # evidence-loss cycle (fix facet A, silently lose facet B) repeated for the run's entire
-    # 45-minute budget with findings.md never stabilizing.
+    # Both tools always satisfy the gate regardless of which one was recommended (2026-08-16):
+    # a model that reaches for the OTHER real write tool anyway still made real forward progress,
+    # and refusing that would just recreate the same trap for the opposite tool choice.
     if tool_name in ("write_workspace_file", "edit_workspace_file"):
         gate["write_done"] = True
     return None
@@ -146,6 +161,16 @@ def _get_tool_rule(tool_name: str, rule_key: str, default_val: int) -> int:
         return ctx[tool_name]["rules"].get(rule_key, default_val)
     return default_val
 
+def _first_arg_filename(args, kwargs) -> str | None:
+    """Every gated tool (read_workspace_file, grep_workspace_file, write_workspace_file,
+    edit_workspace_file) takes `filename` as its first positional/keyword parameter -- pulled out
+    once here so `with_quota`'s wrapper can pass it to `check_writer_gate` without hardcoding a
+    specific tool's full signature."""
+    if args:
+        return args[0]
+    return kwargs.get("filename")
+
+
 def with_quota(func):
     """Decorator to enforce quotas dynamically based on the function's name, and surface a
     caught exception's message (type + str, no full traceback -- see the 2026-08-02 audit note
@@ -154,7 +179,7 @@ def with_quota(func):
         @functools.wraps(func)
         async def async_wrapper(*args, **kwargs):
             if err := check_quota(func.__name__): return err
-            if err := check_writer_gate(func.__name__): return err
+            if err := check_writer_gate(func.__name__, _first_arg_filename(args, kwargs)): return err
             try:
                 return await func(*args, **kwargs)
             except Exception as e:
@@ -169,7 +194,7 @@ def with_quota(func):
         @functools.wraps(func)
         def sync_wrapper(*args, **kwargs):
             if err := check_quota(func.__name__): return err
-            if err := check_writer_gate(func.__name__): return err
+            if err := check_writer_gate(func.__name__, _first_arg_filename(args, kwargs)): return err
             try:
                 return func(*args, **kwargs)
             except Exception as e:
