@@ -87,6 +87,41 @@ def main():
         city_prior,
     ) == "rent_lisbon_central_one_bedroom"
 
+    # --- _content_word_overlap OR-trigger (2026-08-17 live incident): a genuine full-sentence
+    # paraphrase (the model's actual, common rewrite style) scores near-zero on difflib's
+    # char-level ratio despite being unambiguously the same angle reworded -- confirmed live via
+    # this exact real (task_name, instructions) pair pulled from `_run_state.json`: difflib ratio
+    # was 0.11, so the ORIGINAL char-ratio-only version of this function returned None for all 3
+    # of this facet's task_name variants, and RunState.coverage()'s denominator kept growing
+    # across "new" 0-content tasks that were actually retries. ---
+    mexico_rent_prior = [{"task_name": "Mexico City central one-bedroom apartment rental cost",
+                           "instructions": ("Find the typical monthly rent for a one-bedroom "
+                                             "apartment in a central neighborhood of Mexico City "
+                                             "(e.g., Polanco, Condesa, Roma). Provide an average "
+                                             "figure and cite a real source URL.")}]
+    assert _looks_like_renamed_task(
+        "Mexico City central one-bedroom rental cost",
+        ("Search for recent data on the average monthly rent of a one-bedroom apartment in a "
+         "central Mexico City neighbourhood such as Polanco, Condesa or Roma. Provide a URL to a "
+         "reputable real-estate listing site or cost-of-living report."),
+        mexico_rent_prior,
+    ) == "Mexico City central one-bedroom apartment rental cost", (
+        "a genuine full-sentence paraphrase of the same facet must still be caught via content-word "
+        "overlap even when difflib's char-ratio alone would miss it")
+    # The entity-mismatch override must still reject a cross-city paraphrase that ALSO clears the
+    # new word-overlap threshold (0.4 Jaccard on this exact live pair, per the incident's own
+    # measurement) -- content-word overlap is additive, not a bypass of the existing safety net.
+    assert _looks_like_renamed_task(
+        "rent_mexico_city_central_one_bedroom",
+        ("Find the typical monthly rent for a one-bedroom apartment in a central neighborhood of "
+         "Mexico City (e.g., Polanco, Condesa, Roma). Provide an average figure and cite a real "
+         "source URL."),
+        [{"task_name": "rent_lisbon_central_one_bedroom",
+          "instructions": ("Find the typical monthly rent for a one-bedroom apartment in a "
+                            "central neighborhood of Lisbon (e.g., Baixa, Chiado, Alfama). "
+                            "Provide an average figure and cite a real source URL.")}],
+    ) is None, "cross-city template overlap must not be treated as a rename even via the word-overlap trigger"
+
     # --- specialist per-task delegation cap (2026-07-26 live case: one WebSearcher task
     # delegated 6+ Analyzer sub-tasks for a trivial single-fact query, burning most of the run's
     # global delegate_tasks budget) ---
@@ -2239,6 +2274,33 @@ def main():
             assert abs(cov4["ratio"] - 1 / 3) < 1e-9, cov4
             assert set(cov4["uncovered_task_names"]) == {"Comparison A", "Comparison B"}, cov4
             assert cov4["per_task_counts"] == {"Background": 1, "Comparison A": 0, "Comparison B": 0}, cov4
+
+            # "superseded" task_names excluded from the denominator (2026-08-17 live incident): a
+            # facet redispatched under a fresh, reworded task_name (never reusing the original)
+            # must not inflate `total` -- once _update_task_verification (completion.py) has
+            # already marked the stale name(s) "superseded" via _looks_like_renamed_task, coverage()
+            # must not still count them as separate uncovered tasks. Without this, check_thin_
+            # coverage kept re-firing "Only N/(growing total)" on a denominator padded by the exact
+            # renaming this ledger status already accounts for.
+            rs5 = RunState(tmpdir)
+            rs5.add_finding("Mexico rent v1", "", task_name="Mexico rent v1", depth=1)
+            rs5.add_finding("Mexico rent v2", "", task_name="Mexico rent v2", depth=1)
+            rs5.add_finding("https://c.example.co/z", "real content", task_name="Mexico rent v3", depth=1)
+            rs5.data["task_verification"] = {
+                "Mexico rent v1": {"status": "superseded"},
+                "Mexico rent v2": {"status": "superseded"},
+                "Mexico rent v3": {"status": "verified"},
+            }
+            cov5 = rs5.coverage()
+            assert cov5 == {"total": 1, "covered": 1, "ratio": 1.0, "uncovered_task_names": [],
+                             "per_task_counts": {"Mexico rent v3": 1}}, cov5
+            # A "flagged" (not yet superseded) task_name must still count normally -- only the
+            # ledger's explicit "superseded" status is special-cased here.
+            rs5b = RunState(tmpdir)
+            rs5b.add_finding("Still Flagged", "", task_name="Still Flagged", depth=1)
+            rs5b.data["task_verification"] = {"Still Flagged": {"status": "flagged"}}
+            cov5b = rs5b.coverage()
+            assert cov5b["total"] == 1 and cov5b["uncovered_task_names"] == ["Still Flagged"], cov5b
 
     _coverage_scenario()
 

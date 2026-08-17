@@ -324,9 +324,31 @@ class RunState:
         utils.grounding imports utils.run_state, so the reverse import can only happen inside the
         method, not at module level) -- reusing the existing, already-proven predicate rather than
         a narrower one-off check, so "does this URL count as real coverage" means the same thing
-        here as it does in every other check in this project."""
+        here as it does in every other check in this project.
+
+        "superseded" task_names excluded from the denominator (2026-08-17, live incident): the
+        Planner doesn't reliably retry a facet under its ORIGINAL task_name -- it commonly
+        re-delegates the same angle under a fresh, reworded name instead (confirmed live: one
+        facet dispatched 3 times as 'Mexico City central one-bedroom apartment rental cost' ->
+        '...reliable' -> 'Mexico City central one-bedroom rental cost', only the 3rd ever landing
+        real content). `_update_task_verification` (completion.py, via `_looks_like_renamed_task`)
+        already detects this and marks the stale name(s) "superseded" in `task_verification` --
+        but this method used to count every distinct task_name at face value regardless, so the
+        denominator kept growing across renames (3 dispatches -> `total` counted as 3, not 1) and
+        `check_thin_coverage` kept re-firing "Only N/(growing total) tasks covered" on a
+        denominator that was never really that large. `_update_task_verification` always runs
+        immediately before any check that calls `coverage()` (see run_completion_check's own
+        per-attempt loop), so `task_verification` is guaranteed fresh here, never stale from a
+        prior attempt."""
         from utils.grounding import _is_null_finding_summary
-        top_level = [f for f in self.data.get("findings", []) if f.get("depth") == 1 and f.get("task_name")]
+        superseded = {
+            name for name, entry in self.data.get("task_verification", {}).items()
+            if entry.get("status") == "superseded"
+        }
+        top_level = [
+            f for f in self.data.get("findings", [])
+            if f.get("depth") == 1 and f.get("task_name") and f.get("task_name") not in superseded
+        ]
         by_task: dict = {}
         for f in top_level:
             by_task.setdefault(f["task_name"], []).append(f)

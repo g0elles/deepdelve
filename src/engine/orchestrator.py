@@ -309,43 +309,87 @@ def _instruction_entities(text: str) -> set:
     return entities
 
 
-def _looks_like_renamed_task(task_name: str, instructions: str, prior_tasks: list) -> Optional[str]:
-    """Heuristic-only (difflib similarity, not a deterministic error) detector for the Planner
-    renaming the same research angle across retries instead of redispatching under the same
-    task_name (e.g. 'background_heuristic_algorithms' -> '_refined' -> '_final'; confirmed live,
-    one angle redispatched 43 times total under --resume-run this way). Root cause: nothing
-    anywhere tells the model to keep task_name stable, and the coverage/investment nudges'
-    own "phrased differently" wording nudges it toward inventing a new name too. Deliberately
-    NOT wired as a hard delegate_tasks validation error like the other checks in that loop --
-    a fuzzy match is a guess, not a fact, and must never be able to jam a batch of otherwise-valid
-    tasks the way the placeholder/pronoun/cross-task-dependency checks correctly do for real
-    deterministic errors. Returns the matched prior task_name, or None.
+# Generic function-word set for _content_word_overlap below -- deliberately NOT the same list as
+# _SCOPE_STOPWORDS above (that one filters CAPITALIZED sentence-initial verbs for entity
+# extraction; this one filters lowercase, low-information words from a general content-overlap
+# comparison, a different job with a different vocabulary).
+_TASK_SIMILARITY_STOPWORDS = frozenset({
+    "the", "a", "an", "in", "of", "for", "to", "and", "or", "on", "at", "by", "is", "are",
+    "was", "were", "find", "search", "provide", "cite", "real", "data", "recent", "reliable",
+    "typical", "average", "such", "as", "eg", "report", "site", "source", "url", "urls", "from",
+    "with", "this", "that", "about", "into", "give", "figure", "reputable", "using",
+})
 
-    Entity-mismatch override (2026-08-16 live incident): raw difflib ratio alone false-positives
-    hard on a multi-entity comparison query's own templated task phrasing -- 'Find the typical
-    monthly rent cost for a one-bedroom apartment in a central neighborhood of Lisbon (e.g.,
-    Baixa, Chiado, Alfama)...' vs the SAME template with 'Mexico City (e.g., Polanco, Condesa,
-    Roma)' scores a 0.89 ratio (well over the 0.6 threshold) despite being two genuinely
-    independent, always-separately-dispatched facets that just happen to share a parallel
-    template -- not a rename at all. Confirmed live: this silently downgraded
-    'rent_mexico_city_central_one_bedroom' to "superseded" the moment 'rent_lisbon_central_
-    one_bedroom' got verified, permanently stopping check_task_verification_flagged from ever
-    nudging Mexico City's rent facet again -- it never appeared in findings.md OR the final
-    report, and nothing in the run ever flagged the gap. When both instructions carry extractable
-    proper nouns (`_instruction_entities`) and those sets barely overlap (Jaccard < 0.34 -- picked
-    to tolerate one or two incidentally shared generic capitalized tokens like "URL" without
-    diluting a genuine near-total mismatch), the high text-similarity ratio is coming from shared
-    TEMPLATE wording, not a shared SUBJECT -- skip this candidate rather than falsely superseding
-    it. A same-subject rename (the case this function exists to catch) either shares its subject's
-    entity words directly (e.g. both mention "Lisbon") or has no extractable entities at all
-    (short, generic instructions) and is unaffected by this override either way."""
+
+def _content_word_overlap(a: str, b: str) -> float:
+    """Jaccard similarity over lowercase content words (function words/instruction-boilerplate
+    verbs stripped) -- see _looks_like_renamed_task's own docstring for why this exists alongside
+    (not instead of) the difflib char-ratio it already used. Returns 0.0 if either side has no
+    content words left after stripping."""
+    def words(t: str) -> set:
+        return {w.lower().strip(",()") for w in re.findall(r"[A-Za-z][A-Za-z\-']+", t or "")} - _TASK_SIMILARITY_STOPWORDS
+    wa, wb = words(a), words(b)
+    if not wa or not wb:
+        return 0.0
+    return len(wa & wb) / len(wa | wb)
+
+
+def _looks_like_renamed_task(task_name: str, instructions: str, prior_tasks: list) -> Optional[str]:
+    """Heuristic-only (similarity, not a deterministic error) detector for the Planner renaming
+    the same research angle across retries instead of redispatching under the same task_name
+    (e.g. 'background_heuristic_algorithms' -> '_refined' -> '_final'; confirmed live, one angle
+    redispatched 43 times total under --resume-run this way). Root cause: nothing anywhere tells
+    the model to keep task_name stable, and the coverage/investment nudges' own "phrased
+    differently" wording nudges it toward inventing a new name too. Deliberately NOT wired as a
+    hard delegate_tasks validation error like the other checks in that loop -- a fuzzy match is a
+    guess, not a fact, and must never be able to jam a batch of otherwise-valid tasks the way the
+    placeholder/pronoun/cross-task-dependency checks correctly do for real deterministic errors.
+    Returns the matched prior task_name, or None.
+
+    `_content_word_overlap` as a SECOND, OR-combined trigger (2026-08-17 live incident): the
+    original difflib char-ratio alone badly under-fires on genuine full-sentence paraphrase, which
+    is the model's actual, common rewrite style -- confirmed live, `_run_state.json` cross-checked
+    directly: 'Find the typical monthly rent for a one-bedroom apartment in a central neighborhood
+    of Mexico City...' vs its own real retry 'Search for recent data on the average monthly rent
+    of a one-bedroom apartment in a central Mexico City neighbourhood...' -- unambiguously the
+    same angle, reworded -- scored difflib ratio 0.11, nowhere near the 0.6 threshold, so this
+    function silently returned None for all 3 of that facet's task_name variants and none of them
+    were ever recognized as retries of each other. `check_thin_coverage`'s own denominator
+    (RunState.coverage(), which counts DISTINCT task_names) kept growing across 3 real dispatches
+    of what a human would call one facet, and repeatedly re-fired "Only N/(growing total) tasks
+    covered" for 6 of 9 completion-check attempts before the run's `max_run_minutes` cap hit and
+    it ended in unverified salvage -- the retry budget was consumed re-litigating a denominator
+    inflated by the very renaming this function exists to catch. `_content_word_overlap` (Jaccard
+    over content words, order-independent by construction) scored 0.5 for that exact live pair --
+    comfortably over its own 0.3 threshold below. Deliberately additive (`or`), not a replacement:
+    difflib's char-ratio still fires correctly on the near-identical-suffix rename case the
+    original docstring names ('_refined' -> '_final'), which content-word overlap alone would also
+    catch but there's no reason to narrow coverage by dropping a working signal.
+
+    Entity-mismatch override (2026-08-16 live incident, UNCHANGED by the above): raw similarity
+    alone false-positives hard on a multi-entity comparison query's own templated task phrasing --
+    'Find the typical monthly rent cost for a one-bedroom apartment in a central neighborhood of
+    Lisbon (e.g., Baixa, Chiado, Alfama)...' vs the SAME template with 'Mexico City (e.g.,
+    Polanco, Condesa, Roma)' scores a 0.89 difflib ratio AND a 0.4 content-word Jaccard (both over
+    their own thresholds) despite being two genuinely independent, always-separately-dispatched
+    facets that just happen to share a parallel template -- not a rename at all. When both
+    instructions carry extractable proper nouns (`_instruction_entities`) and those sets barely
+    overlap (Jaccard < 0.34 -- picked to tolerate one or two incidentally shared generic
+    capitalized tokens like "URL" without diluting a genuine near-total mismatch), the high
+    text-similarity is coming from shared TEMPLATE wording, not a shared SUBJECT -- skip this
+    candidate rather than falsely superseding it. Verified directly against the live incident
+    pair: entity Jaccard for the true Mexico-City rename above is 1.0 (identical entity set); for
+    Lisbon-vs-Mexico-City it's 0.1 -- an order of magnitude apart, so this override continues to
+    cleanly separate "same subject, reworded" from "different subject, shared template" even
+    though the primary trigger below is now more sensitive."""
     entities = _instruction_entities(instructions)
     for prior in prior_tasks:
         if prior.get("task_name") == task_name:
             continue  # same-name reuse is the expected, legitimate case, not a rename
         prior_instructions = prior.get("instructions") or ""
         ratio = difflib.SequenceMatcher(None, instructions or "", prior_instructions).ratio()
-        if ratio > 0.6:
+        word_overlap = _content_word_overlap(instructions or "", prior_instructions)
+        if ratio > 0.6 or word_overlap > 0.3:
             prior_entities = _instruction_entities(prior_instructions)
             if entities and prior_entities:
                 jaccard = len(entities & prior_entities) / len(entities | prior_entities)
