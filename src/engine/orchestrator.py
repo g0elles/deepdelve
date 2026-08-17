@@ -22,6 +22,14 @@ import contextvars
 _session = None
 delegation_depth_ctx = contextvars.ContextVar('delegation_depth_ctx', default=0)
 available_sub_agents_ctx = contextvars.ContextVar('available_sub_agents_ctx', default=[])
+# The depth==1 task_name a nested (depth>1) dispatch is running underneath (2026-08-17, ledger
+# rollup fix). Set once, when a task transitions from depth 0 -> 1 (a Planner-dispatched task
+# starting), and left untouched (inherited via contextvars) for any further nesting under it -- so
+# a depth==2 Analyzer dispatched BY that task's own Searcher still carries the same top-level
+# name. Without this, a depth>1 finding's own `task_name` field is the CHILD's name (e.g. "Analyze
+# SEF D8 Visa page"), which has no recorded link back to the depth==1 parent it was working for --
+# see RunState.add_finding and completion.py::_update_task_verification for why that link matters.
+top_level_task_name_ctx = contextvars.ContextVar('top_level_task_name_ctx', default=None)
 
 # Per-task-instance counter of Analyzer children a Tier-2 specialist (WebSearcher/AcademicSearcher)
 # has spawned via its own delegate_tasks call, reset fresh for every _run_single_task dispatch (see
@@ -76,6 +84,22 @@ def _extract_follow_up_directions(text: str) -> list:
     if not m:
         return []
     return [b.strip() for b in _FOLLOW_UP_BULLET_RE.findall(m.group(1)) if b.strip()]
+
+
+def _strip_follow_up_directions(text: str) -> str:
+    """Drop the FOLLOW-UP DIRECTIONS section before running any citation-grounding check on a
+    specialist's summary (2026-08-17). That section lists URLs the model suggests checking NEXT,
+    not citations backing a claim it already made -- but real_grounding_problem/extract_cited_urls
+    can't tell the difference and treat any URL-shaped text in the summary as a claim citation.
+    Confirmed live: MexicoCity_digital_nomad_visa's summary correctly cited relocate.world and
+    consulmex.sre.gob.mx for its actual findings, then named citas.sre.gob.mx in its own
+    FOLLOW-UP DIRECTIONS bullet as a suggested next source -- never fetched this run, so
+    real_grounding_problem flagged the WHOLE summary as ungrounded via a SYSTEM VERIFICATION
+    WARNING, which _is_citable_finding then excludes wholesale. Real, correctly-cited content got
+    invalidated by a suggestion appended after it. Safe to strip unconditionally here: the bullets
+    are re-extracted from the ORIGINAL (unstripped) final_text by _extract_follow_up_directions
+    right after these checks run, so iterative deepening still sees them."""
+    return _FOLLOW_UP_DIRECTIONS_RE.sub("", text or "")
 
 
 _BATCH_MIN_CALLS_PER_TASK = {"web_search": 2, "fetch_url_to_workspace": 1}
@@ -954,6 +978,10 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
         async with sem:
             parent_depth = delegation_depth_ctx.get()
             depth_token = delegation_depth_ctx.set(parent_depth + 1)
+            # Only set (and later reset) at the depth 0 -> 1 transition -- a deeper nested call
+            # leaves this unset so it inherits the already-set value from its depth==1 ancestor's
+            # context, per top_level_task_name_ctx's own header comment.
+            top_level_token = top_level_task_name_ctx.set(task_name) if parent_depth == 0 else None
             token_setter = holds_token.set(True)
             # Pre-declared so the `finally` block's reset is always safe even on an early return
             # below (bad agent_id) — found via a real end-to-end test: a model invented a fictional
@@ -1277,7 +1305,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                 # enabled is the grounding_check section's master switch (2026-07-12 audit, G2)
                 if target_children and gc_cfg.get("enabled", True) and gc_cfg.get("verify_specialist_output", True):
                     from utils.grounding import real_grounding_problem
-                    problem = await real_grounding_problem(final_text)
+                    problem = await real_grounding_problem(_strip_follow_up_directions(final_text))
                     if problem and problem != "no_urls":
                         verification_warnings += (
                             f"\n\n[SYSTEM VERIFICATION WARNING: this summary attributes a claim to "
@@ -1334,7 +1362,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                     from utils.grounding import _urls_prefix_match
                     if reference_urls:
                         reconstructed = [
-                            u for u in extract_cited_urls(final_text)
+                            u for u in extract_cited_urls(_strip_follow_up_directions(final_text))
                             if u.rstrip("/") not in reference_urls
                             and not any(_urls_prefix_match(u.rstrip("/"), r) for r in reference_urls)
                         ]
@@ -1361,7 +1389,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                     # already exists, is already proven via Check A, and works unchanged against an
                     # Analyzer's own final_text the same way it does a Searcher's.
                     from utils.grounding import real_grounding_problem
-                    problem = await real_grounding_problem(final_text)
+                    problem = await real_grounding_problem(_strip_follow_up_directions(final_text))
                     if problem and problem != "no_urls":
                         verification_warnings += (
                             f"\n\n[SYSTEM VERIFICATION WARNING: this summary attributes a claim to "
@@ -1401,12 +1429,14 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                 finding_summary = body_text[:body_budget] + verification_warnings
 
                 this_depth = delegation_depth_ctx.get()
+                top_level_task_name = top_level_task_name_ctx.get()
                 run_state = run_state_ctx.get()
                 if run_state is not None and agent_id not in _NON_RESEARCH_DISPATCH_ROLES:
                     if new_urls:
                         for u in new_urls:
                             run_state.add_finding(u["url"], finding_summary, task_name=task_name, depth=this_depth,
-                                                   follow_up_directions=follow_up_directions, agent_id=agent_id)
+                                                   follow_up_directions=follow_up_directions, agent_id=agent_id,
+                                                   top_level_task_name=top_level_task_name)
                     elif reference_urls:
                         # An Analyzer fetches nothing itself, but the Searcher that delegated to it
                         # is instructed to pass the real source URL IN its instructions (see
@@ -1420,10 +1450,12 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                         # remaining defense-in-depth case (no reference URL either).
                         for u in reference_urls:
                             run_state.add_finding(u, finding_summary, task_name=task_name, depth=this_depth,
-                                                   follow_up_directions=follow_up_directions, agent_id=agent_id)
+                                                   follow_up_directions=follow_up_directions, agent_id=agent_id,
+                                                   top_level_task_name=top_level_task_name)
                     else:
                         run_state.add_finding(task_name, finding_summary, task_name=task_name, depth=this_depth,
-                                               follow_up_directions=follow_up_directions, agent_id=agent_id)
+                                               follow_up_directions=follow_up_directions, agent_id=agent_id,
+                                               top_level_task_name=top_level_task_name)
 
                 # RAG findings cache (ROADMAP.md "Strategic options" item 5, 2026-07-20): only cache
                 # a finding that passed the EXACT SAME grounding+relevance gate above with zero
@@ -1448,6 +1480,8 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                     available_sub_agents_ctx.reset(children_token)
                 holds_token.reset(token_setter)
                 delegation_depth_ctx.reset(depth_token)
+                if top_level_token is not None:
+                    top_level_task_name_ctx.reset(top_level_token)
                 task_fetched_urls_ctx.reset(task_urls_token)
                 task_id_ctx.reset(task_id_token)
                 specialist_delegate_task_count_ctx.reset(specialist_delegate_count_token)

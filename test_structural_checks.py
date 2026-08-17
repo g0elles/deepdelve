@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src
 
 from engine.orchestrator import (
     _extract_excluded_topics, _lacks_concrete_subject, _extract_follow_up_directions,
+    _strip_follow_up_directions,
     _ring_fenced_deadline, _looks_like_renamed_task,
 )
 from engine.completion import (
@@ -202,6 +203,21 @@ def main():
     assert _extract_follow_up_directions("") == []
     # Case-insensitive header, per re.IGNORECASE — a model that varies casing must still be caught.
     assert _extract_follow_up_directions("stuff\nfollow-up directions:\n- one lead") == ["one lead"]
+
+    # --- _strip_follow_up_directions (2026-08-17): grounding checks on a specialist summary must
+    # not treat a FOLLOW-UP DIRECTIONS bullet's URL as a claim citation -- live incident:
+    # MexicoCity_digital_nomad_visa correctly cited relocate.world/consulmex for its real findings,
+    # then suggested citas.sre.gob.mx (never fetched) as a follow-up lead, and real_grounding_
+    # problem flagged the WHOLE summary as ungrounded over a suggestion, not a citation. ---
+    real_body = "- **[Relocate.World](https://relocate.world/visa)**: real cited finding.\n\n"
+    with_directions = real_body + "FOLLOW-UP DIRECTIONS:\n- Check https://citas.sre.gob.mx for current status.\n"
+    stripped = _strip_follow_up_directions(with_directions)
+    assert "citas.sre.gob.mx" not in stripped, stripped
+    assert "relocate.world/visa" in stripped, stripped
+    assert stripped.rstrip() == real_body.rstrip(), stripped
+    # No section present -> unchanged.
+    assert _strip_follow_up_directions("no such section here") == "no such section here"
+    assert _strip_follow_up_directions("") == ""
 
     # --- task_deadline ring-fence math (2026-07-21, "4th synthesis-vanishing mechanism" fix 1) ---
     # Normal case: extends by a full second sub_agent_timeout_minutes when the SDK ceiling has room.
@@ -2714,6 +2730,29 @@ def main():
             rs.add_finding("https://b.example.co/z", "real content this time", task_name="task_flagged", depth=1)
             _update_task_verification(rs)
             assert rs.data["task_verification"]["task_flagged"]["status"] == "verified"
+
+            # Ledger rollup (2026-08-17 live incident): a depth==1 task whose OWN findings are all
+            # empty-summary (the zero-trailing-text synthesis-vanishing mechanism) must still read
+            # "verified" if a nested Analyzer it dispatched -- carrying top_level_task_name back to
+            # it -- produced real citable content. Without this, Lisbon_digital_nomad_visa-shaped
+            # tasks read "flagged: no real citable source" despite 2 of 3 nested Analyzers having
+            # full real content, and the Planner acknowledges a gap that doesn't exist.
+            rs10 = RunState(tmpdir)
+            rs10.add_finding("https://c.example.co/1", "", task_name="task_rollup", depth=1)
+            rs10.add_finding("https://c.example.co/2", "", task_name="task_rollup", depth=1)
+            rs10.add_finding(
+                "https://c.example.co/analyzed", "real, substantive analysis of the fetched page",
+                task_name="Analyze c_example_page", depth=2, top_level_task_name="task_rollup",
+            )
+            _update_task_verification(rs10)
+            assert rs10.data["task_verification"]["task_rollup"]["status"] == "verified", \
+                rs10.data["task_verification"]["task_rollup"]
+            # A depth>1 finding with NO top_level_task_name (older data, or a non-rollup caller)
+            # must not spuriously create or flip a ledger entry -- same "ignored" convention as the
+            # depth==2 case asserted above, now stated for the field's absence specifically.
+            rs10.add_finding("https://c.example.co/orphan", "some content", task_name="orphan_child", depth=2)
+            _update_task_verification(rs10)
+            assert "orphan_child" not in rs10.data["task_verification"]
 
             # check_task_verification_flagged wiring: re-flag task_flagged and confirm the check
             # fires, names it, and leaves task_kept alone.
@@ -6975,6 +7014,27 @@ def main():
             assert "### Source: uncovered_task" not in material, material
 
     contextvars.copy_context().run(_findings_filename_scenario)
+
+    # --- task_names scoping (_dispatch_per_facet_findings_writer_fix) must also pull in a nested
+    # Analyzer's own finding via top_level_task_name, not just an exact task_name match (2026-08-17
+    # ledger-rollup sibling fix) -- otherwise a per-facet FindingsWriter retry scoped to the facet
+    # that actually has the real content would silently drop it, the same evidence-crowding shape
+    # the scoping feature exists to prevent, just from the opposite direction. ---
+    def _findings_scoping_rollup_scenario():
+        from engine.completion import _build_findings_source_material
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rs = RunState(tmpdir)
+            rs.data["fetched_urls"] = [{"url": _SRC, "filename": "sources/page.md"}]
+            rs.add_finding(_SRC, "real nested analysis", task_name="Analyze page.md", depth=2,
+                            top_level_task_name="facet_a")
+            rs.add_finding("https://other.example.co/x", "unrelated facet's own content",
+                            task_name="facet_b", depth=1)
+            material = _build_findings_source_material(rs, task_names={"facet_a"})
+            assert f"### Source: {_SRC}" in material, material
+            assert "unrelated facet's own content" not in material, material
+
+    contextvars.copy_context().run(_findings_scoping_rollup_scenario)
 
     # --- A finding whose source_url is the add_finding task_name fallback (no real fetched or
     # reference URL at all) must NEVER be rendered as a "### Source: ..." entry -- that shape is

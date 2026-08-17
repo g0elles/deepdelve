@@ -254,7 +254,7 @@ class RunState:
 
     def add_finding(self, source_url: str, summary: str, task_name: Optional[str] = None,
                      depth: Optional[int] = None, follow_up_directions: Optional[list] = None,
-                     agent_id: Optional[str] = None) -> None:
+                     agent_id: Optional[str] = None, top_level_task_name: Optional[str] = None) -> None:
         # task_name/depth (ROADMAP Phase 5, "Coverage accounting") are the anchor coverage() below
         # groups by -- depth==1 means a top-level task the Planner itself dispatched via
         # delegate_tasks, depth>1 a nested Analyzer-tier call one of THOSE tasks made in turn.
@@ -268,10 +268,17 @@ class RunState:
         # follow-up task to the same specialist type. Additive/optional: every existing consumer of
         # RunState.data["findings"] reads via .get(), so an older-shaped entry (or one from a
         # non-Searcher dispatch that never set these) stays fully compatible.
+        # top_level_task_name (2026-08-17, ledger rollup fix): for a depth>1 finding, the depth==1
+        # ancestor task_name it was dispatched underneath (see engine/orchestrator.py's
+        # top_level_task_name_ctx) -- None for a depth==1 finding itself (task_name already IS the
+        # top-level name there) or for any older/other caller that doesn't pass it. Lets a
+        # depth==1 task's real evidence be found even when it lives only in a nested Analyzer's own
+        # finding record -- see completion.py::_update_task_verification for the consumer.
         self.data["findings"].append({
             "source_url": source_url, "summary": summary, "timestamp": time.time(),
             "task_name": task_name, "depth": depth,
             "follow_up_directions": follow_up_directions or [], "agent_id": agent_id,
+            "top_level_task_name": top_level_task_name,
         })
 
     def coverage(self) -> dict:

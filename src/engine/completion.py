@@ -2106,6 +2106,23 @@ def _update_task_verification(run_state: "RunState") -> None:  # noqa: F821 — 
     by_task: dict = {}
     for f in top_level:
         by_task.setdefault(f["task_name"], []).append(f)
+    # Ledger rollup (2026-08-17, live incident): a depth==1 task's OWN findings can be entirely
+    # empty (the "zero trailing text" synthesis-vanishing mechanism, see RunState.coverage()'s own
+    # docstring) while the depth>1 Analyzer children it dispatched produced real, citable content
+    # that was simply never folded back up. Confirmed live: Lisbon_digital_nomad_visa's 5 own
+    # findings were all empty-summary, but 2 of its 3 nested Analyzer dispatches ("Analyze SEF D8
+    # Visa page", "Analyze MyVisaPortugal Fees") had full real content -- yet the ledger read
+    # "flagged: no real citable source" and the Planner acknowledged a gap that didn't actually
+    # exist, silently dropping the run's single best-researched task. Rolled in here (not into
+    # RunState.coverage()) because coverage()'s own docstring deliberately excludes depth>1 for a
+    # DIFFERENT reason (a child reusing already-fetched content with no new URL of its own must not
+    # make coverage look artificially low) -- this ledger cares about "does real evidence exist for
+    # this task anywhere", which is a strictly different question from coverage()'s "did the
+    # Planner's own top-level breadth pay off".
+    for f in findings:
+        if f.get("depth") == 1 or not f.get("top_level_task_name"):
+            continue
+        by_task.setdefault(f["top_level_task_name"], []).append(f)
     ledger = run_state.data.setdefault("task_verification", {})
     for name, task_findings in by_task.items():
         if any(_is_citable_finding(f) for f in task_findings):
@@ -2288,7 +2305,16 @@ def _build_findings_source_material(run_state: "RunState", task_names: Optional[
     path to keep in sync with the unscoped one."""
     findings = run_state.data.get("findings", [])
     if task_names is not None:
-        findings = [f for f in findings if f.get("task_name") in task_names]
+        # A depth>1 (Analyzer) finding's OWN task_name is the child dispatch's name (e.g. "Analyze
+        # SEF D8 Visa page"), never one of the depth==1 facet names task_names scopes to -- without
+        # also matching top_level_task_name, a per-facet FindingsWriter retry (
+        # _dispatch_per_facet_findings_writer_fix) would silently drop real nested-Analyzer content
+        # for the exact facet it was scoped to include (2026-08-17, same rollup fix as
+        # _update_task_verification's ledger; see that function's docstring for the live incident).
+        findings = [
+            f for f in findings
+            if f.get("task_name") in task_names or f.get("top_level_task_name") in task_names
+        ]
     urls = run_state.data.get("fetched_urls", [])
     if task_names is not None:
         _scoped_urls_lower = {(f.get("source_url") or "").rstrip("/").lower() for f in findings}
