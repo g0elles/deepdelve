@@ -575,7 +575,16 @@ def _findings_facet_coverage(ctx: Ctx) -> tuple[dict[str, set], list[str]]:
     and _dispatch_per_facet_findings_writer_fix's real per-facet scoping can never drift onto two
     different notions of "dropped" -- one computation, read twice, the same relationship
     _facet_coverage already has with check_report_underuses_evidence/
-    _dispatch_per_facet_builder_fix one layer downstream."""
+    _dispatch_per_facet_builder_fix one layer downstream.
+
+    `_is_citable_finding` exclusion (2026-08-16, sibling fix to `_facet_coverage`'s own -- see that
+    function's docstring for the full live incident): without it, a task whose ONLY finding is
+    fabricated/off-topic (a `[SYSTEM WARNING...]` marker) still counts here as "real evidence that
+    needs findings.md coverage" -- but `_build_findings_source_material` (FindingsWriter's actual
+    evidence blob) already excludes that same finding via `_is_citable_finding` and routes it into
+    its "these tasks have nothing citable" note instead. Without this exclusion, this check could
+    tell FindingsWriter it "dropped" a task that was never handed to it as real citable material in
+    the first place -- an unwinnable, contradictory nudge."""
     from utils.grounding import extract_cited_urls, _urls_prefix_match
     findings_urls = {u.rstrip('/') for u in extract_cited_urls(get_workspace_file_content("findings.md") or "")}
     by_task: dict[str, set] = {}
@@ -585,6 +594,8 @@ def _findings_facet_coverage(ctx: Ctx) -> tuple[dict[str, set], list[str]]:
         name = f.get("task_name")
         url = (f.get("source_url") or "").strip()
         if not name or not url.startswith("http"):
+            continue
+        if not _is_citable_finding(f):
             continue
         by_task.setdefault(name, set()).add(url.rstrip('/'))
     dropped = sorted(
@@ -910,7 +921,24 @@ def _facet_coverage(ctx: Ctx) -> tuple[dict[str, set], list[str]]:
     (final_report.md). Factored out of check_report_underuses_evidence (2026-08-01) so its verdict
     and _dispatch_per_facet_builder_fix's real per-facet URL sets can never drift onto two
     different notions of "dropped" -- one computation, read twice in the same completion-check
-    iteration (check's ctx, then the dispatch branch's same ctx), not duplicated."""
+    iteration (check's ctx, then the dispatch branch's same ctx), not duplicated.
+
+    `_is_citable_finding` exclusion (2026-08-16 live incident, sibling bug to `_is_null_finding_
+    summary` below): this loop used to ONLY skip a finding via `_is_null_finding_summary` -- "a
+    fetch that yielded nothing extractable" -- which does NOT catch a finding carrying a
+    `[SYSTEM VERIFICATION WARNING...]`/`[SYSTEM RELEVANCE WARNING...]` marker (real-looking but
+    FABRICATED or off-topic content; `_is_citable_finding`'s own, stricter exclusion). That gap let
+    this function and `check_task_verification_flagged`'s ledger (`_is_citable_finding`-based)
+    disagree about the SAME task in the SAME run: the ledger correctly flags a task as fabricated
+    and tells the Planner to acknowledge the gap and stop, while this function -- feeding both
+    `check_report_underuses_evidence`'s verdict AND `_dispatch_per_facet_builder_fix`'s own
+    per-facet URL set -- still counted that task's fabricated finding as "real surviving evidence"
+    and told Builder to go cite it. Confirmed live: a run's `digital_nomad_visa_portugal` was
+    flagged fabricated/quota-exhausted at attempt 0, then `report_underuses_evidence` told Builder
+    at attempt 3 it had "real surviving sources" for that exact task and to cite them -- directly
+    contradicting the acknowledge-the-gap directive one attempt earlier, and a plausible
+    contributor to the citation-accuracy churn (`uncited_claims`/`quote_paraphrased`) that followed
+    before the whole facet was silently dropped from the final report with no gap ever disclosed."""
     from utils.grounding import extract_cited_urls, _urls_prefix_match, _is_null_finding_summary
     findings_urls = {u.rstrip('/') for u in extract_cited_urls(get_workspace_file_content("findings.md") or "")}
     report_urls = {u.rstrip('/') for u in extract_cited_urls(ctx.content or "")}
@@ -930,6 +958,11 @@ def _facet_coverage(ctx: Ctx) -> tuple[dict[str, set], list[str]]:
                        # see _is_null_finding_summary's own docstring. A URL with a DIFFERENT,
                        # real-content finding entry elsewhere in this same loop still gets added
                        # normally, since this only skips THIS null entry, not the URL as a whole.
+        if not _is_citable_finding(f):
+            continue  # fabricated/off-topic (SYSTEM WARNING marker) -- see this function's own
+                      # docstring above. Must never be counted as "real surviving evidence" to
+                      # recover, or this directly contradicts check_task_verification_flagged's
+                      # own acknowledge-the-gap directive for the same task.
         by_task.setdefault(name, set()).add(url)
 
     dropped = sorted(

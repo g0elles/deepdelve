@@ -3063,6 +3063,71 @@ def main():
 
     contextvars.copy_context().run(_null_summary_exclusion_scenario)
 
+    # --- fabricated-finding exclusion (2026-08-16 live incident, sibling to the null-summary
+    # exclusion above): a task whose ONLY finding carries a [SYSTEM VERIFICATION WARNING...]
+    # marker (fabricated/off-topic content, NOT a null/empty extraction) must ALSO be excluded from
+    # _facet_coverage/_findings_facet_coverage's notion of "real surviving evidence" -- the same
+    # _is_citable_finding definition check_task_verification_flagged's own ledger already uses.
+    # Confirmed live: without this, _facet_coverage told Builder a fabricated/quota-exhausted task
+    # had "real surviving sources" to cite, directly contradicting check_task_verification_
+    # flagged's own acknowledge-the-gap directive for the SAME task one attempt earlier. ---
+    def _fabricated_finding_exclusion_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        from engine.completion import _facet_coverage, _findings_facet_coverage, Ctx
+
+        _orig_ws_fab = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            _IN_MEMORY_FS.clear()
+            real_url = "https://real.example.co/visa-guide"
+            fabricated_url = "https://fabricated.example.co/visa-guide"
+            fabricated_summary = (
+                "Minimum monthly income of €5,000 is required.\n\n"
+                "[SYSTEM VERIFICATION WARNING: this summary cites a claim that does not match "
+                "anything actually fetched this run (claim_unsupported).]"
+            )
+            findings_md = (
+                f"### [Real Source]({real_url})\n- real finding, no warning marker.\n\n"
+                f"### [Fabricated Source]({fabricated_url})\n{fabricated_summary}"
+            )
+            _IN_MEMORY_FS["findings.md"] = findings_md
+            report_content = f"- real finding. [Real Source]({real_url})"
+            _IN_MEMORY_FS["final_report.md"] = report_content
+
+            with tempfile.TemporaryDirectory() as tmpdir_fab:
+                rs = RunState(tmpdir_fab)
+                run_state_ctx.set(rs)
+                rs.add_finding(real_url, "real finding, no warning marker.",
+                                task_name="task_real", depth=1)
+                rs.add_finding(fabricated_url, fabricated_summary,
+                                task_name="task_fabricated", depth=1)
+                ctx = Ctx(req_artifact="final_report.md", attempt=0, max_attempts=10, delegated=True,
+                           files=["findings.md", "final_report.md"], content=report_content,
+                           quotas=None, run_state=rs)
+
+                by_task, dropped = _facet_coverage(ctx)
+                assert "task_real" in by_task and real_url.rstrip('/') in by_task["task_real"], by_task
+                assert "task_fabricated" not in by_task, (
+                    "a fabricated (SYSTEM WARNING-marked) finding must not count as real "
+                    "surviving evidence Builder can be told to go cite", by_task)
+                assert dropped == [], "no task with REAL evidence was dropped from the report"
+
+                findings_by_task, findings_dropped = _findings_facet_coverage(ctx)
+                assert "task_real" in findings_by_task, findings_by_task
+                assert "task_fabricated" not in findings_by_task, (
+                    "the same fabricated finding must not count as real evidence FindingsWriter "
+                    "can be told it 'dropped' from findings.md either", findings_by_task)
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            if _orig_ws_fab is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws_fab
+
+    contextvars.copy_context().run(_fabricated_finding_exclusion_scenario)
+
     # --- 2026-07-31 (research finding, not a live incident): both check_report_underuses_findings
     # and check_report_underuses_evidence used to say "actually add sections" without ever naming
     # edit_workspace_file, the tool BUILDER_INSTRUCTIONS itself reserves for exactly this narrow-
