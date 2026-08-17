@@ -133,15 +133,40 @@ _NULL_FINDING_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Live-confirmed 2026-08-17 (session_status 2026-08-16 item 3 follow-up): a Searcher-tier
+# dispatch that hits its OWN delegate_tasks quota mid-task -- before it ever hands a fetched file
+# to an Analyzer for real extraction -- narrates that block instead of any actual finding, e.g.
+# "I have already used the maximum allowed number of delegate_tasks calls... I am unable to
+# proceed with Analyzer processing due to the quota limit." This carries none of _NULL_FINDING_RE's
+# "nothing found on the page" phrases (extraction was simply never attempted, not attempted-and-
+# failed) and is a full multi-paragraph status report, way over the <300-char gate below -- so it
+# passed _is_null_finding_summary cleanly and sat in FindingsWriter's evidence blob as if it were
+# real content. Confirmed live: FindingsWriter then discarded genuinely good Analyzer-produced
+# findings for the SAME url in favor of writing a "no information extracted" placeholder instead,
+# apparently confused by the two conflicting entries for one source. No length gate needed here,
+# unlike _NULL_FINDING_RE's two-signal design: mentioning this project's own internal tool/role
+# vocabulary ("delegate_tasks", "Analyzer processing", quota exhaustion) is not something any
+# genuine research finding about an external topic would ever do, so the vocabulary match alone is
+# already a safe, narrow signal -- same precedent _CUTOFF_ONLY_SUMMARY_RE already sets (an exact,
+# distinctive system/self-narrated shape, not a length heuristic).
+_QUOTA_BLOCKED_RE = re.compile(
+    r'unable to (?:proceed|continue)\b.{0,60}\b(?:analyz\w*|quota|delegat\w*)|'
+    r'\b(?:delegate_tasks|analyzer)\b.{0,80}\b(?:quota|exhausted|rejected|maximum allowed)',
+    re.IGNORECASE,
+)
+
 
 def _is_null_finding_summary(summary: Optional[str]) -> bool:
     """True if `summary` (a run_state.data['findings'] entry's own text) is an admission that
     nothing was actually extracted, not a real finding — see the module comment above this
-    function for why this matters and the two-signal design."""
+    function for why this matters and the two-signal design. Also true for the length-independent
+    quota-blocked narration shape _QUOTA_BLOCKED_RE catches — see that regex's own comment."""
     if not summary or not summary.strip():
         return True
     stripped = summary.strip()
-    return len(stripped) < 300 and bool(_NULL_FINDING_RE.search(stripped))
+    if len(stripped) < 300 and _NULL_FINDING_RE.search(stripped):
+        return True
+    return bool(_QUOTA_BLOCKED_RE.search(stripped))
 
 
 def _strip_trailing_punct(url: str) -> str:

@@ -5,6 +5,7 @@ import re
 import socket
 import asyncio
 import threading
+from typing import Optional
 from bs4 import BeautifulSoup
 from agent_framework import tool
 from tools.core import with_quota, tool_quotas_ctx, TOOL_ERROR_PREFIX
@@ -726,11 +727,35 @@ def _slugify_for_filename(url: str, query: str) -> str:
     return f"{slug}_{digest}"
 
 
+def _reject_malformed_url(url: str) -> tuple[str, Optional[str]]:
+    """Strips harmless leading/trailing whitespace and returns (clean_url, error_or_None) --
+    error is set if INTERNAL whitespace remains. See fetch_url_to_workspace's own call site
+    comment for the live incident (2026-08-17) this closes: a fetched URL with an embedded space
+    got stored verbatim as "ground truth", and extract_cited_urls' citation regex (which correctly
+    stops at whitespace) could then never re-match it -- an ungroundable-by-construction citation
+    that burned a whole run's retry budget on an unwinnable rewrite loop. Factored out as a pure
+    function so it's testable without a real network fetch."""
+    url = url.strip() if isinstance(url, str) else url
+    if isinstance(url, str) and any(c.isspace() for c in url):
+        return url, (
+            f"{TOOL_ERROR_PREFIX}Malformed URL — it contains whitespace (\"{url}\"), which can "
+            f"never be cited or grounded correctly later. Call fetch_url_to_workspace again with "
+            f"the URL fixed (no spaces)."
+        )
+    return url, None
+
+
 @tool
 @with_quota
 async def fetch_url_to_workspace(url: str | list, filename: str = "", convert_to_md: bool = True) -> str:
     """Fetch external web content and save it directly to the workspace. If convert_to_md is True, parses to Markdown. url takes ONE URL per call. filename is optional — a name is auto-generated from the URL if you omit it."""
     url, list_note = _first_of_list_arg(url, "url", "fetch_url_to_workspace")
+
+    # Reject-not-truncate on a malformed URL -- see _reject_malformed_url's own docstring for the
+    # live incident this closes.
+    url, malformed_err = _reject_malformed_url(url)
+    if malformed_err:
+        return malformed_err
 
     # Cross-agent dedup (2026-07-23): confirmed live -- 4 different sub-agents each
     # independently searched, found, and fetched the SAME timeanddate.com page under 4 different

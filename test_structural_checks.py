@@ -308,6 +308,16 @@ def main():
                     "that does not match anything actually fetched this run.]"),
     }
     assert _is_citable_finding(verification_flagged) is False
+    # NULL-FINDING (2026-08-17, evidence-crowding root cause, session_status 2026-08-16 item 3):
+    # a real http URL with a genuine "nothing extracted" narration used to pass every condition
+    # above (real URL, no cutoff marker, no warning marker) and render as an ordinary citable
+    # source -- crowding FindingsWriter's evidence blob with placeholders on a busy multi-source
+    # task. Must be excluded exactly like a relevance/verification-flagged finding.
+    null_finding = {
+        "task_name": "background", "source_url": "https://example.com/thin-page",
+        "summary": "No key findings extracted from this source during this research run.",
+    }
+    assert _is_citable_finding(null_finding) is False
 
     # --- _build_findings_source_material renders a real title when available (2026-07-21,
     # closing the format gap with FINDINGS_WRITER_INSTRUCTIONS' own required output shape), falls
@@ -719,6 +729,25 @@ def main():
     _slug3 = _slugify_for_filename("https://different.com/other", "")
     assert _slug1 and _slug1 == _slug2, "must be deterministic for the same URL"
     assert _slug1 != _slug3, "must differ for a different URL"
+
+    # --- fetch_url_to_workspace rejects a malformed URL containing internal whitespace
+    # (2026-08-17, live incident, session_status 2026-08-16 item 3 follow-up): a model tool-call
+    # mangled a URL with an embedded space ("...-in-port Portugal" instead of "...-in-portugal").
+    # This used to fetch successfully (a 404/stub, no exception) and get stored VERBATIM as
+    # "ground truth" -- but extract_cited_urls' citation regex correctly stops at whitespace, so
+    # any citation to it forever extracts as a shorter, non-matching prefix: UNGROUNDABLE BY
+    # CONSTRUCTION, no matter how FindingsWriter rewords the citation. Confirmed live: this burned
+    # 4+ rebuild attempts and nearly the whole run's retry budget on an unwinnable rewrite loop.
+    # Must now be rejected before it's ever fetched or recorded, as an immediate, recoverable tool
+    # error the model can retry with a clean URL. Tested against the pure helper, not the full
+    # network-fetching tool function -- no real HTTP call belongs in this suite. ---
+    from tools.web import _reject_malformed_url
+    _clean, _err = _reject_malformed_url("https://example.com/post/real-page Extra")
+    assert _err and "Malformed URL" in _err and "whitespace" in _err, _err
+    # Leading/trailing whitespace (common, harmless) must still be accepted after stripping --
+    # only INTERNAL whitespace is a real malformation.
+    _clean2, _err2 = _reject_malformed_url("  https://example.com/some/page  ")
+    assert _err2 is None and _clean2 == "https://example.com/some/page", (_clean2, _err2)
     _orig_ws = _config.cfg.get("settings", {}).get("workspace")
     _config.cfg.setdefault("settings", {})["workspace"] = {"type": "memory"}
     try:
@@ -3127,6 +3156,40 @@ def main():
                 _config.cfg["settings"]["workspace"] = _orig_ws_fab
 
     contextvars.copy_context().run(_fabricated_finding_exclusion_scenario)
+
+    # --- null-finding evidence-blob crowding (2026-08-17, session_status 2026-08-16 item 3): a
+    # busy task that fetches several sources but only extracts real content from one of them used
+    # to have EVERY source -- including the "No key findings extracted" placeholders -- rendered
+    # as an ordinary "### Source: ..." entry in _build_findings_source_material's evidence blob,
+    # since a null-finding summary carries a real http URL and no cutoff/warning marker. Confirmed
+    # live, repeatedly: FindingsWriter then wrote the placeholder text itself into findings.md
+    # instead of just the real entry. Placeholders must be excluded from the evidence blob and
+    # routed into the "nothing citable" note instead, same treatment as a fabricated/off-topic
+    # finding above. ---
+    def _null_finding_evidence_blob_scenario():
+        reset_fetched_urls()
+        with tempfile.TemporaryDirectory() as tmpdir_null_blob:
+            rs = RunState(tmpdir_null_blob)
+            run_state_ctx.set(rs)
+            record_fetched_url("https://busy.example.co/real", filename="sources/real.md")
+            record_fetched_url("https://busy.example.co/thin1", filename="sources/thin1.md")
+            record_fetched_url("https://busy.example.co/thin2", filename="sources/thin2.md")
+            rs.add_finding("https://busy.example.co/real",
+                            "Rent in the target neighborhood averages €900/month per 2026 listings.",
+                            task_name="busy_task", depth=1)
+            rs.add_finding("https://busy.example.co/thin1",
+                            "No key findings extracted from this source during this research run.",
+                            task_name="busy_task", depth=1)
+            rs.add_finding("https://busy.example.co/thin2",
+                            "I was unable to find any relevant information on this page.",
+                            task_name="busy_task", depth=1)
+            material = _build_findings_source_material(rs)
+            assert "€900/month" in material, material
+            assert "No key findings extracted" not in material, material
+            assert "unable to find any relevant information" not in material, material
+        reset_fetched_urls()
+
+    contextvars.copy_context().run(_null_finding_evidence_blob_scenario)
 
     # --- 2026-07-31 (research finding, not a live incident): both check_report_underuses_findings
     # and check_report_underuses_evidence used to say "actually add sections" without ever naming
@@ -6074,6 +6137,29 @@ def main():
     assert not _is_null_finding_summary(_long_but_mentions_phrase), (
         "a long passage with real content must not be excluded just because it also mentions "
         "'could not find' about one minor sub-detail -- length is the second required signal"
+    )
+
+    # --- quota-blocked narration (2026-08-17, session_status 2026-08-16 item 3 follow-up, live
+    # incident): a Searcher-tier dispatch that hits its OWN delegate_tasks quota before handing a
+    # fetched file to an Analyzer narrates the block instead of a real finding -- no length gate,
+    # since mentioning this project's own internal tool/role vocabulary is itself the safe signal. ---
+    _quota_blocked_real_text = (
+        "**Status Update – Research Task \"visa_requirements_mexico_city\"**\n\n"
+        "I have completed the initial web-search phase and fetched three relevant documents into "
+        "the workspace.\n\n**Next Step (Blocked by Quota)**\nThe next step would be to delegate "
+        "each file to the appropriate Analyzer (DocumentAnalyzer) for a detailed extraction of key "
+        "findings. However, I have already used the maximum allowed number of delegate_tasks calls "
+        "for this task (6). The system has rejected any further delegation attempts.\n\n"
+        "**Conclusion**\nI am unable to proceed with Analyzer processing due to the quota limit."
+    )
+    assert _is_null_finding_summary(_quota_blocked_real_text), (
+        "a long multi-paragraph status report that never actually extracted anything -- just "
+        "narrated its own delegate_tasks quota block -- must be excluded despite being way over "
+        "the 300-char length gate"
+    )
+    assert not _is_null_finding_summary(_long_but_mentions_phrase), (
+        "a real finding about an external topic must not be misclassified just because the quota-"
+        "blocked regex exists -- it mentions none of this project's own internal tool vocabulary"
     )
 
     def _stub_gate_scenario():

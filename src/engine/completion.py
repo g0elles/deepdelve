@@ -21,7 +21,7 @@ from tools import tool_quotas_ctx, get_workspace_files, get_workspace_file_conte
 from utils.run_state import get_fetched_urls, get_search_health
 from utils.grounding import (
     fully_ungrounded, partially_ungrounded, real_grounding_problem, split_into_heading_sections,
-    find_cross_source_contradictions, cheap_grounding_problems,
+    find_cross_source_contradictions, cheap_grounding_problems, _is_null_finding_summary,
 )
 from engine.orchestrator import (
     topup_quota_pool, available_sub_agents_ctx, _extract_excluded_topics, get_context_budget,
@@ -2035,10 +2035,26 @@ def _is_citable_finding(f: dict) -> bool:
     already treats the same warning more strictly elsewhere for a similar reason: _should_cache_finding
     (orchestrator.py) already refuses to cache anything carrying a VERIFICATION warning ("a cache
     entry must never be less verified than a same-run finding") -- this function was the odd one
-    out relative to that existing, stricter precedent."""
+    out relative to that existing, stricter precedent.
+
+    `_is_null_finding_summary` exclusion (2026-08-17, evidence-crowding root cause, session_status
+    2026-08-16 item 3): a fetch that came back but yielded nothing extractable ("No key findings
+    extracted from this source...") still has a real http source_url and no warning marker, so it
+    used to pass every check above and render as an ordinary "### Source: ..." entry in
+    _build_findings_source_material's evidence blob -- indistinguishable from a genuinely useful
+    finding. On a busy task with 8+ fetched sources this let several null placeholders crowd the
+    same one-shot evidence blob real content has to compete with, and confirmed live (repeatedly,
+    2026-08-16) FindingsWriter then wrote the placeholder text itself into findings.md rather than
+    skipping it. check_report_underuses_findings/`_facet_coverage` already special-cased
+    `_is_null_finding_summary` around this same predicate; folding it into `_is_citable_finding`
+    directly means every consumer (evidence blob, uncited-task accounting, the verification ledger)
+    now agrees a null finding is not real evidence, instead of each call site needing its own
+    bolted-on exclusion."""
     src = f.get("source_url") or ""
     summary = f.get("summary") or ""
     if not (src.startswith("http") and not _CUTOFF_ONLY_SUMMARY_RE.match(summary)):
+        return False
+    if _is_null_finding_summary(summary):
         return False
     return "[SYSTEM RELEVANCE WARNING" not in summary and "[SYSTEM VERIFICATION WARNING" not in summary
 
