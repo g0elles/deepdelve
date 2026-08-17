@@ -70,11 +70,25 @@ per-instance patch — see below for the invariant and the mechanism that now en
   `None` instead of `verdict`, letting `COMPLETION_CHECKS`/`GROUNDING_CHECKS`' own first-match
   ordering fall through to whatever's next in the list — no rewiring needed elsewhere, the list
   order already does the right thing once the winning check goes quiet.
-- **`_yield_to_starved_check(verdict, ctx, starved_check, never_final_blocker=False)`** — a
-  DIFFERENT shape from `_capped`: protects one specific LOW-PRIORITY hygiene check
-  (`check_untracked_delegation`) regardless of WHICH problem is currently winning, not tied to one
-  specific problem name. Still hand-called with the specific starved check passed directly (never
-  wrapped in `or`) — this one was never buggy.
+- **`_yield_to_starved_check(verdict, ctx, starved_check, never_final_blocker=False,
+  tier_problems=None)`** — a DIFFERENT shape from `_capped`: protects one specific LOW-PRIORITY
+  hygiene check (`check_untracked_delegation`) regardless of WHICH problem is currently winning,
+  not tied to one specific problem name. Still hand-called with the specific starved check passed
+  directly (never wrapped in `or`).
+  **`tier_problems` landmine (2026-08-16, found live)**: the ORIGINAL version of this function's
+  starvation window was keyed on `_consecutive_occurrences(ctx.run_state, verdict.problem)` — the
+  SAME problem repeating. That misses the case where `COMPLETION_CHECKS` as a whole TIER keeps
+  winning but the SPECIFIC problem changes every attempt (`missing_findings -> missing_artifact ->
+  uneven_task_investment -> task_verification_flagged`, never repeating) — `GROUNDING_CHECKS` is
+  just as starved either way (the hard two-tier gate below only cares whether `COMPLETION_CHECKS`
+  returned non-None AT ALL, not which check). Confirmed live: `report_underuses_evidence` never got
+  a single turn across an entire run despite `final_report.md` having dropped 3 of 4 requested
+  facets. Fixed by adding `_COMPLETION_TIER_PROBLEMS` (the full set of `COMPLETION_CHECKS` problem
+  names) + `_consecutive_tier_wins` (membership-based counting, sibling to `_consecutive_
+  occurrences`'s equality-based counting) — the `check_report_underuses_evidence` call site now
+  passes `tier_problems=_COMPLETION_TIER_PROBLEMS`, so the guard fires on EITHER the same problem
+  repeating OR the whole tier winning consecutively. **A new `COMPLETION_CHECKS` entry needs its
+  problem name added to `_COMPLETION_TIER_PROBLEMS` too** — see checklist item 6 below.
 - **`_STARVATION_YIELD_TARGETS` + `_apply_starvation_yield(verdict, ctx)`** — for a SPECIFIC problem
   that should yield to a SPECIFIC sibling (`report_underuses_findings` → `report_underuses_
   evidence`), a declarative `{problem_name: target_check}` dict, always probed directly. Replaces a
@@ -160,6 +174,13 @@ four tuples, dispatched by its own `elif` instead.
    `_per_facet_builder_dispatch_scenario` does for `report_underuses_evidence` — the verdict matrix
    alone only proves the check fires with the right problem name, not that the dispatch branch
    handles it correctly.
+6. **If it's a new `COMPLETION_CHECKS` entry** (not `GROUNDING_CHECKS`), add its problem name to
+   `_COMPLETION_TIER_PROBLEMS` too (2026-08-16) — this is what lets `_yield_to_starved_check`'s
+   `tier_problems` param detect "the whole `COMPLETION_CHECKS` tier keeps winning" even when the
+   SPECIFIC problem changes every attempt; miss this and a real, permanent `GROUNDING_CHECKS`
+   starvation (see this section's own `tier_problems` landmine writeup above) can recur without the
+   standing audit test catching it, since that test only checks `_capped` usage, not tier-set
+   membership.
 
 ## 2. The writer-dispatch system (FindingsWriter / Builder)
 
@@ -188,11 +209,26 @@ because code written for the "normal" multi-turn dispatch shape didn't consider 
   it. Before adding a new dispatch role whose first message is also large and self-contained (not
   built up turn-by-turn), check whether it needs the same exclusion.
 - **`writer_gate_ctx`** (`src/tools/core.py`): blocks `read_workspace_file`/`grep_workspace_file`
-  until FindingsWriter's first `write_workspace_file` call, because a model given both raw source
-  files AND a compiled evidence string tends to abandon the compiled evidence and hand-read files
-  instead, producing a far thinner `findings.md`. Armed only for FindingsWriter — Builder's own
-  instructions correctly require reading `findings.md` first, so Builder must never be gated by
-  this.
+  until FindingsWriter's first `write_workspace_file` (or `edit_workspace_file` — see below) call,
+  because a model given both raw source files AND a compiled evidence string tends to abandon the
+  compiled evidence and hand-read files instead, producing a far thinner `findings.md`. Armed only
+  for FindingsWriter — Builder's own instructions correctly require reading `findings.md` first, so
+  Builder must never be gated by this. **It is armed for EVERY FindingsWriter dispatch**, not just
+  the original from-scratch write — including `_dispatch_per_facet_findings_writer_fix`'s
+  (`completion.py`; same idea as §1's `report_underuses_evidence`/`_dispatch_per_facet_builder_fix`
+  above, one layer earlier — a per-facet ADD-ONLY fix for `findings.md` instead of `final_report.md`)
+  corrective passes, whose instructions explicitly say "use `edit_workspace_file` ... do not
+  rewrite or touch any other part of the file."
+  **Landmine, found live 2026-08-16**: `check_writer_gate` originally only accepted
+  `write_workspace_file` as satisfying the gate. A per-facet dispatch trying to read `findings.md`
+  first (legitimate — it needs to find an edit anchor for `edit_workspace_file`) got blocked, and
+  the block's own hardcoded wording ("call `write_workspace_file` now") actively steered the model
+  toward a full-file overwrite that silently destroyed facets a PRIOR per-facet round had already
+  correctly added — confirmed live, this exact contradiction fired 20 times in one 45-minute run
+  that never converged on a stable `findings.md`. Fixed: `edit_workspace_file` now also satisfies
+  the gate. Any FUTURE tool added to FindingsWriter's toolset that can legitimately be its first
+  real action (writing/editing the artifact) needs the same treatment in `check_writer_gate`, or
+  this exact trap recurs for that tool instead.
 
 `_build_findings_source_material` enforces its own **shared character budget**
 (`settings.context_budget_chars`) across `findings_block` + `fetched_block` + the omitted/uncited
@@ -244,6 +280,44 @@ distinct, citable findings that existed at the moment `findings.md` was LAST wri
 current count, and fires when more exist now. It is stamped every time
 `_dispatch_writer_review_fix(..., "FindingsWriter", ...)` succeeds. **This is exactly the kind of
 key that needs to be added everywhere `run_state.data` gets partially copied** — see §3.
+
+### The per-task verification ledger (`task_verification`) and its supersede heuristic — both fuzzy, both fully recomputed every attempt
+
+**Where**: `_update_task_verification` (`completion.py`) writes `run_state.data["task_verification"]`
+— one entry per top-level dispatched task, `status` one of `verified` / `flagged` / `superseded` —
+fresh, EVERY completion-check attempt, from `run_state.data["findings"]` alone (never incrementally
+patched). `check_task_verification_flagged` only ever acts on `status == "flagged"` entries.
+
+Two landmines here, both live-confirmed 2026-08-16, both from the same root shape — a fuzzy
+heuristic making a PERMANENT decision about a task without enough context to know it's wrong:
+
+- **`gap_acknowledged` must survive the full recompute.** Once `check_task_verification_flagged`'s
+  `quota_exhausted` branch tells the Planner to stop redelegating a flagged task for good, that
+  decision has to persist — but `_update_task_verification` REPLACES each flagged entry's whole
+  dict every attempt. A field set once and not explicitly carried forward from the prior entry
+  (`ledger.get(name, {}).get("gap_acknowledged", False)`, the way `_update_task_verification` now
+  does before overwriting) gets silently reset to absent on the very next attempt. Combined with
+  `retry_quota_topup` (§1's own docstring on `topup_quota_pool`) periodically un-exhausting the
+  quota this branch keys off, an unprotected reset here reopens a directive the model was already
+  told was final — see `check_task_verification_flagged`'s own docstring for the full oscillation
+  incident. **Any new per-task ledger field meant to be a one-way, sticky decision needs this same
+  explicit carry-forward, not just "set it once and assume the dict persists."**
+- **The `superseded` downgrade (`_looks_like_renamed_task`, `orchestrator.py`) is a raw `difflib`
+  text-similarity guess, and a HIGH ratio does not mean "same subject."** It exists to catch the
+  Planner renaming a flagged task instead of retrying it under the same `task_name` — but two
+  INDEPENDENTLY dispatched, always-differently-named tasks that share a template (a multi-entity
+  comparison query's own parallel phrasing, e.g. two cities' rent facets differing only in the city
+  and neighborhood names) can score 0.89 similarity, comfortably over the 0.6 threshold, while being
+  two genuinely different, both-still-needed facets. The downgrade is PERMANENT and silent — a
+  `superseded` task is invisible to `check_task_verification_flagged` forever, with nothing else in
+  the pipeline ever re-flagging the gap; confirmed live, a whole city's rent facet vanished from
+  both `findings.md` and the final report with zero warning anywhere in the run. Fixed via
+  `_instruction_entities` (proper-noun extraction) + a Jaccard-overlap override: a high text ratio
+  is trusted as a real rename only when the two tasks' extractable named subjects actually overlap.
+  **Any FUTURE heuristic that makes a permanent, silent decision from raw text similarity alone
+  needs the same kind of "do the ACTUAL subjects match, not just the wording" guard** — text
+  similarity and subject identity are correlated, not the same thing, and a templated multi-entity
+  query is exactly the shape that pulls them apart.
 
 ## 3. `RunState.data`: the persisted-state surface, and the carryover-allowlist trap
 

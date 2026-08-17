@@ -88,7 +88,57 @@ concluded verdict, which is the actual complaint. Going forward, a candidate is 
 
 ## History
 
-### 2026-08-04 (latest): First hosted frontier-model test (`deepseek-v4-flash`/`deepseek-v4-pro`) — DISQUALIFIED, but two real cross-cutting harness bugs found and fixed along the way
+### 2026-08-16 (latest): Four real completion-check bugs found and fixed by repeatedly live-testing one prompt instead of trusting a single pass
+
+Ran the medium "Lisbon vs Mexico City" eval prompt (`eval/dataset.jsonl`) as a smoke test for an
+unrelated open item (`_find_sibling_fetch`), and instead of getting a clean confirmation, kept
+hitting real, DIFFERENT bugs each of 5 consecutive live runs (~45-68 min each). Chased each one
+down to its actual root cause via `_run_state.json`/`findings.md`/`final_report.md` (not log lines
+alone — a mid-session user correction, "you're too confident," caught a case where the run's
+"System" log messages looked like healthy progress while the actual report on disk was still badly
+incomplete) rather than retrying blind. Full root-cause traces in `session_status/2026-08-16.md`
+and `ARCHITECTURE.md` §1/§2's own updated landmine writeups; summary here:
+
+1. **`gap_acknowledged` directive-oscillation fix** (commit `cdf354c`) —
+   `check_task_verification_flagged`'s quota-exhausted "stop redelegating" directive could get
+   silently reversed by a LATER `retry_quota_topup` refill flipping `quota_exhausted` back to
+   `False`, reissuing "redelegate" for a task already told to stop. `gap_acknowledged` on the
+   per-task ledger entry now makes that decision sticky across the ledger's full recompute.
+2. **Cross-tier completion-check starvation fix** (commit `1e70bba`) — the existing starvation
+   guard only protected `GROUNDING_CHECKS` when the SAME `COMPLETION_CHECKS` problem repeated
+   consecutively; a run where a DIFFERENT `COMPLETION_CHECKS` problem won every attempt starved
+   `GROUNDING_CHECKS` (specifically `report_underuses_evidence`, built to catch exactly this) for
+   an entire run despite `final_report.md` having dropped 3 of 4 requested facets. New
+   `_COMPLETION_TIER_PROBLEMS`/`_consecutive_tier_wins` generalize the guard to the whole tier.
+   **Live-confirmed working**: post-fix, the same check correctly kept firing and dispatching
+   Builder across 11 attempts instead of never getting a turn.
+3. **`writer_gate_ctx` / `edit_workspace_file` fix** (commit `1e70bba`) — the structural gate
+   forcing FindingsWriter to write before reading only accepted `write_workspace_file`, but is
+   armed for the per-facet ADD-ONLY correction dispatches too, whose own instructions say to use
+   `edit_workspace_file` instead and never touch the rest of the file. The gate's block (wording:
+   "call `write_workspace_file` now") actively steered the model toward exactly the full-file
+   overwrite its own instructions forbade, silently destroying facets a prior round had already
+   added. Fired 20 times in one run that never converged. **Live-confirmed working**: zero
+   occurrences post-fix, `findings.md` converged cleanly on the first pass.
+4. **`_looks_like_renamed_task` entity-mismatch fix** (commit `1e70bba`) — the heuristic meant to
+   catch the Planner renaming a flagged task instead of retrying it under the same name
+   false-positived on two INDEPENDENTLY dispatched, differently-named tasks sharing a template
+   (two cities' rent facets differing only in city/neighborhood names, 0.89 raw `difflib`
+   similarity). This silently, permanently marked one city's real facet "superseded" the moment the
+   other verified — it never appeared in `findings.md` or the final report, with no gap ever
+   flagged anywhere in the run. Fixed via proper-noun extraction + a Jaccard-overlap override that
+   only trusts a high text-similarity ratio when the two tasks' actual named subjects overlap.
+   Found too late in the session for a fresh live run to finish before this write-up — unit-tested,
+   live reconfirmation still open (see `session_status/CURRENT.md`).
+
+**Related, found but deliberately NOT fixed this session** (own future investigation): a single
+task that legitimately fetches many real sources (8+ seen live) can still crowd FindingsWriter's
+one-shot synthesis even after the existing per-facet dispatch fix (which scopes by TASK, not by
+individual source) — confirmed live, 11 of 13 source headings in one `findings.md` got a placeholder
+despite real content existing for at least one of them, and Builder then fabricated plausible
+numbers for those gapped sources in the final report. See `session_status/CURRENT.md` item 2.
+
+### 2026-08-04: First hosted frontier-model test (`deepseek-v4-flash`/`deepseek-v4-pro`) — DISQUALIFIED, but two real cross-cutting harness bugs found and fixed along the way
 
 First-ever hosted (non-local) model tested against this project's real pipeline, via `src/api.py` +
 web UI and the headless `eval/evaluate.py` harness. 4 total runs (2x flash via web UI, 1x flash
