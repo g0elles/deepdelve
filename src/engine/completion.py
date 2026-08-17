@@ -2049,17 +2049,59 @@ def _is_citable_finding(f: dict) -> bool:
     `_is_null_finding_summary` around this same predicate; folding it into `_is_citable_finding`
     directly means every consumer (evidence blob, uncited-task accounting, the verification ledger)
     now agrees a null finding is not real evidence, instead of each call site needing its own
-    bolted-on exclusion."""
+    bolted-on exclusion.
+
+    `_verification_warning_targets_url` scoping (2026-08-17, live incident, session_status 2026-08-16
+    item 3's own long-open root cause): `orchestrator.py::_run_single_task` attaches the SAME
+    task-level synthesis text (and the SAME verification_warnings string) to EVERY URL fetched in
+    one turn via one `add_finding` call per URL -- see `_collapse_multi_url_task_findings`'s own
+    docstring. A verification warning about ONE of those co-fetched URLs used to wholesale-exclude
+    the shared finding record for ALL of them, discarding real content about URLs the warning never
+    named. Confirmed live: a Mexico City rent synthesis covering Blueground (a stub page) AND
+    Rentberry (real, with a genuine 'MX$17,300/month' figure) in one text got a
+    `stub_source:...blueground...` warning; the old wholesale check threw away Rentberry's real
+    price too, for all 3 co-fetched URLs including mexicoinsider.mx (never even mentioned in the
+    warning) -- the single largest content loss found in that run's final report. Now scoped to the
+    finding's OWN `source_url` when the warning names specific URL(s) (`unverified_urls:`/
+    `stub_source:`/`claim_unsupported:` are the only labels that reliably carry real_grounding_
+    problem's own flagged URLs -- see that function and claim_grounding_problem's own return
+    strings); falls back to the prior wholesale exclusion when it can't (a warning shape that
+    identifies its problem by quoted text or a regulation ID, not a URL, or the Analyzer-tier
+    reconstructed-URL message, which deliberately also names the CORRECT reference URL alongside
+    the bad one and must not have that safe URL swept up by a broader match)."""
     src = f.get("source_url") or ""
     summary = f.get("summary") or ""
     if not (src.startswith("http") and not _CUTOFF_ONLY_SUMMARY_RE.match(summary)):
         return False
     if _is_null_finding_summary(summary):
         return False
-    return "[SYSTEM RELEVANCE WARNING" not in summary and "[SYSTEM VERIFICATION WARNING" not in summary
+    if "[SYSTEM RELEVANCE WARNING" in summary:
+        return False
+    if "[SYSTEM VERIFICATION WARNING" in summary and _verification_warning_targets_url(summary, src):
+        return False
+    return True
 
 
 _WARNING_MARKER_RE = re.compile(r"\[SYSTEM (?:VERIFICATION|RELEVANCE) WARNING:.{0,160}")
+_VERIFICATION_WARNING_BLOCK_RE = re.compile(r"\[SYSTEM VERIFICATION WARNING:.*?\]", re.DOTALL)
+_VERIFICATION_FLAGGED_URLS_RE = re.compile(r"\((?:unverified_urls|stub_source|claim_unsupported):([^)]*)\)")
+
+
+def _verification_warning_targets_url(summary: str, source_url: str) -> bool:
+    """True if a `[SYSTEM VERIFICATION WARNING...]` marker on `summary` specifically names
+    `source_url` as the bad one -- see `_is_citable_finding`'s own docstring for why this must be
+    URL-scoped, not wholesale. Returns True (exclude, the safe default) when the marker's own
+    detail carries no extractable URL at all -- nothing to scope to, so the pre-existing wholesale
+    behavior is preserved for those shapes."""
+    from utils.grounding import extract_cited_urls, _urls_prefix_match
+    flagged = set()
+    for block in _VERIFICATION_WARNING_BLOCK_RE.findall(summary):
+        for m in _VERIFICATION_FLAGGED_URLS_RE.finditer(block):
+            flagged.update(u.rstrip("/") for u in extract_cited_urls(m.group(1)))
+    if not flagged:
+        return True
+    own = source_url.rstrip("/")
+    return any(own == u or _urls_prefix_match(own, u) for u in flagged)
 
 
 def _update_task_verification(run_state: "RunState") -> None:  # noqa: F821 — utils.run_state.RunState, annotation only

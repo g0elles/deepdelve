@@ -3314,6 +3314,80 @@ def main():
 
     contextvars.copy_context().run(_null_finding_evidence_blob_scenario)
 
+    # --- verification-warning URL scoping (2026-08-17 live incident, session_status item 3's own
+    # long-open root cause): add_finding attaches the SAME shared synthesis text to every URL
+    # fetched in one turn (_collapse_multi_url_task_findings's own docstring) -- a stub/unverified
+    # flag about ONE of those co-fetched URLs must not wholesale-exclude the record for the OTHERS.
+    # Confirmed live: a Mexico City rent synthesis covering a stub Blueground page AND a real
+    # Rentberry price (MX$17,300/month) in one text got 'stub_source:...blueground...', and the old
+    # wholesale check threw the real Rentberry price away too, along with mexicoinsider.mx (never
+    # even named in the warning). ---
+    def _is_citable_finding_url_scoped_scenario():
+        from engine.completion import _is_citable_finding
+
+        stub_url = "https://stub.example.co/polanco-listing"
+        real_url = "https://real.example.co/condesa-listing"
+        untouched_url = "https://untouched.example.co/insider"
+        shared_summary = (
+            "Consolidated findings: Stub page price data was not captured (quota limits); "
+            "Real page shows the lowest observed price is $17,300/month for a 1-bedroom.\n\n"
+            f"[SYSTEM VERIFICATION WARNING: this summary attributes a claim to a source that does "
+            f"not match anything actually fetched this run, or to something that isn't a real URL "
+            f"at all (stub_source:{stub_url}). Do not treat the associated claim as sourced when "
+            f"writing findings.md.]"
+        )
+        stub_f = {"source_url": stub_url, "summary": shared_summary}
+        real_f = {"source_url": real_url, "summary": shared_summary}
+        untouched_f = {"source_url": untouched_url, "summary": shared_summary}
+        assert _is_citable_finding(stub_f) is False, "the URL the warning actually names must stay excluded"
+        assert _is_citable_finding(real_f) is True, (
+            "a co-cited URL the warning never named must NOT be swept up by another URL's "
+            "stub/unverified flag")
+        assert _is_citable_finding(untouched_f) is True, (
+            "a third co-cited URL never mentioned anywhere in the warning must also stay citable")
+
+        # unverified_urls: (multiple bad URLs) -- same scoping, more than one flagged URL.
+        multi_bad_summary = (
+            "Real content here.\n\n"
+            "[SYSTEM VERIFICATION WARNING: this summary attributes a claim to a source that does "
+            "not match anything actually fetched this run, or to something that isn't a real URL "
+            "at all (unverified_urls:https://bad1.example.co/x, https://bad2.example.co/y). Do not "
+            "treat the associated claim as sourced when writing findings.md.]"
+        )
+        assert _is_citable_finding({"source_url": "https://bad1.example.co/x", "summary": multi_bad_summary}) is False
+        assert _is_citable_finding({"source_url": "https://bad2.example.co/y", "summary": multi_bad_summary}) is False
+        assert _is_citable_finding({"source_url": "https://real.example.co/z", "summary": multi_bad_summary}) is True
+
+        # A warning shape with no extractable URL (quote-identified, not URL-identified) falls back
+        # to wholesale exclusion -- nothing to scope the exclusion to.
+        no_url_summary = (
+            "Some content.\n\n"
+            "[SYSTEM VERIFICATION WARNING: this summary attributes a claim to a source that does "
+            "not match anything actually fetched this run, or to something that isn't a real URL "
+            "at all (quote_paraphrased:the exact wording was altered). Do not treat the associated "
+            "claim as sourced when writing findings.md.]"
+        )
+        assert _is_citable_finding({"source_url": real_url, "summary": no_url_summary}) is False, (
+            "a warning that identifies its problem by quoted text, not a URL, has nothing to scope "
+            "to and must fall back to the prior wholesale exclusion")
+
+        # The Analyzer-tier reconstructed-URL message also names the CORRECT reference URL inside
+        # its own parenthetical -- that URL must never be swept up as if it were also flagged bad.
+        reconstructed_summary = (
+            "Some content.\n\n"
+            "[SYSTEM VERIFICATION WARNING: this summary cites 'https://guessed.example.co/z', "
+            "which does not match the source URL you were actually given to analyze "
+            "(https://correct.example.co/real) — this looks like a reconstructed or guessed URL, "
+            "not the real one. Do not treat the associated claim as sourced when writing "
+            "findings.md.]"
+        )
+        assert _is_citable_finding({"source_url": "https://correct.example.co/real", "summary": reconstructed_summary}) is False, (
+            "unlabeled parentheticals (no unverified_urls:/stub_source:/claim_unsupported: prefix) "
+            "aren't scoped at all -- falls back to wholesale exclusion, same as the no-URL case, "
+            "rather than risk sweeping the correct reference URL into the wrong bucket")
+
+    _is_citable_finding_url_scoped_scenario()
+
     # --- 2026-07-31 (research finding, not a live incident): both check_report_underuses_findings
     # and check_report_underuses_evidence used to say "actually add sections" without ever naming
     # edit_workspace_file, the tool BUILDER_INSTRUCTIONS itself reserves for exactly this narrow-
