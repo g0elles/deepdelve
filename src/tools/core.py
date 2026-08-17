@@ -28,8 +28,31 @@ class QuotaAbortException(BaseException):
     """Raised when a tool is called repeatedly despite being over quota, indicating an LLM loop."""
     pass
 
-def check_quota(tool_name: str) -> str | None:
-    """Check if the specific tool has exceeded its per-invocation quota."""
+# Tools eligible for the exact-repeat dedup below (2026-08-17, live incident) -- deliberately a
+# tiny opt-in allowlist, not applied to every quota'd tool. read_workspace_file is idempotent
+# (the same filename/start_line/end_line always returns the same content unless something else
+# wrote to that file in between -- and a write/edit IS a different tool call, so it doesn't reset
+# this tool's own tracked key, meaning even a legitimate re-read after an edit still executes
+# normally and returns fresh content; only the quota bookkeeping is slightly more generous, never
+# wrong). Other quota'd tools (web_search, fetch_url_to_workspace, ...) are NOT safe to add here
+# without separate review -- identical args there don't reliably mean "wasted call."
+_DEDUP_ELIGIBLE_TOOLS = frozenset({"read_workspace_file"})
+
+def check_quota(tool_name: str, call_key: tuple | None = None) -> str | None:
+    """Check if the specific tool has exceeded its per-invocation quota.
+
+    `call_key` (2026-08-17, live incident, session_status 2026-08-17 "run5" investigation):
+    optional, only meaningful for `_DEDUP_ELIGIBLE_TOOLS`. Confirmed live via a real session
+    transcript: a FindingsWriter dispatch called `read_workspace_file(findings.md, 1, 200)` with
+    the EXACT SAME arguments 2-3 times in a row -- not re-reading after a change, just
+    re-verifying unchanged state -- and burned its entire quota this way before it could finish
+    its actual edit work ("Quota reached... used the 'read_workspace_file' tool 41/47 times"),
+    forcing an early cutoff and another retry round. When the immediately preceding call to this
+    SAME tool had the identical `call_key` (and this tool is in `_DEDUP_ELIGIBLE_TOOLS`) and the
+    pool is still under its limit, this call is treated as a free repeat -- no `used` increment --
+    while the wrapped function still runs normally and returns real (possibly updated) content.
+    `_last_call_key` is stored on the tool's own pool entry, the same established pattern
+    `_rescued_task_ids` below already uses for per-tool private bookkeeping."""
     ctx = tool_quotas_ctx.get()
     # DEEPDELVE_QUOTA_DEBUG=1: one line per quota check to stderr, with the pool's object id —
     # the 'shared cumulative pool' design silently degrades to 'unlimited' for any tool call the
@@ -42,6 +65,10 @@ def check_quota(tool_name: str) -> str | None:
         print(f"[quota_debug] {tool_name}: {state}", file=_sys.stderr)
     if ctx and tool_name in ctx:
         entry = ctx[tool_name]
+        if tool_name in _DEDUP_ELIGIBLE_TOOLS and call_key is not None:
+            if entry["used"] < entry["limit"] and entry.get("_last_call_key") == call_key:
+                return None  # exact repeat of the immediately preceding call -- no new quota spent
+            entry["_last_call_key"] = call_key
         if entry["used"] >= entry["limit"]:
             # Ring-fence against the shared-pool starvation bug (ROADMAP "Findings from live
             # testing", confirmed live 2026-07-14, 2026-07-18, and again 2026-07-21 in a fresh
@@ -171,6 +198,14 @@ def _first_arg_filename(args, kwargs) -> str | None:
     return kwargs.get("filename")
 
 
+def _dedup_call_key(func_name: str, args, kwargs) -> tuple | None:
+    """Builds check_quota's `call_key` for a `_DEDUP_ELIGIBLE_TOOLS` member, else None (no-op for
+    every other tool -- see check_quota's own docstring for why this must stay a tiny opt-in)."""
+    if func_name not in _DEDUP_ELIGIBLE_TOOLS:
+        return None
+    return (args, tuple(sorted(kwargs.items())))
+
+
 def with_quota(func):
     """Decorator to enforce quotas dynamically based on the function's name, and surface a
     caught exception's message (type + str, no full traceback -- see the 2026-08-02 audit note
@@ -178,7 +213,7 @@ def with_quota(func):
     if asyncio.iscoroutinefunction(func):
         @functools.wraps(func)
         async def async_wrapper(*args, **kwargs):
-            if err := check_quota(func.__name__): return err
+            if err := check_quota(func.__name__, _dedup_call_key(func.__name__, args, kwargs)): return err
             if err := check_writer_gate(func.__name__, _first_arg_filename(args, kwargs)): return err
             try:
                 return await func(*args, **kwargs)
@@ -193,7 +228,7 @@ def with_quota(func):
     else:
         @functools.wraps(func)
         def sync_wrapper(*args, **kwargs):
-            if err := check_quota(func.__name__): return err
+            if err := check_quota(func.__name__, _dedup_call_key(func.__name__, args, kwargs)): return err
             if err := check_writer_gate(func.__name__, _first_arg_filename(args, kwargs)): return err
             try:
                 return func(*args, **kwargs)

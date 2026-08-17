@@ -600,6 +600,61 @@ def main():
 
     contextvars.copy_context().run(_quota_ring_fence_scenario)
 
+    # --- read_workspace_file exact-repeat quota dedup (2026-08-17 live incident, run5
+    # investigation): a real FindingsWriter dispatch called read_workspace_file(findings.md, 1,
+    # 200) with the IDENTICAL exact arguments 2-3 times in a row -- not re-reading after a change,
+    # just re-verifying unchanged state -- and burned its entire quota this way
+    # ("Quota reached... used the 'read_workspace_file' tool 41/47 times") before it could finish
+    # its actual edit work. Deliberately a tiny opt-in (_DEDUP_ELIGIBLE_TOOLS = {read_workspace_
+    # file} only) -- other quota'd tools (web_search, etc.) are untouched. ---
+    def _read_dedup_scenario():
+        from tools.core import tool_quotas_ctx as q_ctx, check_quota
+
+        q_ctx.set({"read_workspace_file": {"used": 0, "limit": 3}})
+        key_a = (("findings.md",), (("end_line", 200), ("start_line", 1)))
+        key_b = (("other.md",), (("end_line", 200), ("start_line", 1)))
+
+        assert check_quota("read_workspace_file", key_a) is None
+        assert q_ctx.get()["read_workspace_file"]["used"] == 1, "the first call must spend one unit"
+
+        # Exact repeat of the immediately preceding call -- must NOT spend another unit.
+        assert check_quota("read_workspace_file", key_a) is None
+        assert q_ctx.get()["read_workspace_file"]["used"] == 1, (
+            "an exact-repeat call (same filename/start_line/end_line) must be free")
+        assert check_quota("read_workspace_file", key_a) is None
+        assert q_ctx.get()["read_workspace_file"]["used"] == 1, (
+            "repeated dedup hits must stay free, not just the first repeat")
+
+        # A DIFFERENT call must spend its own unit normally -- dedup must never suppress a real,
+        # distinct read.
+        assert check_quota("read_workspace_file", key_b) is None
+        assert q_ctx.get()["read_workspace_file"]["used"] == 2, (
+            "a call with different arguments must not be treated as a repeat")
+
+        # Once key_b is the new 'last call', repeating key_a again is a genuinely new call (not
+        # consecutive with the earlier key_a run) and must spend its own unit.
+        assert check_quota("read_workspace_file", key_a) is None
+        assert q_ctx.get()["read_workspace_file"]["used"] == 3, (
+            "only CONSECUTIVE identical calls are deduped -- a different call in between breaks "
+            "the streak")
+
+        # At/over the limit, dedup must not apply -- the real quota-exhaustion error must still
+        # surface normally so the model gets the "you must stop" signal.
+        err = check_quota("read_workspace_file", key_a)
+        assert err and "Quota reached" in err, (
+            "dedup must never mask a genuine quota-exhaustion rejection", err)
+
+        # Other quota'd tools are NOT in _DEDUP_ELIGIBLE_TOOLS -- a call_key passed for one must be
+        # a complete no-op, identical behavior to the pre-fix code path.
+        q_ctx.set({"web_search": {"used": 0, "limit": 2}})
+        assert check_quota("web_search", key_a) is None
+        assert q_ctx.get()["web_search"]["used"] == 1
+        assert check_quota("web_search", key_a) is None, "web_search has no dedup -- a repeat still spends"
+        assert q_ctx.get()["web_search"]["used"] == 2, (
+            "an ineligible tool must never dedup, even with an identical call_key")
+
+    contextvars.copy_context().run(_read_dedup_scenario)
+
     # --- delegate_tasks batch pre-reservation (ROADMAP's tracked open angle (c), 2026-07-21):
     # live-confirmed a heavily-redispatched sibling can structurally starve later-listed siblings
     # in the same batch before they ever get a turn, even across completion-check topups. Pure
