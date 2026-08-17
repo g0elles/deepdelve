@@ -2191,6 +2191,28 @@ def main():
             assert cov3 == {"total": 1, "covered": 1, "ratio": 1.0, "uncovered_task_names": [],
                              "per_task_counts": {"Background": 1}}, cov3
 
+            # Empty-summary exclusion (2026-08-17, live incident, session_status 2026-08-16 item 3
+            # follow-up): a real, http-prefixed URL whose summary is a completely empty string
+            # (the model ended its turn right after a tool call with no synthesis text at all --
+            # confirmed live, 25%/42% of two real runs' own findings) must NOT count as coverage --
+            # confirmed live this let a task with 5 fetched-but-unsynthesized URLs read as the
+            # run's BEST-covered task while a genuinely thin one got flagged instead.
+            rs3b = RunState(tmpdir)
+            rs3b.add_finding("https://a.example.co/x", "", task_name="Lisbon_visa", depth=1)
+            rs3b.add_finding("https://b.example.co/y", "", task_name="Lisbon_visa", depth=1)
+            rs3b.add_finding("https://c.example.co/z", "real content here", task_name="Rent", depth=1)
+            cov3b = rs3b.coverage()
+            assert cov3b == {"total": 2, "covered": 1, "ratio": 0.5,
+                              "uncovered_task_names": ["Lisbon_visa"],
+                              "per_task_counts": {"Lisbon_visa": 0, "Rent": 1}}, cov3b
+            # Same treatment for a "nothing extracted" admission, not just true emptiness -- same
+            # predicate _is_citable_finding already uses, so the two never disagree.
+            rs3c = RunState(tmpdir)
+            rs3c.add_finding("https://a.example.co/x",
+                              "No key findings extracted from this source.", task_name="Thin", depth=1)
+            cov3c = rs3c.coverage()
+            assert cov3c["covered"] == 0 and cov3c["uncovered_task_names"] == ["Thin"], cov3c
+
             # Three top-level tasks, only one with a real URL -> thin (ratio 1/3).
             rs4 = RunState(tmpdir)
             rs4.add_finding("https://a.example.co/x", "summary", task_name="Background", depth=1)

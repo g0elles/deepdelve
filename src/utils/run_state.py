@@ -299,7 +299,26 @@ class RunState:
         check_uneven_task_investment): per-task count of real (http-prefixed) sources -- the same
         filter already used to build `uncovered` below, just tallied instead of discarded, so a
         task that's technically "covered" (>=1 real source) but starved relative to its siblings
-        can still be told apart from one that's genuinely well-researched."""
+        can still be told apart from one that's genuinely well-researched.
+
+        Empty-summary exclusion (2026-08-17, live incident, session_status 2026-08-16 item 3's own
+        follow-up investigation): a real, http-prefixed source_url used to count as "covered" here
+        even when its summary was a completely empty string -- confirmed live, TWICE, that this is
+        not an edge case: 25% and 42% of a run's own findings had a fully empty summary (the model
+        ended a sub-agent's turn immediately after a tool call, with no deadline/budget cutoff
+        marker and no synthesis text at all -- a third, previously undetected "synthesis-vanishing
+        mechanism" alongside the two this project already tracks). Because this method only ever
+        checked source_url, a task with 5 fetched-but-unsynthesized URLs read as the run's
+        BEST-covered task while a genuinely thin one (1 real URL, real content) got flagged instead
+        by check_uneven_task_investment -- the exact check built to catch under-researched tasks
+        was structurally blind to its own worst case. Now excludes a finding whose summary is
+        null/empty OR a "nothing extracted" admission via the SAME `_is_null_finding_summary`
+        predicate `_is_citable_finding` already uses elsewhere in this project (local import --
+        utils.grounding imports utils.run_state, so the reverse import can only happen inside the
+        method, not at module level) -- reusing the existing, already-proven predicate rather than
+        a narrower one-off check, so "does this URL count as real coverage" means the same thing
+        here as it does in every other check in this project."""
+        from utils.grounding import _is_null_finding_summary
         top_level = [f for f in self.data.get("findings", []) if f.get("depth") == 1 and f.get("task_name")]
         by_task: dict = {}
         for f in top_level:
@@ -308,7 +327,11 @@ class RunState:
         if total == 0:
             return {"total": 0, "covered": 0, "ratio": 1.0, "uncovered_task_names": [], "per_task_counts": {}}
         per_task_counts = {
-            name: sum(1 for tf in task_findings if (tf.get("source_url") or "").startswith("http"))
+            name: sum(
+                1 for tf in task_findings
+                if (tf.get("source_url") or "").startswith("http")
+                and not _is_null_finding_summary(tf.get("summary"))
+            )
             for name, task_findings in by_task.items()
         }
         uncovered = [name for name, count in per_task_counts.items() if count == 0]
