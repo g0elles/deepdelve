@@ -2654,6 +2654,24 @@ def main():
             assert verdict is not None and verdict.problem == "task_verification_flagged", verdict
             assert "task_flagged" in verdict.warning and "task_kept" not in verdict.warning, verdict.warning
 
+            # Quota NOT exhausted (used < limit) -> original "delegate_tasks again" directive
+            # fires. Checked BEFORE the exhausted case below, on its own fresh ledger snapshot --
+            # the exhausted case now mutates rs2's ledger (gap_acknowledged), so order matters.
+            rs2b = RunState(tmpdir)
+            rs2b.add_finding("https://a.example.co/x", "real content", task_name="task_kept", depth=1)
+            rs2b.add_finding(
+                "https://b.example.co/y",
+                "[SYSTEM RELEVANCE WARNING: none of the sources fetched for this task actually "
+                "mention the required entity.]",
+                task_name="task_flagged", depth=1,
+            )
+            _update_task_verification(rs2b)
+            ctx_quota_ok = Ctx(req_artifact="final_report.md", attempt=0, max_attempts=8,
+                                delegated=True, files=[], content=None,
+                                quotas={"delegate_tasks": {"used": 2, "limit": 6}}, run_state=rs2b)
+            verdict_ok = check_task_verification_flagged(ctx_quota_ok)
+            assert "delegate_tasks again" in verdict_ok.inject, verdict_ok.inject
+
             # Quota-aware directive (2026-07-27 live regression, delegate_tasks tightened 15->6):
             # telling the Planner to "delegate_tasks again" when its delegate_tasks quota is
             # already exhausted produced 4 wasted attempts of the Planner narrating a fake report
@@ -2667,12 +2685,26 @@ def main():
             assert "delegate_tasks again" not in verdict_exhausted.inject, verdict_exhausted.inject
             assert "stop" in verdict_exhausted.inject.lower(), verdict_exhausted.inject
 
-            # Quota NOT exhausted (used < limit) -> original "delegate_tasks again" directive still fires.
-            ctx_quota_ok = Ctx(req_artifact="final_report.md", attempt=0, max_attempts=8,
-                                delegated=True, files=[], content=None,
-                                quotas={"delegate_tasks": {"used": 2, "limit": 6}}, run_state=rs2)
-            verdict_ok = check_task_verification_flagged(ctx_quota_ok)
-            assert "delegate_tasks again" in verdict_ok.inject, verdict_ok.inject
+            # gap_acknowledged oscillation fix (2026-08-16 live incident): a real run had
+            # retry_quota_topup refill delegate_tasks' LIMIT on a later completion-check attempt,
+            # flipping quota_exhausted back to False and making this check reissue "delegate_tasks
+            # again" for a task it had JUST told the model to stop redelegating -- the model then
+            # degraded into narrating instead of calling tools across the resulting stop/redo/stop
+            # oscillation, and the run only survived via final_report.md salvage. Once quota_
+            # exhausted has fired for a task (as it just did on rs2/ctx_quota_exhausted above), a
+            # later quota top-up making quota look available again must NOT resurrect the "redo
+            # it" directive for that same task.
+            ctx_quota_refilled = Ctx(req_artifact="final_report.md", attempt=0, max_attempts=8,
+                                      delegated=True, files=[], content=None,
+                                      quotas={"delegate_tasks": {"used": 6, "limit": 9}}, run_state=rs2)
+            assert check_task_verification_flagged(ctx_quota_refilled) is None, (
+                "a task already told to stop must not be re-nudged just because quota was topped up")
+            # Full-ledger recompute (e.g. next completion-check attempt) must preserve the
+            # acknowledgment -- confirmed via _update_task_verification, not just an in-memory dict.
+            _update_task_verification(rs2)
+            assert rs2.data["task_verification"]["task_flagged"]["gap_acknowledged"] is True
+            assert check_task_verification_flagged(ctx_quota_refilled) is None, (
+                "gap_acknowledged must survive a full ledger recompute, not just the original dict")
 
             # No flagged tasks at all -> no verdict.
             rs3 = RunState(tmpdir)

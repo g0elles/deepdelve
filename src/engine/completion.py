@@ -210,7 +210,15 @@ def check_task_verification_flagged(ctx: Ctx) -> Optional[Verdict]:
     if not cfg.get("enabled", True):
         return None
     ledger = ctx.run_state.data.get("task_verification", {})
-    flagged = sorted(name for name, entry in ledger.items() if entry.get("status") == "flagged")
+    # gap_acknowledged (2026-08-16 live incident, see quota_exhausted branch below): once this
+    # check has told the model to stop and accept a task as an unfixable gap, that decision must
+    # stick even if a later completion-check retry's quota top-up makes quota_exhausted go back to
+    # False -- excluded here so a re-flagged/still-flagged task already marked acknowledged never
+    # re-enters the redo/stop directive cycle.
+    flagged = sorted(
+        name for name, entry in ledger.items()
+        if entry.get("status") == "flagged" and not entry.get("gap_acknowledged")
+    )
     if not flagged:
         return None
 
@@ -242,6 +250,15 @@ def check_task_verification_flagged(ctx: Ctx) -> Optional[Verdict]:
     flagged_list = ", ".join(f"'{n}'" for n in flagged[:5])
     subject = "this task" if len(flagged) == 1 else "these tasks"
     if quota_exhausted:
+        # Mark these tasks as an accepted, permanent gap so a LATER retry_quota_topup-driven
+        # quota refill can't flip quota_exhausted back to False and reissue "delegate_tasks
+        # again" for a task this check already told the model to stop redelegating (2026-08-16
+        # live incident: exactly that oscillation — stop, then redo, then stop again — burned an
+        # 11-attempt completion-check budget with the model degrading into narrating instead of
+        # calling tools, ending in an unverified salvage report).
+        for name in flagged:
+            if name in ledger:
+                ledger[name]["gap_acknowledged"] = True
         directive = (
             f"Task(s) {flagged_list} produced ONLY fabricated, off-topic, or unverifiable sources, "
             f"but your delegate_tasks quota is exhausted — you cannot redelegate. Do NOT narrate a "
@@ -2024,10 +2041,17 @@ def _update_task_verification(run_state: "RunState") -> None:  # noqa: F821 — 
             m = _WARNING_MARKER_RE.search(f.get("summary") or "")
             if m and m.group(0) not in reasons:
                 reasons.append(m.group(0))
+        # gap_acknowledged carries forward across this full-ledger recompute (2026-08-16) -- once
+        # check_task_verification_flagged has told the model to stop redelegating this task for
+        # good, that decision must survive a still-flagged task getting rewritten fresh here on
+        # the next attempt, or a later quota top-up can resurrect the "redo it" directive (see
+        # that check's own quota_exhausted branch for the full incident).
+        prior_ack = ledger.get(name, {}).get("gap_acknowledged", False)
         ledger[name] = {
             "status": "flagged",
             "reason": "; ".join(reasons) if reasons else "no real citable source",
             "checked_at": time.time(),
+            "gap_acknowledged": prior_ack,
         }
 
     dispatched = run_state.data.get("dispatched_tasks", [])
