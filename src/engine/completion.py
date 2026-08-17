@@ -1358,6 +1358,18 @@ COMPLETION_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
     check_uneven_task_investment,
     check_untracked_delegation,
 ]
+
+# The problem names COMPLETION_CHECKS' own members can produce, one-to-one with the list above --
+# used by the cross-tier starvation yield below to detect "COMPLETION_CHECKS as a WHOLE TIER kept
+# winning" as distinct from "the SAME problem kept winning" (_consecutive_occurrences' narrower
+# question). A new COMPLETION_CHECKS entry needs its problem name added here too (see that list's
+# own "one row in the verdict matrix test" reminder -- this is the same kind of paired update).
+_COMPLETION_TIER_PROBLEMS = frozenset({
+    "not_delegated", "thin_coverage", "task_verification_flagged", "findings_ungrounded",
+    "missing_findings", "stale_findings", "findings_underuses_evidence", "missing_artifact",
+    "uneven_task_investment", "untracked_delegation",
+})
+
 GROUNDING_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
     check_claim_unsupported,
     check_no_urls,
@@ -2520,6 +2532,34 @@ def _consecutive_occurrences(run_state: "RunState", problem: str,  # noqa: F821
     return count
 
 
+def _consecutive_tier_wins(run_state: "RunState", tier_problems: frozenset) -> int:  # noqa: F821
+    """Sibling to `_consecutive_occurrences` above, but membership- not equality-based: how many of
+    the run's most recent completion-check attempts, counting backward, recorded ANY problem from
+    `tier_problems` (e.g. `_COMPLETION_TIER_PROBLEMS`) consecutively -- "has this whole TIER kept
+    winning" rather than "has this exact problem kept winning".
+
+    Exists because `_yield_to_starved_check`'s original starvation guard (2026-08-01) only
+    protected against the SAME problem recurring: `_consecutive_occurrences(ctx.run_state,
+    verdict.problem)` resets to 0 the instant a DIFFERENT COMPLETION_CHECKS problem wins next,
+    even though GROUNDING_CHECKS is still just as starved either way (the hard two-tier gate in
+    run_completion_check only ever evaluates GROUNDING_CHECKS when COMPLETION_CHECKS returns None
+    for the WHOLE scan, regardless of which specific check is responsible). Live-confirmed
+    2026-08-16: a run's winning problem changed every single attempt (missing_findings ->
+    missing_artifact -> uneven_task_investment -> task_verification_flagged), so the same-problem
+    counter never once reached _STARVATION_SKIP_THRESHOLD and GROUNDING_CHECKS (specifically
+    check_report_underuses_evidence/check_report_underuses_findings, built to catch exactly this --
+    a Builder draft that dropped 3 of 4 requested facets) never got a single turn in the whole run.
+    The run's remaining budget was spent entirely re-researching one flagged sub-task while the
+    already-catastrophically-incomplete report sat on disk unexamined."""
+    count = 0
+    for a in reversed(run_state.data.get("completion_check_attempts", [])):
+        if a.get("problem") in tier_problems:
+            count += 1
+        else:
+            break
+    return count
+
+
 _STARVATION_SKIP_THRESHOLD = 2
 
 # How many consecutive occurrences of the SAME problem earn a check's strongest escalation
@@ -2553,7 +2593,8 @@ def _capped(ctx: "Ctx", problem: str, verdict: Optional["Verdict"],  # noqa: F82
 
 
 def _yield_to_starved_check(verdict: Optional[Verdict], ctx: Ctx, starved_check,
-                             never_final_blocker: bool = False) -> Optional[Verdict]:
+                             never_final_blocker: bool = False,
+                             tier_problems: Optional[frozenset] = None) -> Optional[Verdict]:
     """First-verdict-wins normally, but a low-priority hygiene check placed deliberately last in
     its own list (check_untracked_delegation in COMPLETION_CHECKS — a "wait a cycle" check,
     explicitly documented as lower-priority-than-correctness, never meant to compete with a real
@@ -2590,12 +2631,25 @@ def _yield_to_starved_check(verdict: Optional[Verdict], ctx: Ctx, starved_check,
     final branch no matter what), a check documented as never-blocking must not be allowed to
     become the reported blocker — keep the real verdict instead. This is the only remaining caller
     of this function (never_final_blocker defaults False for any future caller that carries a
-    genuine correctness guarantee and doesn't need this protection)."""
+    genuine correctness guarantee and doesn't need this protection).
+
+    tier_problems (2026-08-16, live incident, see `_consecutive_tier_wins`'s own docstring for the
+    full trace): the same-problem-only check above misses a run where the winning problem CHANGES
+    every attempt but always comes from the same starving tier -- GROUNDING_CHECKS still never
+    gets evaluated in that case, just for a subtler reason. When provided, the starvation window
+    opens on EITHER the same problem recurring OR the whole tier winning consecutively, whichever
+    threshold is reached first; None (the default) preserves the original same-problem-only
+    behavior for callers (like check_untracked_delegation's) that don't need the broader check."""
     if verdict is None:
         return None
     if never_final_blocker and ctx.attempt >= ctx.max_attempts:
         return verdict
-    if _consecutive_occurrences(ctx.run_state, verdict.problem) < _STARVATION_SKIP_THRESHOLD:
+    same_problem_stuck = _consecutive_occurrences(ctx.run_state, verdict.problem) >= _STARVATION_SKIP_THRESHOLD
+    tier_stuck = (
+        tier_problems is not None
+        and _consecutive_tier_wins(ctx.run_state, tier_problems) >= _STARVATION_SKIP_THRESHOLD
+    )
+    if not (same_problem_stuck or tier_stuck):
         return verdict
     alt = starved_check(ctx)
     if alt is not None and alt.problem != verdict.problem:
@@ -2899,10 +2953,16 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
             # Builder draft dropping a covered facet) never got evaluated ONCE in the entire run, no
             # matter how many attempts passed, because GROUNDING_CHECKS structurally never got a
             # turn while ANYTHING in COMPLETION_CHECKS kept returning non-None -- old, carried-over,
-            # or brand new, it doesn't matter which. Reuses _yield_to_starved_check unchanged (same
-            # mechanism already protecting check_untracked_delegation above, generic regardless of
-            # which COMPLETION_CHECKS problem is currently winning) rather than a new bespoke
-            # cross-tier mechanism. never_final_blocker=False (the default): unlike
+            # or brand new, it doesn't matter which. Reuses _yield_to_starved_check (same mechanism
+            # already protecting check_untracked_delegation above), now passing tier_problems=
+            # _COMPLETION_TIER_PROBLEMS (2026-08-16 follow-up incident: the ORIGINAL same-problem-
+            # only version of this call still missed the case where the winning problem CHANGES
+            # every attempt but always comes from COMPLETION_CHECKS -- a real run cycled
+            # missing_findings -> missing_artifact -> uneven_task_investment -> task_verification_
+            # flagged, never repeating, and report_underuses_evidence never got a single turn in
+            # the whole run despite the report on disk having dropped 3 of 4 requested facets; see
+            # _consecutive_tier_wins' own docstring for the full trace). never_final_blocker=False
+            # (the default): unlike
             # check_untracked_delegation, a real dropped-facet problem winning as the run's
             # terminal reported blocker is correct, not something to protect against. Gated on
             # grounding_check.enabled for the same reason the real GROUNDING_CHECKS scan below is —
@@ -2910,7 +2970,8 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
             # it doesn't itself require ctx.grounding_problem, so it would otherwise bypass the
             # master switch entirely.
             if verdict is not None and config.cfg.get("settings", {}).get("grounding_check", {}).get("enabled", True):
-                verdict = _yield_to_starved_check(verdict, ctx, check_report_underuses_evidence)
+                verdict = _yield_to_starved_check(verdict, ctx, check_report_underuses_evidence,
+                                                   tier_problems=_COMPLETION_TIER_PROBLEMS)
             if verdict is not None:
                 verdict = _with_other_problems_addendum(verdict, ctx, COMPLETION_CHECKS)
             # grounding_check.enabled is the section's master switch — before this guard it was a

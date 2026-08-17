@@ -59,6 +59,33 @@ def main():
         prior,
     ) is None
 
+    # Entity-mismatch override (2026-08-16 live incident): two genuinely independent facets from a
+    # multi-city comparison query, dispatched under DIFFERENT task_names from the start (never a
+    # rename), share a parallel template differing only in city/neighborhood names -- raw difflib
+    # ratio alone scores 0.89 (well over 0.6) and previously silently "superseded" Mexico City's
+    # rent facet the moment Lisbon's got verified, permanently dropping it from findings.md and the
+    # final report with no further nudge ever firing.
+    city_prior = [{"task_name": "rent_lisbon_central_one_bedroom",
+                   "instructions": ("Find the typical monthly rent cost for a one-bedroom apartment "
+                                     "in a central neighborhood of Lisbon (e.g., Baixa, Chiado, "
+                                     "Alfama). Include average price range and provide a real "
+                                     "source URL that supports each claim.")}]
+    assert _looks_like_renamed_task(
+        "rent_mexico_city_central_one_bedroom",
+        ("Find the typical monthly rent cost for a one-bedroom apartment in a central neighborhood "
+         "of Mexico City (e.g., Polanco, Condesa, Roma). Include average price range and provide a "
+         "real source URL that supports each claim."),
+        city_prior,
+    ) is None, "different named subjects sharing a template must not be treated as a rename"
+    # But a genuine same-city rename (matching entity) must still be caught.
+    assert _looks_like_renamed_task(
+        "rent_lisbon_central_one_bedroom_v2",
+        ("Find the typical monthly rent cost for a one-bedroom apartment in central Lisbon (e.g., "
+         "Baixa, Chiado, Alfama), trying a narrower search this time. Provide a real source URL "
+         "that supports each claim."),
+        city_prior,
+    ) == "rent_lisbon_central_one_bedroom"
+
     # --- specialist per-task delegation cap (2026-07-26 live case: one WebSearcher task
     # delegated 6+ Analyzer sub-tasks for a trivial single-fact query, burning most of the run's
     # global delegate_tasks budget) ---
@@ -4277,6 +4304,110 @@ def main():
 
     contextvars.copy_context().run(_cross_tier_starvation_yield_scenario)
 
+    # --- Cross-TIER starvation yield, DIFFERENT-problem case (2026-08-16 follow-up incident):
+    # the scenario above only pre-seeds the SAME problem (task_verification_flagged) twice, which
+    # the ORIGINAL same-problem-only _consecutive_occurrences check already caught. A live run
+    # instead cycled missing_findings -> missing_artifact -> uneven_task_investment ->
+    # task_verification_flagged, never repeating the same problem twice in a row, and
+    # report_underuses_evidence never got a single turn despite the report on disk having dropped
+    # 3 of 4 requested facets. This scenario is identical to the one above except the two
+    # pre-seeded attempts record TWO DIFFERENT COMPLETION_CHECKS problems (neither of which equals
+    # this attempt's own winner) -- proving the fix is the TIER-wide check
+    # (_consecutive_tier_wins / tier_problems=_COMPLETION_TIER_PROBLEMS), not just the pre-existing
+    # same-problem one. ---
+    def _cross_tier_starvation_yield_different_problems_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        from tools.core import tool_quotas_ctx as q_ctx
+        from unittest.mock import AsyncMock
+        from engine.orchestrator import available_sub_agents_ctx
+
+        class _FakeSubAgentConfig:
+            def __init__(self, name):
+                self.name = name
+
+        _orig_ws_ct2 = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
+        _orig_gc_ct2 = _config.cfg.get("settings", {}).get("grounding_check")
+        _config.cfg["settings"]["grounding_check"] = {"nli_verify": False, "topical_relevance_check": False}
+        _orig_uc_ct2 = _config.cfg.get("settings", {}).get("uneven_coverage_check")
+        _config.cfg["settings"]["uneven_coverage_check"] = {"enabled": False}
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            _IN_MEMORY_FS.clear()
+            reset_fetched_urls()
+            heur_urls = ["https://a.example.co/heur1", "https://a.example.co/heur2"]
+            colo_urls = ["https://c.example.co/colo1", "https://c.example.co/colo2"]
+            for u in heur_urls + colo_urls:
+                record_fetched_url(u, filename=f"sources/{u.rsplit('/', 1)[-1]}.md")
+            findings_md = "\n\n".join(f"### [Src]({u})\n- real finding." for u in heur_urls + colo_urls)
+            _IN_MEMORY_FS["findings.md"] = findings_md
+            _IN_MEMORY_FS["final_report.md"] = "\n".join(f"- dato. [Src]({u})" for u in colo_urls)
+
+            with tempfile.TemporaryDirectory() as tmpdir_ct2:
+                rs = RunState(tmpdir_ct2)
+                run_state_ctx.set(rs)
+                for u in heur_urls:
+                    rs.add_finding(u, "heuristic finding", task_name="heuristics", depth=1)
+                for u in colo_urls:
+                    rs.add_finding(u, "colombia finding", task_name="colombia", depth=1)
+                rs.add_finding(
+                    "https://flagged.example.co/page",
+                    "[SYSTEM VERIFICATION WARNING: this summary cites 'X', which does not match "
+                    "the source URL you were actually given to analyze.]",
+                    task_name="flagged_task", depth=1,
+                )
+                q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5}})
+                available_sub_agents_ctx.set([_FakeSubAgentConfig("Builder"), _FakeSubAgentConfig("PeerReviewer")])
+
+                # TWO DIFFERENT tier problems, neither equal to this attempt's own winner
+                # (task_verification_flagged) -- the same-problem-only check would see 0
+                # consecutive occurrences here and never yield.
+                rs.record_attempt(0, "missing_artifact", 0)
+                rs.record_attempt(1, "uneven_task_investment", 2)
+                rs.attempt = 2
+
+                async def _side_effect_ct2(name, instructions, role):
+                    if role == "Builder":
+                        assert "heuristics" in instructions, instructions
+                        _IN_MEMORY_FS["final_report.md"] += "\n" + "\n".join(
+                            f"- dato. [Src]({u})" for u in heur_urls)
+                        return "## Result\nAdded heuristics section\n---"
+                    return "REVIEW: CLEAN\nNo issues found."
+
+                dispatch = AsyncMock(side_effect=_side_effect_ct2)
+                msgs = []
+                should_retry, _ = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append,
+                    dispatch_task=dispatch))
+                recorded_problems = [a["problem"] for a in rs.data["completion_check_attempts"]]
+                assert "report_underuses_evidence" in recorded_problems, (
+                    "a run where COMPLETION_CHECKS keeps winning with a DIFFERENT problem every "
+                    "attempt must still yield to report_underuses_evidence once the whole TIER "
+                    "has recurred _STARVATION_SKIP_THRESHOLD times -- not just when the exact same "
+                    "problem repeats", recorded_problems, msgs)
+                assert any(
+                    call.args[2] == "Builder" and "heuristics" in call.args[1]
+                    for call in dispatch.call_args_list
+                ), dispatch.call_args_list
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            if _orig_ws_ct2 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws_ct2
+            if _orig_gc_ct2 is None:
+                _config.cfg["settings"].pop("grounding_check", None)
+            else:
+                _config.cfg["settings"]["grounding_check"] = _orig_gc_ct2
+            if _orig_uc_ct2 is None:
+                _config.cfg["settings"].pop("uneven_coverage_check", None)
+            else:
+                _config.cfg["settings"]["uneven_coverage_check"] = _orig_uc_ct2
+
+    contextvars.copy_context().run(_cross_tier_starvation_yield_different_problems_scenario)
+
     # --- Per-facet FindingsWriter dispatch for findings_underuses_evidence (2026-08-01): the
     # combined-instruction version (routed through _FINDINGS_WRITER_FIXABLE_PROBLEMS until this
     # fix) got the same live-confirmed negative result as report_underuses_evidence's own Builder-
@@ -6811,6 +6942,36 @@ def main():
         assert "a finding" in read_workspace_file("findings.md")
 
     contextvars.copy_context().run(_writer_gate_scenario)
+
+    # --- writer_gate_ctx: edit_workspace_file also satisfies the gate (2026-08-16 live incident):
+    # _dispatch_per_facet_findings_writer_fix's corrective passes arm this SAME gate (it's shared
+    # by every FindingsWriter dispatch) but their own instructions explicitly say "use
+    # edit_workspace_file ... do not rewrite or touch any other part of the file" -- findings.md
+    # already exists at that point, so trying to read it first (to find an edit anchor) is
+    # legitimate. With only write_workspace_file satisfying the gate, that read got rejected with
+    # wording that told the model to call write_workspace_file instead -- steering it toward a
+    # full-file overwrite that silently destroyed facets a PRIOR per-facet round had already
+    # correctly added. Confirmed live: this exact error fired 20 times in one 45-minute run that
+    # never once converged on a stable findings.md. ---
+    def _writer_gate_edit_satisfies_scenario():
+        from tools import writer_gate_ctx
+        from tools.fs import read_workspace_file, write_workspace_file, edit_workspace_file
+
+        write_workspace_file("findings.md", "### [T](https://x.com)\n- a finding")
+        token = writer_gate_ctx.set({"write_done": False})
+        try:
+            blocked = read_workspace_file("findings.md")
+            assert blocked.startswith("Error:") and "write_workspace_file" in blocked, blocked
+
+            result = edit_workspace_file("findings.md", "- a finding", "- a finding\n- another finding")
+            assert "Error" not in result, result
+
+            unblocked = read_workspace_file("findings.md")
+            assert "another finding" in unblocked, unblocked
+        finally:
+            writer_gate_ctx.reset(token)
+
+    contextvars.copy_context().run(_writer_gate_edit_satisfies_scenario)
 
     # --- low-novelty search-streak backstop (2026-07-22): a real live run showed one WebSearcher
     # task fire 14 near-duplicate web_search calls (each worded differently, so the existing

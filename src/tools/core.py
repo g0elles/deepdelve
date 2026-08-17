@@ -102,8 +102,8 @@ writer_gate_ctx = contextvars.ContextVar('writer_gate_ctx', default=None)
 
 def check_writer_gate(tool_name: str) -> str | None:
     """Blocks read_workspace_file/grep_workspace_file until the active gate's write_workspace_file
-    call has happened. No-op (returns None) unless a caller armed the gate via writer_gate_ctx.set
-    for this specific dispatch."""
+    (or edit_workspace_file -- see below) call has happened. No-op (returns None) unless a caller
+    armed the gate via writer_gate_ctx.set for this specific dispatch."""
     gate = writer_gate_ctx.get()
     if not gate or gate.get("write_done"):
         return None
@@ -113,7 +113,19 @@ def check_writer_gate(tool_name: str) -> str | None:
             "instructions BEFORE reading any source file directly -- call write_workspace_file "
             "now. Raw source files are only for enrichment AFTER that first write."
         )
-    if tool_name == "write_workspace_file":
+    # edit_workspace_file also satisfies the gate (2026-08-16 live incident): this gate is armed
+    # for EVERY FindingsWriter dispatch, including _dispatch_per_facet_findings_writer_fix's
+    # ADD-ONLY corrective passes, whose own instructions explicitly say "use edit_workspace_file
+    # ... do not rewrite or touch any other part of the file" -- findings.md already exists at
+    # that point, so reading it first to find an anchor for the edit is legitimate, not the
+    # "raw source file" case this gate exists to block. Confirmed live: with only
+    # write_workspace_file satisfying the gate, a per-facet dispatch trying to read findings.md
+    # before editing it hit this exact error 20 times in one run, and its hardcoded wording
+    # ("call write_workspace_file now") actively steered the model toward a full-file overwrite --
+    # destroying every OTHER facet a prior per-facet round had already correctly added. That
+    # evidence-loss cycle (fix facet A, silently lose facet B) repeated for the run's entire
+    # 45-minute budget with findings.md never stabilizing.
+    if tool_name in ("write_workspace_file", "edit_workspace_file"):
         gate["write_done"] = True
     return None
 

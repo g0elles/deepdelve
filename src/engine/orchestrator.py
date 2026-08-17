@@ -270,6 +270,21 @@ def _lacks_concrete_subject(instructions: str) -> bool:
                 return False
     return True
 
+def _instruction_entities(text: str) -> set:
+    """Rough proper-noun extraction from a task's instructions: capitalized words that aren't the
+    first word of their sentence (same "real subject, not sentence-initial capitalization" test
+    `_is_placeholder_referent_or_similar` above already uses). Used only by
+    `_looks_like_renamed_task`'s entity-mismatch override below -- a cheap way to tell "two
+    genuinely different named subjects" (Lisbon vs Mexico City) apart from "the same subject,
+    reworded" without any real NLP."""
+    entities = set()
+    for sentence in re.split(r"[.!?:;\n]+", text or ""):
+        for w in sentence.split()[1:]:
+            if re.match(r"[A-Z][a-zA-Z]{2,}", w):
+                entities.add(w.strip(",()."))
+    return entities
+
+
 def _looks_like_renamed_task(task_name: str, instructions: str, prior_tasks: list) -> Optional[str]:
     """Heuristic-only (difflib similarity, not a deterministic error) detector for the Planner
     renaming the same research angle across retries instead of redispatching under the same
@@ -280,12 +295,38 @@ def _looks_like_renamed_task(task_name: str, instructions: str, prior_tasks: lis
     NOT wired as a hard delegate_tasks validation error like the other checks in that loop --
     a fuzzy match is a guess, not a fact, and must never be able to jam a batch of otherwise-valid
     tasks the way the placeholder/pronoun/cross-task-dependency checks correctly do for real
-    deterministic errors. Returns the matched prior task_name, or None."""
+    deterministic errors. Returns the matched prior task_name, or None.
+
+    Entity-mismatch override (2026-08-16 live incident): raw difflib ratio alone false-positives
+    hard on a multi-entity comparison query's own templated task phrasing -- 'Find the typical
+    monthly rent cost for a one-bedroom apartment in a central neighborhood of Lisbon (e.g.,
+    Baixa, Chiado, Alfama)...' vs the SAME template with 'Mexico City (e.g., Polanco, Condesa,
+    Roma)' scores a 0.89 ratio (well over the 0.6 threshold) despite being two genuinely
+    independent, always-separately-dispatched facets that just happen to share a parallel
+    template -- not a rename at all. Confirmed live: this silently downgraded
+    'rent_mexico_city_central_one_bedroom' to "superseded" the moment 'rent_lisbon_central_
+    one_bedroom' got verified, permanently stopping check_task_verification_flagged from ever
+    nudging Mexico City's rent facet again -- it never appeared in findings.md OR the final
+    report, and nothing in the run ever flagged the gap. When both instructions carry extractable
+    proper nouns (`_instruction_entities`) and those sets barely overlap (Jaccard < 0.34 -- picked
+    to tolerate one or two incidentally shared generic capitalized tokens like "URL" without
+    diluting a genuine near-total mismatch), the high text-similarity ratio is coming from shared
+    TEMPLATE wording, not a shared SUBJECT -- skip this candidate rather than falsely superseding
+    it. A same-subject rename (the case this function exists to catch) either shares its subject's
+    entity words directly (e.g. both mention "Lisbon") or has no extractable entities at all
+    (short, generic instructions) and is unaffected by this override either way."""
+    entities = _instruction_entities(instructions)
     for prior in prior_tasks:
         if prior.get("task_name") == task_name:
             continue  # same-name reuse is the expected, legitimate case, not a rename
-        ratio = difflib.SequenceMatcher(None, instructions or "", prior.get("instructions") or "").ratio()
+        prior_instructions = prior.get("instructions") or ""
+        ratio = difflib.SequenceMatcher(None, instructions or "", prior_instructions).ratio()
         if ratio > 0.6:
+            prior_entities = _instruction_entities(prior_instructions)
+            if entities and prior_entities:
+                jaccard = len(entities & prior_entities) / len(entities | prior_entities)
+                if jaccard < 0.34:
+                    continue  # different named subjects sharing a template -- not a rename
             return prior.get("task_name")
     return None
 
