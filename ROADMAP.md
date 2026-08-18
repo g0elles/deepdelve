@@ -88,7 +88,62 @@ concluded verdict, which is the actual complaint. Going forward, a candidate is 
 
 ## History
 
-### 2026-08-16 (latest): Four real completion-check bugs found and fixed by repeatedly live-testing one prompt instead of trusting a single pass
+### 2026-08-17 (latest): Seven real bugs found and fixed across 6 live runs, closing the "per-source evidence-crowding" item that stood as the #1 priority since 2026-07-22
+
+Closed out every open item from `session_status/2026-08-16.md`, then kept live-testing the same
+"Lisbon vs Mexico City" prompt through 4 more full runs, root-causing each new failure via direct
+`_run_state.json`/session-transcript reads rather than trusting log lines alone. Full traces in
+`ARCHITECTURE.md` §2/§3's updated landmine writeups; summary here, roughly in the order fixed:
+
+1. **`RunState.coverage()` empty-summary exclusion** (commit `7eefe5e`) — a real, http-prefixed
+   `source_url` used to count as "covered" even when its summary was completely empty (a sub-agent
+   ending its own turn immediately after a tool call, zero trailing text, no cutoff marker at all —
+   a third, previously-undetected synthesis-vanishing mechanism, measured at 25%/42% of all
+   findings across two live runs). `coverage()` now excludes via the same `_is_null_finding_summary`
+   predicate used elsewhere, fixing `check_thin_coverage`/`check_uneven_task_investment`
+   automatically (both consume `coverage()`'s output directly).
+2. **Ledger rollup + FOLLOW-UP DIRECTIONS grounding fix** (commit `87b2d73`) — a depth==1 task
+   whose OWN findings were all empty still had real evidence in its depth>1 Analyzer children that
+   `_update_task_verification` never credited back to it; new `top_level_task_name` contextvar
+   fixes the rollup. Separately, a specialist's `FOLLOW-UP DIRECTIONS:` section (suggested next
+   URLs, never a citation) was firing false `SYSTEM VERIFICATION WARNING`s that invalidated
+   genuinely-cited real content next to it.
+3. **Task-name-churn denominator inflation fix** (commit `182d2e6`) — `_looks_like_renamed_task`'s
+   raw `difflib` char-ratio scored 0.11 on a real live full-sentence paraphrase (nowhere near its
+   0.6 threshold), so a facet redispatched 3 times under 3 different names was never recognized as
+   one rename — and even when caught, `coverage()` never read the `superseded` ledger status, so
+   the denominator kept inflating anyway. Fixed both: a content-word-overlap OR-trigger, and
+   `coverage()` excluding superseded task_names.
+4. **URL-scoped verification-warning exclusion** (commit `4c5a4c3`) — root cause of the
+   "per-source evidence-crowding" item first named 2026-07-22 and repeatedly flagged since as the
+   clear #1 priority (`session_status/2026-08-16.md` item 3): `add_finding` attaches ONE shared
+   synthesis text to every URL fetched in a turn,
+   so a `stub_source`/`unverified_urls` flag about ONE co-fetched URL wholesale-excluded the
+   record for ALL of them — confirmed live, a real `MX$17,300/month` price got thrown away
+   alongside an unrelated stub-page flag. `_is_citable_finding` now scopes the exclusion to the
+   finding's own `source_url` when the marker names specific bad URL(s).
+5. **`read_workspace_file` exact-repeat quota dedup** (commit `b442797`) — a FindingsWriter
+   dispatch called `read_workspace_file` with IDENTICAL arguments 2-3 times in a row, burning its
+   entire quota before finishing its actual edit work (confirmed: "41/47" quota-exhaustion,
+   forcing a `final_report.md`-never-written outcome). **Live-confirmed working**: zero
+   quota-exhaustion events in the very next live run, versus the prior run's clear 41/47.
+6. **Warning-marker leak fix** (commit `ba8dddf`) — a direct side effect of fix 4, found in the
+   NEXT live run after it shipped: a finding correctly staying citable (its own URL wasn't the
+   flagged one) still carried the raw warning marker TEXT verbatim in its summary, which got
+   rendered into `findings.md` by the deterministic fallback and then re-flagged by findings.md's
+   own grounding check as if the warning's named URL were a real citation — a self-inflicted loop,
+   confirmed via 3 byte-identical `findings.md.rejected_attempt_N` snapshots. Fixed by stripping
+   the marker text before rendering a citable finding's block.
+
+**Two real issues found but deliberately left open, not rushed**: (a) a writer-role dispatch
+(FindingsWriter) can end its own turn with zero output after a `writer_gate_ctx` block — the same
+"zero trailing text" mechanism as fix 1, now confirmed to also hit a writer role, where the
+consequence is worse (nothing written at all); the existing one-shot retry only partially absorbs
+it. (b) why FindingsWriter's rebuild sometimes fails to self-correct a flagged citation across
+multiple retries. Both need their own properly-scoped investigation, not a tail-end patch — see
+`session_status/CURRENT.md` for the live-run evidence backing each.
+
+### 2026-08-16: Four real completion-check bugs found and fixed by repeatedly live-testing one prompt instead of trusting a single pass
 
 Ran the medium "Lisbon vs Mexico City" eval prompt (`eval/dataset.jsonl`) as a smoke test for an
 unrelated open item (`_find_sibling_fetch`), and instead of getting a clean confirmation, kept
@@ -3988,6 +4043,39 @@ tried, twice, not merely proposed):
   change to the writer-dispatch shape (new dispatch shape, a merge step, TUI/CLI parity per this
   project's own mandatory rule, new quota accounting) — needs its own scoped plan before
   implementation, not a small patch.
+
+  **UPDATE 2026-08-17**: `_dispatch_per_facet_builder_fix` and `_dispatch_per_facet_findings_
+  writer_fix` (`ARCHITECTURE.md` §1's routing section) now exist and are live — the "next step"
+  above shipped since this entry was last written. But the self-correction blind spot this
+  literature review names is NOT fully closed by per-facet dispatch alone: a live run
+  (`session_status/CURRENT.md`, run6) showed FindingsWriter reproduce the IDENTICAL hallucinated
+  citation across 3 consecutive WHOLE-REBUILD dispatches (`missing_findings`/`findings_ungrounded`
+  → `_dispatch_writer_review_fix`, not the per-facet ADD-ONLY path) — confirmed via 3
+  byte-identical `findings.md.rejected_attempt_N` snapshots on disk, so this wasn't even fresh
+  model generation reproducing the error, it was the SAME deterministic-fallback content getting
+  rejected on repeat with nothing changing between attempts. Per-facet dispatch fixes the
+  "aggregator noise drops a whole facet" shape this entry's literature review targeted; it does
+  NOT fix "a rebuild dispatch re-derives (or a fallback re-serves) the exact same wrong
+  conclusion from the exact same evidence." **Not yet investigated**: does the corrective
+  dispatch's own instructions need to surface the SPECIFIC prior-rejected URL more forcefully
+  (risking the "ironic rebound" effect `_is_citable_finding`'s own docstring already names —
+  naming forbidden content inside a "don't cite X" warning can itself prime reproducing X,
+  arXiv:2511.12381), or does the deterministic-fallback path itself need change-detection (skip
+  re-offering identical fallback content that was already rejected once)?
+
+- **Writer-role zero-trailing-text: a FindingsWriter/Builder dispatch blocked by `writer_gate_ctx`
+  can just STOP instead of retrying with the correct tool — new, found 2026-08-17, NOT fixed.**
+  The same "sub-agent ends its own turn immediately after a tool call, zero trailing text, no
+  cutoff marker at all" mechanism this project already tracks for Searcher/Analyzer turns (see
+  `RunState.coverage()`'s own docstring on the 25%/42%-of-findings measurement) confirmed live to
+  also hit a WRITER role — `ARCHITECTURE.md` §2's own writeup has the full trace. Consequence is
+  worse for a writer than a researcher: nothing gets written at all, not just one empty finding.
+  `_dispatch_writer_review_fix`'s existing one-shot immediate-retry safety net
+  ("returned nothing usable... retrying once") partially absorbs this but doesn't reliably recover
+  it — a live run showed it firing on 3 of 3 completion-check rounds in the same run. Needs its
+  own design before a fix (how many retries, does the retry's own instructions need to change, is
+  this the same underlying model behavior as the Searcher/Analyzer instances or a distinct one
+  specific to being blocked by a structural gate) — not a rushed patch.
 
 - **`create_local_agent`'s 963-line nested-closure god-function — new, scoped 2026-07-29, NOT
   attempted, needs its own dedicated session.** A whole-repo structural audit

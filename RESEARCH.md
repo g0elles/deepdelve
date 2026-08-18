@@ -3153,3 +3153,134 @@ counter at all — arguably a genuinely different, unrelated problem resolving i
 mean the ORIGINAL flagged-task problem got any less stuck, so resetting its streak may itself be
 the more precise bug to fix, upstream of needing option (1) at all. Worth investigating both
 before picking one, not assuming (1) is right just because it mirrors 17f most closely.
+
+## 18. Today's 7-fix investigative arc (2026-08-17) cross-checked against current agent-reliability literature, plus a concrete evaluation-methodology gap this project should close
+
+Same "chase convergence, layer by layer" shape as §17 (four fixes there, seven here across 6 live
+runs of the same standing "Lisbon vs Mexico City" prompt) — full technical traces live in
+`ROADMAP.md`'s 2026-08-17 History entry and `ARCHITECTURE.md` §2/§3's updated landmine writeups;
+this section is the literature cross-check the user asked for, done AFTER the fixes (confirming
+they land in a real, active research area, not inventing novel terminology for known phenomena)
+plus the methodology gap this whole investigative pattern exposes.
+
+**⚠️ All papers/figures below are marked ⚠️ not yet primary-source-verified**, per this document's
+own 2026-07-19 methodology rule — every citation here came from `WebSearch`'s own AI-mediated
+result summaries, not from directly reading the papers' actual text/data/tables the way §1's ✅
+entries were. The specific figures (64.5%, 45-48%, k=3-10, etc.) and the framing built on them
+should be treated as directionally credible, not confirmed fact, until someone does the same
+primary-read pass §1 already sets the bar for. This applies most to any number cited below —
+don't repeat a percentage from this section as verified without first opening the actual paper.
+
+### 18a. The "zero trailing text" mechanism (item -1, item 2 of the History entry) is a named,
+actively-studied 2026 failure class, not a DeepDelve-specific oddity
+
+This project already tracked two "synthesis-vanishing mechanisms" (deadline-cutoff, budget-cutoff,
+both inserting a marker) before today; today added a third (zero trailing text, no marker at all)
+and confirmed it can hit a WRITER role (`ARCHITECTURE.md` §2's new landmine), not just
+Searcher/Analyzer. Checked against current literature rather than assumed novel: **"roughly 45 to
+48 percent of agent failures close with a confident completion claim, where agents generate empty
+or false completion messages rather than continuing productive work"** — a documented, named 2026
+failure mode in production agent-reliability research (via [Confident AI's 2026 LLM Agent
+Evaluation guide](https://www.confident-ai.com/blog/llm-agent-evaluation-complete-guide) and
+adjacent 2026 agentic-loop literature, e.g. [*When Agents Do Not Stop: Uncovering Infinite Agentic
+Loops in LLM Agents*](https://arxiv.org/pdf/2607.01641)). This is directly convergent with this
+project's own measurement (25%/42% of a run's own findings had a fully empty summary across two
+live runs, §17's own predecessor incidents) — two independent measurement methods (DeepDelve's own
+`_run_state.json` forensics vs. published production-agent failure-mode surveys) landing in the
+same ballpark strengthens confidence this is real and general, not a serving-layer or prompt quirk
+specific to `deepdelve-gpt-oss`. **Not yet fixed** (`ROADMAP.md` Pending) — the literature doesn't
+offer a clean fix either, only naming and measurement; worth treating as a genuinely open research
+problem for this project's own model class, not something a quick patch closes.
+
+### 18b. The self-correction blind spot (item 4's docstring, and the ROADMAP Pending update) has
+TWO independent papers converging on the same 64.5% figure
+
+`_is_citable_finding`'s own docstring and the existing "Multi-facet task abandonment" Pending entry
+already cite [*When Can LLMs Actually Correct Their Own Mistakes? A Critical Survey of
+Self-Correction of LLMs*](https://arxiv.org/html/2406.01297v3) (TACL/MIT Press) for the 64.5%
+self-correction-blind-spot figure across 14 open models. A fresh literature check today surfaced a
+SECOND, apparently independent paper — [*Self-Correction Bench: Uncovering and Addressing the
+Self-Correction Blind Spot in Large Language Models*](https://arxiv.org/html/2507.02778) — citing
+the identical 64.5% figure. Whether these are the same underlying study cited two ways or two
+independently-converging measurements wasn't resolved here (worth a direct read-both pass before
+citing as "two separate confirmations" anywhere more load-bearing than this note), but either way
+the figure is stable across at least one additional citation, not a single paper's own outlier
+number. Directly relevant to today's newly-found FindingsWriter loop (`ROADMAP.md`'s
+"UPDATE 2026-08-17" note on the Multi-facet Pending entry): 3 byte-identical rejected `findings.md`
+snapshots is a CLEANER, more extreme instance of the same blind spot than anything in the original
+Pending entry's evidence — not just "the model regenerates a similar mistake," but "the exact same
+deterministic content gets re-rejected with nothing whatsoever changing between attempts," since
+the deterministic fallback path bypasses model generation variance entirely. That's a genuinely
+useful new data point for whichever fix gets scoped next: the blind spot isn't only about the MODEL
+failing to see its own error freshly — DeepDelve's own retry architecture can hand it back
+LITERALLY identical input and expect a different result, which no amount of self-correction
+capability could ever fix. **The retry loop itself, not just the model, needs a fix**: detect
+"the SAME (problem, dispatched content) pair fired twice with the underlying evidence unchanged"
+and escalate to a genuinely different strategy (surface the specific rejected content in the
+correction's own instructions, or force a completely different writer-role prompt framing) rather
+than dispatching the identical retry a third time.
+
+### 18c. Today's quota-dedup fix (mechanism 2) independently rediscovered a named 2026 mitigation
+pattern — "no-progress guard" — worth generalizing with that framing in mind
+
+Before implementing the `read_workspace_file` exact-repeat dedup, this session traced the fix
+narrowly against `check_quota`'s own real call graph (session transcript, not literature) and
+scoped it to exactly one tool. A literature check afterward found this is a named, established
+2026 mitigation pattern applied more broadly than DeepDelve's own narrow fix: **"a no-progress
+guard that hashes repeated (tool, args, error) tuples stops stuck agents early... halts when the
+same (tool, arguments, error) tuple repeats 2 to 3 times"** ([Particula's "Stop AI Agents Looping
+on the Same Failed Tool Call"](https://particula.tech/blog/stop-ai-agents-looping-same-tool-call-no-progress),
+consistent with [Openlayer's July 2026 AI Agent Failure Modes
+survey](https://www.openlayer.com/blog/ai-agent-failure-modes-tool-calling-loops-propagation)).
+DeepDelve's fix is a narrower special case of this general pattern — it only DEDUPES the quota
+cost of an exact repeat (letting the call still execute, since `read_workspace_file` is idempotent
+and a repeat is harmless, just wasteful), rather than HALTING the dispatch outright the way a full
+no-progress guard would for a genuinely stuck/looping tool call. This distinction is deliberate
+(this project's own `QuotaAbortException` already exists as the "halt on genuine loop" mechanism,
+gated on a DIFFERENT signal — repeated OVER-quota calls, not repeated identical arguments per se)
+but worth naming explicitly: **a future generalization of today's dedup fix to other tools should
+use the (tool, args) key as a no-progress SIGNAL feeding the EXISTING `QuotaAbortException`
+threshold, not just a quota-cost exemption** — the literature's framing (halt, don't just discount)
+is the more complete mitigation for a tool where a repeat ISN'T harmless/idempotent (unlike
+`read_workspace_file`).
+
+### 18d. The real gap this arc exposes: DeepDelve validates its own fixes with n=1 live runs, and
+current literature has a specific, actionable answer for that
+
+Every fix in today's 7-fix arc (and §17's four before it) was validated the same way: implement,
+run the standing benchmark prompt ONCE, read the transcript, confirm the target symptom didn't
+recur. This is exactly the evaluation gap 2026 agent-reliability literature has converged on
+naming: **"a single pass rate conflates two different questions — pass@k (can the agent solve this
+AT ALL, at least once) and pass^k (does the agent solve this EVERY time) — a benchmark that
+reports only pass@1 hides the consistency story; one that reports only pass^1 treats a single data
+point as if it were stable."** ([Phil Schmid's "Pass@k vs Pass^k: Understanding Agent
+Reliability"](https://www.philschmid.de/agents-pass-at-k-pass-power-k); consistent framing in
+[*Beyond pass@1: A Reliability Science Framework for Long-Horizon LLM
+Agents*](https://arxiv.org/pdf/2603.29231) and [*Consistency as a Testable Property: Statistical
+Methods to Evaluate AI Agent Reliability*](https://arxiv.org/pdf/2605.10516).) A single successful
+live run after a fix is a pass@1 data point at best — it proves the fix CAN work, not that it
+RELIABLY works, and (per §18b/18c above) this project's own failure modes are frequently
+stochastic/model-behavior-dependent, exactly the kind of failure a single trial is least equipped
+to characterize. [*Stochasticity in Agentic Evaluations: Quantifying Inconsistency with Intraclass
+Correlation*](https://arxiv.org/pdf/2512.06710) and general 2026 guidance converge on **k=3–10
+repeated trials of the same task as the practical floor for a meaningful pass^k signal**, scaled by
+cost tolerance — for a 20-70 minute live run against a real local model, k=3 is the realistic
+starting point for this project's own hardware/time budget, not k=10.
+
+**Concrete recommendation, not yet implemented**: extend `eval/evaluate.py`
+(`score_structural`'s own tier-1 forensic scoring already exists and is exactly the right
+per-run signal to aggregate) to support running the SAME benchmark prompt `k` times back-to-back
+and reporting BOTH pass@k (did any of the k runs produce a clean, fully-grounded, complete
+report?) and pass^k (did ALL k runs?) — plus, since this project's runs are expensive
+(20-70+ minutes each on this hardware), a lighter-weight per-attempt signal (does `_run_state.json`
+show zero `SYSTEM VERIFICATION WARNING`/`findings_ungrounded`/task-name-churn events? does
+`task_verification` show 100% verified with no superseded entries?) that doesn't require a full
+run to complete before yielding partial reliability data. This is the direct, actionable answer to
+tonight's own question ("we need more data to know if we're really improving") — not a research
+literature summary for its own sake, but a specific missing piece of infrastructure this project's
+own `Model Evaluation Standard` section (`ROADMAP.md`) already has a precedent for building
+(a rigor bar for MODEL comparisons; this would be the equivalent rigor bar for ENGINE/completion-
+check fix comparisons). **Not scoped or implemented this session** — flagged here as the concrete
+next step once the currently-open items (mechanism 1, the self-correction retry loop) are
+themselves fixed, since running k=3+ trials against a still-actively-changing pipeline would
+conflate "is this fix working" with "did the pipeline change again since the last measurement."

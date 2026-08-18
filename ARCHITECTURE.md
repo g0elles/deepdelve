@@ -230,6 +230,66 @@ because code written for the "normal" multi-turn dispatch shape didn't consider 
   real action (writing/editing the artifact) needs the same treatment in `check_writer_gate`, or
   this exact trap recurs for that tool instead.
 
+**A single `add_finding` call's shared synthesis text creates two non-obvious grounding-check
+false positives, both found live 2026-08-17, both from the same root cause**: `_run_single_task`
+(`orchestrator.py`) attaches the SAME task-level synthesis text (and the SAME verification-warning
+string) to EVERY URL fetched in one turn — one `add_finding` call per URL, see
+`_collapse_multi_url_task_findings`'s own docstring above for why this shape exists at all.
+
+- **A `[SYSTEM VERIFICATION WARNING: stub_source:/unverified_urls:/claim_unsupported:...]` marker
+  about ONE co-fetched URL used to wholesale-exclude the shared record for ALL of them.** A real
+  Mexico City rent synthesis mentioned a stub page AND a genuinely real price (`MX$17,300/month`)
+  found on a different page in the SAME text; the resulting warning named only the stub URL, but
+  `_is_citable_finding`'s prior wholesale "any VERIFICATION marker → exclude" rule threw the real
+  price away too, for all 3 co-fetched URLs including a third never even mentioned in the warning —
+  the single largest content-loss mechanism found this session. **Fixed**:
+  `_verification_warning_targets_url` (`completion.py`) scopes the exclusion to the finding's OWN
+  `source_url` when the marker names specific bad URL(s) (`unverified_urls:`/`stub_source:`/
+  `claim_unsupported:` — the only labels that reliably carry `real_grounding_problem`'s own flagged
+  URLs), falling back to wholesale exclusion for quote/regulation-identified shapes and the
+  Analyzer-tier reconstructed-URL message (which deliberately ALSO names the CORRECT reference URL
+  right next to the bad one, and must not have that safe URL swept up by a broader match).
+  **A `dedup_key`/URL-scoping fix on a shared-text finding needs the same "which specific co-cited
+  URL does this actually apply to" question asked before excluding/including anything.**
+- **Side effect of the fix above, found in the very next live run**: once a finding correctly STAYS
+  citable despite still carrying a warning about a DIFFERENT co-cited URL, the raw marker TEXT was
+  still being rendered verbatim into `_build_findings_source_material`'s block — and a downstream
+  consumer (the deterministic fallback below) copied it straight into `findings.md`. A
+  findings.md-level grounding check then scanned `findings.md`'s OWN rendered text, found the
+  warning's own named "bad" URL sitting there as if it were a real citation, and flagged
+  `findings_ungrounded` on content that was otherwise entirely real — reproducing IDENTICALLY on
+  every retry (confirmed via 3 byte-identical `findings.md.rejected_attempt_N` snapshots) since the
+  underlying research data never changed. **Fixed**: `_build_findings_source_material` now strips
+  the marker text (same `_VERIFICATION_WARNING_BLOCK_RE`) from a citable finding's summary before
+  rendering it — the marker was only ever meant to inform THIS project's own citability decision,
+  never to be copied into a human-facing artifact. **Any text that exists purely to inform an
+  internal decision (a marker, a flag, an annotation) must be stripped before it reaches a
+  rendered-for-humans artifact, even once the content it's attached to is legitimately citable** —
+  "citable" and "safe to render verbatim" are not the same guarantee.
+- **A specialist's `FOLLOW-UP DIRECTIONS:` section (suggested next-URLs-to-check, engine-driven
+  iterative deepening) is NOT a citation for any claim, but `real_grounding_problem`/
+  `extract_cited_urls` couldn't tell the difference** — a URL named only as a suggested lead (never
+  fetched, by design) fired a whole-summary `SYSTEM VERIFICATION WARNING`, invalidating genuinely-
+  cited real content sitting right next to it in the same summary. **Fixed**: a new
+  `_strip_follow_up_directions` helper (`orchestrator.py`, next to `_extract_follow_up_directions`)
+  strips that section before the text reaches any grounding check, applied at all 3
+  `real_grounding_problem` call sites — `final_text` itself stays untouched, so the deepening
+  feature still sees the real bullets afterward. **Any FUTURE section of a specialist's summary
+  with a documented, non-citation purpose (a caveat, a confidence note, a suggestion) needs the
+  same "strip before grounding-check, extract separately for its real purpose" treatment** — a
+  grounding check that scans raw text has no way to know a URL's role in that text is unrelated to
+  the claims around it.
+- **A writer-role dispatch blocked by `writer_gate_ctx` can just STOP instead of retrying with the
+  correct tool** — the SAME "sub-agent ends its own turn immediately after a tool call, with ZERO
+  trailing text and no marker at all" mechanism this project already tracks for Searcher/Analyzer
+  turns (see `RunState.coverage()`'s own docstring), confirmed 2026-08-17 to also hit a WRITER
+  role, where the consequence is worse — nothing gets written at all, not just one empty finding.
+  The existing one-shot immediate-retry safety net (`_dispatch_writer_review_fix`'s own
+  "returned nothing usable... retrying once") partially absorbs this but doesn't reliably recover
+  it. **STILL OPEN, not fixed** — needs its own design (how many retries, what changes in the
+  retry's own instructions) rather than a rushed patch; a real live run showed this firing on 3 of
+  3 completion-check rounds in a row.
+
 `_build_findings_source_material` enforces its own **shared character budget**
 (`settings.context_budget_chars`) across `findings_block` + `fetched_block` + the omitted/uncited
 notes + fixed boilerplate — all reserved from ONE total before any section is capped, not
@@ -302,6 +362,26 @@ heuristic making a PERMANENT decision about a task without enough context to kno
   told was final — see `check_task_verification_flagged`'s own docstring for the full oscillation
   incident. **Any new per-task ledger field meant to be a one-way, sticky decision needs this same
   explicit carry-forward, not just "set it once and assume the dict persists."**
+- **The ledger's own depth==1-only blind spot (found 2026-08-17)**: `_update_task_verification`
+  only ever grouped `depth == 1` findings before this fix — a task whose OWN findings were all
+  empty (the "zero trailing text" mechanism below) read as `flagged: no real citable source` even
+  when its nested depth>1 Analyzer children produced full, real, citable content. Confirmed live:
+  a task with 5 empty-summary findings of its own had 2 of 3 nested Analyzer dispatches carrying
+  complete real content, yet the ledger told the Planner to acknowledge a gap that didn't exist,
+  silently dropping the run's single best-researched task. Root cause: a depth>1 finding's own
+  `task_name` field is the CHILD dispatch's name (e.g. "Analyze SEF D8 Visa page"), with no stored
+  link back to which depth==1 task it was working for. **Fixed** via a new `top_level_task_name`
+  contextvar (`orchestrator.py`, set once at the depth 0→1 transition, inherited — never re-set —
+  by any deeper nesting under it) threaded through every `add_finding` call and stored as a new
+  field on each finding record; `_update_task_verification` now also groups depth>1 findings by
+  `top_level_task_name` when computing per-task citability. Deliberately NOT applied to
+  `RunState.coverage()` — that method's own docstring already excludes depth>1 for an unrelated,
+  still-valid reason (a child REUSING content with no new URL must not make coverage look
+  artificially low); this rollup is about the opposite case, a child producing genuinely NEW
+  content the parent's own record never captured. **Any future per-task-name consumer of
+  `run_state.data["findings"]` needs to ask: does this task's real evidence definition need to
+  roll up depth>1 children, or does it have its own good reason (like `coverage()`) not to?** —
+  the two functions correctly answer this differently, on purpose, not by oversight.
 - **The `superseded` downgrade (`_looks_like_renamed_task`, `orchestrator.py`) is a raw `difflib`
   text-similarity guess, and a HIGH ratio does not mean "same subject."** It exists to catch the
   Planner renaming a flagged task instead of retrying it under the same `task_name` — but two
@@ -318,6 +398,29 @@ heuristic making a PERMANENT decision about a task without enough context to kno
   needs the same kind of "do the ACTUAL subjects match, not just the wording" guard** — text
   similarity and subject identity are correlated, not the same thing, and a templated multi-entity
   query is exactly the shape that pulls them apart.
+  **Extended 2026-08-17, TWO more gaps found live in this same function/ledger, both from the same
+  "a fuzzy detector's blind spot silently inflates a downstream count" root shape**:
+  1. **`difflib.SequenceMatcher`'s char-level ratio badly under-fires on genuine full-sentence
+     paraphrase** — the model's actual, common rewrite style when redispatching the same facet under
+     a new name. A real live pair pulled from `_run_state.json` ('Find the typical monthly rent for
+     a one-bedroom apartment...' vs. its own retry 'Search for recent data on the average monthly
+     rent of a one-bedroom apartment...' — unambiguously the same facet, reworded) scored 0.11,
+     nowhere near the 0.6 threshold, so the rename was never caught at all. Fixed by adding
+     `_content_word_overlap` (Jaccard over lowercase content words) as an OR-combined second
+     trigger — the existing entity-mismatch override (above) still runs afterward and still
+     correctly rejects a cross-city false positive, unchanged.
+  2. **Even when a rename IS caught and marked `superseded`, `RunState.coverage()` never read the
+     ledger at all** — it counted every distinct `task_name` at face value, so a facet redispatched
+     3 times under 3 different names still inflated `coverage()`'s `total` by 3, not 1. This is what
+     actually consumed a live run's retry budget: `check_thin_coverage` kept re-firing "Only
+     N/(growing total) tasks covered" as the total climbed with every rename, never converging.
+     Fixed: `coverage()` now excludes any task_name whose `task_verification` entry is
+     `"superseded"` from its `by_task`/`total` grouping. **Any future consumer of "how many
+     distinct tasks/facets exist this run" needs to ask the SAME question — does it already know
+     about `task_verification`'s `superseded` status, or will a renamed-and-recognized task still
+     silently double-count for it?** `_update_task_verification` always runs immediately before any
+     `coverage()`-dependent check in `run_completion_check`'s own per-attempt loop, so the ledger is
+     guaranteed fresh for any new consumer that reads it the same way.
 
 ## 3. `RunState.data`: the persisted-state surface, and the carryover-allowlist trap
 
