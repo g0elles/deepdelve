@@ -3256,8 +3256,30 @@ reports only pass@1 hides the consistency story; one that reports only pass^1 tr
 point as if it were stable."** ([Phil Schmid's "Pass@k vs Pass^k: Understanding Agent
 Reliability"](https://www.philschmid.de/agents-pass-at-k-pass-power-k); consistent framing in
 [*Beyond pass@1: A Reliability Science Framework for Long-Horizon LLM
-Agents*](https://arxiv.org/pdf/2603.29231) and [*Consistency as a Testable Property: Statistical
-Methods to Evaluate AI Agent Reliability*](https://arxiv.org/pdf/2605.10516).) A single successful
+Agents*](https://arxiv.org/pdf/2603.29231) (Khanal, Tao, Zhou, Northern Kentucky University,
+2026-04-01) and [*Consistency as a Testable Property: Statistical
+Methods to Evaluate AI Agent Reliability*](https://arxiv.org/pdf/2605.10516).)
+
+**✅ Primary-source-verified 2026-08-17** (downloaded and read directly, `arxiv.org/pdf/2603.29231`,
+not just the WebSearch summary above): Definitions 1/2 confirm pass@1/pass^k exactly as used here
+(pass^k = probability ALL k independent repeated episodes succeed, not just one). The paper's own
+motivating example is a real, precisely-measured number worth citing directly: τ-bench (Yao et al.,
+2024) found **GPT-4o scores 61% pass@1 but only 25% pass@8 on retail agent tasks** — a single
+best-effort attempt looks 2.4x better than the metric that actually matters for a system meant to
+run unattended. The paper's own full study uses **k=3 repeats** as its methodology (Table 2, "23,760
+planned episodes... k=3... two scaffolds") — direct external precedent for this section's own
+"k=3 is the realistic starting point" recommendation, not an invented number. One of the paper's
+three benchmark domains is literally **"Agentic Web Research (WR)"** — "multi-step information
+gathering via web search and URL fetching, followed by synthesis into structured or prose
+outputs" — the same task shape DeepDelve's own Searcher/Analyzer/FindingsWriter pipeline performs,
+making this paper's findings directly on-domain, not just analogous. Two further findings worth
+tracking even though not yet acted on: (a) the "MOP paradox" — frontier models exhibit the HIGHEST
+meltdown rates (up to 19%) specifically because they pursue more ambitious multi-step strategies,
+a caution against assuming a stronger model automatically means fewer of this project's own
+"synthesis-vanishing"-shaped failures; (b) memory scaffolds "universally hurt long-horizon
+reliability (negative or neutral GDS for all 10 models tested)" — relevant if this project ever
+considers adding cross-turn memory beyond the Planner's own single growing conversation, since the
+paper's evidence argues against assuming memory helps by default. A single successful
 live run after a fix is a pass@1 data point at best — it proves the fix CAN work, not that it
 RELIABLY works, and (per §18b/18c above) this project's own failure modes are frequently
 stochastic/model-behavior-dependent, exactly the kind of failure a single trial is least equipped
@@ -3267,20 +3289,22 @@ repeated trials of the same task as the practical floor for a meaningful pass^k 
 cost tolerance — for a 20-70 minute live run against a real local model, k=3 is the realistic
 starting point for this project's own hardware/time budget, not k=10.
 
-**Concrete recommendation, not yet implemented**: extend `eval/evaluate.py`
-(`score_structural`'s own tier-1 forensic scoring already exists and is exactly the right
-per-run signal to aggregate) to support running the SAME benchmark prompt `k` times back-to-back
-and reporting BOTH pass@k (did any of the k runs produce a clean, fully-grounded, complete
-report?) and pass^k (did ALL k runs?) — plus, since this project's runs are expensive
-(20-70+ minutes each on this hardware), a lighter-weight per-attempt signal (does `_run_state.json`
-show zero `SYSTEM VERIFICATION WARNING`/`findings_ungrounded`/task-name-churn events? does
-`task_verification` show 100% verified with no superseded entries?) that doesn't require a full
-run to complete before yielding partial reliability data. This is the direct, actionable answer to
-tonight's own question ("we need more data to know if we're really improving") — not a research
-literature summary for its own sake, but a specific missing piece of infrastructure this project's
-own `Model Evaluation Standard` section (`ROADMAP.md`) already has a precedent for building
-(a rigor bar for MODEL comparisons; this would be the equivalent rigor bar for ENGINE/completion-
-check fix comparisons). **Not scoped or implemented this session** — flagged here as the concrete
-next step once the currently-open items (mechanism 1, the self-correction retry loop) are
-themselves fixed, since running k=3+ trials against a still-actively-changing pipeline would
-conflate "is this fix working" with "did the pipeline change again since the last measurement."
+**IMPLEMENTED 2026-08-17, same day, commit `071d64f`**: `eval/evaluate.py` gained
+`compute_reliability_summary`/`print_reliability_summary` — groups the existing `--runs`-produced
+per-run entries in `results.jsonl` by (query, model, hardware) and reports both pass@k and pass^k
+(plus mean score), using `score_structural`'s own tier-1 forensic scoring (already existed) as the
+per-run signal to aggregate. New `--pass-threshold` (default 1.0) and `--summary-only` (recompute
+without re-running) CLI flags. This is the direct, actionable answer to that night's own question
+("we need more data to know if we're really improving") — the equivalent rigor bar for
+ENGINE/completion-check fix comparisons that `Model Evaluation Standard` (`ROADMAP.md`) already
+sets for MODEL comparisons. **Not yet actually USED to draw a k≥3 reliability conclusion about any
+of this session's fixes** — building the measurement infrastructure was deliberately separated
+from running it, per this note's own original caution: running k=3+ trials against a still-
+actively-changing pipeline (mechanism 1 and the self-correction retry loop were both still open at
+the time this was written, though both got partial mitigations later the same day — see the
+2026-08-17 History entry in `ROADMAP.md`) would conflate "is this fix working" with "did the
+pipeline change again since the last measurement." The lighter-weight per-attempt signal idea
+(checking `_run_state.json` for zero grounding-warning/task-name-churn events without waiting for
+a full run) was NOT implemented — `score_structural`'s existing 4-check design was judged
+sufficient for now; revisit if a full k=3 run turns out too expensive to be practical on this
+hardware.
