@@ -3163,13 +3163,21 @@ this section is the literature cross-check the user asked for, done AFTER the fi
 they land in a real, active research area, not inventing novel terminology for known phenomena)
 plus the methodology gap this whole investigative pattern exposes.
 
-**⚠️ All papers/figures below are marked ⚠️ not yet primary-source-verified**, per this document's
-own 2026-07-19 methodology rule — every citation here came from `WebSearch`'s own AI-mediated
-result summaries, not from directly reading the papers' actual text/data/tables the way §1's ✅
-entries were. The specific figures (64.5%, 45-48%, k=3-10, etc.) and the framing built on them
-should be treated as directionally credible, not confirmed fact, until someone does the same
-primary-read pass §1 already sets the bar for. This applies most to any number cited below —
-don't repeat a percentage from this section as verified without first opening the actual paper.
+**⚠️ Every paper/figure below is ⚠️ not yet primary-source-verified EXCEPT §18b and §18d's own
+citations**, per this document's own 2026-07-19 methodology rule — every OTHER citation here came
+from `WebSearch`'s own AI-mediated result summaries, not from directly reading the papers' actual
+text/data/tables the way §1's ✅ entries were:
+- §18d's pass@k/pass^k paper (arXiv:2603.29231) — fully read, all 23 pages, correcting an earlier
+  same-session pass that stopped at page 6 on a bad page-count read.
+- §18b's self-correction blind spot paper (arXiv:2507.02778, Self-Correction Bench, COLM 2026) —
+  fully read, all 11 body pages (References/appendices not read in full).
+
+Both PDFs saved permanently at `papers/*.pdf` (gitignored, not committed) for later reading. The
+specific figures (45-48%, k=3-10, etc.) outside these two and the framing built on them should be
+treated as directionally credible, not confirmed fact, until someone does the same primary-read
+pass §1 (and now §18b/§18d) already sets the bar for. This applies most to any number cited below
+outside §18b/§18d — don't repeat a percentage from this section as verified without first opening
+the actual paper.
 
 ### 18a. The "zero trailing text" mechanism (item -1, item 2 of the History entry) is a named,
 actively-studied 2026 failure class, not a DeepDelve-specific oddity
@@ -3192,20 +3200,59 @@ specific to `deepdelve-gpt-oss`. **Not yet fixed** (`ROADMAP.md` Pending) — th
 offer a clean fix either, only naming and measurement; worth treating as a genuinely open research
 problem for this project's own model class, not something a quick patch closes.
 
-### 18b. The self-correction blind spot (item 4's docstring, and the ROADMAP Pending update) has
-TWO independent papers converging on the same 64.5% figure
+### 18b. The self-correction blind spot — ✅ PRIMARY-SOURCE-VERIFIED (full paper, all 11 body
+pages read, `papers/self_correction_bench_2507.02778.pdf`, gitignored) — one original source, not
+two independent confirmations, plus a directly actionable, training-free intervention
 
-`_is_citable_finding`'s own docstring and the existing "Multi-facet task abandonment" Pending entry
-already cite [*When Can LLMs Actually Correct Their Own Mistakes? A Critical Survey of
-Self-Correction of LLMs*](https://arxiv.org/html/2406.01297v3) (TACL/MIT Press) for the 64.5%
-self-correction-blind-spot figure across 14 open models. A fresh literature check today surfaced a
-SECOND, apparently independent paper — [*Self-Correction Bench: Uncovering and Addressing the
-Self-Correction Blind Spot in Large Language Models*](https://arxiv.org/html/2507.02778) — citing
-the identical 64.5% figure. Whether these are the same underlying study cited two ways or two
-independently-converging measurements wasn't resolved here (worth a direct read-both pass before
-citing as "two separate confirmations" anywhere more load-bearing than this note), but either way
-the figure is stable across at least one additional citation, not a single paper's own outlier
-number. Directly relevant to today's newly-found FindingsWriter loop (`ROADMAP.md`'s
+Correction to this section's own earlier draft (same session): initially framed as "two
+independent papers converging on 64.5%." Having now read [*Self-Correction Bench: Uncovering and
+Addressing the Self-Correction Blind Spot in Large Language
+Models*](https://arxiv.org/abs/2507.02778) (Ken Tsui, independent researcher, **published at COLM
+2026** — a real peer-reviewed NLP venue, not a preprint-only claim) in full, this is clearly the
+ORIGINAL empirical source of the 64.5% figure: "Testing 14 open-source non-reasoning models, we
+find a 64.5% average Self-Correction Blind Spot." `_is_citable_finding`'s own docstring and the
+existing "Multi-facet task abandonment" Pending entry cite [*When Can LLMs Actually Correct Their
+Own Mistakes? A Critical Survey of Self-Correction of LLMs*](https://arxiv.org/html/2406.01297v3)
+(TACL) for the SAME number — but that paper's own title identifies it as a SURVEY, and surveys
+compile others' findings rather than running new experiments; the most likely explanation is the
+survey cites this same Self-Correction Bench study (or an earlier version of it) as its source for
+that number, not an independent second measurement. **Not fully resolved** (would need to open the
+TACL paper's own reference list to confirm directly), but the "two independent confirmations"
+framing from the earlier draft should not be repeated as fact until that's checked.
+
+**Methodology, verified**: the paper's real contribution is isolating WHY models don't self-correct
+— injecting the IDENTICAL error either into the model's own prior turn (internal) or the user's
+prompt (external), with nothing else different. A model that fixes the external version but not
+the identical internal one has the KNOWLEDGE to catch the error but fails to ACTIVATE that
+capability — ruling out "the model doesn't know any better" as the explanation. This confirms the
+blind spot is a genuine activation failure, not a competence gap, which is the load-bearing claim
+this project's `_is_citable_finding` docstring and the ROADMAP Pending entry already build on.
+
+**The closed-source/frontier finding, directly relevant to tonight's "frontier models were a
+disaster" comment**: the blind spot is NOT solved by frontier proprietary models either — Claude
+3.5 Haiku shows a 52.5% blind spot, Claude Sonnet 4 shows 41.4% (Table 7) — lower than the 64.5%
+open-source average, but far from zero. A frontier model failing to self-correct its own prior
+output is consistent with this paper's own findings, not a surprising or unexplained result.
+
+**Directly actionable, training-free intervention this project hasn't tried yet**: appending the
+single word **"Wait"** after a model's own erroneous/rejected output — with NO fine-tuning, NO
+architecture change — reduces the blind spot by 89.3% on average and increases mean accuracy by
+156% (Section 4, Figure 6/7). Even more striking (Table 3): appending "Wait" to a NON-reasoning
+base model's output nearly matches the accuracy of that same model's FULL reasoning-mode variant
+— e.g. DeepSeek-V3-0324 base 0.567 → +"Wait" 0.902 → DeepSeek-R1 (its own reasoning model) 0.908,
+almost identical. Reasoning models show a near-zero blind spot to begin with (Section 4.4), which
+the paper attributes to their training data containing far more error-correction sequences, not a
+fundamental capability difference. **DeepDelve currently runs with `enable_thinking: False`**
+(`config_template.yaml`) — if the served model has reasoning capability at all, running it with
+thinking off may be operating in exactly the higher-blind-spot regime this paper measures. A
+concrete, cheap follow-up worth scoping: append "Wait" (or a similar marker — "But"/"However" also
+help, less strongly, per Table 12) to `_dispatch_writer_review_fix`'s retry-instructions
+prepend (today's own "strengthened retry" fix, commit `4dc19bc`) as an ADDITIONAL, evidence-backed
+technique alongside the current "CRITICAL: your previous attempt..." framing — genuinely different
+from what's implemented now, not yet tried, not implemented this session pending the user's
+go-ahead.
+
+Directly relevant to today's newly-found FindingsWriter loop (`ROADMAP.md`'s
 "UPDATE 2026-08-17" note on the Multi-facet Pending entry): 3 byte-identical rejected `findings.md`
 snapshots is a CLEANER, more extreme instance of the same blind spot than anything in the original
 Pending entry's evidence — not just "the model regenerates a similar mistake," but "the exact same
@@ -3260,26 +3307,70 @@ Agents*](https://arxiv.org/pdf/2603.29231) (Khanal, Tao, Zhou, Northern Kentucky
 2026-04-01) and [*Consistency as a Testable Property: Statistical
 Methods to Evaluate AI Agent Reliability*](https://arxiv.org/pdf/2605.10516).)
 
-**✅ Primary-source-verified 2026-08-17** (downloaded and read directly, `arxiv.org/pdf/2603.29231`,
-not just the WebSearch summary above): Definitions 1/2 confirm pass@1/pass^k exactly as used here
-(pass^k = probability ALL k independent repeated episodes succeed, not just one). The paper's own
-motivating example is a real, precisely-measured number worth citing directly: τ-bench (Yao et al.,
-2024) found **GPT-4o scores 61% pass@1 but only 25% pass@8 on retail agent tasks** — a single
-best-effort attempt looks 2.4x better than the metric that actually matters for a system meant to
-run unattended. The paper's own full study uses **k=3 repeats** as its methodology (Table 2, "23,760
-planned episodes... k=3... two scaffolds") — direct external precedent for this section's own
-"k=3 is the realistic starting point" recommendation, not an invented number. One of the paper's
-three benchmark domains is literally **"Agentic Web Research (WR)"** — "multi-step information
-gathering via web search and URL fetching, followed by synthesis into structured or prose
-outputs" — the same task shape DeepDelve's own Searcher/Analyzer/FindingsWriter pipeline performs,
-making this paper's findings directly on-domain, not just analogous. Two further findings worth
-tracking even though not yet acted on: (a) the "MOP paradox" — frontier models exhibit the HIGHEST
-meltdown rates (up to 19%) specifically because they pursue more ambitious multi-step strategies,
-a caution against assuming a stronger model automatically means fewer of this project's own
-"synthesis-vanishing"-shaped failures; (b) memory scaffolds "universally hurt long-horizon
-reliability (negative or neutral GDS for all 10 models tested)" — relevant if this project ever
-considers adding cross-turn memory beyond the Planner's own single growing conversation, since the
-paper's evidence argues against assuming memory helps by default. A single successful
+**✅ Primary-source-verified 2026-08-17, FULL PAPER (all 23 pages, not the 6 originally read).**
+Correction to an earlier pass this same session: the first read stopped after 6 pages on a false
+"12 page(s)" reading from a metadata field that undercounted the real length — `pdfinfo` confirms
+23 pages. The user's own explicit "read the papers properly, I don't want half-based research"
+instruction caught exactly this gap; the rest below is from the completed read, saved permanently
+at `papers/beyond_pass1_2603.29231.pdf` (gitignored, not committed).
+
+Definitions 1/2 confirm pass@1/pass^k exactly as used here (pass^k = probability ALL k independent
+repeated episodes succeed, not just one). The paper's own motivating example is a real,
+precisely-measured number worth citing directly: τ-bench (Yao et al., 2024) found **GPT-4o scores
+61% pass@1 but only 25% pass@8 on retail agent tasks** — a single best-effort attempt looks 2.4x
+better than the metric that actually matters for a system meant to run unattended. The paper's own
+full study uses **k=3 repeats** as its methodology (Table 2, "23,760 planned episodes... k=3...
+two scaffolds") — direct external precedent for this section's own "k=3 is the realistic starting
+point" recommendation, not an invented number. One of the paper's three benchmark domains is
+literally **"Agentic Web Research (WR)"** — "multi-step information gathering via web search and
+URL fetching, followed by synthesis into structured or prose outputs" — the same task shape
+DeepDelve's own Searcher/Analyzer/FindingsWriter pipeline performs, making this paper's findings
+directly on-domain, not just analogous.
+
+**The MOP paradox, now with the real numbers (Section 6.4, Table 12, confirmed in the paper's own
+Conclusion)**: DeepSeek V3 and MiniMax M2.5 — the two models with the BEST very-long-horizon GDS
+(0.87, 0.89) — also have the HIGHEST very-long meltdown rates (19% and 13% respectively); every
+other model in the study has 0-4% meltdown rates across all buckets. The paper's own mechanism:
+"frontier models attempt more aggressive, multi-step strategies... when they spiral... the
+sliding-window entropy exceeds the threshold. Weaker models, by contrast, emit stable low-entropy
+tool-call sequences... because they follow rote, shallow strategies that never generate entropy
+spikes — but also never complete the task." This is NOT "frontier models are less reliable" — the
+SAME models have both the best average reliability AND the highest failure-mode rate, because
+capability and ambition create more opportunities to both succeed AND spiral. Directly relevant to
+this project's own "zero trailing text" mechanism (ARCHITECTURE.md §2): a model ending a turn with
+literally nothing after a tool call is arguably the LOW-entropy failure shape this paper's weak
+models show, not the high-entropy "spiral" shape MOP detects — worth keeping distinct if this
+project ever adds its own meltdown-style detection.
+
+**Memory scaffold finding, precise numbers (Section 6.5, Table 13)**: across all 10 models, the
+memory-augmented scaffold NEVER improves long-horizon GDS relative to plain ReAct — neutral
+(within ±0.03 GDS) for 4 models, negative for 6, zero models gained. Largest penalties on
+mid-capability models (Kimi K2.5 −0.14, Mistral 24B −0.13) — "capable enough to use the scratchpad
+but not capable enough to absorb its overhead efficiently." The paper's own recommendation: "the
+baseline ReAct loop is strictly better in aggregate" and memory scaffolds "should not be adopted as
+a default reliability intervention" without per-task overhead calibration.
+
+**⚠️ Critical scope limitation, stated explicitly by the paper's own authors (Section 7.3) — this
+is the caveat that matters most for anyone reading "frontier" in this paper's findings as a general
+claim**: *"We evaluate 10 open-source models only, for cost and reproducibility reasons. We do NOT
+evaluate GPT-4o, Claude 3.7, Gemini 2.0 Ultra, or other frontier PROPRIETARY models, which are
+likely MORE reliable than the models studied here. Our findings characterize the open-source
+frontier; extending to frontier proprietary models is left to future work."* Every "frontier"
+claim in this paper (the MOP paradox, the VAF bifurcation, the two-tier reliability structure) is
+about the frontier of OPEN-WEIGHT models (DeepSeek V3, Kimi K2.5, MiniMax M2.5 — all large MoE
+models served via OpenRouter) — it says nothing, one way or the other, about proprietary
+frontier-labeled models (GPT-4o/Claude/Gemini-class). A real-world "we tried frontier models and
+it was a disaster" experience with a proprietary API model is neither confirmed nor contradicted by
+this paper — it's simply a population the study didn't cover, by its own explicit admission (also
+listed as unstudied future work: "Proprietary model extension... to characterize the proprietary
+reliability frontier and its relation to the open-source tier boundary observed here"). Also worth
+noting as a methodological caveat on MOP specifically: the paper's own Table 15 (window-size
+sensitivity) reports empty "—" cells for precision/recall — the authors state outright that "full
+manual labeling of meltdown episodes against ground-truth failure outcomes is deferred to future
+work," meaning the MOP metric's own detection accuracy is self-acknowledged as not yet validated
+against ground truth, only calibrated by F1 on a 50-episode pilot sample.
+
+A single successful
 live run after a fix is a pass@1 data point at best — it proves the fix CAN work, not that it
 RELIABLY works, and (per §18b/18c above) this project's own failure modes are frequently
 stochastic/model-behavior-dependent, exactly the kind of failure a single trial is least equipped
