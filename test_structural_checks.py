@@ -6961,6 +6961,36 @@ def main():
         assert _ev.score_structural(tmpdir, "final_report.md") == 0.75
         assert _ev.score_structural(None, "final_report.md") == 0.0
 
+    # --- pass@k / pass^k reliability summary (2026-08-17, RESEARCH.md §18d): a single pass rate
+    # conflates "can the agent solve this at all" (pass@k) with "does it solve this every time"
+    # (pass^k) -- this project's own completion-check fixes were all validated with n=1 live-run
+    # anecdotes until this was added. ---
+    with tempfile.TemporaryDirectory() as tmpdir_rel:
+        results_path = os.path.join(tmpdir_rel, "results.jsonl")
+        rows = [
+            {"query": "q1", "score": 1.0, "run_index": 1, "config": {"model": "m1", "hardware": "h1"}},
+            {"query": "q1", "score": 0.75, "run_index": 2, "config": {"model": "m1", "hardware": "h1"}},
+            {"query": "q1", "score": 1.0, "run_index": 3, "config": {"model": "m1", "hardware": "h1"}},
+            {"query": "q2", "score": 1.0, "run_index": 1, "config": {"model": "m1", "hardware": "h1"}},
+            {"query": "q2", "score": 1.0, "run_index": 2, "config": {"model": "m1", "hardware": "h1"}},
+        ]
+        with open(results_path, "w", encoding="utf-8") as f:
+            for r in rows:
+                f.write(_json.dumps(r) + "\n")
+        summary = _ev.compute_reliability_summary(results_path, threshold=1.0)
+        q1 = next(r for r in summary if r["query"] == "q1")
+        q2 = next(r for r in summary if r["query"] == "q2")
+        # q1: 3 runs, one imperfect (0.75) -- solved at least once, but not every time.
+        assert q1["k"] == 3 and q1["pass_at_k"] is True and q1["pass_pow_k"] is False, q1
+        assert q1["mean_score"] == round((1.0 + 0.75 + 1.0) / 3, 3), q1
+        # q2: 2 runs, both perfect -- both metrics pass.
+        assert q2["k"] == 2 and q2["pass_at_k"] is True and q2["pass_pow_k"] is True, q2
+        # No results file at all -> empty summary, not an error.
+        assert _ev.compute_reliability_summary(os.path.join(tmpdir_rel, "missing.jsonl")) == []
+        # print_reliability_summary must not raise on an empty summary or a real one.
+        _ev.print_reliability_summary([], 1.0)
+        _ev.print_reliability_summary(summary, 1.0)
+
     # --- intake verdict parsing (fail-open: the clarifier can never block research) ---
     assert _clarify_verdict("CLEAR") is None
     assert _clarify_verdict("  clear\n") is None

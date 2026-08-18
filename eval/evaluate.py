@@ -384,6 +384,67 @@ def evaluate_item(query: str, output: str, criteria: list[dict],
 
 
 # ---------------------------------------------------------------------------
+# Reliability summary: pass@k vs pass^k (RESEARCH.md §18d)
+# ---------------------------------------------------------------------------
+
+def compute_reliability_summary(results_path: str, threshold: float = 1.0) -> list[dict]:
+    """A single pass rate conflates two different reliability questions (RESEARCH.md §18d, 2026
+    literature on agent-reliability evaluation): pass@k (did the agent solve this AT LEAST ONCE
+    across k trials) vs. pass^k (did it solve this EVERY time) -- a single live-run anecdote can
+    only ever answer the first, and this project's own completion-check fixes were all validated
+    that way until now. Groups `results_path`'s own per-run entries by (query, model, hardware) and
+    computes both, plus mean score, over however many runs actually exist for that key in the file
+    -- NOT just the current invocation's own `--runs` count, since results.jsonl is resumable/
+    appendable across multiple separate `evaluate.py` invocations (see `load_existing_keys`), so a
+    key can legitimately accumulate runs from more than one session. `threshold` (default 1.0) is
+    the score a single run must meet or exceed to count as a "pass" -- 1.0 for eval_type=structural
+    means all 4 forensic checks passed (see `score_structural`'s own docstring); lower it for
+    llm_judge/contains scoring where a perfect 1.0 is a stricter bar than "good enough"."""
+    if not os.path.exists(results_path):
+        return []
+    groups: dict[tuple, list[float]] = {}
+    with open(results_path, encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            try:
+                r = json.loads(line)
+            except Exception:
+                continue
+            key = (r.get("query", ""), r.get("config", {}).get("model", "unknown"),
+                   r.get("config", {}).get("hardware", "unknown"))
+            groups.setdefault(key, []).append(r.get("score", 0.0))
+    summary = []
+    for (query, model, hardware), scores in groups.items():
+        k = len(scores)
+        passes = [s >= threshold for s in scores]
+        summary.append({
+            "query": query, "model": model, "hardware": hardware, "k": k,
+            "pass_at_k": any(passes), "pass_pow_k": all(passes),
+            "mean_score": round(sum(scores) / k, 3) if k else 0.0,
+            "scores": scores,
+        })
+    return summary
+
+
+def print_reliability_summary(summary: list[dict], threshold: float) -> None:
+    """Human-readable rendering of `compute_reliability_summary`'s output. A `k=1` row is flagged
+    explicitly -- pass@1 == pass^1 always (a single trial can't distinguish "works" from "reliably
+    works"), so the reader isn't misled into reading a lone anecdote as a reliability signal."""
+    if not summary:
+        return
+    print(f"\n--- Reliability summary (pass@k / pass^k, threshold={threshold}, RESEARCH.md §18d) ---")
+    for row in summary:
+        flag_at = "PASS" if row["pass_at_k"] else "FAIL"
+        flag_pow = "PASS" if row["pass_pow_k"] else "FAIL"
+        k_note = "  (k=1: pass@k==pass^k, single trial, not a reliability signal)" if row["k"] == 1 else ""
+        print(
+            f"  [{row['model']}/{row['hardware']}] k={row['k']} mean={row['mean_score']:.3f} "
+            f"pass@k={flag_at} pass^k={flag_pow}{k_note}  {row['query'][:70]}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Main harness
 # ---------------------------------------------------------------------------
 
@@ -401,7 +462,22 @@ def main() -> None:
     parser.add_argument("--hardware",      default="unknown", help="Hardware tag for metadata")
     parser.add_argument("--timeout",       type=int, default=1200, help="Agent subprocess timeout in seconds (default: 1200)")
     parser.add_argument("--judge-timeout", type=int, default=600,  help="LLM judge HTTP request timeout in seconds (default: 600)")
+    parser.add_argument("--pass-threshold", type=float, default=1.0,
+                        help="Score a single run must meet/exceed to count as a pass for the "
+                             "pass@k/pass^k reliability summary printed at the end (default: 1.0, "
+                             "RESEARCH.md §18d). Use --runs 3 or more for a meaningful pass^k signal "
+                             "-- a single run can only ever show pass@1==pass^1.")
+    parser.add_argument("--summary-only", action="store_true",
+                        help="Skip running the agent entirely -- just recompute and print the "
+                             "pass@k/pass^k reliability summary from the existing --output file.")
     args = parser.parse_args()
+
+    if args.summary_only:
+        summary = compute_reliability_summary(args.output, args.pass_threshold)
+        if not summary:
+            print(f"No results found in {args.output}")
+        print_reliability_summary(summary, args.pass_threshold)
+        return
 
     eval_cfg = load_eval_config(args.eval_config)
     dataset = load_dataset(args.dataset, limit=args.limit, difficulty=args.difficulty)
@@ -528,6 +604,9 @@ def main() -> None:
 
     print(f"\nDone. Results appended to {args.output}")
     print(f"Workspaces saved to {runs_dir}")
+
+    summary = compute_reliability_summary(args.output, args.pass_threshold)
+    print_reliability_summary(summary, args.pass_threshold)
 
 
 
