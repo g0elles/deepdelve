@@ -96,6 +96,24 @@ Hachiuma et al. (NVIDIA + KAIST), arXiv:2605.28774, 2026-05-28
      underperforms AXPO), and three other RL algorithm baselines (RLTF, CISPO, ARPO). The paper's
      own framing: "the gain comes from *where* compute is spent, not *how much*" — a real, tested
      claim, not just asserted.
+  3. **2026-08-17: the remaining 30 appendix pages now read (`papers/axpo_2605.28774.pdf`,
+     confirmed 41 pages total via `pdfinfo`).** Appendix D formalizes Proposition 1 as a clean,
+     correct monotonicity proof (coverage `1-(1-p)^N` is non-decreasing in `p`; resampling raises
+     the effective per-sample success rate from `q·p_tool` to `p(t1_src)` by construction) — no
+     hidden caveat, the informal claim already cited holds up under the actual math. **Appendix E
+     (Limitations) directly confirms and sharpens the reward-shape mismatch already flagged in
+     point 1 above, in the paper's own words, not just my inference**: *"AXPO's subgroup-level
+     trigger... and per-prefix advantage... both rely on a binary, automatically verifiable outcome
+     signal r ∈ {0,1}. Tasks where verifiability is partial... require a different definition of
+     'failed subgroup' before tool-call resampling applies."* This is the authors' own explicit
+     scope boundary, not a gap I inferred — strengthens (doesn't just repeat) the earlier caveat
+     that adapting AXPO to `writer_role_response_reward`'s structural (did-it-happen) reward, not a
+     correctness-verifiable one, needs the trigger definition itself reworked, not just the
+     mechanics. Appendix E also notes training was capped at 8B (compute-limited, not a
+     methodological choice) and the tool inventory excludes long-latency/high-per-call-cost tools
+     (browser agents, GUI control, terminal sessions) — DeepDelve's own tool surface (web_search,
+     fetch_url_to_workspace, delegate_tasks) sits closer to this excluded category than to AXPO's
+     tested Python-interpreter/web-search/image-zoom set, a real, previously-unstated domain gap.
 
 ### ✅ "Why Reasoning Fails to Plan: A Planning-Centric Analysis of Long-Horizon Decision Making in
 LLM Agents" — Wang, Wu, Wang et al. (Notre Dame, Stanford, Edinburgh, Yale, Purdue, Oxford, UIUC),
@@ -317,13 +335,31 @@ Sanpaolo), arXiv:2503.13657, **NeurIPS 2025 Track on Datasets and Benchmarks**
   2. **§5.1 confirms failure profiles are system-specific, not universal**: AppWorld skews toward
      premature termination, OpenManus toward step repetition, HyperAgent toward incorrect
      verification — "there is no one-size-fits-all solution to MAS failures." This is direct support
-     for the ATLAS idea (§2's still-unread lead) that a domain-specific taxonomy induced from
+     for the ATLAS idea (now read and verified, see its own ✅ entry below — this cross-reference
+     was stale, written before that read happened, caught 2026-08-17) that a domain-specific
+     taxonomy induced from
      DeepDelve's own traces could surface a different profile than the generic MAST percentages
      quoted above — those percentages describe an aggregate across 7 unrelated systems, not a
      prediction for what DeepDelve's own failure mix looks like.
   3. **No dedicated Limitations section exists in the paper** (checked directly, confirmed absent)
      — a minor, honestly-noted gap in an otherwise rigorous paper, not a reason to distrust the
      core findings.
+  4. **2026-08-17: PDF saved to `papers/mast_failure_taxonomy_2503.13657.pdf` (was missing from
+     that folder — read in an earlier session before the save-papers convention started) and
+     Appendix A's full 14-mode catalog read verbatim (previously only 4 of the 14 codes had been
+     extracted into this file).** Two more direct matches to DeepDelve's own bug catalog, used to
+     scope a same-day fix (see `session_status/CURRENT.md`): **FM-1.3 "Step repetition"**
+     ("Unnecessary reiteration of previously completed steps in a process") — matches both a
+     Planner re-dispatching the same research angle under new names after being warned not to, and
+     a sub-agent re-issuing read/grep calls after its first one already succeeded; the paper's own
+     data notes "OpenManus exhibits a tendency towards step repetition (FM-1.3)" (§5.1), confirming
+     this is a recurring, not one-off, failure shape. **FM-2.5 "Ignored other agent's input"**
+     ("Disregarding or failing to adequately consider input or recommendations provided by other
+     agents") — matches a Planner seeing a tool-surfaced correction and discarding it repeatedly.
+     Both cross-checked against §5.3's already-cited causal evidence (structural/gating
+     interventions, not prompt wording, produced the paper's own measured +9.4%/+15.6% gains) —
+     used as the deciding argument for HOW to fix these two DeepDelve bugs (a real gate, not
+     stronger warning text).
 
 ### ✅ "MiniCPM4: Ultra-Efficient LLMs on End Devices" — MiniCPM Team (OpenBMB / Tsinghua-affiliated
 supervision: Xu Han, Zhiyuan Liu, Guoyang Zeng, Chao Jia, Dahai Li, Maosong Sun), arXiv:2506.07900,
@@ -910,20 +946,49 @@ to an "architectural-vs-parametric distinction."
 verified, now in §1.
 
 Still open, in priority order:
-1. **Endgame-collapse: Lost in the Middle gives a partial mechanism, not a complete account.** It
-   explains why mid-context information is under-used; it does NOT explain the specific
-   turn-by-turn degradation pattern DeepDelve has observed (a model getting progressively worse
-   or more repetitive as a session/retry-loop lengthens, not just failing to use middle content).
-   Still worth a targeted search specifically for that narrower phenomenon — possibly under
-   "attention sink," "repetition degeneration," or "self-consuming generation" as search terms.
-   **Partial corroboration found, 2026-07-22, still not a root-cause account**: the PING taxonomy
-   paper (§1, arXiv:2601.22984) independently measured a real deep-research agent (Salesforce Deep
-   Research) suffering "late-stage collapse" — over 40% of its hallucinations occur late in the
-   trajectory, a different temporal profile than Gemini/OpenAI's early-stage cascading (>57%) on
-   the same benchmark. This confirms turn-by-turn late-session degradation is a real, independently
-   observed phenomenon in at least one other real system, not a DeepDelve-specific artifact — but
-   the paper diagnoses WHERE it happens, not WHY, so the targeted search for a mechanism (attention
-   sink / repetition degeneration / self-consuming generation) is still the open item.
+1. ~~Endgame-collapse: Lost in the Middle gives a partial mechanism, not a complete account...~~
+   **RESOLVED 2026-08-17** (the exact targeted search this item called for, sitting open since
+   2026-07-19, finally run — caught during a self-audit of "what literature did we say we'd chase
+   down and never did," prompted by the user asking to check for missed planned literature). Found
+   and **read in full**: [*LoopGuard: Breaking Self-Reinforcing Attention Loops via Dynamic KV
+   Cache Intervention*](https://arxiv.org/abs/2604.10044) (Xu, Wu, Shi, Cui, Liu, Li, Ma, Liu, Zhu,
+   Xu — Soochow University / Tongji University / HKUST / Alibaba Group / Zhejiang Normal
+   University, arXiv:2604.10044, 2026-04-11, 16 pages, `papers/loopguard_2604.10044.pdf`).
+   **Provenance caveat**: no confirmed peer-reviewed venue found in the paper itself — an
+   unreviewed preprint, same caveat tier as other arXiv-only sources in this review.
+   - **This is a real, mechanism-level answer to the exact phenomenon the open item named**: long-
+     context decoding can collapse into "persistent repetition loops" via a two-stage trajectory —
+     output diversity stays high early, then drops sharply at a collapse point and stays
+     persistently low (their Figure 2a) — driven by a subset of attention heads locking onto a
+     narrow suffix of the generation history, which KV cache reuse then stabilizes and
+     self-reinforces (their Figure 1a/b). This is a genuinely different, complementary mechanism to
+     Lost in the Middle's positional-attention account: LiM explains why MIDDLE content is
+     under-used at any single point; LoopGuard explains why a session gets WORSE OVER TIME as it
+     runs long, matching the specific "progressively more repetitive as a retry loop lengthens"
+     pattern this item was opened to explain.
+   - **Directly relevant scale effect, verified (their §3.2, Figure 2b)**: "larger models survive
+     longer while smaller models fail earlier and more frequently" — the collapse is MORE
+     pronounced in smaller LLMs, "making loops easier to trigger and harder to escape." Tested
+     directly on Llama-1B/3B and Qwen-1.7B/4B (their §6) — the same model family and parameter
+     range as several of DeepDelve's own disqualified bake-off candidates (`qwen3:4b`,
+     `llama3.2:3b`). This gives a candidate mechanism-level explanation for WHY those specific
+     small models looped/repeated during real DeepDelve runs, not just an empirical observation
+     that they did.
+   - **Real, honest limitation that caps how far this generalizes to DeepDelve specifically (their
+     own Limitations section)**: LoopGuard's detection targets LEXICAL repetition (the same tail
+     span recurring near-verbatim); it explicitly does NOT claim to catch "semantically repetitive
+     but lexically varied" degeneration — and DeepDelve's own most damaging repetition pattern
+     (task-name churn — `rent_lisbon` → `rent_lisbon_price` → `rent_lisbon_analysis`; PeerReviewer's
+     varying hallucinated filenames, `session_status/CURRENT.md` 2026-08-17) is exactly that
+     semantically-repetitive-but-lexically-varied shape, not verbatim lexical looping. **The paper's
+     own mechanism (attention collapse locking onto a narrow suffix) is a plausible root cause for
+     BOTH shapes, but LoopGuard's specific detector and fix (KV-cache pruning) would not catch
+     DeepDelve's actual observed variant, and DeepDelve doesn't control inference-server KV cache
+     policy anyway (that's Ollama's own layer, not application code)** — so this resolves the
+     open literature question (a real, verified mechanism now exists) without supplying an
+     adoptable fix; today's own tool-failure-streak-guard fix (this session, `tools/core.py`)
+     addresses the semantic-variant shape structurally, at the application layer, independent of
+     whatever the serving engine's attention/KV-cache behavior turns out to be underneath it.
 2. Verify the AXPO mechanism against DeepDelve's actual `writer_role_response_reward` prompt shapes
    before deciding whether to adapt it for the next combined GRPO round.
 3. ~~Consider whether an ATLAS-style domain-specific failure taxonomy...~~ **RESOLVED this round.**
@@ -1364,6 +1429,17 @@ Garani, Independent Researcher, published at *Proceedings of the 6th Workshop on
   README.md/ROADMAP.md** from the earlier SOTA literature review (§5's merge) — direct
   reinforcement from an independent source, not a new finding, but confirms it's a real, broadly
   replicated effect relevant to any long-context RAG design DeepDelve might build.
+- **2026-08-17: read cover-to-cover (12 pages, `papers/rag_failure_taxonomy_trustnlp2026.pdf`)** —
+  previously cited via specific sections/tables without an explicit completeness confirmation. The
+  paper's own §6.6 Limitations, now folded in: single-rater evidence grading (already noted above)
+  with NO formal inter-rater agreement established; and, more load-bearing than that, its own
+  explicit caveat that **"claims regarding the relative frequency, severity, or production
+  prevalence of specific failure modes rest on secondary interpretation... rather than direct
+  measurement. The taxonomy is therefore most usefully read as a structured map of the failure
+  space, not as a quantitative ranking of failure prevalence."** The 12/33-unvalidated headline
+  number above is a real, useful signal about WHERE the evidence gaps are, not a claim about how
+  often each failure mode actually occurs in production — worth keeping that distinction precise
+  when citing this paper elsewhere.
 
 ### ✅ "Agentic Retrieval-Augmented Generation: A Survey on Agentic RAG" — Singh, Ehtesham, Kumar,
 Talaei Khoei, Vasilakos (Cleveland State / Kent State / Northeastern / University of Agder),
@@ -1434,6 +1510,16 @@ Deployment Trade-offs" — Sharma (Northeastern), Mehta (USC), arXiv:2510.03847
   schema/API-constrained tasks specifically) than that claim's magnitude — worth treating the
   claim as plausible-in-direction but unverified-in-degree, consistent with how this review already
   flagged it live.
+- **2026-08-17: read cover-to-cover (9 pages, `papers/slm_agentic_survey_2510.03847.pdf`)** —
+  previously cited via Table II and Section XI without an explicit completeness confirmation. The
+  paper's own §XVI Limitations, now folded in, directly tempers the headline Table II numbers cited
+  above (98.7%/97.9% for schema-constrained + INT8 vs. 91.2%/89.4% baseline): *"Benchmark/API
+  drift; results may not transfer,"* *"Overfitting to narrow traces,"* and *"Heavy validator
+  dependence can hide reasoning [failures]."* The magnitude of the constrained-decoding win is
+  real and directly measured (not a search-summary claim), but the paper itself warns against
+  assuming that specific gap generalizes past its own benchmark distribution — relevant caution
+  before treating "add schema-constrained decoding" as a guaranteed fix rather than a
+  well-evidenced candidate worth testing on DeepDelve's own tasks.
 
 ### Synthesis: what this means for planning DeepDelve's RAG feature
 
@@ -3170,19 +3256,40 @@ papers' actual text/data/tables the way §1's ✅ entries were:
 - §18d's pass@k/pass^k paper (arXiv:2603.29231) — fully read, all 23 pages, correcting an earlier
   same-session pass that stopped at page 6 on a bad page-count read.
 - §18b's self-correction blind spot paper (arXiv:2507.02778, Self-Correction Bench, COLM 2026) —
-  fully read, all 11 body pages (References/appendices not read in full).
+  fully read, all 11 body pages **+ Appendix C's sensitivity/robustness tables (2026-08-17
+  follow-up)**; Appendices A/B/D/E (dataset construction, figures, prompts, worked example) not
+  read line-by-line since they're implementation detail, not new claims.
 - §18e's ICC/agentic-evaluation-stochasticity paper (arXiv:2512.06710) — fully read, all 11 pages
   including all 5 appendices.
-- §18f's "Illusion of Multi-Agent Advantage" (arXiv:2606.13003) — fully read, main body + skimmed
-  appendices for config detail. §18f's MARL sample-complexity paper (arXiv:2602.08272) — full main
-  body read (Sections 1-5, pages 1-10: theorems, empirical GSM8K validation, Limitations); the
-  ~20 remaining pages are the theorems' own mathematical proofs (Appendices), not read line-by-line
-  since the theorem statements and empirical results are what's load-bearing here. (First pass this
-  session stopped at 3 of 32 pages and prematurely dismissed this paper as non-load-bearing
-  training-theory only — the user directly caught this; finishing the read found a real, specific,
-  structural match to where today's own bugs concentrated. See §18f's own corrected writeup.)
+- §18f's "Illusion of Multi-Agent Advantage" (arXiv:2606.13003) — **now fully read, ALL 22 pages
+  including Appendices A-G** (2026-08-17 follow-up; the appendices had only been skimmed for
+  config detail before — see §18f's own corrected writeup for what Appendix E's six per-framework
+  case studies and Appendix F's scope limitation actually add). §18f's MARL sample-complexity paper
+  (arXiv:2602.08272) — full main body read (Sections 1-5, pages 1-10: theorems, empirical GSM8K
+  validation, Limitations); the ~20 remaining pages are the theorems' own mathematical proofs
+  (Appendices), not read line-by-line since the theorem statements and empirical results are what's
+  load-bearing here. (First pass this session stopped at 3 of 32 pages and prematurely dismissed
+  this paper as non-load-bearing training-theory only — the user directly caught this; finishing
+  the read found a real, specific, structural match to where today's own bugs concentrated. See
+  §18f's own corrected writeup.)
+- MAST (arXiv:2503.13657, §2 above) — had been ✅ since 2026-07-19 on a main-body-only read (10 of
+  47 pages); **Appendix A's full 14-mode failure catalog now read verbatim (2026-08-17)**, not
+  caught by the user this time, found on a self-audit prompted by the user asking "how much more
+  are we referencing without a full read." See §2's own updated entry.
+- The AXPO paper (arXiv:2605.28774, §1 above) — **remaining 30 appendix pages now read (2026-08-17,
+  same self-audit)**: Appendix D's Proposition 1 proof (clean, holds up) and Appendix E's
+  Limitations (confirms and sharpens the reward-shape mismatch already flagged for DeepDelve's
+  `writer_role_response_reward`). See §1's own updated entry.
+- The RAG failure-taxonomy survey (`aclanthology.org/2026.trustnlp-main.27`, §9 area) and the SLM
+  agentic-systems survey (arXiv:2510.03847, §9 area) — **both fully read cover-to-cover for the
+  first time this session (2026-08-17 self-audit)**; both entries already cited specific
+  tables/sections but had no explicit completeness confirmation. Neither surfaced a claim that
+  invalidates what was already cited; each surfaced its own Limitations section, now folded into
+  the relevant entries (single-rater grading + "structured map, not a prevalence ranking" for the
+  taxonomy; "benchmark/API drift," "overfitting to narrow traces," "heavy validator dependence can
+  hide reasoning failures" for the SLM survey's headline constrained-decoding numbers).
 
-All five PDFs saved permanently at `papers/*.pdf` (gitignored, not committed) for later reading.
+All PDFs saved permanently at `papers/*.pdf` (gitignored, not committed) for later reading.
 The specific figures (45-48%, etc.) outside these and the framing built on them should be treated
 as directionally credible, not confirmed fact, until someone does the same primary-read pass §1
 (and now §18b/§18d/§18e/§18f) already sets the bar for. This applies most to any number cited
@@ -3226,9 +3333,16 @@ Own Mistakes? A Critical Survey of Self-Correction of LLMs*](https://arxiv.org/h
 (TACL) for the SAME number — but that paper's own title identifies it as a SURVEY, and surveys
 compile others' findings rather than running new experiments; the most likely explanation is the
 survey cites this same Self-Correction Bench study (or an earlier version of it) as its source for
-that number, not an independent second measurement. **Not fully resolved** (would need to open the
-TACL paper's own reference list to confirm directly), but the "two independent confirmations"
-framing from the earlier draft should not be repeated as fact until that's checked.
+that number, not an independent second measurement. **RESOLVED 2026-08-17**: downloaded and read the
+TACL paper directly (`arXiv:2406.01297v3`, full text) and grepped it for "64.5", "Tsui," and
+"Self-Correction Bench" — **none appear anywhere in the paper**. The Kamoi et al. survey does not
+report or cite that figure at all; it's a pure methodology critique (many published self-correction
+studies fail to define their research question or design controlled experiments; §8 provides a
+checklist for a valid study) with no empirical blind-spot measurement of its own. **The earlier
+"two independent confirmations" framing was simply wrong, not just unconfirmed** — the 64.5% figure
+has exactly ONE primary source (Tsui's Self-Correction Bench), and citing Kamoi et al. as a second
+source for it (as this project's own README.md did until this correction) was a real citation
+error, not a title typo like the Rasheed case above — fixed in README.md.
 
 **Methodology, verified**: the paper's real contribution is isolating WHY models don't self-correct
 — injecting the IDENTICAL error either into the model's own prior turn (internal) or the user's
@@ -3243,6 +3357,24 @@ disaster" comment**: the blind spot is NOT solved by frontier proprietary models
 3.5 Haiku shows a 52.5% blind spot, Claude Sonnet 4 shows 41.4% (Table 7) — lower than the 64.5%
 open-source average, but far from zero. A frontier model failing to self-correct its own prior
 output is consistent with this paper's own findings, not a surprising or unexplained result.
+
+**2026-08-17: Appendix C (Sensitivity Analysis) now read in full too — a genuinely important,
+directly relevant per-model breakdown, not just dataset-construction boilerplate as the earlier
+"References/appendices not read in full" note assumed.** Table 14 (temperature 0.0) breaks the
+64.5% AVERAGE blind spot down per model, and the spread is enormous and directly relevant to
+DeepDelve's own model choices: **Qwen3-14B, Qwen3-32B, and Qwen3-30B-A3B score external-error
+self-correction accuracy of 0.004-0.108 — near-total blind spot, far worse than the 64.5% average
+implies**, while Llama-4-Scout-17B scores 0.976 (near-perfect). A footnote confirms Qwen3 models
+were tested in **non-thinking mode** — DeepDelve's own `config_template.yaml` also runs with
+`enable_thinking: False`, so this is the SAME operating regime, not an extrapolation. This
+strengthens (with a specific, damning number instead of just the aggregate) the paragraph below's
+concern about DeepDelve's own non-thinking configuration. **Robustness checks, also now read,
+rule out the obvious confounds before this number is trusted**: results hold at both temperature
+0.0 and 0.6 (Table 14 vs 15, "does not change our conclusion"), at both 1,024 and 4,096-token
+compute budgets (Table 16), and the LLM-judge scoring was cross-checked across three different
+judges (Gemini 2.5 Flash, Claude Sonnet 4.6, GPT-5.4) at 95-97.9% pairwise agreement, Cohen's
+kappa 0.90-0.95 (Table 17) — a real methodological safeguard against the single-judge bias risk
+this review flags in other papers (e.g. the RAG failure taxonomy's single-rater grading, §1).
 
 **Directly actionable, training-free intervention this project hasn't tried yet**: appending the
 single word **"Wait"** after a model's own erroneous/rejected output — with NO fine-tuning, NO
@@ -3544,6 +3676,38 @@ single-agent. The paper's own Discussion states the principle directly: **"multi
 excels only when architectures are specifically engineered to exploit parallelizable sub-problems
 or context protection"** — exactly what DeepDelve's Searcher/Analyzer split and per-facet parallel
 dispatch are built to do (protect context per sub-agent, parallelize independent research facets).
+
+**2026-08-17 correction: the Illusion paper's remaining appendices (E "Architectural Analysis," F
+"Scope and Limitations") are now read in full, not skimmed** (`papers/illusion_multiagent_
+2606.13003.pdf`, `pdfinfo`-confirmed 22 pages). Two things change:
+1. **Appendix E's six per-framework case studies (DyLAN, AFlow, MAS-Zero, ADAS, MaAS,
+   MAS-Orchestra) are exactly the automated/dynamically-routed systems the main body's aggregate
+   critique targets, confirmed in granular detail — none of them describe anything resembling
+   DeepDelve's fixed pipeline.** Concretely: AFlow's "optimized" workflows literally degenerate
+   into 3x-custom-prompt-then-vote (functionally CoT-SC) in 7/14 discovered workflows; MAS-Zero's
+   verifier exhibits severe positional bias (GPT-4o picks the first block >45% of the time
+   regardless of quality); MaAS's router collapses to either a trivial single I/O call or an
+   undifferentiated uniform distribution once accuracy saturates; MAS-Orchestra's difficulty-aware
+   router turns out to be difficulty-AGNOSTIC in practice. This strengthens (with real per-system
+   evidence, not just the aggregate number) the earlier conclusion that DeepDelve's FIXED,
+   hand-designed roster is not the failure shape this paper documents.
+2. **Appendix F's own stated scope limitation is a real, previously-missed caveat that tempers
+   (not reverses) the "DeepDelve matches Expert-MAS" framing above**: *"Our evaluation focuses
+   primarily on cognitive orchestration and long-horizon reasoning within closed or semi-closed
+   contexts... we did not evaluate the broader spectrum of autonomous tool-use, such as real-time
+   API interaction... It remains possible that the structural efficiencies identified in our
+   'Expert-MAS' might differ in environments where the primary bottleneck is external tool-call
+   latency or protocol adherence rather than internal logical consistency. Our findings of
+   functional collapse are therefore most applicable to reasoning-heavy agentic workflows."*
+   DeepDelve is NOT a closed-context reasoning system — its actual bottlenecks (quota exhaustion,
+   fetch/search tool-call reliability, protocol adherence to task_name conventions) are precisely
+   the category this paper's authors flag as untested. The paper's own Model Diversity limitation
+   (§F) is a second, compounding gap: evaluated primarily on frontier OpenAI/Google models plus
+   ONE open-source backbone, none of it on small local models in DeepDelve's own capability range.
+   **Net effect: "DeepDelve's architecture matches the one winning pattern in this literature" is
+   still the best-supported reading, but it is an extrapolation from a reasoning-benchmark study to
+   a tool-heavy one, not a direct result — worth stating plainly rather than letting the earlier
+   framing imply a tighter fit than the paper itself claims.**
 
 **So: no, the task-division ARCHITECTURE itself is not the evidenced problem** — it matches the
 one pattern this literature actually validates, not the one it criticizes. **But the paper's own

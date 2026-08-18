@@ -526,6 +526,64 @@ def find_unsupported_regulation_ids(text: str) -> list[str]:
     return hits
 
 
+# Dollar/currency figures and day/month-count claims -- small, specific numbers that
+# extract_salient_terms' own regex is deliberately narrow enough to miss entirely (it only
+# extracts period-grouped decimals, bare 4-digit years, and percentages -- see that function's
+# docstring). A bare year is a near-universal coincidental match between any two same-year sources
+# on the same narrow topic (e.g. two 2026-dated visa guides), so claim_grounding_problem's
+# term-overlap gate can pass on nothing but that shared year even when every SPECIFIC figure in the
+# claim is entirely absent from its cited source.
+_SPECIFIC_FIGURE_RE = re.compile(
+    r'[$€£]\s?\d[\d,]*(?:\.\d+)?'
+    r'|\b\d[\d,]*(?:\.\d+)?\s?(?:USD|EUR|GBP|COP)\b'
+    r'|\b\d{2,4}\s?(?:days?|months?)\b',
+    re.IGNORECASE,
+)
+
+
+def find_unsupported_specific_figures(text: str) -> list[str]:
+    """A specific dollar figure, fee, or day/month-count claim (e.g. '$53', '300 days') cited to a
+    fetched source whose content never mentions that exact figure anywhere. Confirmed live
+    (2026-08-17 ablation smoke-test): a report's Mexico visa income/fee/duration figures were all
+    real, but misattributed to the WRONG one of two genuinely-fetched, topically-similar sources —
+    the hard URL-presence gate passed (both sources really were fetched) and
+    claim_grounding_problem's term-overlap gate passed too, on nothing more than a coincidentally
+    shared bare year (both sources being 2026-dated visa guides) — extract_salient_terms doesn't
+    extract '300', '53', or '1,200' as checkable terms at all. Same failure shape
+    find_unsupported_regulation_ids already catches for regulation identifiers, generalized here to
+    the broader class of small numeric claims. Same conservative construction: line-scoped (one
+    claim + citation per line, this project's report format), only fires when the line's cited URL
+    WAS fetched, and only flags a figure that is verbatim absent from ITS OWN cited source —
+    coincidental presence of the same number in the WRONG source for an unrelated reason (e.g. a
+    differently-scoped '180 days' meaning something else) is a false negative this check accepts
+    rather than risk over-firing, matching find_unsupported_regulation_ids' own stated design bar."""
+    fetched = _fetched_url_files()
+    ref_map = parse_academic_references(text or "")
+    hits = []
+    for line in (text or "").splitlines():
+        figures = list(_SPECIFIC_FIGURE_RE.finditer(line))
+        if not figures:
+            continue
+        files = _line_cited_files(line, fetched, ref_map)
+        if not files:
+            continue
+        content = "\n".join(_source_body(get_workspace_file_content(f) or "") for f in files)
+        if len(content.strip()) < 50:
+            continue
+        # Thousands-separator commas stripped from the SOURCE too (digit,digit only, so an
+        # ordinary prose comma like "5, 200" is untouched) -- otherwise a genuinely-supported
+        # figure like "$1,200" in the claim never matches the source's own "$1,200" formatting,
+        # since the digits-only search below strips the claim's comma but not the source's.
+        content_digits = re.sub(r'(?<=\d),(?=\d)', '', content)
+        for m in figures:
+            digits = re.sub(r'[^\d.]', '', m.group(0))
+            if len(digits.replace('.', '')) < 2:
+                continue  # single-digit figures are too generic a signal on their own
+            if not re.search(rf'\b{re.escape(digits)}\b', content_digits):
+                hits.append(m.group(0).strip())
+    return hits
+
+
 # Quoted spans, straight or curly double quotes. Minimum length excludes short generic phrases
 # ("the sky") that would false-positive on coincidence; a real "this is an exact quote" claim is
 # almost always longer than this in practice.
@@ -1192,6 +1250,10 @@ def cheap_grounding_problems(content: str, gc_cfg: dict, fetched_entries: list) 
         bad_regs = find_unsupported_regulation_ids(content)
         if bad_regs:
             out.append(f"regulation_unsupported:{'; '.join(bad_regs[:3])}")
+    if gc_cfg.get("specific_figure_check", True):
+        bad_figures = find_unsupported_specific_figures(content)
+        if bad_figures:
+            out.append(f"specific_figure_unsupported:{'; '.join(bad_figures[:3])}")
     if gc_cfg.get("quote_fidelity_check", True):
         bad_quotes = find_paraphrased_quotes(content)
         if bad_quotes:

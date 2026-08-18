@@ -25,7 +25,7 @@ from utils.grounding import (
 )
 from engine.orchestrator import (
     topup_quota_pool, available_sub_agents_ctx, _extract_excluded_topics, get_context_budget,
-    _looks_like_renamed_task,
+    _looks_like_renamed_task, _content_word_overlap,
 )
 
 DEFAULT_MAX_COMPLETION_CHECK_ATTEMPTS = 3
@@ -900,9 +900,11 @@ def check_report_underuses_findings(ctx: Ctx) -> Optional[Verdict]:
     # for an ADDITION ("actually add sections") but never named the one tool built exactly for a
     # scoped addition -- edit_workspace_file (BUILDER_INSTRUCTIONS, src/prompts.py, explicitly
     # reserved for "a small targeted fix... it can't accidentally drop or alter anything else in
-    # the file"). Literature (arXiv:2406.01297, the "self-correction blind spot": models are
-    # measurably worse at fixing errors in their OWN prior output than identical errors framed as
-    # external input) suggests a full write_workspace_file regeneration -- which the old wording
+    # the file"). Literature (arXiv:2507.02778, "Self-Correction Bench" -- the "self-correction
+    # blind spot": models are measurably worse at fixing errors in their OWN prior output than
+    # identical errors framed as external input; corrected 2026-08-17 from a wrong arXiv:2406.01297
+    # attribution -- that paper is a methodology-critique survey with no such finding, see
+    # RESEARCH.md §18b) suggests a full write_workspace_file regeneration -- which the old wording
     # implicitly invited by never specifying a narrower tool -- is exactly the weakest operation
     # here. Now explicit on BOTH branches, not just the escalated one, so the narrower ask is tried
     # from the first attempt rather than only after a full rewrite has already failed once.
@@ -1066,6 +1068,74 @@ def check_report_underuses_evidence(ctx: Ctx) -> Optional[Verdict]:
     ))
 
 
+_NEAR_DUP_SECTION_OVERLAP_THRESHOLD = 0.6
+
+
+def find_duplicate_report_sections(report: str) -> list[str]:
+    """Near-duplicate heading-delimited SUBSECTIONS within the same document — self-consistency,
+    not cross-source citation grounding (unlike every other check in this file/utils/grounding.py).
+    Confirmed live (2026-08-17): a Builder Fix-pass's own `edit_workspace_file` call anchored
+    `old_string` on a bare section heading alone, then wrote a `new_string` that retyped the
+    heading's own PRE-EXISTING content verbatim before appending a new, more specific subsection
+    next to it — since the original content was never part of `old_string`, it stayed in place,
+    and the retyped copy landed right in front of it. `final_report.md` ended up with two
+    near-identical "### Mexico City" / "### Mexico City – Central Districts" sections citing the
+    same figures. `BUILDER_INSTRUCTIONS`/`FINDINGS_WRITER_INSTRUCTIONS` were given the matching
+    prompt-level fix the same day (anchor edits on content boundaries, never retype existing
+    content into `new_string`) — this is the structural backstop, since this project's own history
+    (`ARCHITECTURE.md`, the no-progress-guard writeup, `writer_gate_ctx`'s own docstring) is
+    consistently skeptical that a prompt-only fix holds reliably on a small local model.
+
+    Reuses `_content_word_overlap` — the same metric `_looks_like_renamed_task` uses for the
+    identical underlying question ("do these two things restate the same content"), just applied
+    to report SECTIONS instead of task instructions. Scoped to h3+ SUBSECTIONS only (via
+    `split_into_heading_sections`, this project's existing h1-h3 section-detection helper) —
+    comparing every section against every other, including h1/h2 or the headingless intro/
+    conclusion, would false-positive on the normal pattern of a summary section legitimately
+    restating figures already covered in detail elsewhere. Returns the heading text of each
+    duplicate section found (the SECOND of a matched pair — the one to merge into the first, not
+    delete outright, since a Fix pass needs to know which two to reconcile, not just that a
+    duplicate exists)."""
+    sections = split_into_heading_sections(report or "")
+    headed = []
+    for sec in sections:
+        if not sec:
+            continue
+        heading_line = sec[0].strip()
+        if not re.match(r'#{3,}\s', heading_line):
+            continue  # only h3+ subsections -- see docstring for why h1/h2/intro are excluded
+        headed.append((heading_line, "\n".join(sec)))
+    dups = []
+    for i, (_, text_a) in enumerate(headed):
+        for heading_b, text_b in headed[i + 1:]:
+            if _content_word_overlap(text_a, text_b) > _NEAR_DUP_SECTION_OVERLAP_THRESHOLD:
+                dups.append(heading_b)
+                break
+    return dups
+
+
+def check_duplicate_report_sections(ctx: Ctx) -> Optional[Verdict]:
+    """See find_duplicate_report_sections' own docstring for the live incident this exists for."""
+    if not config.cfg.get("settings", {}).get("duplicate_section_check", {}).get("enabled", True):
+        return None
+    if ctx.content is None:
+        return None
+    dups = find_duplicate_report_sections(ctx.content)
+    if not dups:
+        return None
+    dup_list = ", ".join(f"'{h}'" for h in dups[:3])
+    return Verdict(
+        "duplicate_report_sections",
+        f"`{ctx.req_artifact}` has near-duplicate sections ({dup_list}) restating the same content under different headings.",
+        f"SYSTEM WARNING: '{ctx.req_artifact}' has near-duplicate sections that restate the same "
+        f"figures/claims under different headings ({dup_list}) — most likely from an edit that "
+        f"retyped existing content instead of only appending new material. Use edit_workspace_file "
+        f"to MERGE the duplicate section(s) into the first one covering that subject and remove the "
+        f"redundant heading(s) — do not just delete the new content, keep whatever the duplicate "
+        f"section added that the first one didn't already have.{_redelegate_directive(ctx)}",
+    )
+
+
 def _redelegate_directive(ctx: Ctx) -> str:
     """Structural signal for a real, confirmed failure mode: a model makes ONE
     delegate_tasks call early on (satisfying "you must delegate"), then — after a
@@ -1152,6 +1222,24 @@ def check_regulation_unsupported(ctx: Ctx) -> Optional[Verdict]:
         "regulation_unsupported",
         f"`{ctx.req_artifact}` names a regulation whose own cited source never mentions that regulation's number ({gp}) — likely a misattributed or invented identifier.",
         f"SYSTEM WARNING: '{ctx.req_artifact}' attributes a specific regulation ({gp}) to a source whose content never mentions that number anywhere. Naming a law the cited source does not contain is fabrication even when the URL itself is real and was fetched. The previous draft has been moved aside. Either delegate a Searcher to fetch the regulation's actual text or official page and cite THAT for the identifier, or rewrite the claim using only what the cited source actually says — without a law number you cannot support.{_redelegate_directive(ctx)}",
+    )
+
+
+def check_specific_figure_unsupported(ctx: Ctx) -> Optional[Verdict]:
+    """The URL is real and fetched, but a specific dollar figure, fee, or day/month-count
+    attributed to it doesn't appear anywhere in that source's content — most often because the
+    claim actually belongs to a DIFFERENT, also-genuinely-fetched source on the same narrow topic.
+    Confirmed live (2026-08-17 ablation smoke-test): a report's Mexico visa income/fee/duration
+    figures were all real, but attributed to the wrong one of two similar, both-fetched sources —
+    the URL-presence gate and the term-overlap gate (which passed on nothing but a coincidentally
+    shared bare year) both let it through. See utils/grounding.py::find_unsupported_specific_figures."""
+    gp = ctx.grounding_problem
+    if not (gp and gp.startswith("specific_figure_unsupported")):
+        return None
+    return Verdict(
+        "specific_figure_unsupported",
+        f"`{ctx.req_artifact}` attributes a specific figure to a source whose content never mentions it ({gp}) — likely misattributed to the wrong (but also genuinely fetched) source.",
+        f"SYSTEM WARNING: '{ctx.req_artifact}' attributes a specific figure ({gp}) to a source whose content never mentions it anywhere. This is usually NOT a fabrication from nothing — it is more often a real figure from a DIFFERENT source you also fetched this run, attached to the wrong one. The previous draft has been moved aside. Re-check EACH of your fetched sources individually and re-attach every specific number (fee, income threshold, day/month count) to the exact source that actually states it — do not assume two similar sources on the same topic are interchangeable.{_redelegate_directive(ctx)}",
     )
 
 
@@ -1422,6 +1510,7 @@ GROUNDING_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
     check_no_urls,
     check_stub_source,
     check_regulation_unsupported,
+    check_specific_figure_unsupported,
     check_quote_paraphrased,
     check_non_url_citation,
     check_nli_unsupported,
@@ -1438,6 +1527,10 @@ GROUNDING_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
     # Same breadth-not-accuracy category as its sibling above, one layer more specific (per-TASK
     # zero-coverage, not a flat ratio) -- see its own docstring (2026-07-29, RESEARCH.md Sec.14h).
     check_report_underuses_evidence,
+    # Self-consistency, not citation accuracy or breadth -- placed after both since a report with a
+    # bad citation or a missing task should get those fixed first; still before the generic
+    # catch-all so a genuinely duplicate-only report gets a specific, actionable nudge.
+    check_duplicate_report_sections,
     check_not_grounded,  # generic catch-all: fires on ANY grounding problem — keep it LAST
 ]
 
@@ -1446,7 +1539,8 @@ GROUNDING_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
 # run_completion_check derives its quarantine branch from this tuple (findings_ungrounded
 # quarantines findings.md instead of the artifact) — one list, no second copy to forget.
 _QUARANTINE_PROBLEMS = ("not_grounded", "claim_unsupported", "non_url_citation",
-                        "regulation_unsupported", "quote_paraphrased", "stub_source",
+                        "regulation_unsupported", "specific_figure_unsupported",
+                        "quote_paraphrased", "stub_source", "duplicate_report_sections",
                         "nli_unsupported", "topical_mismatch", "findings_ungrounded")
 
 # Problems fixable by rewriting `req_artifact` from the SAME findings.md, no new research needed —
@@ -1472,8 +1566,10 @@ _QUARANTINE_PROBLEMS = ("not_grounded", "claim_unsupported", "non_url_citation",
 # set") -- Builder's branch never got the same treatment until this fix.
 # See _BUILDER_NO_DELEGATE_CLARIFICATION below for the fix.
 _BUILDER_FIXABLE_PROBLEMS = ("missing_artifact", "not_grounded", "claim_unsupported",
-                             "non_url_citation", "regulation_unsupported", "quote_paraphrased",
-                             "stub_source", "nli_unsupported", "topical_mismatch", "uncited_claims",
+                             "non_url_citation", "regulation_unsupported",
+                             "specific_figure_unsupported", "quote_paraphrased",
+                             "stub_source", "duplicate_report_sections",
+                             "nli_unsupported", "topical_mismatch", "uncited_claims",
                              "excluded_topic_present", "cross_source_contradiction",
                              "report_underuses_findings")
 
@@ -1952,8 +2048,17 @@ async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artif
         if think_tool_skipped else ""
     )
     fix_instructions = (
-        f"PeerReviewer critiqued your last draft of '{req_artifact}'. Fix every issue it raised, "
-        f"using only the real source material below (never your own prior knowledge), "
+        # "Wait." prefix (2026-08-17, RESEARCH.md §18b, Self-Correction Bench arXiv:2507.02778):
+        # appending the single word "Wait" after a model's own erroneous/rejected output is the
+        # paper's own single most actionable, training-free finding -- reduces the measured
+        # self-correction blind spot by 89.3% on average with zero fine-tuning. The paper's own
+        # experimental harness appends it mid-generation (a continuation cue); this dispatch is a
+        # fresh turn, not a continuation, so the adaptation here is a deliberation cue at the very
+        # start of the correction ask instead -- same intent (prime reconsideration before the
+        # model reproduces its prior mistake), not a literal replication of the paper's exact
+        # mechanism, worth noting honestly rather than overclaiming a precise reproduction.
+        f"Wait. PeerReviewer critiqued your last draft of '{req_artifact}'. Fix every issue it "
+        f"raised, using only the real source material below (never your own prior knowledge), "
         f"then rewrite the file:\n\n{review_text}\n\n"
         f"--- YOUR ORIGINAL TASK INSTRUCTIONS AND SOURCE MATERIAL (unchanged) ---\n{write_instructions}"
         f"{think_tool_note}"
@@ -2281,17 +2386,52 @@ def _update_task_verification(run_state: "RunState") -> None:  # noqa: F821 — 
                 entry["status"] = "superseded"
 
 
+_NEAR_DUP_FINDING_OVERLAP_THRESHOLD = 0.5
+
+
 def _dedupe_findings(findings: list) -> list:
     """Exact (source_url, summary) dedup, shared by _build_findings_source_material and
     check_propagated_ungrounded_content (2026-07-22) -- extracted so both stay in sync on the one
-    definition of "duplicate" instead of drifting."""
+    definition of "duplicate" instead of drifting.
+
+    Near-duplicate pass added 2026-08-17 (live incident, ablation smoke-test): a task-name-renamed
+    retry that gets through as the FIRST rename match (advisory-only, not yet a hard reject -- see
+    `_rename_match_escalates` in orchestrator.py, which only escalates on the SECOND match against
+    the same target) still produces a genuinely SEPARATE finding under a different task_name, whose
+    summary independently restates the same underlying research -- confirmed live: `final_report.md`
+    carried two near-identical "Mexico City" rent sections citing the same sources with the same
+    figures, from two dispatches of what was really one facet. Exact-key dedup above can't catch
+    this (the two summaries are independently generated text, not byte-identical). Reuses
+    `_content_word_overlap` -- the SAME metric `_looks_like_renamed_task` already uses to detect
+    this at dispatch time, applied here as a second, later-stage net for whichever renamed pair
+    still slipped through (e.g. the first, still-advisory match). Threshold set higher than
+    `_looks_like_renamed_task`'s own 0.3 (tuned for short, templated task INSTRUCTIONS) since
+    findings summaries are longer, denser prose where topical vocabulary overlap alone (both about
+    "Mexico City" and "rent") is far more likely to be coincidental -- 0.5 is a deliberately more
+    conservative judgment call for this different text population, not a re-derivation of the same
+    number. A minimum word count guards the short/generic-summary edge case (found while testing
+    this fix): two SHORT, boilerplate-heavy summaries (e.g. "Real finding with a title." vs. "Real
+    finding without a title.") can cross a word-overlap threshold on almost nothing but shared
+    filler after stopword-stripping -- real findings summaries are long-form prose, so this only
+    ever exempts thin/placeholder-shaped ones, never a genuine research summary."""
     seen = set()
     deduped = []
+    kept_summaries: list[tuple] = []  # (task_name, summary) already kept, for the near-dup check
     for f in findings:
         key = (f.get("source_url"), f.get("summary"))
         if key in seen:
             continue
         seen.add(key)
+        summary = f.get("summary") or ""
+        task_name = f.get("task_name")
+        if summary and len(summary.split()) >= 8 and any(
+            other_name != task_name
+            and len(other_summary.split()) >= 8
+            and _content_word_overlap(summary, other_summary) > _NEAR_DUP_FINDING_OVERLAP_THRESHOLD
+            for other_name, other_summary in kept_summaries
+        ):
+            continue
+        kept_summaries.append((task_name, summary))
         deduped.append(f)
     return deduped
 

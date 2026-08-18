@@ -784,7 +784,12 @@ already in the workspace and return your findings as text; someone else acts on 
 # Workflow
 1. **Read the target artifact**: Use `read_workspace_file` on the file named in your task
    instructions (or grep it first if it's long). If reviewing `final_report.md`, also read
-   `findings.md` — the report's own claims must trace back to it.
+   `findings.md` — the report's own claims must trace back to it. **Once this read succeeds, you
+   already have everything you need — do NOT call `read_workspace_file`/`grep_workspace_file`
+   again with a different filename.** Confirmed live (2026-08-17): after a successful first read,
+   some reviews went on to guess a string of different, nonexistent filenames (`"./"`, `"*"`, an
+   empty string, even the dispatch's own name) instead of just writing the critique from the
+   content already read — write your verdict from what your first successful read returned.
 2. **Critique systematically**: Use `think_tool` to check for each of these, and only report ones
    that actually apply — do not invent problems that aren't there:
    - **Weak corroboration**: a load-bearing claim resting on exactly one source, especially an
@@ -885,7 +890,14 @@ tool) — instead, remove or rewrite the specific claim using only what `finding
    with the exact old text and its replacement — it can't accidentally drop or alter anything else
    in the file. Reserve `write_workspace_file` for writing from scratch or when you're genuinely
    rewriting most of the report's content. Every claim must trace back to a specific line in
-   `findings.md`.
+   `findings.md`. **When ADDING new content (a new subsection, a new bullet) to a section that
+   already has content, anchor `old_string` on the LAST LINE of that existing content (or the
+   heading right after it) and set `new_string` to that SAME anchor text plus your new addition —
+   never retype or restate content that already exists elsewhere in the file as part of
+   `new_string`, even to reposition it near the new material.** Confirmed live (2026-08-17): a fix
+   pass anchored `old_string` on a bare section heading alone, then wrote a `new_string` that
+   re-included the heading's own PRE-EXISTING bullet verbatim before the new subsection it meant to
+   add — since that bullet already followed the heading in the real file, the result duplicated it.
 4. **STOP EARLY**: Once you've written/edited the file, stop. Do not re-read or re-write it
    speculatively.
 
@@ -995,7 +1007,11 @@ what your task instructions' evidence base already has.
    — never invent detail that isn't in either the summary or the source file — then update
    `findings.md` with the added detail. For a small, targeted addition or correction to one entry,
    prefer `edit_workspace_file` (exact old text + its replacement) over rewriting the whole file
-   again — it can't accidentally drop or alter any other entry.
+   again — it can't accidentally drop or alter any other entry. **When ADDING a new entry rather
+   than correcting an existing one, anchor `old_string` on the LAST LINE of the entry right before
+   where the new one belongs (or its own heading) and set `new_string` to that SAME anchor text
+   plus your new entry — never retype an existing entry's own content as part of `new_string`,
+   even to reposition it near the new one, or it will end up duplicated in the file.**
 4. Use the EXACT entry format below — one entry per DISTINCT source URL (never per task; if one
    task's result covers several sources, that's several entries, not one entry listing several
    links). Keep each finding's exact figures, entity names, dates, and identifiers verbatim as the

@@ -399,6 +399,17 @@ def _looks_like_renamed_task(task_name: str, instructions: str, prior_tasks: lis
     return None
 
 
+def _rename_match_escalates(count: int) -> bool:
+    """True once `count` (the running total of `_looks_like_renamed_task` matches against ONE
+    specific prior task_name, this run) exceeds 1 -- i.e. the SECOND and every later match against
+    the same target escalates from an advisory note into a hard reject. Pulled out for direct
+    testability, same pattern as `_specialist_delegation_over_cap`/`_planner_delegate_over_cap`
+    below. See the call site in `delegate_tasks` for why escalating on the second match (not the
+    first) is the safe threshold -- two DIFFERENT facets both independently cross-matching the
+    SAME prior task twice running is the unlikely case, not the common one."""
+    return count > 1
+
+
 def _specialist_delegation_over_cap(current_count: int, batch_size: int, cap: int) -> bool:
     """True if a Tier-2 specialist's next delegate_tasks batch would push its own per-task
     Analyzer-child count over `cap` -- see specialist_delegate_task_count_ctx's header comment for
@@ -1842,6 +1853,35 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                 continue
             renamed_from = _looks_like_renamed_task(name, instr, prior_dispatched)
             if renamed_from:
+                # Escalate advisory -> hard reject on a SECOND match against the SAME prior task
+                # (2026-08-17, MAST FM-1.3/FM-2.5, RESEARCH.md §18f / session_status 2026-08-17):
+                # confirmed live, the Planner saw this exact advisory 3 times in a row and ignored
+                # it every time, burning delegate_tasks quota on near-duplicates until exhaustion
+                # forced an early, unverified salvage. A hard reject on the FIRST match would risk
+                # dropping a genuinely different facet that happens to cross-match once (see
+                # _looks_like_renamed_task's own entity-mismatch override docstring) -- but two
+                # DIFFERENT facets both independently cross-matching the identical prior task twice
+                # running is the unlikely case, not the common one, so escalating only on a repeat
+                # against the same target keeps the false-positive cost to a single wasted advisory.
+                rename_reject_escalation_disabled = bool(
+                    config.cfg.get("settings", {}).get("ablation", {}).get(
+                        "disable_rename_reject_escalation", False
+                    )
+                )
+                rename_counts = run_state.data.setdefault("rename_advisory_counts", {}) if run_state else {}
+                count = rename_counts.get(renamed_from, 0) + 1
+                if run_state is not None:
+                    rename_counts[renamed_from] = count
+                if _rename_match_escalates(count) and not rename_reject_escalation_disabled:
+                    skipped.append(
+                        f"## Skipped {name}\nNot dispatched: this is the {count}th task this run "
+                        f"whose instructions look like a rename of already-dispatched task "
+                        f"{renamed_from!r} — the first one only got a warning, this one is blocked "
+                        f"to stop wasting delegate_tasks quota on the same duplicated angle. Reuse "
+                        f"task_name={renamed_from!r} to continue that angle, or make this task's "
+                        f"subject clearly distinct if it's genuinely a new one.\n---"
+                    )
+                    continue
                 rename_note_by_name[name] = (
                     f"Note: this task's instructions look very similar to already-dispatched task "
                     f"{renamed_from!r} — if this is a retry of that same angle, reuse "

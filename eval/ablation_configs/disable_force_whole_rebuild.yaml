@@ -563,3 +563,14 @@ settings:
     # quota unit per attempt, until the tool's own numeric quota naturally runs out. Does NOT
     # affect the separate read_workspace_file/grep_workspace_file exact-repeat-is-free dedup.
     disable_no_progress_guard: false
+    # Disables engine/orchestrator.py::delegate_tasks' escalation of a task-rename advisory into a
+    # hard reject on a SECOND match against the same prior task (MAST FM-1.3/FM-2.5). With this
+    # True, a renamed-task match is always just an advisory note, never blocking dispatch, no
+    # matter how many times the Planner ignores it (pre-2026-08-17 behavior).
+    disable_rename_reject_escalation: false
+    # Disables tools/core.py::check_quota's tool-failure streak guard (N consecutive FAILURES to
+    # the same tool regardless of differing arguments -> halt; a hallucination-spiral guard,
+    # distinct from the exact-repeat no-progress guard above). With this True, a tool call can keep
+    # failing with a NEW set of wrong arguments every time indefinitely, spending one quota unit
+    # per attempt, until the tool's own numeric quota naturally runs out.
+    disable_tool_failure_streak_guard: false

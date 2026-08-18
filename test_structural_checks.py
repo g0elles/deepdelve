@@ -393,6 +393,71 @@ def main():
     import contextvars
     contextvars.copy_context().run(_title_rendering_scenario)
 
+    # --- near-duplicate finding dedup (2026-08-17, live incident: a task-name-renamed retry that
+    # got through as the FIRST rename match -- advisory-only, not yet a hard reject -- produced a
+    # SEPARATE finding restating the same research under a different task_name; final_report.md
+    # carried two near-identical "Mexico City rent" sections as a result). ---
+    def _near_dup_finding_scenario():
+        import tempfile
+        from utils.run_state import RunState, run_state_ctx
+        reset_fetched_urls()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rs = RunState(tmpdir)
+            run_state_ctx.set(rs)
+            record_fetched_url("https://airbnb.example.com/mexico-city", filename="sources/airbnb.md")
+            record_fetched_url("https://numbeo.example.com/mexico-city", filename="sources/numbeo.md")
+            rent_summary = (
+                "Average rent for a one-bedroom apartment in Mexico City is 22,000-38,000 "
+                "Mexican pesos per month (~$1,200-$2,050 USD)."
+            )
+            rs.add_finding("https://airbnb.example.com/mexico-city", rent_summary,
+                            task_name="rental_cost_mexico_city_central")
+            # Same underlying research, independently synthesized (not byte-identical) under a
+            # DIFFERENT, renamed task_name -- exact-key dedup alone would keep both.
+            rs.add_finding("https://numbeo.example.com/mexico-city",
+                            rent_summary.replace("Average rent", "The average rent"),
+                            task_name="rental_cost_mexico_city_central_districts")
+            # A genuinely different facet must survive even though it shares topical vocabulary
+            # ("Mexico City") with the near-duplicate pair above.
+            rs.add_finding("https://esimcard.example.com/mexico-visa",
+                            "Mexico's digital nomad visa requires proof of steady monthly income.",
+                            task_name="visa_requirements_mexico")
+            material = _build_findings_source_material(rs)
+            assert material.count("22,000") == 1, (
+                "the near-duplicate rent finding must be collapsed to one entry", material)
+            assert "digital nomad visa" in material, (
+                "a genuinely different facet must not be swept up by the near-dup guard", material)
+        reset_fetched_urls()
+
+    contextvars.copy_context().run(_near_dup_finding_scenario)
+
+    # --- duplicate report sections (2026-08-17, live incident: a Builder Fix-pass's own
+    # edit_workspace_file call retyped an existing section's content while appending a new
+    # subsection next to it, producing two near-identical "### Mexico City" /
+    # "### Mexico City – Central Districts" sections). ---
+    from engine.completion import find_duplicate_report_sections
+
+    _DUP_REPORT = """# Report
+
+## Rental Costs
+
+### Mexico City
+- Average rent for a one-bedroom apartment: 22,000-38,000 Mexican pesos per month (~$1,200-$2,050 USD). - [Airbnb](https://airbnb.example.com/mx)
+
+### Mexico City – Central Districts
+- Average monthly rent for a one-bedroom apartment: 22,000-38,000 Mexican pesos per month (~$1,200-$2,050 USD). - [Airbnb](https://airbnb.example.com/mx)
+
+### Lisbon
+- Average rent for a one-bedroom apartment is 650 EUR in the city centre. - [Nestpick](https://nestpick.example.com/lisbon)
+"""
+    dups = find_duplicate_report_sections(_DUP_REPORT)
+    assert dups and "Central Districts" in dups[0], dups
+    # A genuinely different section (Lisbon) sharing topical vocabulary ("rent", "one-bedroom
+    # apartment") with Mexico City must not be swept up.
+    assert not any("Lisbon" in d for d in dups), dups
+    # No duplicates at all -> silent.
+    assert find_duplicate_report_sections("# R\n\n### Mexico City\n- a\n\n### Lisbon\n- b\n") == []
+
     # --- findings.md wholesale-fabrication gate ---
     reset_fetched_urls()
     assert fully_ungrounded("Findings: lots of prose, zero sources.") == "no_urls"
@@ -710,6 +775,39 @@ def main():
         assert err2 and "exact same arguments" in err2, err2
 
     contextvars.copy_context().run(_no_progress_guard_scenario)
+
+    # --- tool-failure streak guard (2026-08-17, MAST FM-1.3, RESEARCH.md §18f): unlike the
+    # no-progress guard above, this fires on N consecutive FAILURES to the same tool regardless of
+    # DIFFERING arguments -- confirmed live, PeerReviewer read its real target once then burned 66
+    # read/grep calls guessing distinct garbage filenames, never once repeating the same (tool,
+    # args) pair and so never tripping the guard above. ---
+    def _tool_failure_streak_scenario():
+        from tools.core import (
+            tool_quotas_ctx as q_ctx, check_quota, _record_call_outcome, TOOL_ERROR_PREFIX,
+        )
+
+        q_ctx.set({"read_workspace_file": {"used": 0, "limit": 20}})
+        keys = [(("./",), ()), (("*",), ()), (("",), ()), (("ReviewFix_attempt2.md",), ())]
+
+        # 1st real success (the live incident's own first call) must not count toward the streak.
+        assert check_quota("read_workspace_file", keys[0]) is None
+        _record_call_outcome("read_workspace_file", keys[0], "file content here")
+
+        # 3 DIFFERENT failing calls in a row -- none share a call_key, so the exact-repeat
+        # no-progress guard never fires, but the tool-wide streak does.
+        for k in keys[1:]:
+            assert check_quota("read_workspace_file", k) is None
+            _record_call_outcome("read_workspace_file", k, f"{TOOL_ERROR_PREFIX}file not found")
+
+        err = check_quota("read_workspace_file", (("yet_another_guess.md",), ()))
+        assert err and "all failed" in err and "different arguments" in err, err
+
+        # A real success anywhere resets the tool-wide streak (not just a matching-key success).
+        _record_call_outcome("read_workspace_file", keys[0], "file content here")
+        assert check_quota("read_workspace_file", (("one_more_guess.md",), ())) is None, (
+            "a success must reset the tool-wide failure streak, regardless of which call_key it used")
+
+    contextvars.copy_context().run(_tool_failure_streak_scenario)
 
     # --- delegate_tasks batch pre-reservation (ROADMAP's tracked open angle (c), 2026-07-21):
     # live-confirmed a heavily-redispatched sibling can structurally starve later-listed siblings
@@ -1094,6 +1192,13 @@ def main():
     assert "Title:" in ACADEMIC_SEARCHER_INSTRUCTIONS and "Authors:" in ACADEMIC_SEARCHER_INSTRUCTIONS, (
         "must reference the new fetch-time header fields")
     assert "already in the file" in DATA_ANALYZER_INSTRUCTIONS or "header" in DATA_ANALYZER_INSTRUCTIONS
+
+    # --- PEER_REVIEWER_INSTRUCTIONS: must explicitly tell the model not to guess further filenames
+    # after its first successful read (2026-08-17 fix for the hallucinated-filename churn incident —
+    # tools/core.py's tool-failure-streak guard now CONTAINS this, but the prompt itself should
+    # still say not to do it in the first place). ---
+    from prompts import PEER_REVIEWER_INSTRUCTIONS
+    assert "do NOT call" in PEER_REVIEWER_INSTRUCTIONS and "different filename" in PEER_REVIEWER_INSTRUCTIONS
 
     # --- query-level scope warning (live case: Colombia task searching offshore wind turbines) ---
     from tools.web import _scope_warning
@@ -1669,6 +1774,20 @@ def main():
         ("regulation_unsupported", True, {"findings.md": _FINDINGS_OK,
           "final_report.md": f"| Ley 1906 de 2021 | [gov]({_SRC}) |"},
          "regulation_unsupported", "never mentions that regulation's number"),
+        # Live case 2026-08-17 (ablation smoke-test): a real dollar figure was misattributed to the
+        # WRONG one of two genuinely-fetched sources on the same narrow topic — _SRC's content
+        # never mentions '53' anywhere.
+        ("specific_figure_unsupported", True, {"findings.md": _FINDINGS_OK,
+          "final_report.md": f"- Application fee is $53. [gov]({_SRC})"},
+         "specific_figure_unsupported", "never mentions it"),
+        # Live case 2026-08-17: an edit_workspace_file call retyped an existing section's content
+        # while appending a new subsection next to it, producing two near-identical sections.
+        ("duplicate_report_sections", True, {"findings.md": _FINDINGS_OK,
+          "final_report.md": (
+              f"### Mexico City\n- Average rent is 22,000-38,000 pesos per month. [g]({_SRC})\n\n"
+              f"### Mexico City - Central Districts\n- Average monthly rent is 22,000-38,000 pesos "
+              f"per month. [g]({_SRC})\n")},
+         "duplicate_report_sections", "near-duplicate sections"),
         # Live case 2026-07-24: a report quoted a plausible-sounding sentence and attributed it to
         # a real, fetched source -- the underlying claim can be true and traceable while the exact
         # wording still never appears there, which content_level_check's term-overlap check alone
@@ -5309,6 +5428,11 @@ def main():
                 assert any("flagged issues" in m for m in msgs), (
                     "must be notified as issues-found, not as a clean pass", msgs)
                 assert not any("found no issues" in m for m in msgs), msgs
+                # "Wait." prefix (2026-08-17, RESEARCH.md §18b, Self-Correction Bench
+                # arXiv:2507.02778): the Fix-pass dispatch's own instructions must lead with it.
+                assert dispatch.call_args_list[2].args[1].startswith("Wait."), (
+                    "Fix-pass instructions must start with the 'Wait.' deliberation cue",
+                    dispatch.call_args_list[2].args[1][:60])
 
             # (b) PeerReviewer says CLEAN and DOES increment read_workspace_file's used count ->
             # trusted as before (2 dispatches, converges).
@@ -5601,7 +5725,14 @@ def main():
 
         _orig_ablation2 = _config.cfg.get("settings", {}).get("ablation")
         try:
-            _config.cfg.setdefault("settings", {})["ablation"] = {"disable_no_progress_guard": True}
+            # Also disables the tool-failure streak guard (2026-08-17) -- this scenario repeats the
+            # SAME failing call 4 times, which would otherwise trip that orthogonal, tool-wide
+            # guard regardless of no_progress_guard's own state; isolating the mechanism under test
+            # here, not testing the two guards' interaction (see _tool_failure_streak_scenario for
+            # that guard's own dedicated coverage).
+            _config.cfg.setdefault("settings", {})["ablation"] = {
+                "disable_no_progress_guard": True, "disable_tool_failure_streak_guard": True,
+            }
             q_ctx.set({"edit_workspace_file": {"used": 0, "limit": 10}})
             bad_key = (("findings.md", "wrong old_string", "new"), ())
             for _ in range(3):
@@ -5619,6 +5750,40 @@ def main():
                 _config.cfg["settings"]["ablation"] = _orig_ablation2
 
     contextvars.copy_context().run(_no_progress_guard_ablation_scenario)
+
+    # --- tool-failure streak guard's own ablation switch, same pattern ---
+    def _tool_failure_streak_ablation_scenario():
+        from tools.core import tool_quotas_ctx as q_ctx, check_quota, _record_call_outcome, TOOL_ERROR_PREFIX
+
+        _orig_ablation3 = _config.cfg.get("settings", {}).get("ablation")
+        try:
+            _config.cfg.setdefault("settings", {})["ablation"] = {"disable_tool_failure_streak_guard": True}
+            q_ctx.set({"read_workspace_file": {"used": 0, "limit": 20}})
+            for i in range(4):
+                key = ((f"guess_{i}.md",), ())
+                assert check_quota("read_workspace_file", key) is None, (
+                    "with the guard disabled, a run of different-args failures must pass through "
+                    "normally, never intercepted")
+                _record_call_outcome("read_workspace_file", key, f"{TOOL_ERROR_PREFIX}file not found")
+        finally:
+            if _orig_ablation3 is None:
+                _config.cfg.get("settings", {}).pop("ablation", None)
+            else:
+                _config.cfg["settings"]["ablation"] = _orig_ablation3
+
+    contextvars.copy_context().run(_tool_failure_streak_ablation_scenario)
+
+    # --- rename-match escalation predicate (2026-08-17, MAST FM-1.3/FM-2.5): the SECOND match
+    # against the SAME prior task escalates delegate_tasks' advisory note into a hard reject; the
+    # first match alone must not (see _rename_match_escalates' own docstring for why). ---
+    from engine.orchestrator import _rename_match_escalates
+
+    def _rename_escalation_scenario():
+        assert _rename_match_escalates(1) is False, "a single match is only ever an advisory"
+        assert _rename_match_escalates(2) is True, "a second match against the same target rejects"
+        assert _rename_match_escalates(3) is True
+
+    _rename_escalation_scenario()
 
     # --- force_whole_rebuild's OWN consecutive-counter must also survive an untracked_delegation
     # interruption for task_verification_flagged (2026-07-31 live incident, Ornith-1.0-9B re-test):
@@ -6177,6 +6342,75 @@ def main():
                 _config.cfg["settings"]["workspace"] = _orig_ws7
 
     contextvars.copy_context().run(_missing_findings_escalation_scenario)
+
+    # --- specific-figure grounding (live case, 2026-08-17 ablation smoke-test: a real income
+    # figure was misattributed to the WRONG one of two genuinely-fetched, similar sources; the
+    # URL gate and content_level_check's term-overlap gate both passed on nothing but a
+    # coincidentally shared bare year) ---
+    from utils.grounding import find_unsupported_specific_figures
+
+    def _specific_figure_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        _orig_ws13 = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory"}
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            _IN_MEMORY_FS.clear()
+            reset_fetched_urls()
+            record_fetched_url("https://esimcard.example.com/mexico-visa", filename="sources/esim.md")
+            _IN_MEMORY_FS["sources/esim.md"] = (
+                "Source-URL: https://esimcard.example.com/mexico-visa\n\n"
+                "Mexico does not offer an official digital nomad visa in 2026. Remote workers "
+                "usually use the Temporary Resident Visa, whose income requirement varies by "
+                "consulate, from $4,510 in San Diego to other amounts elsewhere."
+            )
+            # Misattributed figures: neither "300" nor "53" appears in this source at all ->
+            # flagged, even though a coincidentally shared bare year ("2026") is present.
+            bad = find_unsupported_specific_figures(
+                "- Income requirement: 300 days of minimum wage; application fee $53. "
+                "[esimcard](https://esimcard.example.com/mexico-visa)")
+            assert any("300" in b for b in bad), bad
+            assert any("53" in b for b in bad), bad
+            # Supported figures: a source that DOES contain both numbers -> silent
+            record_fetched_url("https://themexicohandbook.example.com/visa", filename="sources/handbook.md")
+            _IN_MEMORY_FS["sources/handbook.md"] = (
+                "Source-URL: https://themexicohandbook.example.com/visa\n\n"
+                "You must demonstrate income equivalent to 300 days of the minimum wage. The "
+                "consular processing fee is approximately 53 USD, payable by credit card."
+            )
+            assert find_unsupported_specific_figures(
+                "- Income requirement: 300 days of minimum wage; application fee $53. "
+                "[handbook](https://themexicohandbook.example.com/visa)") == []
+            # A figure with no citation on the line, or an unfetched URL -> other gates' job, silent.
+            assert find_unsupported_specific_figures("Pay a $53 fee before your interview.") == []
+            assert find_unsupported_specific_figures(
+                "Pay a $53 fee ([x](https://never-fetched.example.com/y))") == []
+            # Single-digit figures are too generic a signal -> never flagged.
+            assert find_unsupported_specific_figures(
+                "- A $5 surcharge applies. [esimcard](https://esimcard.example.com/mexico-visa)") == []
+            # Comma-formatting must not false-positive (caught live 2026-08-17 validating this
+            # check against the real incident data): a genuinely-supported figure whose SOURCE
+            # also happens to write it with a thousands-separator comma (not just the claim) must
+            # still match -- comparing raw strings without normalizing the source's own comma too
+            # silently broke this the first time it was implemented.
+            record_fetched_url("https://budget.example.com/mexico-city", filename="sources/budget.md")
+            _IN_MEMORY_FS["sources/budget.md"] = (
+                "Source-URL: https://budget.example.com/mexico-city\n\n"
+                "Utilities and internet typically run about $1,200 per month for a comfortable "
+                "setup, separate from rent."
+            )
+            assert find_unsupported_specific_figures(
+                "- Utilities cost $1,200/month. [budget](https://budget.example.com/mexico-city)") == []
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            if _orig_ws13 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws13
+
+    contextvars.copy_context().run(_specific_figure_scenario)
 
     # --- regulation-identifier grounding (live case run 12: 'Ley 1906 de 2021' cited to a real
     # fetched page that never mentions 1906 — passed both the URL gate and zero-overlap check) ---

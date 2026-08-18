@@ -2700,6 +2700,62 @@ tried, twice, not merely proposed):
 ## Completed
 
 
+- **Builder duplicate-section bug: an `edit_workspace_file` call that retypes existing content
+  while adding new material — root-caused from the live session transcript, IMPLEMENTED and
+  live-validated, 2026-08-17.** Traced `final_report.md`'s two near-identical "Mexico City" /
+  "Mexico City – Central Districts" sections to the exact `edit_workspace_file` call that caused
+  them (`BuilderFix_attempt3_reviewed`, the run's last action): `old_string="### Mexico City"`
+  (the bare heading), `new_string=` heading + the heading's own PRE-EXISTING bullet retyped
+  verbatim + a new subsection — since the original bullet was never part of `old_string`, it
+  stayed where it was, and the retyped copy landed directly in front of it. Fixed at both layers:
+  (1) `BUILDER_INSTRUCTIONS`/`FINDINGS_WRITER_INSTRUCTIONS` (`src/prompts.py`) now explicitly say
+  to anchor an ADDING edit on the boundary of existing content, never retype it into `new_string`;
+  (2) `find_duplicate_report_sections`/`check_duplicate_report_sections`
+  (`src/engine/completion.py`) — a new structural, self-consistency completion-check comparing
+  every h3+ subsection of a report against every other via `_content_word_overlap` (threshold
+  0.6), registered in `GROUNDING_CHECKS`/`_QUARANTINE_PROBLEMS`/`_BUILDER_FIXABLE_PROBLEMS`, gated
+  by new `settings.duplicate_section_check.enabled`. Live-validated by running the new function
+  directly against the real incident's `final_report.md`: correctly flags exactly the one real
+  duplicate section and nothing else (no false positives on the genuinely-distinct Lisbon/Portugal
+  sections). See `ROADMAP.md`'s Pending "UNIFIED LIST" entry (item B.4, now resolved) and
+  `session_status/CURRENT.md` for the full incident writeup.
+
+- **Citation misattribution: a real, correctly-fetched claim gets attached to the wrong cited URL
+  — IMPLEMENTED and live-verified against the real incident data, 2026-08-17.** Found via a manual
+  claim-by-claim audit of the ablation smoke-test's own `final_report.md` (user asked "did you
+  evaluate the report properly?" — the automated structural score had missed it entirely): four
+  real, accurately-worded Mexico-visa figures ("300 days" income formula, "$53" fee, sworn-
+  translator requirement, MiConsulado interview) were all traced verbatim to
+  `themexicohandbook.com`'s fetched content but cited to `esimcard.com` instead — both URLs were
+  genuinely fetched this run, so the hard grounding gate passed, and `claim_grounding_problem`'s
+  term-overlap gate passed too, on nothing more than a coincidentally shared bare year (both
+  sources being 2026-dated visa guides) — `extract_salient_terms`'s own number regex is narrow
+  enough (period-grouped decimals, bare 4-digit years, percentages only) to never extract "300" or
+  "53" as a checkable term at all. Same failure shape `find_unsupported_regulation_ids` already
+  catches for regulation identifiers ("the URL-presence gate passed... and the zero-overlap content
+  check passed (shared generic terms)... so a misattributed law number sailed through both," live
+  2026-07-11) — generalized to the broader class of small numeric claims via a new sibling
+  function, `find_unsupported_specific_figures` (`src/utils/grounding.py`): line-scoped, matches
+  dollar/currency figures and day/month-count claims, flags one verbatim-absent from its own cited
+  source. Wired into `cheap_grounding_problems` (new `settings.grounding_check.specific_figure_
+  check`, default true) and a new `check_specific_figure_unsupported` completion-check
+  (`src/engine/completion.py`), registered in `GROUNDING_CHECKS`, `_QUARANTINE_PROBLEMS`, and
+  `_BUILDER_FIXABLE_PROBLEMS`. **A real implementation bug caught and fixed during live
+  validation, not just synthetic tests**: the first version stripped commas from the CLAIM's
+  digits but not from the SOURCE content before searching, so a genuinely-supported figure whose
+  source also formats it with a thousands-separator comma (e.g. source says "$1,200", search
+  target was bare "1200") false-positived as unsupported — fixed by normalizing thousands-separator
+  commas out of the source content too before the presence check, then re-validated against the
+  same real report: false positives (€1,000, $2,050×3) resolved, while the true incident (300
+  days, $53) AND two more previously-unnoticed real grounding failures in the SAME report (a
+  fabricated "€1,000–€1,800" Lisbon rent range cited to a property-*purchase*-price page with no
+  rental data at all; the model's own unstated "$1,200–$1,400" USD approximation, absent from every
+  fetched source) were all correctly caught. Full `test_structural_checks.py` coverage: a direct
+  `find_unsupported_specific_figures` unit scenario (including a regression test for the
+  comma-formatting bug) plus a new verdict-matrix row. See `session_status/CURRENT.md` and
+  `ROADMAP.md`'s Pending "UNIFIED LIST" entry (item A.1, now resolved) for the full incident
+  writeup.
+
 - **Output/export feature gaps + optional HTTP API/web UI — IMPLEMENTED and live-verified,
   2026-08-02.** Scoped from a purpose-vs-built-feature gap check (not a code audit): research
   inputs were web-only, output was markdown-only, no programmatic API existed, and
@@ -3637,7 +3693,13 @@ tried, twice, not merely proposed):
 - **Phase 1 of the approved 6-phase plan: claim-level grounding upgrade (atomic-claim
   decomposition + per-claim evidence binding).** (Found 2026-07-13, informed by FActScore's
   decompose-then-verify pattern (arXiv:2305.14251, already cited in README for the NLI check) and
-  Rasheed et al.'s claim-evidence provenance framing (arXiv:2602.13855).) The prior
+  Rasheed et al.'s claim-evidence provenance framing (arXiv:2602.13855 — **UPDATE 2026-08-17**:
+  read in full for the first time as part of a broader literature-completeness audit; the real
+  title is "From Fluent to Verifiable: Claim-Level Auditability for Deep Research Agents," not
+  "Claim-Evidence Provenance in Grounded Generation" as this file and README.md had it — a citation
+  title error, author/substance were correct, now fixed in both places. It's an unreviewed
+  perspective paper, not empirical validation, but its claim-node/typed-edge formalization matches
+  what's cited here).) The prior
   `claim_grounding_problem` compared a WHOLE LINE's terms against the UNION of every source cited
   anywhere on that line — a real gap when a line carries two distinct claims each with its own
   citation (e.g. "Sector A grew 12% [gov](url1), while Sector B declined 3% [news](url2)"): a
@@ -3972,6 +4034,158 @@ tried, twice, not merely proposed):
 
 ## Pending
 
+- **UNIFIED LIST, 2026-08-17 — every open gap and literature-derived candidate improvement from
+  today's session in one place, prioritized.** Consolidated at the user's request after a full
+  literature-completeness audit plus a real citation audit of the ablation smoke-test's own
+  output. Individual items are detailed in their own dated entries elsewhere in this file /
+  `RESEARCH.md` / `session_status/CURRENT.md` — this entry is the index, not a duplicate write-up.
+
+  **A. New correctness bug found, NOT YET FIXED — highest priority, found via manual claim audit,
+  not caught by any automated check:**
+  1. ~~Citation misattribution: a real, correctly-fetched claim gets attached to the WRONG cited
+     URL...~~ **RESOLVED 2026-08-17, see "Completed" above** (`find_unsupported_specific_figures`
+     + `check_specific_figure_unsupported`). Live-confirmed
+     (2026-08-17 ablation smoke-test re-run, `final_report.md`'s "Mexico Digital Nomad Visa"
+     section): 4 specific claims (the "300 days minimum wage/UMA" income formula, the sworn-
+     translator requirement, the $53 fee/MiConsulado interview detail, the 180-day sticker
+     validity) are all real and accurately worded — but every one of them was traced verbatim to
+     `themexicohandbook.com`'s fetched content, while the report cited `esimcard.com` instead
+     (whose actual content explicitly says Mexico has NO official digital nomad visa and gives
+     DIFFERENT, consulate-varying income figures). Both URLs were genuinely fetched this run, so
+     `real_grounding_problem`'s hard gate passed; the specific-number term overlap between the
+     claim and its WRONG source's shared generic vocabulary ("income," "monthly," "USD," "months,"
+     "2026") plausibly let `claim_grounding_problem`'s cheap term-overlap gate pass too, before NLI
+     ever got a chance to judge entailment against the correct evidence window. **This is the SAME
+     failure shape `find_unsupported_regulation_ids` was built for** (its own docstring: "the
+     URL-presence gate passed... and the zero-overlap content check passed (shared generic terms)...
+     so a misattributed law number sailed through both," live-confirmed 2026-07-11) — but that fix
+     is scoped narrowly to `_REGULATION_ID_RE`-shaped identifiers (e.g. "Ley 1906 de 2021"), not to
+     general numeric/factual claims (dollar amounts, day counts, named-requirement phrases). **Candidate
+     fix, not yet scoped in code**: generalize the regulation-ID pattern's core check — "does THIS
+     claim's specific, checkable token (a number, a named fee, a specific procedural detail) appear
+     in ITS OWN cited source's content, not just in the run's fetched-URL set as a whole" — from
+     regulation IDs to a broader claim-specificity check. Directly the mechanism Rasheed et al.'s
+     claim-level-auditability paper (arXiv:2602.13855, §1 above) formalizes as claim-node → typed-edge
+     → source-node provenance; this project's own `decompose_claim_segments`/`_grounded_claim_pairs`
+     infrastructure already does per-segment source binding for the NLI/topical-relevance stage —
+     the gap is specifically at the CHEAP term-overlap gate being too permissive for near-duplicate
+     sources on the same narrow sub-topic (two Mexican-visa pages sharing enough generic vocabulary
+     to pass before content-specific verification ever runs).
+  2. **Portugal visa research shallowness** (same run): the agent fetched Portugal's official visa
+     category-index page, correctly found it named "Remote Work / Digital Nomad" as a residency-visa
+     category but had no income/process specifics, and reported "No specific visa data was
+     retrieved" rather than following the page's own "Necessary Documentation" link to the real
+     requirements. Consistent with (not a new bug beyond) the `uneven_task_investment` problem this
+     exact run's final completion-check attempt already flagged for the Portugal sub-task (1 fetch
+     vs. siblings' 3-5) — the existing check correctly detected thin research, it just didn't get
+     resolved before `max_run_minutes`. No new fix needed here beyond what's already tracked; noted
+     for completeness since it was found during the same claim audit.
+
+  **B. Live-confirmed but only CONTAINED, not eliminated:**
+  3. ~~PeerReviewer's hallucinated-filename churn...~~ **PROMPT-LEVEL NUDGE ADDED 2026-08-17**:
+     `PEER_REVIEWER_INSTRUCTIONS`' Workflow step 1 (`src/prompts.py`) now explicitly says not to
+     call `read_workspace_file`/`grep_workspace_file` again with a different filename once the
+     first read succeeds — write the verdict from what's already been read. This project's own
+     standing skepticism of prompt-only nudges on small local models means this should NOT be
+     treated as closing the item on its own — `tools/core.py`'s tool-failure-streak guard remains
+     the real structural backstop (containment, not elimination, per item above). Not yet live-
+     tested whether the prompt change measurably reduces how often the guard even needs to fire.
+  4. ~~Duplicate/redundant report content from a task that got through as the FIRST rename
+     match...~~ **RESOLVED 2026-08-17, real root cause traced from the session transcript itself,
+     structural fix built and live-validated against the actual incident data.** `_dedupe_findings`
+     (`src/engine/completion.py`) also now collapses near-identical findings across DIFFERENT
+     task_names (reusing `_content_word_overlap`) — a real, defensively-valuable general fix for the
+     rename-retry-produces-a-separate-near-duplicate-finding mechanism this item originally
+     described, though tracing didn't confirm that mechanism as THIS incident's actual cause (see
+     below).
+     **The real root cause, found by reading the live session transcript event-by-event**: the very
+     last action in the run, `BuilderFix_attempt3_reviewed`'s own `edit_workspace_file` call,
+     anchored `old_string` on the bare heading `"### Mexico City"` alone, then wrote a `new_string`
+     that retyped the heading's own PRE-EXISTING bullet verbatim before appending a new, more
+     specific `"### Mexico City – Central Districts"` subsection next to it — since the original
+     bullet was never part of `old_string`, it stayed in place, and the retyped copy landed right in
+     front of it. Not a research/dispatch bug at all — a tool-usage mistake in how Builder
+     constructed a single edit.
+     **Two-layer fix, matching this project's own "prompt nudge alone is unreliable, back it with a
+     structural check" standing pattern**: (1) `BUILDER_INSTRUCTIONS`/`FINDINGS_WRITER_INSTRUCTIONS`
+     (`src/prompts.py`) now explicitly say to anchor an ADDING edit on the boundary of existing
+     content and never retype it into `new_string`; (2) `find_duplicate_report_sections` +
+     `check_duplicate_report_sections` (`src/engine/completion.py`, new `settings.
+     duplicate_section_check.enabled` config flag) — a structural, self-consistency check comparing
+     every h3+ subsection of the SAME report against every other (via `_content_word_overlap`,
+     threshold 0.6), registered in `GROUNDING_CHECKS`/`_QUARANTINE_PROBLEMS`/
+     `_BUILDER_FIXABLE_PROBLEMS`. **Live-validated directly against the real incident's
+     `final_report.md`**: correctly flags exactly `"### Mexico City – Central Districts"` and
+     nothing else (no false positives on the genuinely-distinct Lisbon/Portugal sections). Full
+     `test_structural_checks.py` coverage: a direct `find_duplicate_report_sections` unit scenario
+     and a new verdict-matrix row.
+
+  **C. Literature-derived, actionable, NOT YET implemented, NOT fine-tuning (each already detailed
+  in its own RESEARCH.md/README.md entry, listed here just for the consolidated view):**
+  5. ~~Append "Wait"...~~ **IMPLEMENTED 2026-08-17**: the Fix-pass dispatch (after PeerReviewer
+     flags issues) now leads with "Wait." — Self-Correction Bench's single most actionable,
+     training-free finding (89.3% blind-spot reduction). Adapted, not a literal replication: the
+     paper's own harness appends it mid-generation as a continuation cue; DeepDelve's dispatch is a
+     fresh turn, so it's applied as a deliberation cue at the start of the correction ask instead.
+     Covered by `test_structural_checks.py`'s `_clean_check_read_verification_scenario`.
+  8. ~~Run the full controlled-ablation study...~~ **BACKLOGGED 2026-08-17 — real, not skipped:
+     genuinely needs proper time budget, not a same-session push.** (`eval/ablation_configs/
+     *.yaml`, built earlier this session, 4 mechanisms: `force_whole_rebuild`, `no_progress_guard`,
+     `rename_reject_escalation`, `tool_failure_streak_guard`) — only single-trial smoke tests have
+     been run so far (baseline k=1 twice), never a real k≥3 with/without comparison per any
+     mechanism. This is the standard MAST's own causal-intervention methodology and the Illusion-
+     of-Multi-Agent-Advantage paper's own audit methodology both hold coordination-layer complexity
+     to (RESEARCH.md §18f) — DeepDelve's completion-check mechanisms have accumulated for months
+     validated only by "did today's specific symptom stop recurring." **Real cost, computed
+     honestly**: a full flat 4 mechanisms × (enabled/disabled) × k≥3 = 24 runs, at the ~46-50
+     min/run observed today, is ~19-20 hours of unattended runtime — not something to push through
+     in one sitting. **When picked back up, scope it down, don't run the naive full matrix**: (a)
+     prioritize `force_whole_rebuild`/`no_progress_guard` first — older, never measured with-vs-
+     without at all, unlike `rename_reject_escalation`/`tool_failure_streak_guard` which were JUST
+     live-validated against a real incident today; (b) adaptive trial count per this project's own
+     Model Evaluation Standard point 4 ("a discard claim needs more than one run, a clean pass can
+     stand off one") — one trial per condition first, escalate to the full k≥3 only where a
+     with/without difference actually shows up, not a flat count for all 8 conditions upfront;
+     (c) run unattended in the background across however many sessions it takes, not blocked on in
+     one sitting.
+  9. ~~Hierarchical/divide-and-conquer decomposition for the consolidation stage...~~ **CORRECTED
+     2026-08-17, was NOT actually open — this list entry was written from a stale premise, no new
+     code needed.** The escalation this item described already happened, in an earlier ROADMAP
+     entry this list failed to cross-reference before listing it here: the "Multi-facet task
+     abandonment" entry below already tried the smaller `edit_workspace_file` directive fix,
+     confirmed it live-tested negative, and escalated to real per-facet dispatch
+     (`_dispatch_per_facet_builder_fix`/`_dispatch_per_facet_findings_writer_fix`) — which IS the
+     hierarchical/divide-and-conquer mechanism this item was asking for, already shipped. The one
+     narrower gap that entry left open (a whole-rebuild dispatch reproducing byte-identical
+     rejected content) is also already closed, by `_content_unchanged_since_last_quarantine`
+     (built and live-validated earlier this SAME session — see that entry's own "RESOLVED" update).
+     The three literature papers cited here (MARL, Illusion-of-Multi-Agent-Advantage,
+     Divide-and-Conquer noise) remain valid, real evidence for why per-facet dispatch was the right
+     call — just evidence for something already built, not a case for building something new.
+
+  **BACKLOG, deferred by explicit user decision 2026-08-17 — "I do not want to fine tune a model if
+  the tool is not properly built."** Any fine-tuning-adjacent item goes here by default, below every
+  pipeline-correctness item above, until this project has no known open correctness gaps (item A.1
+  above is the current blocker for even considering re-opening this backlog):
+  6. Verify the AXPO resampling-reward mechanism against `finetune/reward.py`'s actual
+     `writer_role_response_reward` implementation before adapting it for a future GRPO round —
+     AXPO's own Appendix E Limitations (read in full 2026-08-17) confirms in the paper's own words
+     that its trigger mechanism assumes a binary verifiable-outcome reward, which DeepDelve's
+     structural (did-it-happen) reward doesn't have; the underlying "concentrate exploration at the
+     sparse action boundary" insight likely still transfers, the specific mechanics don't as-is.
+  7. Apply Iterative Reward Calibration's "always measure discriminative power before deploying a
+     denser reward" checklist to any future expansion of `writer_role_response_reward` beyond its
+     current single structural signal — the paper's own live finding was a naive dense reward
+     costing up to 14pp versus a sparse one, on the SAME Qwen3 family DeepDelve tests.
+  - Also backlogged under this same rule: starting any NEW GRPO training round at all (already
+    gated separately, see the "Fine-tuning" section's own standing pause/resume history above).
+
+  **D. Already implemented and live-validated this session, for context (not open items)**: the
+  rename-reject-escalation and tool-failure-streak guards (both fired correctly in the re-run
+  above); the `_content_unchanged_since_last_quarantine` escalation; the eval reliability harness
+  (`--runs`/pass@k/pass^k); the ablation-switch infrastructure itself. See `session_status/
+  CURRENT.md` for the full implementation write-up of each.
+
 - **Multi-facet task abandonment under iterative self-correction — scoped 2026-07-31, literature
   review DONE, first fix attempted and LIVE-TESTED: NEGATIVE RESULT, real per-facet dispatch is
   next.** With the completion-check starvation bug class
@@ -3992,13 +4206,27 @@ tried, twice, not merely proposed):
   (not working from a memorized/stale findings.md). The abandonment is not a memory bug.
 
   **Literature review** (before attempting a fix, per `feedback_read_docs_before_building`):
+  - [*Self-Correction Bench: Uncovering and Addressing the Self-Correction Blind Spot in Large
+    Language Models*](https://arxiv.org/abs/2507.02778) (Tsui, COLM 2026 — **corrected 2026-08-17**:
+    this file previously attributed the "self-correction blind spot" finding to the Kamoi et al.
+    TACL survey below; a literature-completeness audit found the 64.5% figure doesn't appear in
+    that paper at all, it's a pure methodology critique with no such measurement — Tsui's paper is
+    the actual, sole empirical source, see `RESEARCH.md` §18b) — models are measurably worse at
+    correcting errors in their OWN prior output than at correcting the identical error presented
+    as external input (~64.5% of self-generated errors survive self-checking across 14 open models
+    even though the same errors are caught when presented externally). Directly matches this
+    setup: Builder re-examines and "fixes" its own prior draft every retry, not someone else's.
   - [*When Can LLMs Actually Correct Their Own Mistakes? A Critical Survey of Self-Correction of
-    LLMs*](https://arxiv.org/html/2406.01297v3) (TACL/MIT Press) — the "self-correction blind
-    spot": models are measurably worse at correcting errors in their OWN prior output than at
-    correcting the identical error presented as external input (~64.5% of self-generated errors
-    survive self-checking across 14 open models even though the same errors are caught when
-    presented externally). Directly matches this setup: Builder re-examines and "fixes" its own
-    prior draft every retry, not someone else's.
+    LLMs*](https://arxiv.org/html/2406.01297v3) (Kamoi et al., TACL) — read in full 2026-08-17, does
+    NOT contain the 64.5% figure (see correction above); its real contribution is a taxonomy of
+    self-correction research questions (RQ1: can a model self-correct on inherent capability alone;
+    RQ2: with external info, on the best-possible initial response; RQ3: does the final result beat
+    other methods) and a Fair/Unfair, Intrinsic/Fair-asymmetric framework classifying HOW a
+    self-correction setup gets its feedback. Under this taxonomy, DeepDelve's PeerReviewer-critique
+    retry loop is "fair-asymmetric" (external feedback from an independent reviewer) — the pattern
+    this paper's own analysis found DOES work — not "intrinsic" self-correction (a model critiquing
+    itself with no external signal), which it found largely does not. Worth keeping in mind before
+    any redesign of this retry loop: don't accidentally shift it toward the intrinsic shape.
   - [*Cross-Context Review: Improving LLM Output Quality by Separating Production and Review
     Sessions*](https://arxiv.org/pdf/2603.12123) — proposes session-separation between production
     and review as a mitigation. DeepDelve's PeerReviewer already does this partially (fresh-context
@@ -4056,12 +4284,22 @@ tried, twice, not merely proposed):
   rejected on repeat with nothing changing between attempts. Per-facet dispatch fixes the
   "aggregator noise drops a whole facet" shape this entry's literature review targeted; it does
   NOT fix "a rebuild dispatch re-derives (or a fallback re-serves) the exact same wrong
-  conclusion from the exact same evidence." **Not yet investigated**: does the corrective
-  dispatch's own instructions need to surface the SPECIFIC prior-rejected URL more forcefully
-  (risking the "ironic rebound" effect `_is_citable_finding`'s own docstring already names —
-  naming forbidden content inside a "don't cite X" warning can itself prime reproducing X,
-  arXiv:2511.12381), or does the deterministic-fallback path itself need change-detection (skip
-  re-offering identical fallback content that was already rejected once)?
+  conclusion from the exact same evidence." ~~Not yet investigated~~ **RESOLVED 2026-08-17, same
+  session, chain closed and confirmed by cross-referencing three ROADMAP entries that had drifted
+  out of sync with each other**: `_content_unchanged_since_last_quarantine` (`src/engine/
+  completion.py`) is exactly the change-detection this question asked for — it directly compares
+  the content about to be quarantined against the most recent already-quarantined snapshot for
+  the same artifact (byte-for-byte, regardless of whether the completion-check PROBLEM NAME
+  changes between attempts, which is what let the original 3-consecutive-same-problem counter miss
+  this exact "run6" case). On a match, it forces exactly ONE `force_whole_rebuild` attempt with
+  genuinely reframed instructions ("do NOT just patch the specific issue again... reconsidering
+  your whole approach"), then caps further looping (`whole_approach_retry_used_for`) rather than
+  repeating indefinitely — live-confirmed firing correctly on the ablation smoke-test re-run
+  (`session_status/CURRENT.md`). This was built and validated as its OWN fix earlier the same day,
+  before this cross-reference was drawn — the "hierarchical decomposition" item in the Pending
+  unified list's item C.9 is consequently NOT open work, it was already closed by the combination
+  of per-facet dispatch (above) and this mechanism; corrected there rather than building a
+  redundant third mechanism.
 
 - **Writer-role zero-trailing-text: a FindingsWriter/Builder dispatch blocked by `writer_gate_ctx`
   can just STOP instead of retrying with the correct tool — new, found 2026-08-17, NOT fixed.**
@@ -4468,6 +4706,60 @@ architectural changes, or judged not to add real value over what DeepDelve alrea
   handle) for a benefit that only applies to formal papers, not the market-research/general-web
   sources most DeepDelve runs actually cite. Revisit as an opt-in flag specifically for
   `--style academic` if that mode's own fetch-based grounding proves insufficient in practice.
+  **Re-researched properly 2026-08-17** (prompted by the day's own citation-misattribution
+  incident, to check whether this rejected feature would actually have caught it) — 2 real,
+  primary-source-read papers plus 3 GitHub reference implementations, not a re-guess from memory:
+  - [*CiteCheck: Retrieval-Grounded Detection of LLM Citation Hallucinations in Scientific
+    Text*](https://arxiv.org/abs/2605.27700) (Khajavi, Sadeghi, Adhikari, Tessier — Simon Fraser
+    University, 2026, `papers/citecheck_2605.27700.pdf`, read in full) — a real, rigorous
+    evaluation (982-citation physics benchmark with controlled corruptions, 88.7 macro-F1 /
+    88.9% accuracy, beats GPT-5.4/Claude Sonnet 4.6/Gemini 2.5 Flash zero-shot and few-shot
+    baselines including their own web-search variants). Its own three-class taxonomy — EXACT,
+    MINOR (a real, recognizable paper with corrupted metadata — wrong author/year/DOI/URL), MAJOR
+    (unrelated or fully fabricated) — maps cleanly onto this project's own incident history: the
+    2026-07-13 GAVEL fake-DOI incident (below) is a MAJOR hallucination; today's citation-
+    misattribution bug is closer to MINOR in spirit, but isn't actually the same failure class
+    (see the disqualifying limitation below).
+  - **The paper's own explicit limitation is the deciding fact, in its own words (§7,
+    Conclusion)**: *"C ITE C HECK verifies citation existence and metadata fidelity, not whether
+    the cited source supports the surrounding claim."* This directly disqualifies bibliographic-
+    API verification as a fix for today's actual incident — that bug was two REAL, EXISTING,
+    correctly-fetched web pages with a claim attached to the wrong one, not a fabricated or
+    metadata-corrupted paper. Bibliographic-API checking answers "does this cited THING exist and
+    is its metadata right," never "does THIS specific source's content actually say what's
+    claimed" — the second question is what `find_unsupported_specific_figures`/`nli_unsupported_
+    problem` (this project's own existing checks) already target, and they apply to ANY source
+    type, not just DOI/arXiv-indexed academic papers. **Confirms the original rejection reasoning
+    was correct, now with primary evidence instead of just an inference.**
+  - [*CheckIfExist: Detecting Citation Hallucinations in the Era of AI-Generated
+    Content*](https://arxiv.org/abs/2602.15871) (Abbonato, University of Turin, 2026,
+    `papers/checkifexist_2602.15871.pdf`, read in full) — a lighter systems paper (open-source
+    MIT-licensed tool, no rigorous benchmark numbers unlike CiteCheck), confirms the same
+    cascading CrossRef→Semantic Scholar→OpenAlex architecture and that all three APIs are usable
+    with NO API key on free tiers (800ms rate-limit interval used to stay compliant).
+  - **3 GitHub implementations checked for real technical feasibility** (not guessed): the
+    author's own tool ([`zabbonat/References-Validation`](https://github.com/zabbonat/References-Validation),
+    28 stars, TypeScript, live web app), [`Vikranth3140/Citation-Hallucination-Detection`](https://github.com/Vikranth3140/Citation-Hallucination-Detection)
+    (a real AAAI 2026 student-abstract companion repo — its own README's DOI badge
+    `10.1609/aaai.v40i48.42257` verified live against CrossRef's actual API during this research
+    pass, resolves to the real paper, correct authors — a fittingly self-referential clean
+    citation check), and [`PHY041/claude-skill-citation-checker`](https://github.com/PHY041/claude-skill-citation-checker)
+    (28 stars, a single ~720-line Python script, `requests`-only dependency, no API key, tested by
+    its own author at 90% known-good/100% known-bad/100% chimeric-detection/0% false-negative —
+    an informal author self-test, not a rigorous benchmark like CiteCheck's, but a real, small,
+    low-risk reference implementation if this is ever built).
+  - **One genuinely new, low-risk scope this research surfaced, not previously considered**:
+    DeepDelve already auto-generates `references.bib` for every run
+    (`utils/run_state.py::build_bibliography`, wired into both the TUI and `GET /research/{id}
+    /references.bib` in the API). A standalone, OPT-IN, post-hoc script that verifies an
+    already-completed run's `references.bib` against these free APIs (mirroring the
+    `claude-skill-citation-checker` shape exactly) would add ZERO latency/complexity/new failure
+    surface to the live agent pipeline — a real, meaningfully smaller-scoped variant of the
+    originally-rejected "build it into the live grounding pipeline" idea. Still not started (no
+    demonstrated need yet — no live DeepDelve run has ever produced a MAJOR-class fabricated
+    academic citation), but the standing "revisit if academic-mode grounding proves insufficient"
+    condition now has a concretely scoped, low-risk answer ready if it's ever triggered, instead of
+    an open-ended "build bibliographic verification" task.
 - **`SkyworkAI/DeepResearchAgent`** (reviewed 2026-07-12): a general self-evolution agent runtime
   (RSPL/SEPL protocol layers, RL-based prompt/solution optimizers, versioned tracing) with example
   agents for trading/ESG/mobile — not a deep-research-specialized project despite the name.
@@ -4814,9 +5106,26 @@ until that's resolved one way or the other.
        though they're far too few to carry general tool-calling reliability alone.
        **RLVR-for-agentic-tool-use papers**: nothing paper-and-dataset-bundled matches this
        project's exact reward shape; most public RLVR work is still math/code-verifier-centric.
-       One 2026 lead worth reading (not downloading): "Multi-Turn Reinforcement Learning for
-       Tool-Calling Agents with Iterative Reward Calibration" (arXiv:2604.02869, per-turn credit
-       assignment for tool calls, closer to this problem than math/code RLVR).
+       One 2026 lead, flagged "worth reading (not downloading)" and left unread for over a month
+       — **read in full 2026-08-17** during a literature-completeness audit prompted by the user:
+       "Multi-Turn Reinforcement Learning for Tool-Calling Agents with Iterative Reward
+       Calibration" (Modecrua, Kaewtawee, Pachtrachai, Kraisingkorn — Amity Research and
+       Application Center, arXiv:2604.02869, 9 pages, `papers/iterative_reward_calibration_
+       2604.02869.pdf`, unreviewed preprint, no confirmed venue). Trains `Qwen3.5-4B` and
+       `Qwen3-30B-A3B` — DeepDelve's own Qwen3 family — on Tau-Bench's realistic multi-turn
+       tool-calling tasks (not math/code RLVR). **Directly actionable warning for this project's
+       own future reward design**: naively-designed dense per-turn rewards CATASTROPHICALLY
+       degraded performance by up to 14pp versus sparse outcome rewards, root-caused (§7.1, all
+       three causes quantified) to advantage-direction misalignment under group-normalized RL —
+       not a tuning mistake, a structural risk of dense/structural rewards specifically. Their own
+       stated takeaway: **"dense rewards require calibration — always measure discriminative power
+       before deploying."** This is a real caution for any future combined GRPO round that expands
+       `writer_role_response_reward` beyond its current single structural signal (did
+       `write_workspace_file` get called) toward anything denser/multi-component — per this
+       paper's own finding, adding more reward granularity without checking each new term's
+       discriminative power first can make training WORSE, not better. Honestly-scoped limitation:
+       evaluated on one narrow domain (Tau-Bench airline, 50 tasks); the paper's own cross-domain
+       transfer test (retail) is promising but explicitly not confirmed general.
        **Recommended recipe, confirmed as the same pattern APIGen-MT/xLAM/Hammer's own papers
        used**: (1) SFT/LoRA warm-start on a subsample of Toucan-1.5M + xlam-60k + the Hammer
        irrelevance set, for general schema-compliant, non-hallucinated tool-calling; (2) a small,

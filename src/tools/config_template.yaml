@@ -284,6 +284,15 @@ settings:
   report_evidence_check:
     enabled: true
     min_tasks: 2
+  # Near-duplicate heading-delimited sections within the SAME report (self-consistency, not
+  # citation grounding). Confirmed live (2026-08-17): a Builder Fix-pass's own edit_workspace_file
+  # call retyped an existing section's content into new_string while appending a new subsection
+  # next to it, producing two near-identical "### Mexico City" / "### Mexico City – Central
+  # Districts" sections. Prompt-level guidance (BUILDER_INSTRUCTIONS/FINDINGS_WRITER_INSTRUCTIONS)
+  # was given the matching fix the same day; this is the structural backstop (see
+  # engine/completion.py::find_duplicate_report_sections).
+  duplicate_section_check:
+    enabled: true
   # Engine-driven iterative deepening (2026-07-19, ROADMAP item 10, dzhng/deep-research pattern):
   # when a thin_coverage retry fires AND a Searcher's own real "FOLLOW-UP DIRECTIONS:" section
   # named a real lead, the ENGINE dispatches those directions directly as new tasks (geometric
@@ -426,6 +435,17 @@ settings:
     # passed (real fetch) and the zero-overlap content check passed (shared generic terms), so
     # only this check catches it (see utils/grounding.py::find_unsupported_regulation_ids).
     regulation_id_check: true
+    # A specific dollar figure, fee, or day/month-count claim ("$53", "300 days") cited to a
+    # fetched source whose content never mentions that exact figure — most often because the claim
+    # actually belongs to a DIFFERENT, also-genuinely-fetched source on the same narrow topic.
+    # Confirmed live (2026-08-17 ablation smoke-test): a report's Mexico visa income/fee/duration
+    # figures were all real, but attributed to the wrong one of two similar sources — the
+    # URL-presence gate and content_level_check's term-overlap gate both passed on nothing but a
+    # coincidentally shared bare year (both sources being 2026-dated). extract_salient_terms's own
+    # number regex doesn't extract figures like '300' or '53' at all, so this sibling check to
+    # regulation_id_check exists specifically for that gap (see
+    # utils/grounding.py::find_unsupported_specific_figures).
+    specific_figure_check: true
     # Text inside quotation marks (implying "the source's own exact words") that doesn't actually
     # appear verbatim in the cited source -- a paraphrase dressed up as a direct quote. Confirmed
     # live (2026-07-24): the underlying claim was true and traceable to a real passage in the
@@ -563,3 +583,14 @@ settings:
     # quota unit per attempt, until the tool's own numeric quota naturally runs out. Does NOT
     # affect the separate read_workspace_file/grep_workspace_file exact-repeat-is-free dedup.
     disable_no_progress_guard: false
+    # Disables engine/orchestrator.py::delegate_tasks' escalation of a task-rename advisory into a
+    # hard reject on a SECOND match against the same prior task (MAST FM-1.3/FM-2.5). With this
+    # True, a renamed-task match is always just an advisory note, never blocking dispatch, no
+    # matter how many times the Planner ignores it (pre-2026-08-17 behavior).
+    disable_rename_reject_escalation: false
+    # Disables tools/core.py::check_quota's tool-failure streak guard (N consecutive FAILURES to
+    # the same tool regardless of differing arguments -> halt; a hallucination-spiral guard,
+    # distinct from the exact-repeat no-progress guard above). With this True, a tool call can keep
+    # failing with a NEW set of wrong arguments every time indefinitely, spending one quota unit
+    # per attempt, until the tool's own numeric quota naturally runs out.
+    disable_tool_failure_streak_guard: false

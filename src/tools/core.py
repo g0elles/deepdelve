@@ -55,6 +55,18 @@ _DEDUP_ELIGIBLE_TOOLS = frozenset({"read_workspace_file", "grep_workspace_file"}
 # with a more specific, actionable message than a generic "quota exceeded."
 _NO_PROGRESS_ERROR_STREAK_LIMIT = 2
 
+# Tool-failure streak guard (2026-08-17, RESEARCH.md §18f / MAST FM-1.3 "Step repetition"): the
+# exact-repeat guard above needs the SAME (tool, args) pair to fire and so cannot see a
+# hallucination spiral where every call has DIFFERENT, all-wrong arguments -- confirmed live,
+# PeerReviewer read its real target once, then burned 66 read/grep calls guessing distinct garbage
+# filenames ("./", "*", "", its own dispatch name) with no two calls alike, never tripping the
+# exact-repeat guard once. Keyed on tool name ONLY (not args) and reset on any success (not just a
+# non-matching call_key, unlike the guard above) -- a genuinely exploratory sequence of different
+# REAL filenames breaks this streak the moment one of them succeeds, while a pure hallucination
+# spiral never does. Threshold one higher than _NO_PROGRESS_ERROR_STREAK_LIMIT since the live
+# incident's first call was a real success (the streak only starts counting after it).
+_TOOL_FAILURE_STREAK_LIMIT = 3
+
 def check_quota(tool_name: str, call_key: tuple | None = None) -> str | None:
     """Check if the specific tool has exceeded its per-invocation quota.
 
@@ -104,6 +116,21 @@ def check_quota(tool_name: str, call_key: tuple | None = None) -> str | None:
                 f"the exact same error {entry['_error_streak_count']} times in a row. Repeating "
                 f"this identical call again will not produce a different result -- change your "
                 f"arguments, use a different tool, or move on to your next step."
+            )
+        # Tool-failure streak guard (see _TOOL_FAILURE_STREAK_LIMIT's own docstring) -- N
+        # consecutive FAILURES to this tool regardless of differing arguments (a hallucination
+        # spiral, not a repeated identical mistake). Same ablation-switch convention, own flag.
+        tool_failure_streak_guard_disabled = bool(
+            config.cfg.get("settings", {}).get("ablation", {}).get("disable_tool_failure_streak_guard", False)
+        )
+        if (not tool_failure_streak_guard_disabled
+                and entry.get("_tool_error_streak_count", 0) >= _TOOL_FAILURE_STREAK_LIMIT):
+            return (
+                f"Error: your last {entry['_tool_error_streak_count']} calls to '{tool_name}' have "
+                f"all failed (with different arguments each time). Guessing another set of "
+                f"arguments is unlikely to help -- if you already successfully read or found real "
+                f"content earlier, use THAT content now instead of continuing to search for more; "
+                f"otherwise use a different tool or move on to your next step."
             )
         if tool_name in _DEDUP_ELIGIBLE_TOOLS and call_key is not None:
             if entry["used"] < entry["limit"] and entry.get("_last_call_key") == call_key:
@@ -264,12 +291,14 @@ def _record_call_outcome(tool_name: str, call_key: tuple, result) -> None:
     if not is_error:
         entry["_error_streak_count"] = 0
         entry["_error_streak_key"] = None
+        entry["_tool_error_streak_count"] = 0  # any success resets the tool-wide streak too
         return
     if entry.get("_error_streak_key") == call_key:
         entry["_error_streak_count"] = entry.get("_error_streak_count", 0) + 1
     else:
         entry["_error_streak_key"] = call_key
         entry["_error_streak_count"] = 1
+    entry["_tool_error_streak_count"] = entry.get("_tool_error_streak_count", 0) + 1
 
 
 def with_quota(func):
