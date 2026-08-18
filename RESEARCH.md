@@ -3163,22 +3163,30 @@ this section is the literature cross-check the user asked for, done AFTER the fi
 they land in a real, active research area, not inventing novel terminology for known phenomena)
 plus the methodology gap this whole investigative pattern exposes.
 
-**⚠️ Every paper/figure below is ⚠️ not yet primary-source-verified EXCEPT §18b, §18d, and §18e's
-own citations**, per this document's own 2026-07-19 methodology rule — every OTHER citation here
-came from `WebSearch`'s own AI-mediated result summaries, not from directly reading the papers'
-actual text/data/tables the way §1's ✅ entries were:
+**⚠️ Every paper/figure below is ⚠️ not yet primary-source-verified EXCEPT §18b, §18d, §18e, and
+§18f's own citations**, per this document's own 2026-07-19 methodology rule — every OTHER citation
+here came from `WebSearch`'s own AI-mediated result summaries, not from directly reading the
+papers' actual text/data/tables the way §1's ✅ entries were:
 - §18d's pass@k/pass^k paper (arXiv:2603.29231) — fully read, all 23 pages, correcting an earlier
   same-session pass that stopped at page 6 on a bad page-count read.
 - §18b's self-correction blind spot paper (arXiv:2507.02778, Self-Correction Bench, COLM 2026) —
   fully read, all 11 body pages (References/appendices not read in full).
 - §18e's ICC/agentic-evaluation-stochasticity paper (arXiv:2512.06710) — fully read, all 11 pages
   including all 5 appendices.
+- §18f's "Illusion of Multi-Agent Advantage" (arXiv:2606.13003) — fully read, main body + skimmed
+  appendices for config detail. §18f's MARL sample-complexity paper (arXiv:2602.08272) — full main
+  body read (Sections 1-5, pages 1-10: theorems, empirical GSM8K validation, Limitations); the
+  ~20 remaining pages are the theorems' own mathematical proofs (Appendices), not read line-by-line
+  since the theorem statements and empirical results are what's load-bearing here. (First pass this
+  session stopped at 3 of 32 pages and prematurely dismissed this paper as non-load-bearing
+  training-theory only — the user directly caught this; finishing the read found a real, specific,
+  structural match to where today's own bugs concentrated. See §18f's own corrected writeup.)
 
-All three PDFs saved permanently at `papers/*.pdf` (gitignored, not committed) for later reading.
-The specific figures (45-48%, etc.) outside these three and the framing built on them should be
-treated as directionally credible, not confirmed fact, until someone does the same primary-read
-pass §1 (and now §18b/§18d/§18e) already sets the bar for. This applies most to any number cited
-below outside those three — don't repeat a percentage from this section as verified without first
+All five PDFs saved permanently at `papers/*.pdf` (gitignored, not committed) for later reading.
+The specific figures (45-48%, etc.) outside these and the framing built on them should be treated
+as directionally credible, not confirmed fact, until someone does the same primary-read pass §1
+(and now §18b/§18d/§18e/§18f) already sets the bar for. This applies most to any number cited
+below outside those — don't repeat a percentage from this section as verified without first
 opening the actual paper.
 
 ### 18a. The "zero trailing text" mechanism (item -1, item 2 of the History entry) is a named,
@@ -3463,3 +3471,123 @@ DeepDelve's own single-benchmark-prompt reliability question ("does THIS query c
 reliably"), this argues FOR spending the budget on trials of the SAME prompt (current design,
 `--runs`), not against it — the tradeoff only cuts the other way if the goal shifts to "how
 reliable is DeepDelve across a WIDE variety of prompts," a different, currently-unasked question.
+
+### 18f. Direct answer to "is DeepDelve's task division too much?" — ✅ BOTH papers now read in
+full (correction: the second was first read only 3 of 32 pages and prematurely dismissed as
+"training theory only, not load-bearing" — the user directly caught this; finishing the read
+found it's substantially MORE relevant than that first-pass summary gave it credit for),
+synthesized against the ALREADY-verified MAST paper (§2, this document)
+
+The user asked directly, after seeing today's 7-fix arc plus the ICC/pass^k evidence: is
+DeepDelve's Planner→Searcher→Analyzer decomposition itself over-engineered? This section is the
+literature-grounded answer, not a hedge.
+
+**Both papers read in full**: [*The Illusion of Multi-Agent
+Advantage*](https://arxiv.org/abs/2606.13003) (Jwalapuram et al., Salesforce Research/HKUST/UBC/NTU,
+2026-06-13), `papers/illusion_multiagent_2606.13003.pdf` — main body (10 pages) + appendices
+skimmed for config detail. [*When Do Multi-Agent Systems Outperform? Analysing the Learning
+Efficiency of Agentic Systems*](https://arxiv.org/abs/2602.08272) (Su, Wu, University of Hong
+Kong, 2026-02-10), `papers/when_mas_outperform_2602.08272.pdf` — full main body (Sections 1-5,
+pages 1-10) including the theorems, the empirical validation section, and Limitations; the
+remaining ~20 pages are pure mathematical proofs of the stated theorems (Appendices), not read in
+detail since the theorem STATEMENTS and their real-data empirical validation (not just the proofs)
+are what's load-bearing here.
+
+**Correcting the first-pass dismissal**: this paper IS about MARL (multi-agent reinforcement
+learning) TRAINING sample complexity, not deployed inference-time orchestration — that part of the
+first read was accurate. What was wrong was concluding this makes it non-load-bearing for
+DeepDelve. The paper's own theorems (4.1-4.3) plus its **empirical validation on REAL GSM8K math
+reasoning data** (Figure 1d/e, not just synthetic tasks) establish a general, mechanism-level
+principle that applies to ANY multi-step decomposed pipeline, training or inference: **decomposing
+into genuinely INDEPENDENT subtasks scales sample/coordination cost down (Theorem 4.3: complexity
+dominated by the single hardest subtask, not the sum); decomposing into DEPENDENT subtasks
+introduces error PROPAGATION with a quadratic (K²) worst-case penalty in the number of agents
+(Theorem 4.2) — confirmed empirically on GSM8K: "In the independent-subtask setting, MARL achieves
+markedly better sample efficiency than SARL. In the dependent-subtask setting, SARL [single-agent]
+consistently outperforms MARL due to error propagation across agents,"** and this gap WIDENS as
+the agent count K grows. Section 4.3's task-alignment factor (α, how well the imposed decomposition
+matches the task's real structure) is the other lever: "under strong task alignment... MARL
+performs comparably to SARL, whereas misaligned decompositions... lead to the expected degradation."
+
+**Why this maps directly onto DeepDelve's own architecture, precisely at the place today's bugs
+concentrated**: DeepDelve's Planner→facet decomposition (Lisbon-visa, Lisbon-rent, MexicoCity-visa,
+MexicoCity-rent as 4 parallel research tasks) is the GOOD case this paper's theory and its GSM8K
+data both predict should benefit from decomposition — the facets are genuinely independent
+research questions, dispatched to genuinely fresh, isolated sub-agent contexts. **But the
+consolidation stage is NOT independent by construction**: FindingsWriter's one dispatch must
+integrate ALL facets' findings into one file; Builder's one dispatch must integrate ALL of
+findings.md into one report. This is exactly the paper's own "dependent subtask" case — each
+downstream synthesis step's correctness depends on everything upstream, and the paper's own
+mechanism (error propagation, worsening with more upstream sources feeding into fewer downstream
+consolidation steps) is a clean structural match for what today's ENTIRE 7-fix arc actually found:
+every single bug (evidence-crowding, marker leaks, the byte-identical self-correction loop,
+quota exhaustion mid-consolidation) occurred at the FindingsWriter/Builder consolidation stage, not
+during the genuinely-independent per-facet research dispatch. **Not a coincidence, evidenced by
+this paper's own theory**: the consolidation stage is structurally the ONE dependent, non-
+parallelizable junction in an otherwise well-decomposed pipeline, and both this paper's GSM8K
+result and today's own bug catalog agree that's exactly where a decomposed system's reliability
+concentrates its failures.
+
+**The critical distinction the Illusion paper makes, and why it does NOT indict DeepDelve's
+architecture**: its central finding — automated MAS "consistently underperform CoT-SC despite
+being up to 10x more expensive," with "functional collapse" into simple ensembling ~70-90% of the
+time — is specifically about **AUTOMATICALLY-GENERATED, dynamically-routed** MAS frameworks
+(DyLAN, MAS-Zero, ADAS, AFlow, MaAS, MAS-Orchestra): systems where an LLM/meta-agent/RL controller
+decides the coordination STRUCTURE itself, per query, at inference time. DeepDelve does none of
+this — its Planner/Searcher/Analyzer roles, `delegate_tasks` dispatch shape, and completion-check
+pipeline are all FIXED, hand-designed, the same for every query. The paper's own contrast case is
+"Expert-MAS": a deterministic, code-driven pipeline with explicit role decomposition and Python-
+orchestrated control flow — structurally the closest match in the paper to DeepDelve's own shape.
+**Expert-MAS is the one architecture in the whole paper that WINS decisively**: "GPT-OSS improves
+from 26.1% to 36.1%; GPT-5 jumps from 57.0% to a near-perfect 96.5%" over the same models run
+single-agent. The paper's own Discussion states the principle directly: **"multi-agent coordination
+excels only when architectures are specifically engineered to exploit parallelizable sub-problems
+or context protection"** — exactly what DeepDelve's Searcher/Analyzer split and per-facet parallel
+dispatch are built to do (protect context per sub-agent, parallelize independent research facets).
+
+**So: no, the task-division ARCHITECTURE itself is not the evidenced problem** — it matches the
+one pattern this literature actually validates, not the one it criticizes. **But the paper's own
+diagnostic METHODOLOGY exposes a real, different risk that today's 7-fix arc is a live instance
+of**: it identifies "architectural bloat" not from decomposition itself, but from complexity ADDED
+WITHOUT VERIFIED CAUSAL CONTRIBUTION — "role redundancy" (pieces that turn out to behave
+identically to something simpler), and "expensive witnesses" (mechanisms that cost real overhead
+but have "near-zero causal influence on the output"). Their own audit method: deconstruct each
+piece of the coordination layer and check whether it demonstrably changes outcomes, not just
+whether it looks reasonable. **This is the missing check for DeepDelve's own completion-check
+pipeline, not the Planner→Searcher→Analyzer decomposition**: today alone added the no-progress
+guard, the content-identity escalation, the strengthened retry, and (across many prior sessions,
+per `ARCHITECTURE.md`'s own growing landmine list) `force_whole_rebuild`, per-facet dispatch,
+starvation guards, quota rescue, `gap_acknowledged` stickiness, and more — EVERY one of these was
+validated only by "did the ONE specific symptom it was built for stop recurring in a live re-run,"
+never by a controlled ablation (run WITH vs. WITHOUT the mechanism, k≥3 trials each, per §18d/§18e's
+own methodology) that would show whether it's genuinely load-bearing or a plausible-sounding
+addition that happened to coincide with the next fix actually mattering. MAST's own causal
+intervention evidence (§2, already-verified: giving one agent final decision authority instead of
+consensus raised success +9.4%; adding a verification step raised +15.6%) is the standard this
+project's OWN completion-check mechanisms have never been held to — every DeepDelve fix this
+session was validated the OPPOSITE way from MAST's own methodology.
+
+**Concrete, evidence-backed recommendation, not implemented — a genuine next-session candidate,
+not a small patch**: once `eval/evaluate.py`'s `--runs`/pass@k/pass^k harness (built today) has
+enough historical data, the highest-value use of it is NOT just "does the whole pipeline pass more
+often" — it's a controlled ablation of the completion-check pipeline's OWN accumulated mechanisms:
+pick 2-3 of the more elaborate ones (per-facet dispatch, `force_whole_rebuild`, the no-progress
+guard) and run k≥3 trials of the standing benchmark WITH each disabled vs. enabled, to find out
+which ones are load-bearing (MAST-style, causally proven) versus which are "expensive witnesses"
+this project has been carrying without ever measuring. This is the literature-grounded version of
+the user's own question — not "is decomposition too much," which the evidence says no, but "has
+the COORDINATION LAYER managing that decomposition grown complexity faster than anyone has
+verified it's earning," which the evidence says is a real, currently-unanswered risk.
+
+**Second, more targeted recommendation from the MARL paper's own dependent-vs-independent
+distinction, not yet scoped**: since the theory AND today's own bug catalog both point at the
+FindingsWriter/Builder consolidation stage specifically (not the per-facet research dispatch) as
+the structurally dependent, error-propagating junction, that stage is where reducing K (the
+effective number of "agents"/steps a single piece of information has to survive before reaching
+the final report) should pay off most, per Theorem 4.2's own K² penalty. Concretely: today's
+per-facet dispatch fixes (`_dispatch_per_facet_findings_writer_fix`/`_dispatch_per_facet_builder_fix`,
+already shipped in prior sessions per `ARCHITECTURE.md` §1) already do exactly this — they reduce
+one N-facet consolidation call to N single-facet calls, each a SHORTER dependency chain. The
+theory suggests this should already be measurably helping; whether it demonstrably does (again,
+never controlled-ablated) is the same open measurement gap as the paragraph above, just pointed at
+the one specific mechanism the theory says should matter most.
