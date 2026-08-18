@@ -6902,6 +6902,46 @@ def main():
 
         contextvars.copy_context().run(_restore_scenario)
 
+    # --- content-identity escalation (2026-08-17 live incident, "run6" -- 3 byte-identical
+    # findings.md.rejected_attempt_N snapshots proved the retry loop was re-offering the SAME
+    # content for rejection every time, while the PROBLEM NAME alternated (findings_ungrounded ->
+    # untracked_delegation -> findings_ungrounded), so the pre-existing 3-consecutive-same-problem
+    # counter never fired even though the run was provably stuck) ---
+    from engine.completion import _content_unchanged_since_last_quarantine
+
+    with tempfile.TemporaryDirectory() as tmpdir_ci:
+        def _content_identity_scenario():
+            _orig_ws_ci = _config.cfg.get("settings", {}).get("workspace")
+            _config.cfg["settings"]["workspace"] = {"type": "disk", "dir": tmpdir_ci}
+            try:
+                # No prior quarantined snapshot at all -> never "unchanged" (nothing to compare).
+                assert not _content_unchanged_since_last_quarantine("findings.md", "some content")
+                assert not _content_unchanged_since_last_quarantine("findings.md", None)
+
+                path = os.path.join(tmpdir_ci, "findings.md.rejected_attempt_1")
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write("### Source: x\nreal content")
+
+                # Byte-identical to the most recent rejected snapshot -> stuck.
+                assert _content_unchanged_since_last_quarantine("findings.md", "### Source: x\nreal content")
+                # Genuinely different content -> not stuck.
+                assert not _content_unchanged_since_last_quarantine("findings.md", "### Source: y\ndifferent content")
+
+                # A LATER snapshot must win over an earlier one with different content -- the most
+                # RECENT rejection is what matters, not the first.
+                path2 = os.path.join(tmpdir_ci, "findings.md.rejected_attempt_2")
+                with open(path2, "w", encoding="utf-8") as f:
+                    f.write("### Source: z\nnewer rejected content")
+                assert _content_unchanged_since_last_quarantine("findings.md", "### Source: z\nnewer rejected content")
+                assert not _content_unchanged_since_last_quarantine("findings.md", "### Source: x\nreal content")
+            finally:
+                if _orig_ws_ci is None:
+                    _config.cfg["settings"].pop("workspace", None)
+                else:
+                    _config.cfg["settings"]["workspace"] = _orig_ws_ci
+
+        contextvars.copy_context().run(_content_identity_scenario)
+
     # --- _get_safe_path Windows escape (review #2 finding 1: os.path.join discards the base
     # for drive-qualified/drive-relative names, letting write_workspace_file leave the workspace) ---
     with tempfile.TemporaryDirectory() as tmpdir:

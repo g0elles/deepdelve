@@ -1512,6 +1512,44 @@ def _quarantine_artifact(req_artifact: str, attempt: int) -> None:
         pass
 
 
+def _content_unchanged_since_last_quarantine(req_artifact: str, current_content: Optional[str]) -> bool:
+    """True if `current_content` (about to be quarantined, i.e. rejected and discarded) is
+    byte-identical to the MOST RECENT already-quarantined snapshot for this exact artifact.
+
+    2026-08-17 live incident: a real run (`session_status/CURRENT.md`, "run6") produced 3
+    byte-identical `findings.md.rejected_attempt_N` snapshots in a row, confirming the retry loop
+    was re-offering the SAME content for rejection every time, not the model genuinely retrying
+    and reproducing a fresh error (the self-correction blind spot literature describes,
+    `RESEARCH.md` §18b) -- the deterministic fallback path (`_salvage_narrated_report`'s
+    `deterministic_fallback` branch) bypasses model generation variance entirely when FindingsWriter
+    itself returns nothing usable, so "try again" alone can never produce a different outcome.
+
+    Deliberately a STRONGER, more precise signal than `_consecutive_occurrences`' problem-name
+    counting: the problem name can legitimately ALTERNATE between attempts
+    (`findings_ungrounded` -> `untracked_delegation` -> `findings_ungrounded`) while the
+    UNDERLYING CONTENT never changes at all -- confirmed exactly this shape in the run that
+    motivated this fix, which is why the existing 3-consecutive-same-problem threshold never
+    fired even though the run was provably stuck. Content identity is ground truth regardless of
+    what the intervening problem was named."""
+    if not current_content:
+        return False
+    try:
+        from tools.fs import _get_safe_path
+        path = _get_safe_path(req_artifact)
+        if not path:
+            return False
+        existing = sorted(
+            (p for p in (f"{path}.rejected_attempt_{n}" for n in range(1, 10)) if os.path.exists(p)),
+        )
+        if not existing:
+            return False
+        with open(existing[-1], "r", encoding="utf-8") as f:
+            prior = f.read()
+        return prior == current_content
+    except Exception:
+        return False
+
+
 def _restore_quarantined_draft(req_artifact: str, problem: str) -> bool:
     """Final-verdict fallback, tried BEFORE narration salvage: if the run ends with the artifact
     missing but a quarantined draft exists, restore the most recent draft with a loud header
@@ -3208,7 +3246,20 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                 # -- scoped narrowly to that one problem, not generically for every problem pair.
                 skip = frozenset({"untracked_delegation"}) if problem == "task_verification_flagged" else frozenset()
                 consecutive = _consecutive_occurrences(run_state, problem, skip)
-                if consecutive >= CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD:
+                stuck = consecutive >= CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD
+                # Content-identity escalation (2026-08-17 live incident, see
+                # _content_unchanged_since_last_quarantine's own docstring): the SAME evidence
+                # producing the SAME rejected content is just as provably stuck as 3 consecutive
+                # occurrences of the SAME problem NAME, even when an unrelated problem interrupts
+                # the streak -- checked here (not just via the counter above) so this doesn't
+                # depend on the problem name repeating consecutively at all.
+                if not stuck:
+                    quarantine_target = "findings.md" if problem == "findings_ungrounded" else (
+                        req_artifact if problem in _QUARANTINE_PROBLEMS else None)
+                    if quarantine_target:
+                        stuck = _content_unchanged_since_last_quarantine(
+                            quarantine_target, get_workspace_file_content(quarantine_target))
+                if stuck:
                     whole_approach_used = run_state.data.setdefault("whole_approach_retry_used_for", {})
                     if not whole_approach_used.get(problem):
                         whole_approach_used[problem] = True
