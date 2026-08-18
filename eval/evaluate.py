@@ -399,7 +399,17 @@ def compute_reliability_summary(results_path: str, threshold: float = 1.0) -> li
     key can legitimately accumulate runs from more than one session. `threshold` (default 1.0) is
     the score a single run must meet or exceed to count as a "pass" -- 1.0 for eval_type=structural
     means all 4 forensic checks passed (see `score_structural`'s own docstring); lower it for
-    llm_judge/contains scoring where a perfect 1.0 is a stricter bar than "good enough"."""
+    llm_judge/contains scoring where a perfect 1.0 is a stricter bar than "good enough".
+
+    Honest limitation (RESEARCH.md §18e, read in full after §18d's own k=3 recommendation): `--runs
+    3` is a practical floor chosen for this project's own per-run cost (20-70 minutes on local
+    hardware), NOT a claim that 3 trials gives a statistically converged reliability estimate.
+    Intraclass-correlation convergence research on the task shape closest to DeepDelve's own (long,
+    open-ended, multi-step reasoning) found stable estimates need ~32 trials, not 3 -- and that same
+    paper's own closest analog to a DeepDelve-shaped agent (a deep-research API) used only 8 trials
+    for cost reasons and explicitly said that wasn't enough for generalizable conclusions either.
+    Treat pass@3/pass^3 here as meaningfully better signal than a single n=1 anecdote, not as proof
+    of true convergence."""
     if not os.path.exists(results_path):
         return []
     groups: dict[tuple, list[float]] = {}

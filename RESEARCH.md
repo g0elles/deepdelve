@@ -3163,21 +3163,23 @@ this section is the literature cross-check the user asked for, done AFTER the fi
 they land in a real, active research area, not inventing novel terminology for known phenomena)
 plus the methodology gap this whole investigative pattern exposes.
 
-**⚠️ Every paper/figure below is ⚠️ not yet primary-source-verified EXCEPT §18b and §18d's own
-citations**, per this document's own 2026-07-19 methodology rule — every OTHER citation here came
-from `WebSearch`'s own AI-mediated result summaries, not from directly reading the papers' actual
-text/data/tables the way §1's ✅ entries were:
+**⚠️ Every paper/figure below is ⚠️ not yet primary-source-verified EXCEPT §18b, §18d, and §18e's
+own citations**, per this document's own 2026-07-19 methodology rule — every OTHER citation here
+came from `WebSearch`'s own AI-mediated result summaries, not from directly reading the papers'
+actual text/data/tables the way §1's ✅ entries were:
 - §18d's pass@k/pass^k paper (arXiv:2603.29231) — fully read, all 23 pages, correcting an earlier
   same-session pass that stopped at page 6 on a bad page-count read.
 - §18b's self-correction blind spot paper (arXiv:2507.02778, Self-Correction Bench, COLM 2026) —
   fully read, all 11 body pages (References/appendices not read in full).
+- §18e's ICC/agentic-evaluation-stochasticity paper (arXiv:2512.06710) — fully read, all 11 pages
+  including all 5 appendices.
 
-Both PDFs saved permanently at `papers/*.pdf` (gitignored, not committed) for later reading. The
-specific figures (45-48%, k=3-10, etc.) outside these two and the framing built on them should be
+All three PDFs saved permanently at `papers/*.pdf` (gitignored, not committed) for later reading.
+The specific figures (45-48%, etc.) outside these three and the framing built on them should be
 treated as directionally credible, not confirmed fact, until someone does the same primary-read
-pass §1 (and now §18b/§18d) already sets the bar for. This applies most to any number cited below
-outside §18b/§18d — don't repeat a percentage from this section as verified without first opening
-the actual paper.
+pass §1 (and now §18b/§18d/§18e) already sets the bar for. This applies most to any number cited
+below outside those three — don't repeat a percentage from this section as verified without first
+opening the actual paper.
 
 ### 18a. The "zero trailing text" mechanism (item -1, item 2 of the History entry) is a named,
 actively-studied 2026 failure class, not a DeepDelve-specific oddity
@@ -3399,3 +3401,65 @@ pipeline change again since the last measurement." The lighter-weight per-attemp
 a full run) was NOT implemented — `score_structural`'s existing 4-check design was judged
 sufficient for now; revisit if a full k=3 run turns out too expensive to be practical on this
 hardware.
+
+### 18e. A THIRD paper read properly (2026-08-17, later same day) — ICC as a more rigorous
+reliability metric than pass@k/pass^k, and a genuinely important correction to the "k=3 is enough"
+framing §18d took from a different paper
+
+✅ **Primary-source-verified, full paper including all 5 appendices** (all 11 pages,
+`papers/stochasticity_agentic_2512.06710.pdf`, gitignored) — [*Stochasticity in Agentic
+Evaluations: Quantifying Inconsistency with Intraclass
+Correlation*](https://arxiv.org/pdf/2512.06710) (Mustahsan, Lim, Anand, Jain, McCann; AAAI 2026
+copyright line). Read AFTER §18d's paper, specifically to check whether "k=3 is a reasonable
+floor" (§18d's own recommendation, borrowed from a DIFFERENT paper's own methodology choice) holds
+up against a paper that actually measures HOW MANY trials are needed for a stable estimate, rather
+than just picking a number.
+
+**The metric**: Intraclass Correlation Coefficient (ICC) decomposes an evaluation's total variance
+into between-task variance (some tasks are just harder) and within-task variance (the SAME agent
+on the SAME task gives different results trial to trial). ICC = between / (between + within). High
+ICC (≥0.75) means differences you see across runs mostly reflect real task difficulty, not agent
+randomness — a single run is trustworthy. Low ICC (<0.50) means the agent is "highly inconsistent,"
+and a single run's result could easily have gone very differently by chance.
+
+**The central, load-bearing finding for this project**: ICC varies dramatically by task structure,
+and the tasks CLOSEST to DeepDelve's own shape are the WORST case. On GAIA Level 3 ("hard
+open-ended reasoning," multi-step, unrestricted tools — the closest analog in this benchmark to
+DeepDelve's own open-ended multi-hour research task) GPT-4o scores ICC=0.304, meaning **70% of
+observed variance is trial-to-trial randomness, not task difficulty** — the paper's own words:
+"Level 3 shows a stark contrast... single-run results are essentially unreliable." Even GPT-5
+(the best model tested) only reaches ICC=0.629 on Level 3 — "moderate," not "good" reliability, and
+Table 5 (Appendix D, 7 more frontier models including Claude 4.5 Sonnet/Haiku, Gemini 2.5 Pro,
+Qwen3-235B, DeepSeek-v3p1) shows even the HIGHEST-accuracy model (GPT-5 search, 59.44%) has LOWER
+ICC (0.745) than a less-accurate one (Claude 4.5 Sonnet, 0.756 ICC at only 39.71% accuracy) — a
+genuine, measured "capability vs. consistency" tension, not a hypothesis.
+
+**Sample-size convergence, the specific correction to §18d's "k=3 is the realistic floor"
+recommendation**: this paper's own empirical convergence analysis (Section "ICC Convergence Across
+GAIA Levels," Table showing n=2 through n=64) finds ICC estimates stabilize by **n≈8-16 trials for
+structured tasks, but n≈32 for Level 3 (hard open-ended reasoning)** — the exact task shape
+DeepDelve's own runs are. §18d's "k=3 is the realistic starting point" was borrowed from a
+DIFFERENT paper's own methodology CHOICE (that paper used k=3 for ITS OWN, differently-shaped
+benchmark, not a convergence measurement) — it was never a claim that k=3 achieves a converged
+reliability estimate for a task this hard. **This paper's own closest real-world analog to
+DeepDelve makes the same point directly**: their own "Deep Research Agents" evaluation (o4-mini
+deep research, the paper's nearest comparison to a DeepDelve-shaped agent) used only n=8 trials
+due to cost, and the paper's own Limitations section states plainly: **"Deep research evaluation
+used one agent with 8 trials. Further research is needed for generalizable conclusions."** If an
+AAAI-published study with the o4-mini deep research API doesn't claim n=8 is enough for their own
+closest-to-DeepDelve case, `eval/evaluate.py`'s k=3 default should not be read as giving a
+converged, statistically solid reliability estimate either — it's a meaningfully-better-than-n=1
+practical floor for this project's own 20-70-minute-per-run cost constraint, not evidence of true
+convergence. **Correction to record, not yet acted on in code**: `eval/evaluate.py`'s
+`--pass-threshold`/reliability summary should eventually get a comment or doc note making this
+explicit (k=3 is a floor chosen for cost reasons, not a claim of statistical convergence) — small,
+low-risk, deferred rather than rushed into this already-long session.
+
+**Practical allocation insight, potentially useful for a future eval redesign**: for a FIXED total
+compute budget B = n·T (n tasks, T trials each), the paper derives that variance is minimized by
+maximizing n (more distinct tasks, fewer trials each) UNLESS the goal is specifically to
+characterize PER-TASK consistency, in which case enough T per task is needed regardless of n. For
+DeepDelve's own single-benchmark-prompt reliability question ("does THIS query converge
+reliably"), this argues FOR spending the budget on trials of the SAME prompt (current design,
+`--runs`), not against it — the tradeoff only cuts the other way if the goal shifts to "how
+reliable is DeepDelve across a WIDE variety of prompts," a different, currently-unasked question.
