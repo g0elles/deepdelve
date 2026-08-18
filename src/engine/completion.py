@@ -2403,7 +2403,25 @@ def _build_findings_source_material(run_state: "RunState", task_names: Optional[
     for group in _collapse_multi_url_task_findings(citable):
         group_urls = [g.get("source_url") or "" for g in group["findings"]]
         first_heading = _heading_for(group_urls[0])
-        block = f"{first_heading}\n{group['summary']}"
+        # Strip any embedded [SYSTEM VERIFICATION/RELEVANCE WARNING...] marker before rendering
+        # (2026-08-17, live incident): _is_citable_finding's URL-scoping fix (same date) means a
+        # finding can now correctly stay citable while its OWN summary still carries a warning
+        # marker about a DIFFERENT co-cited URL that turn (see that function's own docstring --
+        # add_finding attaches one shared synthesis text to every URL fetched in a turn). Before
+        # that fix, ANY warning marker wholesale-excluded the finding, so this text never reached
+        # here at all; now it legitimately can. Confirmed live: a real, correctly-citable
+        # globallawexperts.com finding still carried "[SYSTEM VERIFICATION WARNING: this summary
+        # cites '...family-reunification...).<br', which does not match...]" verbatim in its
+        # summary -- rendered as-is into findings.md by the deterministic fallback (FindingsWriter
+        # itself kept returning nothing usable that run), the warning's OWN mentioned bad URL then
+        # got picked up by findings.md-level grounding checks as if it were a real citation IN
+        # findings.md, flagging `findings_ungrounded` on content that was otherwise entirely real
+        # and correctly grounded -- a self-inflicted loop that reproduced identically on every
+        # retry since the underlying research data never changed. The marker was only ever meant
+        # to inform this project's OWN citability decision, never to be copied verbatim into a
+        # human-facing artifact.
+        clean_summary = _VERIFICATION_WARNING_BLOCK_RE.sub("", group["summary"] or "").rstrip()
+        block = f"{first_heading}\n{clean_summary}"
         if len(group_urls) > 1:
             # See _collapse_multi_url_task_findings's own docstring: these URLs shared the exact
             # same task-level synthesis text, so it's kept ONCE above instead of repeated per URL --

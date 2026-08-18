@@ -3443,6 +3443,46 @@ def main():
 
     _is_citable_finding_url_scoped_scenario()
 
+    # --- warning-marker stripped from a still-citable finding's rendered block (2026-08-17 live
+    # incident, run6): _is_citable_finding's URL-scoping fix (same date) means a finding can now
+    # correctly stay citable while its own summary still carries a [SYSTEM VERIFICATION WARNING...]
+    # marker about a DIFFERENT co-cited URL that turn. Confirmed live: a real, correctly-citable
+    # globallawexperts.com finding rendered that marker text VERBATIM into findings.md (via the
+    # deterministic fallback), and the warning's own mentioned bad URL was then picked up by
+    # findings.md-level grounding checks as if it were a real citation IN findings.md --
+    # `findings_ungrounded` fired on content that was otherwise entirely real, reproducing
+    # identically on every retry since the underlying research data never changed. ---
+    def _warning_marker_stripped_from_citable_block_scenario():
+        from engine.completion import _build_findings_source_material
+
+        with tempfile.TemporaryDirectory() as tmpdir_marker_strip:
+            rs = RunState(tmpdir_marker_strip)
+            real_url = "https://globallawexperts.com/portugal-d8-visa-requirements-real"
+            bad_url = "https://globallawexperts.com/family-reunification-fabricated"
+            rs.data["fetched_urls"] = [{"url": real_url, "filename": "sources/real.md"}]
+            rs.add_finding(
+                real_url,
+                "Two-step application process: first a residency visa abroad, then convert it "
+                "in-person after arrival.\n\n"
+                f"[SYSTEM VERIFICATION WARNING: this summary attributes a claim to a source that "
+                f"does not match anything actually fetched this run, or to something that isn't a "
+                f"real URL at all (unverified_urls:{bad_url}). Do not treat the associated claim "
+                f"as sourced when writing findings.md.]",
+                task_name="visa_requirements", depth=1,
+            )
+            material = _build_findings_source_material(rs)
+            assert "SYSTEM VERIFICATION WARNING" not in material, (
+                "the machine-readable marker must never be copied verbatim into the "
+                "human-facing evidence blob / findings.md", material)
+            assert bad_url not in material, (
+                "the bad URL the warning names must not leak into findings.md either -- it would "
+                "be picked up by findings.md-level grounding checks as if it were a real citation",
+                material)
+            assert "Two-step application process" in material, (
+                "the real, genuinely-citable content must survive the strip", material)
+
+    contextvars.copy_context().run(_warning_marker_stripped_from_citable_block_scenario)
+
     # --- 2026-07-31 (research finding, not a live incident): both check_report_underuses_findings
     # and check_report_underuses_evidence used to say "actually add sections" without ever naming
     # edit_workspace_file, the tool BUILDER_INSTRUCTIONS itself reserves for exactly this narrow-
