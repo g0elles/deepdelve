@@ -1700,11 +1700,10 @@ _NARRATED_SALVAGE_BANNER = (
 )
 
 _DETERMINISTIC_SALVAGE_BANNER = (
-    "> **AUTO-RECOVERED DRAFT** — FindingsWriter produced no usable output twice in a row "
-    "(including one immediate retry). This is assembled directly and deterministically from this "
-    "run's real research data (`RunState.findings`) — it was never written or reviewed by a "
-    "model, so it is unorganized/unedited, but every entry traces to a source this run actually "
-    "fetched.\n\n"
+    "> **AUTO-RECOVERED DRAFT** — FindingsWriter produced no usable output across its original "
+    "attempt and every retry. This is assembled directly and deterministically from this run's "
+    "real research data (`RunState.findings`) — it was never written or reviewed by a model, so "
+    "it is unorganized/unedited, but every entry traces to a source this run actually fetched.\n\n"
 )
 
 
@@ -1794,6 +1793,12 @@ def _ensure_reader_quota_headroom(pool: dict, needed: int = 2) -> None:
         entry["limit"] += (needed - headroom)
 
 
+# How many retries a writer dispatch gets after producing nothing usable (zero tool calls, zero
+# trailing text) before falling back to deterministic salvage or raising -- see the retry loop
+# inside _dispatch_writer_review_fix for the live incident that motivated raising this above 1.
+_WRITER_EMPTY_RETRY_ATTEMPTS = 2
+
+
 async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artifact: str,
                                        write_instructions: str, attempt: int, notify,
                                        deterministic_fallback: Optional[str] = None,
@@ -1808,8 +1813,9 @@ async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artif
     failure so the caller can fall back to the classic inject-into-Planner path for this cycle
     rather than silently doing nothing.
 
-    Capped at 4 dispatches total (Write, one immediate Write-retry only if the first produced
-    nothing usable, Review, optional Fix) — no unbounded nesting.
+    Capped at 5 dispatches total (Write, up to _WRITER_EMPTY_RETRY_ATTEMPTS immediate Write-retries
+    only if the prior attempt produced nothing usable, Review, optional Fix) — no unbounded
+    nesting.
 
     `deterministic_fallback` (2026-07-26): only ever passed by the FindingsWriter call site, as
     `_build_findings_source_material(run_state)`'s own raw output. Confirmed live
@@ -1890,58 +1896,72 @@ async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artif
             # text, nothing for _salvage_narrated_report to work with either (it also declines
             # short text under 200 chars, e.g. a narrated one-line status update).
             #
-            # One immediate retry before giving up: an empty response is plausibly a transient
-            # flake, not a persistent one -- confirmed live all 3 empty responses that motivated
-            # this fix were isolated, never two in a row for the same completion-check attempt. A
-            # fresh dispatch (same instructions, same fresh context) has a real chance of
-            # succeeding outright, which is strictly better than immediately giving up: the
+            # Bounded retry loop before giving up: an empty response is plausibly a transient
+            # flake, not a persistent one -- confirmed live the first 3 empty responses that
+            # motivated this fix were isolated, never two in a row for the same completion-check
+            # attempt. A fresh dispatch (same instructions, same fresh context) has a real chance
+            # of succeeding outright, which is strictly better than immediately giving up: the
             # alternative (raising right away) still costs a full completion-check attempt AND a
             # round-trip through the Planner (which has no write_workspace_file tool and can only
             # re-arrive at "dispatch FindingsWriter again" next cycle anyway) to reach the same
-            # place this retry can reach directly, one dispatch later.
-            notify(
-                f"**System ({attempt + 1}):** {writer_role} returned nothing usable for "
-                f"`{req_artifact}` — retrying once immediately before giving up."
-            )
-            retry_gate_token = writer_gate_ctx.set(
-                {"write_done": False, "recommended_tool": recommended_tool, "target_file": req_artifact}
-            ) if writer_role == "FindingsWriter" else None
-            # Strengthened, non-identical retry instructions for FindingsWriter specifically
-            # (2026-08-17, live incident): a real transcript showed the original dispatch's FIRST
-            # tool call violate the writer_gate_ctx block (called read_workspace_file on a source
-            # file before ever writing) and the turn then ended immediately -- zero further tool
-            # calls, zero trailing text (the same "zero trailing text" synthesis-vanishing
-            # mechanism this project already tracks for Searcher/Analyzer turns, ARCHITECTURE.md
-            # §2's own writeup, now confirmed to also hit a writer role). Retrying with the exact
-            # SAME instructions gives the model no new signal to avoid repeating the identical
-            # first move -- self-correction literature (RESEARCH.md §18b) is specific that an
-            # unchanged retry mostly reproduces the same output, while externally-reframed input
-            # measurably helps. `write_instructions` already tells FindingsWriter not to read
-            # before writing (FINDINGS_WRITER_INSTRUCTIONS' own Workflow step 2) -- this doesn't
-            # repeat that, it makes the retry's OWN input genuinely different by leading with an
-            # unambiguous, un-missable directive before the model reads anything else.
-            retry_instructions = write_instructions
-            if writer_role == "FindingsWriter":
-                retry_instructions = (
-                    f"CRITICAL: your immediately PREVIOUS attempt at this exact task ended with "
-                    f"nothing written, because it called a read/search tool before writing anything "
-                    f"-- that call was rejected and the attempt was lost. Your VERY FIRST tool call "
-                    f"in this response MUST be `{recommended_tool or 'write_workspace_file'}`, with "
-                    f"no other tool call before it, no exceptions.\n\n{write_instructions}"
+            # place a retry can reach directly, one dispatch later.
+            #
+            # _WRITER_EMPTY_RETRY_ATTEMPTS (2026-08-18, was a single hardcoded retry): a real run
+            # (session_status/2026-08-17.md, "run6") showed the ORIGINAL one-shot retry itself
+            # also returning nothing usable, on all 3 completion-check rounds that run hit this
+            # path -- one retry alone doesn't reliably recover it. Bumped to a small bounded loop
+            # instead of one fixed attempt; each retry reuses the SAME externally-reframed
+            # instructions (already a different input from the original per the comment below, not
+            # a verbatim repeat) rather than escalating wording further per round -- no live
+            # evidence yet that a 2nd retry needs materially different phrasing from the 1st, and
+            # each retry is a full sub-agent dispatch, so the cap stays small.
+            for retry_num in range(1, _WRITER_EMPTY_RETRY_ATTEMPTS + 1):
+                notify(
+                    f"**System ({attempt + 1}):** {writer_role} returned nothing usable for "
+                    f"`{req_artifact}` — retrying ({retry_num}/{_WRITER_EMPTY_RETRY_ATTEMPTS}) "
+                    f"immediately before giving up."
                 )
-            try:
-                write_result = await dispatch_task(
-                    f"{writer_role}Fix_attempt{attempt + 1}_retry", retry_instructions, writer_role)
-            finally:
-                if retry_gate_token is not None:
-                    writer_gate_ctx.reset(retry_gate_token)
-            # Re-check against the SAME think_before baseline (not re-snapshotted) so this
-            # reflects "was think_tool used in EITHER the original or the retry attempt" -- the
-            # question that actually matters once a retry has happened, since think_tool_skipped
-            # feeds later wording (the is_clean notify note, the Fix pass's think_tool_note).
-            think_after = pool.get("think_tool", {}).get("used") if pool else None
-            think_tool_skipped = think_before is not None and think_after == think_before
-            if get_workspace_file_content(req_artifact) is None:
+                retry_gate_token = writer_gate_ctx.set(
+                    {"write_done": False, "recommended_tool": recommended_tool, "target_file": req_artifact}
+                ) if writer_role == "FindingsWriter" else None
+                # Strengthened, non-identical retry instructions for FindingsWriter specifically
+                # (2026-08-17, live incident): a real transcript showed the original dispatch's
+                # FIRST tool call violate the writer_gate_ctx block (called read_workspace_file on
+                # a source file before ever writing) and the turn then ended immediately -- zero
+                # further tool calls, zero trailing text (the same "zero trailing text"
+                # synthesis-vanishing mechanism this project already tracks for Searcher/Analyzer
+                # turns, ARCHITECTURE.md §2's own writeup, now confirmed to also hit a writer
+                # role). Retrying with the exact SAME instructions gives the model no new signal
+                # to avoid repeating the identical first move -- self-correction literature
+                # (RESEARCH.md §18b) is specific that an unchanged retry mostly reproduces the
+                # same output, while externally-reframed input measurably helps. `write_instructions`
+                # already tells FindingsWriter not to read before writing (FINDINGS_WRITER_INSTRUCTIONS'
+                # own Workflow step 2) -- this doesn't repeat that, it makes the retry's OWN input
+                # genuinely different by leading with an unambiguous, un-missable directive before
+                # the model reads anything else.
+                retry_instructions = write_instructions
+                if writer_role == "FindingsWriter":
+                    retry_instructions = (
+                        f"CRITICAL: your immediately PREVIOUS attempt at this exact task ended with "
+                        f"nothing written, because it called a read/search tool before writing anything "
+                        f"-- that call was rejected and the attempt was lost. Your VERY FIRST tool call "
+                        f"in this response MUST be `{recommended_tool or 'write_workspace_file'}`, with "
+                        f"no other tool call before it, no exceptions.\n\n{write_instructions}"
+                    )
+                try:
+                    write_result = await dispatch_task(
+                        f"{writer_role}Fix_attempt{attempt + 1}_retry{retry_num}", retry_instructions, writer_role)
+                finally:
+                    if retry_gate_token is not None:
+                        writer_gate_ctx.reset(retry_gate_token)
+                # Re-check against the SAME think_before baseline (not re-snapshotted) so this
+                # reflects "was think_tool used in ANY attempt so far" -- the question that
+                # actually matters once a retry has happened, since think_tool_skipped feeds later
+                # wording (the is_clean notify note, the Fix pass's think_tool_note).
+                think_after = pool.get("think_tool", {}).get("used") if pool else None
+                think_tool_skipped = think_before is not None and think_after == think_before
+                if get_workspace_file_content(req_artifact) is not None:
+                    break
                 retry_text = write_result if isinstance(write_result, str) else str(write_result)
                 if _salvage_narrated_report(req_artifact, retry_text):
                     notify(
@@ -1949,38 +1969,45 @@ async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artif
                         f"chat text instead of calling `write_workspace_file` — auto-recovered its "
                         f"own content as the artifact (flagged unverified) instead of retrying blind."
                     )
-                elif deterministic_fallback and _salvage_narrated_report(
+                    break
+            else:
+                # Loop exhausted without a `break` -- every retry (not just the first) produced
+                # nothing usable and nothing narrated to salvage.
+                if deterministic_fallback and _salvage_narrated_report(
                         req_artifact, deterministic_fallback, banner=_DETERMINISTIC_SALVAGE_BANNER):
                     # Confirmed live 2026-07-26: the "isolated, never two in a row" assumption the
-                    # immediate-retry fix above was built on does not always hold -- see this
+                    # original immediate-retry fix was built on does not always hold -- see this
                     # function's own docstring for the run that motivated this branch. Unlike the
                     # narrated-text salvage above, this content never came from the model at all --
                     # it's assembled deterministically from run_state's own real findings, so it's
-                    # available even when the model produces nothing whatsoever, twice in a row.
+                    # available even when the model produces nothing whatsoever, every attempt.
                     notify(
-                        f"**System ({attempt + 1}):** {writer_role} produced nothing usable twice "
-                        f"in a row (including one immediate retry) — auto-recovered `{req_artifact}` "
+                        f"**System ({attempt + 1}):** {writer_role} produced nothing usable "
+                        f"{_WRITER_EMPTY_RETRY_ATTEMPTS + 1} times in a row (original + "
+                        f"{_WRITER_EMPTY_RETRY_ATTEMPTS} retries) — auto-recovered `{req_artifact}` "
                         f"directly from this run's real research data instead of losing the cycle "
                         f"entirely."
                     )
                 else:
-                    # Still nothing after a genuine retry -- this used to fall through to
-                    # dispatching PeerReviewer anyway, against an artifact that flatly doesn't
-                    # exist. PeerReviewer then has no filename to review, and confirmed live it
-                    # degrades into guessing wrong paths (burned its entire read_workspace_file
-                    # quota on nonexistent filenames before giving up, in the exact run that
-                    # surfaced this). Raising here treats "the write produced nothing usable
-                    # twice" as the dispatch failure it actually is, per this function's own
-                    # documented contract -- the caller's normal retry loop gets a fresh attempt
-                    # next time instead of an entire PeerReviewer dispatch being wasted on a file
-                    # that was never written. Uses get_workspace_file_content (backend-agnostic:
-                    # disk or in-memory), NOT the os.path.exists check above (disk-only, always
-                    # false for the in-memory workspace backend regardless of real content --
-                    # fine for the salvage decision above, an existing harmless quirk, but would
-                    # falsely raise here on every in-memory write that already succeeded).
+                    # Still nothing after every retry -- this used to fall through to dispatching
+                    # PeerReviewer anyway, against an artifact that flatly doesn't exist.
+                    # PeerReviewer then has no filename to review, and confirmed live it degrades
+                    # into guessing wrong paths (burned its entire read_workspace_file quota on
+                    # nonexistent filenames before giving up, in the exact run that surfaced this).
+                    # Raising here treats "the write produced nothing usable every attempt" as the
+                    # dispatch failure it actually is, per this function's own documented contract
+                    # -- the caller's normal retry loop gets a fresh attempt next time instead of
+                    # an entire PeerReviewer dispatch being wasted on a file that was never
+                    # written. Uses get_workspace_file_content (backend-agnostic: disk or
+                    # in-memory), NOT the os.path.exists check above (disk-only, always false for
+                    # the in-memory workspace backend regardless of real content -- fine for the
+                    # salvage decision above, an existing harmless quirk, but would falsely raise
+                    # here on every in-memory write that already succeeded).
                     raise RuntimeError(
-                        f"{writer_role} dispatch produced no '{req_artifact}' twice in a row "
-                        f"(including one immediate retry) and nothing narrated to salvage either time"
+                        f"{writer_role} dispatch produced no '{req_artifact}' "
+                        f"{_WRITER_EMPTY_RETRY_ATTEMPTS + 1} times in a row (original + "
+                        f"{_WRITER_EMPTY_RETRY_ATTEMPTS} retries) and nothing narrated to salvage "
+                        f"any attempt"
                     )
 
     # Snapshot read_workspace_file's usage count BEFORE dispatching PeerReviewer, so a fabricated

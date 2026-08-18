@@ -284,11 +284,15 @@ string) to EVERY URL fetched in one turn — one `add_finding` call per URL, see
   trailing text and no marker at all" mechanism this project already tracks for Searcher/Analyzer
   turns (see `RunState.coverage()`'s own docstring), confirmed 2026-08-17 to also hit a WRITER
   role, where the consequence is worse — nothing gets written at all, not just one empty finding.
-  The existing one-shot immediate-retry safety net (`_dispatch_writer_review_fix`'s own
-  "returned nothing usable... retrying once") partially absorbs this but doesn't reliably recover
-  it. **STILL OPEN, not fixed** — needs its own design (how many retries, what changes in the
-  retry's own instructions) rather than a rushed patch; a real live run showed this firing on 3 of
-  3 completion-check rounds in a row.
+  **FIXED 2026-08-18**: the one-shot immediate-retry safety net (`_dispatch_writer_review_fix`)
+  wasn't enough — a real live run showed the retry itself ALSO returning nothing usable, on 3 of 3
+  completion-check rounds in a row. The single hardcoded retry is now a bounded loop
+  (`_WRITER_EMPTY_RETRY_ATTEMPTS = 2`, `src/engine/completion.py`), each attempt reusing the same
+  externally-reframed instructions (unchanged from the original fix — no live evidence a 2nd retry
+  needs different wording from the 1st), falling through to the deterministic-fallback salvage or
+  a raise only once every retry is exhausted. **Not yet live re-tested** — designed against the
+  run6 transcript shape and covered by `test_structural_checks.py`, not yet exercised in a fresh
+  live run with the new retry count.
 
 `_build_findings_source_material` enforces its own **shared character budget**
 (`settings.context_budget_chars`) across `findings_block` + `fetched_block` + the omitted/uncited

@@ -4510,14 +4510,16 @@ def main():
                     "a malformed/missing REVIEW: sentinel must be treated conservatively as "
                     "ISSUES FOUND, not silently accepted", dispatch.call_args_list)
 
-            # (c2) Write dispatch returns a genuinely EMPTY response TWICE in a row (2026-07-24
-            # live case: gpt-oss, 3 separate occurrences in one run) -> one immediate retry is
-            # attempted first (same instructions, fresh dispatch), and only once THAT also
-            # produces nothing does this raise BEFORE ever dispatching PeerReviewer -- confirmed
-            # live that dispatching PeerReviewer against a nonexistent artifact makes it degrade
-            # into guessing wrong filenames and burn its entire read_workspace_file quota on
-            # nothing. Exactly 2 dispatches (Builder, Builder retry), falls back to the classic
-            # inject-into-Planner nudge.
+            # (c2) Write dispatch returns a genuinely EMPTY response on EVERY attempt (original
+            # 2026-07-24 live case: gpt-oss, 3 separate occurrences in one run, motivated one
+            # immediate retry; 2026-08-18: bumped to _WRITER_EMPTY_RETRY_ATTEMPTS retries after a
+            # later live run showed a single retry alone doesn't reliably recover it) -- only once
+            # every retry ALSO produces nothing does this raise BEFORE ever dispatching
+            # PeerReviewer -- confirmed live that dispatching PeerReviewer against a nonexistent
+            # artifact makes it degrade into guessing wrong filenames and burn its entire
+            # read_workspace_file quota on nothing. Exactly 1 + _WRITER_EMPTY_RETRY_ATTEMPTS
+            # dispatches (Builder, Builder retries), falls back to the classic inject-into-Planner
+            # nudge.
             with tempfile.TemporaryDirectory() as tmpdir_c2:
                 _IN_MEMORY_FS.pop("final_report.md", None)
                 rs = RunState(tmpdir_c2)
@@ -4525,17 +4527,19 @@ def main():
                 msgs = []
 
                 async def _side_effect_c2(name, instructions, role):
-                    return ""  # genuinely empty response, no tool call, nothing narrated, twice
+                    return ""  # genuinely empty response, no tool call, nothing narrated, ever
 
                 dispatch = AsyncMock(side_effect=_side_effect_c2)
                 orig_input = "q"
                 should_retry, new_input = _asyncio.run(run_completion_check(
                     query="q", current_input=orig_input, run_state=rs, notify=msgs.append,
                     dispatch_task=dispatch))
-                assert dispatch.call_count == 2, (
-                    "an empty Write response must retry once immediately, then raise BEFORE "
-                    "PeerReviewer is ever dispatched", dispatch.call_args_list)
-                assert dispatch.call_args_list[1].args[0].endswith("_retry"), dispatch.call_args_list
+                from engine.completion import _WRITER_EMPTY_RETRY_ATTEMPTS
+                assert dispatch.call_count == 1 + _WRITER_EMPTY_RETRY_ATTEMPTS, (
+                    "an empty Write response must retry _WRITER_EMPTY_RETRY_ATTEMPTS times, then "
+                    "raise BEFORE PeerReviewer is ever dispatched", dispatch.call_args_list)
+                for c in dispatch.call_args_list[1:]:
+                    assert "_retry" in c.args[0], dispatch.call_args_list
                 assert should_retry, msgs
                 assert any("Builder dispatch failed" in m for m in msgs), msgs
 
@@ -6121,12 +6125,15 @@ def main():
                     "must still produce findings.md, not raise", msgs)
                 content = open(path, encoding="utf-8").read()
                 assert "A real finding sentence." in content, content
-                assert "FindingsWriter produced no usable output twice" in content, (
+                assert "FindingsWriter produced no usable output" in content, (
                     "must use the deterministic banner, not the narrated-text one", content)
+                assert "every retry" in content, content
                 assert "narrated this content as chat text" not in content, content
                 assert any("auto-recovered" in m for m in msgs), msgs
-                # Write, retry-Write, PeerReviewer -- converges instead of raising.
-                assert dispatch.call_count == 3, dispatch.call_args_list
+                # Write, retry-Write x _WRITER_EMPTY_RETRY_ATTEMPTS, PeerReviewer -- converges
+                # instead of raising.
+                from engine.completion import _WRITER_EMPTY_RETRY_ATTEMPTS
+                assert dispatch.call_count == 2 + _WRITER_EMPTY_RETRY_ATTEMPTS, dispatch.call_args_list
             finally:
                 if _orig_ws13 is None:
                     _config.cfg["settings"].pop("workspace", None)
