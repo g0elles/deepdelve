@@ -28,15 +28,31 @@ class QuotaAbortException(BaseException):
     """Raised when a tool is called repeatedly despite being over quota, indicating an LLM loop."""
     pass
 
-# Tools eligible for the exact-repeat dedup below (2026-08-17, live incident) -- deliberately a
-# tiny opt-in allowlist, not applied to every quota'd tool. read_workspace_file is idempotent
-# (the same filename/start_line/end_line always returns the same content unless something else
-# wrote to that file in between -- and a write/edit IS a different tool call, so it doesn't reset
-# this tool's own tracked key, meaning even a legitimate re-read after an edit still executes
-# normally and returns fresh content; only the quota bookkeeping is slightly more generous, never
-# wrong). Other quota'd tools (web_search, fetch_url_to_workspace, ...) are NOT safe to add here
-# without separate review -- identical args there don't reliably mean "wasted call."
-_DEDUP_ELIGIBLE_TOOLS = frozenset({"read_workspace_file"})
+# Tools eligible for the exact-repeat FREE-DEDUP below (2026-08-17, live incident) -- deliberately
+# a tiny opt-in allowlist, not applied to every quota'd tool. read_workspace_file/grep_workspace_file
+# are both idempotent, read-only, gated identically by _check_analyzer_read_cap (tools/fs.py) --
+# the same filename/start_line/end_line (or pattern) always returns the same content unless
+# something else wrote to that file in between, and a write/edit IS a different tool call, so it
+# doesn't reset this tool's own tracked key, meaning even a legitimate re-read after an edit still
+# executes normally and returns fresh content; only the quota bookkeeping is slightly more
+# generous, never wrong. Other quota'd tools (web_search, fetch_url_to_workspace, write/edit_
+# workspace_file) are NOT safe to add here without separate review -- identical args there don't
+# reliably mean "wasted call" (a write/edit is not idempotent, and web_search/fetch results can
+# legitimately change run to run).
+_DEDUP_ELIGIBLE_TOOLS = frozenset({"read_workspace_file", "grep_workspace_file"})
+
+# No-progress guard (2026-08-17, RESEARCH.md §18c): a GENERAL mechanism, unlike the free-dedup
+# above -- applies to every quota'd tool, not an allowlist, because "the model called this tool
+# with the exact same arguments and got the exact same error N times in a row" is itself the
+# no-progress signal regardless of which tool it is (confirmed live: edit_workspace_file's own
+# "old_string not found"/"appears N times" errors are exactly this shape). Named/framed after the
+# published pattern this project independently rediscovered narrowly (the free-dedup above) before
+# generalizing: "a no-progress guard that hashes repeated (tool, args, error) tuples... halts when
+# the same tuple repeats 2 to 3 times." Threshold picked at the literature's conservative end (2,
+# not 3) since this project's own quota system already has its own separate, coarser
+# `used > limit + 3` hard abort as a backstop -- this guard exists to catch the loop EARLIER and
+# with a more specific, actionable message than a generic "quota exceeded."
+_NO_PROGRESS_ERROR_STREAK_LIMIT = 2
 
 def check_quota(tool_name: str, call_key: tuple | None = None) -> str | None:
     """Check if the specific tool has exceeded its per-invocation quota.
@@ -65,6 +81,18 @@ def check_quota(tool_name: str, call_key: tuple | None = None) -> str | None:
         print(f"[quota_debug] {tool_name}: {state}", file=_sys.stderr)
     if ctx and tool_name in ctx:
         entry = ctx[tool_name]
+        if (call_key is not None and entry.get("_error_streak_key") == call_key
+                and entry.get("_error_streak_count", 0) >= _NO_PROGRESS_ERROR_STREAK_LIMIT):
+            # No-progress guard (see _NO_PROGRESS_ERROR_STREAK_LIMIT's own docstring) -- this exact
+            # (tool, args) pair has already failed with the same error this many times in a row.
+            # Does NOT consume a quota unit: the model isn't over quota, it's stuck, a different
+            # problem with a different fix (change the arguments / a different tool / move on).
+            return (
+                f"Error: you have called '{tool_name}' with the exact same arguments and gotten "
+                f"the exact same error {entry['_error_streak_count']} times in a row. Repeating "
+                f"this identical call again will not produce a different result -- change your "
+                f"arguments, use a different tool, or move on to your next step."
+            )
         if tool_name in _DEDUP_ELIGIBLE_TOOLS and call_key is not None:
             if entry["used"] < entry["limit"] and entry.get("_last_call_key") == call_key:
                 return None  # exact repeat of the immediately preceding call -- no new quota spent
@@ -198,12 +226,38 @@ def _first_arg_filename(args, kwargs) -> str | None:
     return kwargs.get("filename")
 
 
-def _dedup_call_key(func_name: str, args, kwargs) -> tuple | None:
-    """Builds check_quota's `call_key` for a `_DEDUP_ELIGIBLE_TOOLS` member, else None (no-op for
-    every other tool -- see check_quota's own docstring for why this must stay a tiny opt-in)."""
-    if func_name not in _DEDUP_ELIGIBLE_TOOLS:
-        return None
+def _build_call_key(args, kwargs) -> tuple:
+    """A hashable key identifying one tool call's own arguments -- used by both the free-repeat
+    dedup (`_DEDUP_ELIGIBLE_TOOLS`-gated in `check_quota`) and the general no-progress guard
+    (ungated, every tool). Computed unconditionally now (2026-08-17) -- it used to only be built
+    for dedup-eligible tools, but the no-progress guard needs it for every tool, so there is no
+    longer a reason to gate the computation itself, only its two DIFFERENT uses inside
+    `check_quota`."""
     return (args, tuple(sorted(kwargs.items())))
+
+
+def _record_call_outcome(tool_name: str, call_key: tuple, result) -> None:
+    """Updates the no-progress guard's own per-tool streak tracking, called AFTER the wrapped
+    function returns (this is the one piece `check_quota` itself can't do -- it runs BEFORE the
+    real call, with no way to know whether it will fail). A result string starting with
+    `TOOL_ERROR_PREFIX` extends the streak if it matches the SAME `call_key` as the last recorded
+    error for this tool, else starts a fresh streak of 1; any non-error result resets the streak to
+    0 -- a single real success is proof the model isn't stuck anymore, regardless of how many
+    failures came before it."""
+    ctx = tool_quotas_ctx.get()
+    if not ctx or tool_name not in ctx:
+        return
+    entry = ctx[tool_name]
+    is_error = isinstance(result, str) and result.startswith(TOOL_ERROR_PREFIX)
+    if not is_error:
+        entry["_error_streak_count"] = 0
+        entry["_error_streak_key"] = None
+        return
+    if entry.get("_error_streak_key") == call_key:
+        entry["_error_streak_count"] = entry.get("_error_streak_count", 0) + 1
+    else:
+        entry["_error_streak_key"] = call_key
+        entry["_error_streak_count"] = 1
 
 
 def with_quota(func):
@@ -213,25 +267,35 @@ def with_quota(func):
     if asyncio.iscoroutinefunction(func):
         @functools.wraps(func)
         async def async_wrapper(*args, **kwargs):
-            if err := check_quota(func.__name__, _dedup_call_key(func.__name__, args, kwargs)): return err
+            call_key = _build_call_key(args, kwargs)
+            if err := check_quota(func.__name__, call_key): return err
             if err := check_writer_gate(func.__name__, _first_arg_filename(args, kwargs)): return err
             try:
-                return await func(*args, **kwargs)
+                result = await func(*args, **kwargs)
+                _record_call_outcome(func.__name__, call_key, result)
+                return result
             except Exception as e:
                 # Message + exception TYPE only, no full traceback -- a traceback leaks local
                 # absolute filesystem paths into the model's context, which can end up copied
                 # verbatim into findings.md/final_report.md (2026-08-02 audit). The full
                 # traceback is still available via traceback.format_exc() to anyone reading the
                 # actual server-side logs, just not handed to the model.
-                return f"{TOOL_ERROR_PREFIX}{func.__name__} failed internally: {type(e).__name__}: {e}"
+                result = f"{TOOL_ERROR_PREFIX}{func.__name__} failed internally: {type(e).__name__}: {e}"
+                _record_call_outcome(func.__name__, call_key, result)
+                return result
         return async_wrapper
     else:
         @functools.wraps(func)
         def sync_wrapper(*args, **kwargs):
-            if err := check_quota(func.__name__, _dedup_call_key(func.__name__, args, kwargs)): return err
+            call_key = _build_call_key(args, kwargs)
+            if err := check_quota(func.__name__, call_key): return err
             if err := check_writer_gate(func.__name__, _first_arg_filename(args, kwargs)): return err
             try:
-                return func(*args, **kwargs)
+                result = func(*args, **kwargs)
+                _record_call_outcome(func.__name__, call_key, result)
+                return result
             except Exception as e:
-                return f"{TOOL_ERROR_PREFIX}{func.__name__} failed internally: {type(e).__name__}: {e}"
+                result = f"{TOOL_ERROR_PREFIX}{func.__name__} failed internally: {type(e).__name__}: {e}"
+                _record_call_outcome(func.__name__, call_key, result)
+                return result
         return sync_wrapper

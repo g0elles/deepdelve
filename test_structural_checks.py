@@ -653,7 +653,63 @@ def main():
         assert q_ctx.get()["web_search"]["used"] == 2, (
             "an ineligible tool must never dedup, even with an identical call_key")
 
+        # grep_workspace_file (2026-08-17) shares read_workspace_file's idempotent-read shape, so
+        # it gets the exact same free-repeat dedup treatment.
+        q_ctx.set({"grep_workspace_file": {"used": 0, "limit": 3}})
+        assert check_quota("grep_workspace_file", key_a) is None
+        assert q_ctx.get()["grep_workspace_file"]["used"] == 1
+        assert check_quota("grep_workspace_file", key_a) is None
+        assert q_ctx.get()["grep_workspace_file"]["used"] == 1, (
+            "grep_workspace_file must dedup an exact-repeat call the same way read_workspace_file does")
+
     contextvars.copy_context().run(_read_dedup_scenario)
+
+    # --- no-progress guard (2026-08-17, RESEARCH.md §18c): a GENERAL mechanism (every quota'd
+    # tool, not an allowlist) -- the same (tool, args) pair failing with the SAME error N times in
+    # a row is a no-progress signal regardless of which tool it is. Confirmed live:
+    # edit_workspace_file's own "old_string not found"/"appears N times" errors are exactly this
+    # shape (a model retrying the identical wrong old_string). ---
+    def _no_progress_guard_scenario():
+        from tools.core import (
+            tool_quotas_ctx as q_ctx, check_quota, _record_call_outcome, TOOL_ERROR_PREFIX,
+        )
+
+        q_ctx.set({"edit_workspace_file": {"used": 0, "limit": 10}})
+        bad_key = (("findings.md", "wrong old_string", "new"), ())
+        good_key = (("findings.md", "correct old_string", "new"), ())
+
+        # 1st failing call: passes through normally, no guard yet.
+        assert check_quota("edit_workspace_file", bad_key) is None
+        _record_call_outcome("edit_workspace_file", bad_key, f"{TOOL_ERROR_PREFIX}old_string not found")
+        # 2nd identical failing call: still passes through (streak reaches 2, the LIMIT, not yet over it).
+        assert check_quota("edit_workspace_file", bad_key) is None
+        _record_call_outcome("edit_workspace_file", bad_key, f"{TOOL_ERROR_PREFIX}old_string not found")
+        # 3rd identical call: the guard fires BEFORE the real function would even run.
+        err = check_quota("edit_workspace_file", bad_key)
+        assert err and "exact same arguments" in err and "2 times in a row" in err, err
+        # The guard-blocked 3rd call must NOT consume a further quota unit itself (only the first
+        # two real calls did, 2 total) -- this is a distinct failure from being over quota.
+        assert q_ctx.get()["edit_workspace_file"]["used"] == 2, q_ctx.get()
+
+        # A genuinely DIFFERENT call (different args) must never be blocked by another key's streak.
+        assert check_quota("edit_workspace_file", good_key) is None
+
+        # A real SUCCESS resets the streak -- the model recovering must not stay guarded forever.
+        _record_call_outcome("edit_workspace_file", bad_key, "Edited 'findings.md' (1 replacement).")
+        assert check_quota("edit_workspace_file", bad_key) is None, (
+            "a successful call with the same key must clear the error streak")
+
+        # An exception-shaped internal failure (not a tool's own returned error string) must ALSO
+        # feed the guard -- _record_call_outcome is tool-agnostic, only checks the TOOL_ERROR_PREFIX
+        # shape of whatever the wrapped function actually returned.
+        q_ctx.set({"read_workspace_file": {"used": 0, "limit": 10}})
+        crash_key = (("bad.md",), ())
+        _record_call_outcome("read_workspace_file", crash_key, f"{TOOL_ERROR_PREFIX}read_workspace_file failed internally: OSError: boom")
+        _record_call_outcome("read_workspace_file", crash_key, f"{TOOL_ERROR_PREFIX}read_workspace_file failed internally: OSError: boom")
+        err2 = check_quota("read_workspace_file", crash_key)
+        assert err2 and "exact same arguments" in err2, err2
+
+    contextvars.copy_context().run(_no_progress_guard_scenario)
 
     # --- delegate_tasks batch pre-reservation (ROADMAP's tracked open angle (c), 2026-07-21):
     # live-confirmed a heavily-redispatched sibling can structurally starve later-listed siblings
