@@ -5862,6 +5862,84 @@ def main():
 
         contextvars.copy_context().run(_deterministic_fallback_salvage_scenario)
 
+    # --- FindingsWriter's immediate retry gets STRENGTHENED, non-identical instructions, not a
+    # verbatim repeat (2026-08-17 live incident): a real transcript showed the original dispatch's
+    # first tool call violate writer_gate_ctx (called read_workspace_file before writing) and the
+    # turn then ended with zero further action -- retrying with the exact same instructions gives
+    # the model no new signal to avoid repeating the identical first move. Builder is never gated
+    # by writer_gate_ctx at all, so its own retry must stay untouched (same instructions both
+    # times) -- this fix is deliberately scoped to FindingsWriter only. ---
+    with tempfile.TemporaryDirectory() as tmpdir:
+        def _strengthened_retry_scenario():
+            from unittest.mock import AsyncMock
+
+            _orig_ws14 = _config.cfg.get("settings", {}).get("workspace")
+            _config.cfg["settings"]["workspace"] = {"type": "disk", "dir": tmpdir}
+            try:
+                calls = []
+
+                async def _side_effect(name, instructions, role):
+                    calls.append((name, instructions, role))
+                    if role == "FindingsWriter" and "_retry" not in name:
+                        return ""  # original attempt: empty, forces the retry path
+                    if role == "FindingsWriter":
+                        with open(os.path.join(tmpdir, "findings.md"), "w", encoding="utf-8") as f:
+                            f.write("### Source: x\nreal content")
+                        return "## Result\nWrote findings.md\n---"
+                    return "REVIEW: CLEAN"
+
+                dispatch = AsyncMock(side_effect=_side_effect)
+                msgs = []
+                _asyncio.run(_dispatch_writer_review_fix(
+                    dispatch, "FindingsWriter", "findings.md", "the ORIGINAL instructions text", 0,
+                    msgs.append))
+
+                retry_calls = [c for c in calls if "_retry" in c[0]]
+                assert len(retry_calls) == 1, calls
+                retry_instructions = retry_calls[0][1]
+                assert retry_instructions != "the ORIGINAL instructions text", (
+                    "the retry must NOT reuse the exact same instructions verbatim", retry_instructions)
+                assert "the ORIGINAL instructions text" in retry_instructions, (
+                    "the retry must still include the real task instructions, just not ONLY them",
+                    retry_instructions)
+                assert "CRITICAL" in retry_instructions and "write_workspace_file" in retry_instructions, (
+                    retry_instructions)
+
+                # Builder is never gated by writer_gate_ctx -- its own retry (if it ever needed one)
+                # must stay byte-identical, no strengthening applied.
+                calls.clear()
+
+                async def _builder_side_effect(name, instructions, role):
+                    calls.append((name, instructions, role))
+                    if role == "Builder" and "_retry" not in name:
+                        return ""
+                    if role == "Builder":
+                        with open(os.path.join(tmpdir, "final_report.md"), "w", encoding="utf-8") as f:
+                            f.write("- x")
+                        return "## Result\nWrote final_report.md\n---"
+                    return "REVIEW: CLEAN"
+
+                dispatch_builder = AsyncMock(side_effect=_builder_side_effect)
+                _asyncio.run(_dispatch_writer_review_fix(
+                    dispatch_builder, "Builder", "final_report.md", "the ORIGINAL instructions text", 0,
+                    msgs.append))
+                builder_retry_calls = [c for c in calls if "_retry" in c[0]]
+                assert len(builder_retry_calls) == 1, calls
+                assert builder_retry_calls[0][1] == "the ORIGINAL instructions text", (
+                    "Builder's retry must stay untouched -- it's never gated, so there's nothing to "
+                    "strengthen against", builder_retry_calls[0][1])
+            finally:
+                if os.path.exists(os.path.join(tmpdir, "findings.md")):
+                    os.remove(os.path.join(tmpdir, "findings.md"))
+                if os.path.exists(os.path.join(tmpdir, "final_report.md")):
+                    os.remove(os.path.join(tmpdir, "final_report.md"))
+                if _orig_ws14 is None:
+                    _config.cfg["settings"].pop("workspace", None)
+                else:
+                    _config.cfg["settings"]["workspace"] = _orig_ws14
+
+        contextvars.copy_context().run(_strengthened_retry_scenario)
+
     # --- Builder write_workspace_file quota headroom (ROADMAP "Pending": a Build->Review->Fix
     # cycle can burn up to 2 write_workspace_file calls — Builder's initial rewrite plus one
     # corrective Fix pass — against the same shared pool the Planner's own findings.md writes draw

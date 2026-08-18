@@ -1796,9 +1796,32 @@ async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artif
             retry_gate_token = writer_gate_ctx.set(
                 {"write_done": False, "recommended_tool": recommended_tool, "target_file": req_artifact}
             ) if writer_role == "FindingsWriter" else None
+            # Strengthened, non-identical retry instructions for FindingsWriter specifically
+            # (2026-08-17, live incident): a real transcript showed the original dispatch's FIRST
+            # tool call violate the writer_gate_ctx block (called read_workspace_file on a source
+            # file before ever writing) and the turn then ended immediately -- zero further tool
+            # calls, zero trailing text (the same "zero trailing text" synthesis-vanishing
+            # mechanism this project already tracks for Searcher/Analyzer turns, ARCHITECTURE.md
+            # §2's own writeup, now confirmed to also hit a writer role). Retrying with the exact
+            # SAME instructions gives the model no new signal to avoid repeating the identical
+            # first move -- self-correction literature (RESEARCH.md §18b) is specific that an
+            # unchanged retry mostly reproduces the same output, while externally-reframed input
+            # measurably helps. `write_instructions` already tells FindingsWriter not to read
+            # before writing (FINDINGS_WRITER_INSTRUCTIONS' own Workflow step 2) -- this doesn't
+            # repeat that, it makes the retry's OWN input genuinely different by leading with an
+            # unambiguous, un-missable directive before the model reads anything else.
+            retry_instructions = write_instructions
+            if writer_role == "FindingsWriter":
+                retry_instructions = (
+                    f"CRITICAL: your immediately PREVIOUS attempt at this exact task ended with "
+                    f"nothing written, because it called a read/search tool before writing anything "
+                    f"-- that call was rejected and the attempt was lost. Your VERY FIRST tool call "
+                    f"in this response MUST be `{recommended_tool or 'write_workspace_file'}`, with "
+                    f"no other tool call before it, no exceptions.\n\n{write_instructions}"
+                )
             try:
                 write_result = await dispatch_task(
-                    f"{writer_role}Fix_attempt{attempt + 1}_retry", write_instructions, writer_role)
+                    f"{writer_role}Fix_attempt{attempt + 1}_retry", retry_instructions, writer_role)
             finally:
                 if retry_gate_token is not None:
                     writer_gate_ctx.reset(retry_gate_token)
