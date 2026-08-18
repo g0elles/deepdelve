@@ -2,6 +2,7 @@ import contextvars
 import functools
 import asyncio
 
+import config
 from utils.run_state import task_id_ctx
 
 # Shared tool-error sentinel, added 2026-07-29. Every tool in this project returns a formatted
@@ -81,7 +82,18 @@ def check_quota(tool_name: str, call_key: tuple | None = None) -> str | None:
         print(f"[quota_debug] {tool_name}: {state}", file=_sys.stderr)
     if ctx and tool_name in ctx:
         entry = ctx[tool_name]
-        if (call_key is not None and entry.get("_error_streak_key") == call_key
+        # Controlled-ablation switch (2026-08-17, RESEARCH.md §18f) -- settings.ablation.
+        # disable_no_progress_guard (default False, current behavior unaffected) lets this ONE
+        # mechanism be turned off for a with/without comparison, same rationale as
+        # completion.py's own _ablation_disabled. Scoped to just the halt-on-repeated-failure
+        # guard below, not the free-repeat dedup a few lines down -- that's a narrower, already
+        # differently-evidenced mechanism (real quota-exhaustion transcript data), not the one in
+        # question here.
+        no_progress_guard_disabled = bool(
+            config.cfg.get("settings", {}).get("ablation", {}).get("disable_no_progress_guard", False)
+        )
+        if (not no_progress_guard_disabled and call_key is not None
+                and entry.get("_error_streak_key") == call_key
                 and entry.get("_error_streak_count", 0) >= _NO_PROGRESS_ERROR_STREAK_LIMIT):
             # No-progress guard (see _NO_PROGRESS_ERROR_STREAK_LIMIT's own docstring) -- this exact
             # (tool, args) pair has already failed with the same error this many times in a row.

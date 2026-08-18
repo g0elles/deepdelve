@@ -556,7 +556,7 @@ settings:
     # trigger (_content_unchanged_since_last_quarantine). With this True, a stuck retry loop just
     # keeps issuing the same targeted-fix nudge every attempt instead of ever escalating to a
     # full-rebuild instruction, until max_attempts is reached.
-    disable_force_whole_rebuild: false
+    disable_force_whole_rebuild: true
     # Disables tools/core.py::check_quota's no-progress guard (the general "same (tool, args)
     # failed with the same error N times in a row -> halt" mechanism). With this True, a tool call
     # can keep retrying with identical arguments against the same error indefinitely, spending one

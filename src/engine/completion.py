@@ -31,6 +31,20 @@ from engine.orchestrator import (
 DEFAULT_MAX_COMPLETION_CHECK_ATTEMPTS = 3
 
 
+def _ablation_disabled(name: str) -> bool:
+    """Controlled-ablation switch (2026-08-17, RESEARCH.md §18f): every completion-check
+    coordination mechanism this project has added was validated only by 'did the one live-observed
+    symptom stop recurring,' never by a with/without comparison the way MAST's own causal
+    intervention evidence (§2, this document) or the Illusion-of-Multi-Agent-Advantage paper's own
+    audit methodology (§18f) do. `settings.ablation.disable_<name>` (default unset/False for every
+    name -- current, full behavior, unaffected unless explicitly opted into) lets
+    `eval/evaluate.py --runs 3` be pointed at the standing benchmark with a specific mechanism
+    turned off, to measure whether it's genuinely load-bearing. Deliberately a single shared
+    lookup (not a new config key per mechanism scattered across the file) so a NEW ablation
+    candidate is a one-line call here, not a new plumbing pattern each time."""
+    return bool(config.cfg.get("settings", {}).get("ablation", {}).get(f"disable_{name}", False))
+
+
 class Verdict(NamedTuple):
     problem: str      # recorded in _run_state.json's completion_check_attempts
     warning: str      # shown to the user via notify()
@@ -3256,7 +3270,7 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
             # on the number again (they did, once, before this fix: _capped's own threshold was
             # first set to 2, which pre-empted this exact escalation's one guaranteed shot).
             force_whole_rebuild = False
-            if problem and problem != "missing_findings":
+            if problem and problem != "missing_findings" and not _ablation_disabled("force_whole_rebuild"):
                 # 2026-07-31: uses the shared _consecutive_occurrences (same function _capped and
                 # check_task_verification_flagged/check_thin_coverage's own caps use, see that
                 # function's docstring) instead of a third hand-rolled copy of this loop -- this

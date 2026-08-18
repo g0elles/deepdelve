@@ -13,7 +13,7 @@ from engine.orchestrator import (
 )
 from engine.completion import (
     _CUTOFF_ONLY_SUMMARY_RE, _reorder_findings_for_position_bias, _find_propagated_bad_content,
-    _is_citable_finding, _build_findings_source_material,
+    _is_citable_finding, _build_findings_source_material, _ablation_disabled,
 )
 from utils.grounding import find_non_url_citations, fully_ungrounded, partially_ungrounded, find_uncited_claim_lines, extract_cited_urls
 from utils.run_state import record_fetched_url, reset_fetched_urls
@@ -5567,6 +5567,58 @@ def main():
                 _config.cfg["settings"]["grounding_check"] = _orig_gc12
 
     contextvars.copy_context().run(_force_whole_rebuild_dispatch_scenario)
+
+    # --- controlled-ablation switches (2026-08-17, RESEARCH.md §18f): settings.ablation.disable_*
+    # keys, default unset -> current behavior completely unaffected. Direct unit test on the shared
+    # lookup helper; the dispatch-level effect of disable_force_whole_rebuild (skipping the whole
+    # escalation block above) follows mechanically from _consecutive_occurrences/
+    # _content_unchanged_since_last_quarantine never being consulted when this returns True, and is
+    # not re-tested at the full dispatch level here to avoid duplicating
+    # _force_whole_rebuild_dispatch_scenario's own coverage. ---
+    def _ablation_switch_scenario():
+        _orig_ablation = _config.cfg.get("settings", {}).get("ablation")
+        try:
+            _config.cfg.setdefault("settings", {}).pop("ablation", None)
+            assert _ablation_disabled("force_whole_rebuild") is False, (
+                "unset settings.ablation -> every mechanism stays enabled by default")
+            assert _ablation_disabled("no_progress_guard") is False
+
+            _config.cfg["settings"]["ablation"] = {"disable_force_whole_rebuild": True}
+            assert _ablation_disabled("force_whole_rebuild") is True
+            assert _ablation_disabled("no_progress_guard") is False, (
+                "one mechanism's toggle must not leak into another's")
+        finally:
+            if _orig_ablation is None:
+                _config.cfg.get("settings", {}).pop("ablation", None)
+            else:
+                _config.cfg["settings"]["ablation"] = _orig_ablation
+
+    _ablation_switch_scenario()
+
+    # --- no-progress guard's own ablation switch, same pattern, in tools/core.py ---
+    def _no_progress_guard_ablation_scenario():
+        from tools.core import tool_quotas_ctx as q_ctx, check_quota, _record_call_outcome, TOOL_ERROR_PREFIX
+
+        _orig_ablation2 = _config.cfg.get("settings", {}).get("ablation")
+        try:
+            _config.cfg.setdefault("settings", {})["ablation"] = {"disable_no_progress_guard": True}
+            q_ctx.set({"edit_workspace_file": {"used": 0, "limit": 10}})
+            bad_key = (("findings.md", "wrong old_string", "new"), ())
+            for _ in range(3):
+                assert check_quota("edit_workspace_file", bad_key) is None, (
+                    "with the guard disabled, an identical repeated failing call must pass through "
+                    "normally, never intercepted")
+                _record_call_outcome("edit_workspace_file", bad_key, f"{TOOL_ERROR_PREFIX}old_string not found")
+            # A 4th identical failing call still passes through -- disabled means disabled, not
+            # just a higher threshold.
+            assert check_quota("edit_workspace_file", bad_key) is None
+        finally:
+            if _orig_ablation2 is None:
+                _config.cfg.get("settings", {}).pop("ablation", None)
+            else:
+                _config.cfg["settings"]["ablation"] = _orig_ablation2
+
+    contextvars.copy_context().run(_no_progress_guard_ablation_scenario)
 
     # --- force_whole_rebuild's OWN consecutive-counter must also survive an untracked_delegation
     # interruption for task_verification_flagged (2026-07-31 live incident, Ornith-1.0-9B re-test):

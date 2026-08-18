@@ -562,4 +562,4 @@ settings:
     # can keep retrying with identical arguments against the same error indefinitely, spending one
     # quota unit per attempt, until the tool's own numeric quota naturally runs out. Does NOT
     # affect the separate read_workspace_file/grep_workspace_file exact-repeat-is-free dedup.
-    disable_no_progress_guard: false
+    disable_no_progress_guard: true
