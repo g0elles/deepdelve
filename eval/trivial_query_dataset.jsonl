@@ -1,0 +1,1 @@
+{"query": "Who created the Python programming language?", "artifact": "final_report.md", "eval_type": "contains", "difficulty": "easy", "criteria": [{"answer": "Guido van Rossum", "weight": 1.0}]}
