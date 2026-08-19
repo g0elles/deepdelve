@@ -290,9 +290,11 @@ string) to EVERY URL fetched in one turn — one `add_finding` call per URL, see
   (`_WRITER_EMPTY_RETRY_ATTEMPTS = 2`, `src/engine/completion.py`), each attempt reusing the same
   externally-reframed instructions (unchanged from the original fix — no live evidence a 2nd retry
   needs different wording from the 1st), falling through to the deterministic-fallback salvage or
-  a raise only once every retry is exhausted. **Not yet live re-tested** — designed against the
-  run6 transcript shape and covered by `test_structural_checks.py`, not yet exercised in a fresh
-  live run with the new retry count.
+  a raise only once every retry is exhausted. **LIVE-CONFIRMED 2026-08-19**: `eval/runs/
+  20260818_191800` (the `disable_no_progress_guard` run that surfaced the bad-URL bug below) shows
+  `SubAgent_FindingsWriterFix_attempt2_retry1` AND `_retry2` both firing — the first response was
+  empty, retry1 was ALSO empty, and the loop's 2nd retry recovered real content instead of falling
+  through to salvage.
 - **A `findings_ungrounded` rebuild directive never named the SPECIFIC bad URL, only that
   "something" was ungrounded** — confirmed live 2026-08-18 (a `disable_no_progress_guard` ablation
   run): `findings.md.rejected_attempt_3` and `_4` were byte-identical, 11 minutes apart —
@@ -306,9 +308,10 @@ string) to EVERY URL fetched in one turn — one `add_finding` call per URL, see
   write_directive in `_dispatch_writer_review_fix`'s caller (`run_completion_check`,
   `src/engine/completion.py`) now regexes the specific bad URL(s) out of
   `verdict.warning`'s `unverified_entry_sources:...` detail and names them explicitly, with a
-  direct "do not attribute any finding to these again" instruction. **Not yet live re-tested** —
-  unit-tested (`test_structural_checks.py`, scenario b2 in the `run_completion_check` dispatch
-  suite) against a synthetic partially_ungrounded fixture, not exercised in a fresh live run yet.
+  direct "do not attribute any finding to these again" instruction. **LIVE-CONFIRMED 2026-08-18**:
+  the `disable_no_progress_guard` k=2 retest hit the exact same `findings_ungrounded` rejection
+  shape again (a different bad URL) and did NOT reproduce the byte-identical reject/rebuild loop —
+  `findings.md` converged to a genuinely different, accepted draft on the very next attempt.
 - **The Searcher/Analyzer instance of "zero trailing text" — the ORIGINAL, longest-tracked case of
   this mechanism (both writer-role incidents above are its siblings) — was only ever DETECTED
   downstream, never actually fixed at the source, until 2026-08-19.** `RunState.coverage()`'s own
@@ -332,9 +335,12 @@ string) to EVERY URL fetched in one turn — one `add_finding` call per URL, see
   predicate, the same way `_select_budget_nudge` already is — `_run_single_task` itself is a
   nested closure inside `create_local_agent` (ROADMAP's own tracked "god-function" issue) and
   cannot be unit-tested directly, so this is the only piece of the fix that gets a real test.
-  **Not yet live re-tested** — no full-stream-loop integration test exists for `_run_single_task`
-  at all (a real gap, same root cause as its untestability above); only the extracted predicate is
-  covered.
+  **LIVE-CONFIRMED 2026-08-19**: `post-synthesis-fix-cap4-smoketest` (`eval/ablation_results.jsonl`)
+  scored 0.75 (matching baseline) with 15/15 real fetched findings carrying real, non-empty
+  summaries (0% empty), vs. 32-56% empty in every prior run this session. No full-stream-loop
+  integration test exists for `_run_single_task` at all (a real gap, same root cause as its
+  untestability above) — only the extracted predicate has a unit test — so this live result is the
+  only end-to-end confirmation, but it is a direct one.
 
 `_build_findings_source_material` enforces its own **shared character budget**
 (`settings.context_budget_chars`) across `findings_block` + `fetched_block` + the omitted/uncited
