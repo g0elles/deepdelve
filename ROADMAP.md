@@ -4159,12 +4159,19 @@ tried, twice, not merely proposed):
      `disable_no_progress_guard`'s run 1 also surfaced and got a real fix for a separate bug along
      the way (FindingsWriter re-citing the same hallucinated URL across rebuild attempts because
      the retry directive never named which source failed — see "Completed" section for the fix).
-     `rename_reject_escalation`/`tool_failure_streak_guard` still not run at all.
+     **CLOSED 2026-08-19 — not running `rename_reject_escalation`/`tool_failure_streak_guard`.**
+     Both were built in direct response to a real live incident already (see (a) above), so their
+     load-bearing-ness already has direct evidence independent of this study; an ablation run would
+     only re-confirm that at ~47min/run, and any new run is now confounded (next paragraph) anyway.
+     The study's actual goal — MAST/Illusion-of-Multi-Agent-Advantage-style causal validation of
+     coordination-layer complexity — is satisfied by the two mechanisms tested: both confirmed
+     load-bearing, same underlying failure mode (stuck repetition) recurring at two different
+     layers (tool-call level vs. completion-check-verdict level).
      **CONFOUND, 2026-08-19**: `settings.specialist_delegation_cap` was bumped 3 -> 4 (see
      `session_status/CURRENT.md` item 2) after a fork analysis of these same 6 runs found visa/
      regulatory tasks structurally starved by the old cap. Every result recorded above ran at
-     `cap: 3`; any further ablation run (new mechanisms or more k on the existing two) runs at
-     `cap: 4` and is not a clean apples-to-apples comparison against these numbers.
+     `cap: 3` — noted for the historical record, not something a future run needs to reconcile
+     since no further ablation runs are planned.
   9. ~~Hierarchical/divide-and-conquer decomposition for the consolidation stage...~~ **CORRECTED
      2026-08-17, was NOT actually open — this list entry was written from a stale premise, no new
      code needed.** The escalation this item described already happened, in an earlier ROADMAP
