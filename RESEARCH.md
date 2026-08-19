@@ -3755,3 +3755,47 @@ one N-facet consolidation call to N single-facet calls, each a SHORTER dependenc
 theory suggests this should already be measurably helping; whether it demonstrably does (again,
 never controlled-ablated) is the same open measurement gap as the paragraph above, just pointed at
 the one specific mechanism the theory says should matter most.
+
+**First real results, 2026-08-18 — `no_progress_guard` provisionally CONFIRMED load-bearing,
+`force_whole_rebuild` inconclusive so far.** Adaptive-trial protocol per this section's own
+recommendation above: one k=1 trial per condition first, escalate to k≥2/3 only where a real
+difference shows up (Model Evaluation Standard point 4). Standing benchmark query
+(`eval/ablation_dataset.jsonl`, the Lisbon-vs-Mexico-City dual-angle prompt), `deepdelve-gpt-oss`,
+same hardware, `settings.max_run_minutes: 45` (agent-internal) / `--timeout 2820` (harness-level,
+a small margin above it) both conditions.
+
+| Condition | Runs | Scores | Time(s) | Verdict so far |
+|---|---|---|---|---|
+| baseline (no ablation) | k=1 | 0.75 | 2656 | reference |
+| `disable_force_whole_rebuild` | k=1 | 0.75 | 2061 | no score difference; real ~10min time gap is a soft signal, not yet escalated to k≥2 |
+| `disable_no_progress_guard` | k=2 | 0.00, 0.25 | 2820 (timeout), 2820 (timeout) | **both runs timed out, both scored well below baseline — CONFIRMED load-bearing on this benchmark, provisional pending a real k=3 if this gets revisited** |
+
+`disable_no_progress_guard`'s two runs failed for two DIFFERENT specific reasons, which is itself
+informative — not one fragile failure mode, but the guard's absence generically letting the run
+burn its whole time budget on unproductive retries whenever ANYTHING gets stuck, regardless of
+which specific check triggers it:
+- **Run 1**: `findings.md` entered a byte-identical rebuild→reject→rebuild loop
+  (`findings.md.rejected_attempt_3`/`_4` were byte-for-byte identical, 11 minutes apart) — root
+  cause traced to a real, separate bug (`run_completion_check`'s `findings_ungrounded` directive
+  never named the SPECIFIC hallucinated URL that failed verification, so FindingsWriter had no
+  signal to stop re-citing it; fixed same day, see `session_status/CURRENT.md`). Scored 0.00,
+  `final_report.md` never written.
+- **Run 2** (after the fix above): `findings.md`'s own loop was confirmed broken (no more
+  identical-content repeats) — but the run still timed out, because the earlier retry cycle
+  (`task_verification_flagged` → `missing_findings` → `findings_ungrounded`) alone consumed ~36 of
+  the 47-minute budget before `findings.md` was even accepted, leaving no time for
+  `final_report.md` at all (killed mid-generation by the hard subprocess timeout, zero trace on
+  disk). Scored 0.25.
+
+Both runs show the SAME qualitative shape `no_progress_guard`'s own docstring predicts: without a
+halt on a stuck same-error pattern, a run just keeps paying the token/wall-clock cost of retrying
+instead of failing fast and reallocating the remaining budget. A k=3 was deliberately NOT run —
+with 2/2 runs already timed out on clearly degraded scores against a consistent 0.75 baseline, a
+third run offers very little new information (near-certain to time out again) for a full ~47
+minutes of cost; escalation is for resolving disagreement between early trials, and there wasn't
+any here. If this verdict needs to be load-bearing for a decision beyond "keep the guard, don't
+remove it" (e.g. redesigning it), a real k=3 is still the right bar to clear first.
+
+`rename_reject_escalation`/`tool_failure_streak_guard` (lower priority — both already
+live-validated against a real incident when they were built, unlike the two above) not yet run at
+all as of this writing.

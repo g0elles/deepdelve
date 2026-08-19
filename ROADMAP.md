@@ -4147,7 +4147,16 @@ tried, twice, not merely proposed):
      stand off one") — one trial per condition first, escalate to the full k≥3 only where a
      with/without difference actually shows up, not a flat count for all 8 conditions upfront;
      (c) run unattended in the background across however many sessions it takes, not blocked on in
-     one sitting.
+     one sitting. **IN PROGRESS 2026-08-18, first real results in — see RESEARCH.md §18f's own
+     results table for the full writeup**: baseline 0.75, `disable_force_whole_rebuild` 0.75/faster
+     (k=1 each, no score difference, soft time signal not yet escalated), `disable_no_progress_
+     guard` **0.00 then 0.25, both runs timed out at the 47min ceiling — provisionally CONFIRMED
+     load-bearing** (k=2, deliberately not escalated to k=3: 2/2 already timed out on clearly
+     degraded scores, a 3rd run offers little new information for another ~47min of cost).
+     `disable_no_progress_guard`'s run 1 also surfaced and got a real fix for a separate bug along
+     the way (FindingsWriter re-citing the same hallucinated URL across rebuild attempts because
+     the retry directive never named which source failed — see "Completed" section for the fix).
+     `rename_reject_escalation`/`tool_failure_streak_guard` still not run at all.
   9. ~~Hierarchical/divide-and-conquer decomposition for the consolidation stage...~~ **CORRECTED
      2026-08-17, was NOT actually open — this list entry was written from a stale premise, no new
      code needed.** The escalation this item described already happened, in an earlier ROADMAP
