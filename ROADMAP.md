@@ -4040,8 +4040,7 @@ tried, twice, not merely proposed):
   output. Individual items are detailed in their own dated entries elsewhere in this file /
   `RESEARCH.md` / `session_status/CURRENT.md` — this entry is the index, not a duplicate write-up.
 
-  **A. New correctness bug found, NOT YET FIXED — highest priority, found via manual claim audit,
-  not caught by any automated check:**
+  **A. New correctness bugs found via manual claim audit — both items below CLOSED:**
   1. ~~Citation misattribution: a real, correctly-fetched claim gets attached to the WRONG cited
      URL...~~ **RESOLVED 2026-08-17, see "Completed" above** (`find_unsupported_specific_figures`
      + `check_specific_figure_unsupported`). Live-confirmed
@@ -4060,17 +4059,17 @@ tried, twice, not merely proposed):
      URL-presence gate passed... and the zero-overlap content check passed (shared generic terms)...
      so a misattributed law number sailed through both," live-confirmed 2026-07-11) — but that fix
      is scoped narrowly to `_REGULATION_ID_RE`-shaped identifiers (e.g. "Ley 1906 de 2021"), not to
-     general numeric/factual claims (dollar amounts, day counts, named-requirement phrases). **Candidate
-     fix, not yet scoped in code**: generalize the regulation-ID pattern's core check — "does THIS
-     claim's specific, checkable token (a number, a named fee, a specific procedural detail) appear
-     in ITS OWN cited source's content, not just in the run's fetched-URL set as a whole" — from
-     regulation IDs to a broader claim-specificity check. Directly the mechanism Rasheed et al.'s
-     claim-level-auditability paper (arXiv:2602.13855, §1 above) formalizes as claim-node → typed-edge
-     → source-node provenance; this project's own `decompose_claim_segments`/`_grounded_claim_pairs`
-     infrastructure already does per-segment source binding for the NLI/topical-relevance stage —
-     the gap is specifically at the CHEAP term-overlap gate being too permissive for near-duplicate
-     sources on the same narrow sub-topic (two Mexican-visa pages sharing enough generic vocabulary
-     to pass before content-specific verification ever runs).
+     general numeric/factual claims (dollar amounts, day counts, named-requirement phrases). **The
+     generalization WAS built, same day**: `find_unsupported_specific_figures`
+     (`src/utils/grounding.py:544`) applies the identical "does THIS claim's specific, checkable
+     token appear in ITS OWN cited source's content" check to dollar/fee/day-count figures, not just
+     regulation IDs — confirmed by reading the shipped function, not just the changelog claim.
+     Directly the mechanism Rasheed et al.'s claim-level-auditability paper (arXiv:2602.13855, §1
+     above) formalizes as claim-node → typed-edge → source-node provenance. **Narrower than "any
+     factual claim"** by deliberate design (same conservative bar as `find_unsupported_regulation_ids`):
+     only numeric figures ≥2 digits, line-scoped, only fires on a cited URL that was actually
+     fetched — named-requirement PHRASES (not numbers) still aren't covered, a real, smaller residual
+     gap, not a live bug.
   2. **Portugal visa research shallowness** (same run): the agent fetched Portugal's official visa
      category-index page, correctly found it named "Remote Work / Digital Nomad" as a residency-visa
      category but had no income/process specifics, and reported "No specific visa data was
@@ -4325,19 +4324,18 @@ tried, twice, not merely proposed):
   of per-facet dispatch (above) and this mechanism; corrected there rather than building a
   redundant third mechanism.
 
-- **Writer-role zero-trailing-text: a FindingsWriter/Builder dispatch blocked by `writer_gate_ctx`
-  can just STOP instead of retrying with the correct tool — new, found 2026-08-17, NOT fixed.**
-  The same "sub-agent ends its own turn immediately after a tool call, zero trailing text, no
-  cutoff marker at all" mechanism this project already tracks for Searcher/Analyzer turns (see
-  `RunState.coverage()`'s own docstring on the 25%/42%-of-findings measurement) confirmed live to
-  also hit a WRITER role — `ARCHITECTURE.md` §2's own writeup has the full trace. Consequence is
-  worse for a writer than a researcher: nothing gets written at all, not just one empty finding.
-  `_dispatch_writer_review_fix`'s existing one-shot immediate-retry safety net
-  ("returned nothing usable... retrying once") partially absorbs this but doesn't reliably recover
-  it — a live run showed it firing on 3 of 3 completion-check rounds in the same run. Needs its
-  own design before a fix (how many retries, does the retry's own instructions need to change, is
-  this the same underlying model behavior as the Searcher/Analyzer instances or a distinct one
-  specific to being blocked by a structural gate) — not a rushed patch.
+- **Writer-role zero-trailing-text — found 2026-08-17, FIXED 2026-08-18, LIVE-CONFIRMED
+  2026-08-19.** This Pending entry was never updated when the fix shipped. The same "sub-agent
+  ends its own turn immediately after a tool call, zero trailing text" mechanism this project
+  already tracks for Searcher/Analyzer turns also hit a WRITER role (worse consequence: nothing
+  gets written at all, not just one empty finding). `_dispatch_writer_review_fix`'s one-shot retry
+  didn't reliably recover it (fired on 3 of 3 rounds in one run without success); replaced with a
+  bounded `_WRITER_EMPTY_RETRY_ATTEMPTS = 2` loop (`src/engine/completion.py`). Full detail and the
+  live confirmation (a real run's `_retry1`/`_retry2` both firing, then recovering usable content)
+  in `ARCHITECTURE.md` §2 and `session_status/CURRENT.md`. Closed — its sibling, the original,
+  longest-tracked instance of this mechanism (Searcher/Analyzer dispatches, not writer roles), was
+  also found and fixed 2026-08-19, live-confirmed the same day — see `ARCHITECTURE.md` §2 (no
+  separate Pending entry, it was found and closed within this same session).
 
 - **`create_local_agent`'s 963-line nested-closure god-function — new, scoped 2026-07-29, NOT
   attempted, needs its own dedicated session.** A whole-repo structural audit
