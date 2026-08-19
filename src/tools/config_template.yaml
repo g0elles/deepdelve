@@ -178,7 +178,16 @@ settings:
   # sufficient" — a soft "stop early" instruction the local model didn't reliably follow, burning
   # most of the run's entire global delegate_tasks budget on one facet before the Planner got
   # another turn. This is a structural backstop, independent of the global quotas above.
-  specialist_delegation_cap: 3
+  #
+  # Bumped 3 -> 4 (2026-08-19): the 2026-08-18 ablation study's own run data showed every
+  # visa/regulatory-topic task (digital_nomad_visa_mexico/_portugal, all 6 runs) hitting this cap
+  # and then burning multiple turns on rejected delegate_tasks retries instead of ever completing
+  # real analysis -- a genuinely more source-diverse topic (official gov page + 2-3 third-party
+  # guides) than the trivial single-fact query this cap was tightened for. A deliberate, small,
+  # evidence-based trade-off, not a reversal of the original fix: 4 still stops the 6+-Analyzer
+  # runaway case, while giving real regulatory topics one more source than they were structurally
+  # denied. Revisit if a live run shows trivial queries over-delegating again at this value.
+  specialist_delegation_cap: 4
   # Per-task cap (NOT part of the global quotas pool above) on how many real sources ONE Tier-1
   # specialist task (WebSearcher/AcademicSearcher) may fetch directly via web_search/
   # fetch_url_to_workspace. Added 2026-08-01 — the sibling fix to specialist_delegation_cap above

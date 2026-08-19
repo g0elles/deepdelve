@@ -4160,6 +4160,11 @@ tried, twice, not merely proposed):
      the way (FindingsWriter re-citing the same hallucinated URL across rebuild attempts because
      the retry directive never named which source failed — see "Completed" section for the fix).
      `rename_reject_escalation`/`tool_failure_streak_guard` still not run at all.
+     **CONFOUND, 2026-08-19**: `settings.specialist_delegation_cap` was bumped 3 -> 4 (see
+     `session_status/CURRENT.md` item 2) after a fork analysis of these same 6 runs found visa/
+     regulatory tasks structurally starved by the old cap. Every result recorded above ran at
+     `cap: 3`; any further ablation run (new mechanisms or more k on the existing two) runs at
+     `cap: 4` and is not a clean apples-to-apples comparison against these numbers.
   9. ~~Hierarchical/divide-and-conquer decomposition for the consolidation stage...~~ **CORRECTED
      2026-08-17, was NOT actually open — this list entry was written from a stale premise, no new
      code needed.** The escalation this item described already happened, in an earlier ROADMAP

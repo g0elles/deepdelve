@@ -178,7 +178,7 @@ settings:
   # sufficient" — a soft "stop early" instruction the local model didn't reliably follow, burning
   # most of the run's entire global delegate_tasks budget on one facet before the Planner got
   # another turn. This is a structural backstop, independent of the global quotas above.
-  specialist_delegation_cap: 3
+  specialist_delegation_cap: 4
   # Per-task cap (NOT part of the global quotas pool above) on how many real sources ONE Tier-1
   # specialist task (WebSearcher/AcademicSearcher) may fetch directly via web_search/
   # fetch_url_to_workspace. Added 2026-08-01 — the sibling fix to specialist_delegation_cap above
