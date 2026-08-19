@@ -293,6 +293,22 @@ string) to EVERY URL fetched in one turn — one `add_finding` call per URL, see
   a raise only once every retry is exhausted. **Not yet live re-tested** — designed against the
   run6 transcript shape and covered by `test_structural_checks.py`, not yet exercised in a fresh
   live run with the new retry count.
+- **A `findings_ungrounded` rebuild directive never named the SPECIFIC bad URL, only that
+  "something" was ungrounded** — confirmed live 2026-08-18 (a `disable_no_progress_guard` ablation
+  run): `findings.md.rejected_attempt_3` and `_4` were byte-identical, 11 minutes apart —
+  FindingsWriter kept re-citing the exact same hallucinated URL
+  (`https://www.mexicoembassy.org.uk/visas`, confirmed never actually fetched this run, via
+  `RunState.data["findings"]`) because the retry directive gave it no signal about WHICH source
+  had failed verification, just the same generic "rebuild it, don't fabricate" text plus the same
+  source material every time. This is the same class of bug session_status/2026-08-17.md's item 2
+  flagged and left uninvestigated ("why FindingsWriter keeps RE-CITING the same already-rejected
+  hallucinated URL across rebuild attempts"). **FIXED 2026-08-18**: the `findings_ungrounded`
+  write_directive in `_dispatch_writer_review_fix`'s caller (`run_completion_check`,
+  `src/engine/completion.py`) now regexes the specific bad URL(s) out of
+  `verdict.warning`'s `unverified_entry_sources:...` detail and names them explicitly, with a
+  direct "do not attribute any finding to these again" instruction. **Not yet live re-tested** —
+  unit-tested (`test_structural_checks.py`, scenario b2 in the `run_completion_check` dispatch
+  suite) against a synthetic partially_ungrounded fixture, not exercised in a fresh live run yet.
 
 `_build_findings_source_material` enforces its own **shared character budget**
 (`settings.context_budget_chars`) across `findings_block` + `fetched_block` + the omitted/uncited

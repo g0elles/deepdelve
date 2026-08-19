@@ -3557,11 +3557,30 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                                     "your own prior knowledge."
                                 )
                             elif problem == "findings_ungrounded":
+                                # Name the SPECIFIC bad URL(s), not just "it was ungrounded"
+                                # (2026-08-18, live incident: findings.md.rejected_attempt_3 and
+                                # _4 were byte-identical, 11 minutes apart -- FindingsWriter kept
+                                # re-citing the exact same already-rejected URL because this
+                                # directive never told it WHICH source failed verification, only
+                                # that something did, and it got the same source material both
+                                # times. verdict.warning (not verdict.inject, which is worded for
+                                # the Planner-fallback path) carries the raw partially_ungrounded
+                                # detail, e.g. "unverified_entry_sources:https://...,https://...".
+                                bad_urls_note = ""
+                                if verdict is not None:
+                                    m = re.search(r"unverified_entry_sources:([^)]*)", verdict.warning)
+                                    if m:
+                                        bad_urls_note = (
+                                            f" The source(s) that failed verification last time: "
+                                            f"{m.group(1).strip()} — do not attribute any finding "
+                                            f"to these again; use only a URL that actually appears "
+                                            f"in the real research results below."
+                                        )
                                 write_directive = (
                                     "The previous findings.md draft was fabricated or wholesale "
-                                    "ungrounded and has been moved aside. Rebuild it now, strictly "
-                                    "from the real research results below — never from your own "
-                                    "prior knowledge."
+                                    f"ungrounded and has been moved aside.{bad_urls_note} Rebuild it "
+                                    "now, strictly from the real research results below — never "
+                                    "from your own prior knowledge."
                                 )
                             elif problem == "stale_findings":
                                 write_directive = (

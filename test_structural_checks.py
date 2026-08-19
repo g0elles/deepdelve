@@ -5289,6 +5289,44 @@ def main():
                 _IN_MEMORY_FS.pop("findings.md", None)
                 _IN_MEMORY_FS.pop("final_report.md", None)
 
+            # (b2) findings_ungrounded via the SPECIFIC-URL gate (partially_ungrounded's
+            # unverified_entry_sources, not fully_ungrounded's wholesale no_urls) must name the
+            # exact bad URL in FindingsWriter's rebuild instructions, not just say "it was
+            # ungrounded" generically (2026-08-18 live incident: findings.md.rejected_attempt_3
+            # and _4 were byte-identical 11 minutes apart — FindingsWriter kept re-citing the
+            # SAME hallucinated URL because the old directive never named it).
+            with tempfile.TemporaryDirectory() as tmpdir_b2:
+                _bad_url = "https://never-fetched.example.com/fake"
+                _IN_MEMORY_FS["findings.md"] = (
+                    f"### [Real Finding]({_SRC}) [PRIMARY]\n- Key Findings: real.\n\n"
+                    f"### [Fake Finding]({_bad_url}) [SECONDARY]\n- Key Findings: invented."
+                )
+                _IN_MEMORY_FS["final_report.md"] = _CLEAN_REPORT
+                rs = RunState(tmpdir_b2)
+                rs.add_finding(_SRC, "the real finding a dispatched Searcher actually returned")
+                run_state_ctx.set(rs)
+                msgs = []
+
+                async def _side_effect_b2(name, instructions, role):
+                    if role == "FindingsWriter":
+                        _IN_MEMORY_FS["findings.md"] = _FINDINGS_OK
+                        return "## Result for FindingsWriterFix\nWrote findings.md\n---"
+                    return "REVIEW: CLEAN"
+
+                dispatch = AsyncMock(side_effect=_side_effect_b2)
+                _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append,
+                    dispatch_task=dispatch))
+                write_instructions = dispatch.call_args_list[0].args[1]
+                assert dispatch.call_args_list[0].args[2] == "FindingsWriter", dispatch.call_args_list
+                assert _bad_url in write_instructions, (
+                    "FindingsWriter's rebuild instructions must name the SPECIFIC URL that failed "
+                    "verification, not just say 'it was ungrounded' -- otherwise a retry has no "
+                    "signal to avoid re-citing the exact same hallucinated source", write_instructions)
+                assert "do not attribute any finding to these again" in write_instructions, write_instructions
+                _IN_MEMORY_FS.pop("findings.md", None)
+                _IN_MEMORY_FS.pop("final_report.md", None)
+
             # (c) FindingsWriter/PeerReviewer not both registered -> falls back to the classic
             # inject-into-Planner path, dispatch_task never called.
             with tempfile.TemporaryDirectory() as tmpdir_c:
