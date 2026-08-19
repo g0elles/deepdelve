@@ -4065,11 +4065,18 @@ tried, twice, not merely proposed):
      token appear in ITS OWN cited source's content" check to dollar/fee/day-count figures, not just
      regulation IDs — confirmed by reading the shipped function, not just the changelog claim.
      Directly the mechanism Rasheed et al.'s claim-level-auditability paper (arXiv:2602.13855, §1
-     above) formalizes as claim-node → typed-edge → source-node provenance. **Narrower than "any
-     factual claim"** by deliberate design (same conservative bar as `find_unsupported_regulation_ids`):
-     only numeric figures ≥2 digits, line-scoped, only fires on a cited URL that was actually
-     fetched — named-requirement PHRASES (not numbers) still aren't covered, a real, smaller residual
-     gap, not a live bug.
+     above) formalizes as claim-node → typed-edge → source-node provenance.
+     **Residual gap closed 2026-08-19**: the same function now also flags mixed-case named-entity
+     TOKENS (`_NAMED_TOKEN_RE` — a lowercase letter followed by an uppercase one mid-word, e.g.
+     "MiConsulado") verbatim-absent from their cited source — the exact same incident's
+     "MiConsulado" reference was misattributed alongside its numeric figures, and a named
+     portal/program name is just as checkable (can't be paraphrased) as a number. Deliberately
+     still NOT generalized to arbitrary named-requirement PHRASES ("sworn translator requirement")
+     — a phrase can be paraphrased without changing its truth, so a verbatim check there would
+     over-fire; that remains a real, permanent design boundary, not a gap to close later.
+     `test_structural_checks.py`'s `_specific_figure_scenario` covers the new token case plus a
+     negative check (a plain capitalized word like "Mexico" with no internal case switch never
+     fires). Full suite passes.
   2. **Portugal visa research shallowness** (same run): the agent fetched Portugal's official visa
      category-index page, correctly found it named "Remote Work / Digital Nomad" as a residency-visa
      category but had no income/process specifics, and reported "No specific visa data was

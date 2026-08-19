@@ -540,29 +540,44 @@ _SPECIFIC_FIGURE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Mixed-case named-entity tokens (a lowercase letter followed later by an uppercase one, e.g.
+# "MiConsulado", "eVisa") -- the residual gap named-requirement PHRASES ("sworn translator
+# requirement") aren't covered by, and can't be covered the same way: a phrase can be paraphrased
+# (word order, synonyms) without changing its truth, so a verbatim-absence check on a phrase would
+# false-positive constantly. A named portal/program TOKEN can't be paraphrased -- it's either the
+# literal string the source uses or it isn't -- so it's checkable the same conservative way a
+# figure or regulation ID is. Length >=5 and requires the case transition specifically to avoid
+# firing on common capitalized words (proper nouns like "Mexico" have no internal case switch).
+_NAMED_TOKEN_RE = re.compile(r'\b[A-Za-z]*[a-z][A-Z][A-Za-z]*\b')
+
 
 def find_unsupported_specific_figures(text: str) -> list[str]:
-    """A specific dollar figure, fee, or day/month-count claim (e.g. '$53', '300 days') cited to a
-    fetched source whose content never mentions that exact figure anywhere. Confirmed live
-    (2026-08-17 ablation smoke-test): a report's Mexico visa income/fee/duration figures were all
-    real, but misattributed to the WRONG one of two genuinely-fetched, topically-similar sources —
-    the hard URL-presence gate passed (both sources really were fetched) and
-    claim_grounding_problem's term-overlap gate passed too, on nothing more than a coincidentally
-    shared bare year (both sources being 2026-dated visa guides) — extract_salient_terms doesn't
-    extract '300', '53', or '1,200' as checkable terms at all. Same failure shape
-    find_unsupported_regulation_ids already catches for regulation identifiers, generalized here to
-    the broader class of small numeric claims. Same conservative construction: line-scoped (one
-    claim + citation per line, this project's report format), only fires when the line's cited URL
-    WAS fetched, and only flags a figure that is verbatim absent from ITS OWN cited source —
-    coincidental presence of the same number in the WRONG source for an unrelated reason (e.g. a
-    differently-scoped '180 days' meaning something else) is a false negative this check accepts
-    rather than risk over-firing, matching find_unsupported_regulation_ids' own stated design bar."""
+    """A specific dollar figure, fee, day/month-count, or named-portal/program TOKEN (e.g. '$53',
+    '300 days', 'MiConsulado') cited to a fetched source whose content never mentions it anywhere.
+    Confirmed live (2026-08-17 ablation smoke-test): a report's Mexico visa income/fee/duration
+    figures were all real, but misattributed to the WRONG one of two genuinely-fetched,
+    topically-similar sources — the hard URL-presence gate passed (both sources really were
+    fetched) and claim_grounding_problem's term-overlap gate passed too, on nothing more than a
+    coincidentally shared bare year (both sources being 2026-dated visa guides) —
+    extract_salient_terms doesn't extract '300', '53', or '1,200' as checkable terms at all. Same
+    failure shape find_unsupported_regulation_ids already catches for regulation identifiers,
+    generalized here to small numeric claims AND mixed-case named tokens (the SAME incident's
+    "MiConsulado" reference was misattributed too, alongside its numeric figures). Deliberately
+    NOT generalized to arbitrary named-requirement PHRASES like "sworn translator requirement" --
+    a phrase can be paraphrased without changing its truth, so a verbatim check there would
+    over-fire; only single checkable TOKENS (numbers, named-entity words) get this treatment,
+    same design bar as find_unsupported_regulation_ids. Same conservative construction: line-scoped
+    (one claim + citation per line, this project's report format), only fires when the line's cited
+    URL WAS fetched, and only flags a token that is verbatim absent from ITS OWN cited source —
+    coincidental presence of the same token in the WRONG source for an unrelated reason is a false
+    negative this check accepts rather than risk over-firing."""
     fetched = _fetched_url_files()
     ref_map = parse_academic_references(text or "")
     hits = []
     for line in (text or "").splitlines():
         figures = list(_SPECIFIC_FIGURE_RE.finditer(line))
-        if not figures:
+        tokens = [m for m in _NAMED_TOKEN_RE.finditer(line) if len(m.group(0)) >= 5]
+        if not figures and not tokens:
             continue
         files = _line_cited_files(line, fetched, ref_map)
         if not files:
@@ -581,6 +596,10 @@ def find_unsupported_specific_figures(text: str) -> list[str]:
                 continue  # single-digit figures are too generic a signal on their own
             if not re.search(rf'\b{re.escape(digits)}\b', content_digits):
                 hits.append(m.group(0).strip())
+        for m in tokens:
+            token = m.group(0)
+            if not re.search(rf'\b{re.escape(token)}\b', content):
+                hits.append(token)
     return hits
 
 

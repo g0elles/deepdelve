@@ -6446,6 +6446,27 @@ def main():
             )
             assert find_unsupported_specific_figures(
                 "- Utilities cost $1,200/month. [budget](https://budget.example.com/mexico-city)") == []
+            # Named-entity TOKEN generalization (the residual gap from the same live incident:
+            # "MiConsulado" was misattributed alongside its numeric figures) -- a mixed-case
+            # portal/program name absent from the cited source's content is flagged the same way.
+            bad_token = find_unsupported_specific_figures(
+                "- Interview via MiConsulado portal. "
+                "[esimcard](https://esimcard.example.com/mexico-visa)")
+            assert any("MiConsulado" in b for b in bad_token), bad_token
+            record_fetched_url("https://portal.example.com/miconsulado", filename="sources/portal.md")
+            _IN_MEMORY_FS["sources/portal.md"] = (
+                "Source-URL: https://portal.example.com/miconsulado\n\n"
+                "Schedule your interview through the MiConsulado portal at least two weeks in "
+                "advance."
+            )
+            assert find_unsupported_specific_figures(
+                "- Interview via MiConsulado portal. "
+                "[portal](https://portal.example.com/miconsulado)") == []
+            # A plain capitalized proper noun with no internal case switch (e.g. "Mexico") must
+            # never fire -- only genuine mixed-case tokens are checkable this way.
+            assert find_unsupported_specific_figures(
+                "- Mexico requires proof of income. "
+                "[esimcard](https://esimcard.example.com/mexico-visa)") == []
         finally:
             _IN_MEMORY_FS.clear()
             _IN_MEMORY_FS.update(saved_fs)
