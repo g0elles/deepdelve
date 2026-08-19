@@ -309,6 +309,32 @@ string) to EVERY URL fetched in one turn — one `add_finding` call per URL, see
   direct "do not attribute any finding to these again" instruction. **Not yet live re-tested** —
   unit-tested (`test_structural_checks.py`, scenario b2 in the `run_completion_check` dispatch
   suite) against a synthetic partially_ungrounded fixture, not exercised in a fresh live run yet.
+- **The Searcher/Analyzer instance of "zero trailing text" — the ORIGINAL, longest-tracked case of
+  this mechanism (both writer-role incidents above are its siblings) — was only ever DETECTED
+  downstream, never actually fixed at the source, until 2026-08-19.** `RunState.coverage()`'s own
+  empty-summary exclusion (`_is_null_finding_summary`) correctly stops an unsynthesized finding
+  from counting as real coverage, but does nothing to RECOVER it — the real fetched source is just
+  silently discarded. Confirmed live via the 2026-08-18 ablation study's own workspace data across
+  MULTIPLE independent runs: one task (`digital_nomad_visa_mexico`) had 5/5 real fetched sources
+  land with a completely empty finding summary in one run, and similar (60-100%) empty-summary
+  rates on several other tasks in the same and other runs — this is not a rare edge case, it is a
+  major, silent tax on real research capacity that was previously invisible because the downstream
+  exclusion made it look like "no sources found" rather than "sources found, never synthesized."
+  This is very likely a bigger lever on overall run quality than any single completion-check guard
+  the coordination-layer ablation study measures, since it operates upstream of all of them.
+  **FIXED 2026-08-19**: `_run_single_task`'s stream loop (`src/engine/orchestrator.py`) now nudges
+  once, mirroring the writer-role retry's shape — when a dispatch called at least one tool
+  (`any_tool_call`) but ends its turn with zero trailing text, and nothing else already claimed
+  another turn that iteration, one extra turn is granted with `SEARCHER_ANALYZER_SYNTHESIS_NUDGE`
+  ("write up your findings NOW... do not call the same tool again first"), gated to research-tier
+  roles only (`_NON_RESEARCH_DISPATCH_ROLES` — Builder/FindingsWriter/PeerReviewer have their own
+  mechanism). The trigger condition is pulled into `_should_nudge_zero_synthesis`, a pure
+  predicate, the same way `_select_budget_nudge` already is — `_run_single_task` itself is a
+  nested closure inside `create_local_agent` (ROADMAP's own tracked "god-function" issue) and
+  cannot be unit-tested directly, so this is the only piece of the fix that gets a real test.
+  **Not yet live re-tested** — no full-stream-loop integration test exists for `_run_single_task`
+  at all (a real gap, same root cause as its untestability above); only the extracted predicate is
+  covered.
 
 `_build_findings_source_material` enforces its own **shared character budget**
 (`settings.context_budget_chars`) across `findings_block` + `fetched_block` + the omitted/uncited

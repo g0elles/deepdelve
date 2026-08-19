@@ -701,6 +701,14 @@ SUBAGENT_BUDGET_NUDGE_WRITER = (
 )
 
 
+# 2026-08-19, see the retry check inside _run_single_task's stream loop for the live incident.
+SEARCHER_ANALYZER_SYNTHESIS_NUDGE = (
+    "SYSTEM: your last response called a tool but included no findings text at all. Write up your "
+    "findings NOW as your final message: each finding with its source URL and exact figures/names. "
+    "Do not call the same tool again first -- summarize what you already have."
+)
+
+
 def _select_budget_nudge(agent_id: str | None) -> str:
     """Pure selection logic, pulled out of _run_single_task's stream loop for direct testability
     (same shape as _agent_routing_rejection_reason/_reserve_batch_quota_headroom above). A writer
@@ -708,6 +716,27 @@ def _select_budget_nudge(agent_id: str | None) -> str:
     (Searcher/Analyzer/PeerReviewer, or an unrecognized agent_id) gets the original
     return-as-final-message nudge, which is correct for them."""
     return SUBAGENT_BUDGET_NUDGE_WRITER if agent_id in _ARTIFACT_WRITER_ROLES else SUBAGENT_BUDGET_NUDGE
+
+
+def _should_nudge_zero_synthesis(agent_id: str | None, any_tool_call: bool, final_text: str,
+                                  already_nudged: bool, has_requests: bool) -> bool:
+    """Pure predicate for the zero-synthesis retry check inside _run_single_task's stream loop
+    (2026-08-19), pulled out the same way _select_budget_nudge was — _run_single_task itself is a
+    nested closure inside create_local_agent (ROADMAP's own tracked "god-function" issue) and
+    can't be unit-tested directly, so the decision logic is extracted here instead of shipping
+    untested. See SEARCHER_ANALYZER_SYNTHESIS_NUDGE's own call site for the live incident this
+    exists for: a Searcher/Analyzer dispatch calls a tool, then ends its turn with zero narration,
+    landing a real fetched source with a permanently empty finding summary.
+
+    True only when: nothing else already claimed another turn this iteration (`has_requests`
+    still False going in), this dispatch hasn't already used its one nudge (`already_nudged`),
+    at least one tool call actually happened (`any_tool_call` — a dispatch that never touched a
+    tool at all isn't this bug, it's a different problem), the turn produced no text whatsoever,
+    and the role is research-tier (`_NON_RESEARCH_DISPATCH_ROLES` excludes Builder/FindingsWriter/
+    PeerReviewer, which have their own dedicated retry mechanism and don't feed
+    RunState.add_finding the same way)."""
+    return (not has_requests and not already_nudged and any_tool_call
+            and not final_text.strip() and agent_id not in _NON_RESEARCH_DISPATCH_ROLES)
 
 
 def malformed_tool_call_nudge(e: BaseException) -> str | None:
@@ -1180,6 +1209,10 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                     context_budget = get_context_budget()
                     stream_chars = 0
                     budget_nudged = False
+                    # Zero-synthesis retry state (2026-08-19) -- see the check itself, right after
+                    # the per-iteration nudges below, for the full incident this exists for.
+                    any_tool_call = False
+                    synthesis_nudged = False
                     # Fresh per-DISPATCH deadline (not per internal retry-turn below, and not
                     # shared with any other concurrent/sequential dispatch) -- covers this whole
                     # sub-agent call's total wall-clock budget, same "one deadline for the whole
@@ -1262,6 +1295,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                                     if c.type == "text" and c.text:
                                         final_text += c.text
                                     elif c.type == "function_result":
+                                        any_tool_call = True
                                         # Overwritten on every function_result seen this turn, not
                                         # just set-once — a LATER successful call after an earlier
                                         # error means the model already self-corrected on its own
@@ -1325,6 +1359,24 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                             new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
                             if responses:
                                 new_inputs.extend(responses)
+                            current_input = new_inputs
+
+                        # Zero-synthesis retry (2026-08-19) -- Searcher/Analyzer instance of the
+                        # "zero trailing text" mechanism ARCHITECTURE.md already tracks (the writer-
+                        # role instance got its own bounded retry loop 2026-08-18,
+                        # _WRITER_EMPTY_RETRY_ATTEMPTS; this is the source-level fix for the sibling
+                        # case that was previously only ever DETECTED downstream via RunState.
+                        # coverage()'s empty-summary exclusion, never actually recovered). Confirmed
+                        # live via the 2026-08-18 ablation study: a task's own real, freshly fetched
+                        # sources (5/5 in one run) ALL landed with a completely empty finding
+                        # summary -- see _should_nudge_zero_synthesis's own docstring for the full
+                        # trigger logic (extracted there for testability).
+                        if _should_nudge_zero_synthesis(agent_id, any_tool_call, final_text,
+                                                         synthesis_nudged, has_requests):
+                            synthesis_nudged = True
+                            has_requests = True
+                            new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
+                            new_inputs.append(Message("user", [{"type": "text", "text": SEARCHER_ANALYZER_SYNTHESIS_NUDGE}]))
                             current_input = new_inputs
 
                 if subagent_callback:

@@ -7100,6 +7100,34 @@ def main():
     assert "write_workspace_file" in SUBAGENT_BUDGET_NUDGE_WRITER
     assert "do not call any more tools" not in SUBAGENT_BUDGET_NUDGE_WRITER.lower()
 
+    # --- zero-synthesis retry predicate (2026-08-19, live incident via the ablation study: a
+    # Searcher/Analyzer dispatch calls a tool then ends its turn with zero narration, permanently
+    # landing a real fetched source with an empty finding summary; _run_single_task itself is an
+    # untestable nested closure, so the trigger logic was extracted to _should_nudge_zero_synthesis
+    # the same way _select_budget_nudge was). ---
+    from engine.orchestrator import _should_nudge_zero_synthesis, SEARCHER_ANALYZER_SYNTHESIS_NUDGE
+
+    # Fires: research-tier role, a tool was called, zero text produced, nothing else already
+    # claimed this turn, not already nudged once.
+    assert _should_nudge_zero_synthesis("WebSearcher", True, "", False, False)
+    assert _should_nudge_zero_synthesis("DataAnalyzer", True, "   ", False, False)  # whitespace-only counts as empty
+    assert _should_nudge_zero_synthesis(None, True, "", False, False)  # unrecognized agent_id still research-tier
+
+    # Does NOT fire: no tool was called at all (a different problem, not this bug).
+    assert not _should_nudge_zero_synthesis("WebSearcher", False, "", False, False)
+    # Does NOT fire: real text was produced.
+    assert not _should_nudge_zero_synthesis("WebSearcher", True, "some findings text", False, False)
+    # Does NOT fire: something else already claimed another turn this iteration.
+    assert not _should_nudge_zero_synthesis("WebSearcher", True, "", False, True)
+    # Does NOT fire: already used its one nudge for this dispatch.
+    assert not _should_nudge_zero_synthesis("WebSearcher", True, "", True, False)
+    # Does NOT fire: writer roles have their own dedicated retry mechanism.
+    assert not _should_nudge_zero_synthesis("Builder", True, "", False, False)
+    assert not _should_nudge_zero_synthesis("FindingsWriter", True, "", False, False)
+    assert not _should_nudge_zero_synthesis("PeerReviewer", True, "", False, False)
+
+    assert "findings" in SEARCHER_ANALYZER_SYNTHESIS_NUDGE.lower()
+
     # --- C8 charset handling (run 14: the flagship 750KB DIAN law text was saved as mojibake —
     # 'Resolución'/'número' could never string-match, silently gutting every Spanish-term check) ---
     from tools.web import _decode_html_bytes, _strip_boilerplate_html, _meta_declared_encoding
