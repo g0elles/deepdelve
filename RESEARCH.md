@@ -3756,19 +3756,18 @@ theory suggests this should already be measurably helping; whether it demonstrab
 never controlled-ablated) is the same open measurement gap as the paragraph above, just pointed at
 the one specific mechanism the theory says should matter most.
 
-**First real results, 2026-08-18 — `no_progress_guard` provisionally CONFIRMED load-bearing,
-`force_whole_rebuild` inconclusive so far.** Adaptive-trial protocol per this section's own
-recommendation above: one k=1 trial per condition first, escalate to k≥2/3 only where a real
-difference shows up (Model Evaluation Standard point 4). Standing benchmark query
-(`eval/ablation_dataset.jsonl`, the Lisbon-vs-Mexico-City dual-angle prompt), `deepdelve-gpt-oss`,
-same hardware, `settings.max_run_minutes: 45` (agent-internal) / `--timeout 2820` (harness-level,
-a small margin above it) both conditions.
+**First real results, 2026-08-18 — BOTH `no_progress_guard` and `force_whole_rebuild` CONFIRMED
+load-bearing.** Adaptive-trial protocol per this section's own recommendation above: one k=1 trial
+per condition first, escalate to k≥2/3 only where a real difference shows up (Model Evaluation
+Standard point 4). Standing benchmark query (`eval/ablation_dataset.jsonl`, the Lisbon-vs-Mexico-
+City dual-angle prompt), `deepdelve-gpt-oss`, same hardware, `settings.max_run_minutes: 45`
+(agent-internal) / `--timeout 2820` (harness-level, a small margin above it) both conditions.
 
-| Condition | Runs | Scores | Time(s) | Verdict so far |
+| Condition | Runs | Scores | Time(s) | Verdict |
 |---|---|---|---|---|
 | baseline (no ablation) | k=1 | 0.75 | 2656 | reference |
-| `disable_force_whole_rebuild` | k=1 | 0.75 | 2061 | no score difference; real ~10min time gap is a soft signal, not yet escalated to k≥2 |
-| `disable_no_progress_guard` | k=2 | 0.00, 0.25 | 2820 (timeout), 2820 (timeout) | **both runs timed out, both scored well below baseline — CONFIRMED load-bearing on this benchmark, provisional pending a real k=3 if this gets revisited** |
+| `disable_force_whole_rebuild` | k=3 | 0.75, 0.00, 0.00 | 2061, 1411, 1266 | **mean 0.25 — CONFIRMED load-bearing** (escalated from k=1 after run 2 disagreed with run 1; runs 2 and 3 agreed with each other, resolving it) |
+| `disable_no_progress_guard` | k=2 | 0.00, 0.25 | 2820 (timeout), 2820 (timeout) | **mean 0.125 — CONFIRMED load-bearing** (both runs timed out, both scored well below baseline; not escalated to k=3, see below) |
 
 `disable_no_progress_guard`'s two runs failed for two DIFFERENT specific reasons, which is itself
 informative — not one fragile failure mode, but the guard's absence generically letting the run
@@ -3795,6 +3794,36 @@ third run offers very little new information (near-certain to time out again) fo
 minutes of cost; escalation is for resolving disagreement between early trials, and there wasn't
 any here. If this verdict needs to be load-bearing for a decision beyond "keep the guard, don't
 remove it" (e.g. redesigning it), a real k=3 is still the right bar to clear first.
+
+**`disable_force_whole_rebuild`: k=1 (0.75) disagreed with k=2's own second trial (0.00) — the
+textbook case for escalating, per the same standard, since disagreement between early trials is
+exactly what k≥3 exists to resolve.** A k=3 run confirmed the majority: 0.00 again, mean 0.25
+across all three. Runs 2 and 3 both hit the SAME underlying coordination failure
+`force_whole_rebuild` exists to break — a completion-check problem (`task_verification_flagged` in
+run 2, `thin_coverage` in run 3) repeating 3+ times verbatim, telling the Planner each time to
+"acknowledge the gap" or "redo it," without the mechanism ever forcing a genuine change of
+strategy:
+- **Run 2**: `task_verification_flagged` fired on `digital_nomad_visa_mexico` three times running
+  (attempts 1-3, the last two identically worded "still fabricated, acknowledge the gap"), then the
+  run ended after only 4 completion-check attempts with NEITHER `findings.md` NOR `final_report.md`
+  ever written — not a timeout, the run just gave up early (1411s, ~23.5min, well under the
+  47-minute ceiling). Scored 0.00.
+- **Run 3**: `thin_coverage` fired three separate times (attempts 0, 1, 3 — interrupted once by
+  `untracked_delegation`), never escalating past "only 2/6 delegated tasks produced a real source"
+  for the SAME two Mexico-side tasks each time. A `final_report.md` WAS eventually written (unlike
+  run 2), but with two whole query facets never actually researched, it scored 0.00 structurally —
+  the report existed but was missing entire required content. 1266s (~21min), also well under the
+  timeout ceiling.
+
+Both confirming runs show the SAME shape as `no_progress_guard`'s own confirmed pattern, just at a
+DIFFERENT layer: `no_progress_guard` catches a stuck TOOL CALL (same args, same error);
+`force_whole_rebuild` catches a stuck COMPLETION-CHECK VERDICT (same problem, same "acknowledge and
+move on" resolution) — without either guard, the corresponding stuck pattern is free to repeat
+indefinitely (burning wall-clock, `no_progress_guard`'s failure mode) or terminate the run early
+having never produced real, complete content (`force_whole_rebuild`'s failure mode here). Two
+independently-shaped coordination mechanisms, two independently-confirmed real contributions — a
+genuine result for the audit this section originally called for, not just "did today's specific
+symptom stop recurring."
 
 `rename_reject_escalation`/`tool_failure_streak_guard` (lower priority — both already
 live-validated against a real incident when they were built, unlike the two above) not yet run at

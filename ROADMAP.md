@@ -4147,12 +4147,15 @@ tried, twice, not merely proposed):
      stand off one") — one trial per condition first, escalate to the full k≥3 only where a
      with/without difference actually shows up, not a flat count for all 8 conditions upfront;
      (c) run unattended in the background across however many sessions it takes, not blocked on in
-     one sitting. **IN PROGRESS 2026-08-18, first real results in — see RESEARCH.md §18f's own
-     results table for the full writeup**: baseline 0.75, `disable_force_whole_rebuild` 0.75/faster
-     (k=1 each, no score difference, soft time signal not yet escalated), `disable_no_progress_
-     guard` **0.00 then 0.25, both runs timed out at the 47min ceiling — provisionally CONFIRMED
-     load-bearing** (k=2, deliberately not escalated to k=3: 2/2 already timed out on clearly
-     degraded scores, a 3rd run offers little new information for another ~47min of cost).
+     one sitting. **IN PROGRESS 2026-08-18, first two mechanisms both CONFIRMED load-bearing — see
+     RESEARCH.md §18f's own results table for the full writeup**: baseline 0.75.
+     `disable_force_whole_rebuild` **mean 0.25 across k=3 (0.75, 0.00, 0.00)** — started at k=1
+     (0.75, matched baseline), escalated after a k=2 second trial disagreed (0.00), k=3 confirmed
+     the majority: 2 of 3 runs hit a completion-check verdict (`task_verification_flagged`/
+     `thin_coverage`) repeating 3+ times without the mechanism ever forcing a real change of
+     strategy, ending with an incomplete or entirely missing report. `disable_no_progress_guard`
+     **mean 0.125 across k=2 (0.00, 0.25)**, both runs timed out at the 47min ceiling — not
+     escalated to k=3 (2/2 already failed the same way, a 3rd run offers little new information).
      `disable_no_progress_guard`'s run 1 also surfaced and got a real fix for a separate bug along
      the way (FindingsWriter re-citing the same hallucinated URL across rebuild attempts because
      the retry directive never named which source failed — see "Completed" section for the fix).
