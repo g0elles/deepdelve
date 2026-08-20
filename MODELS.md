@@ -329,6 +329,44 @@ model's actual capability was ever cleanly tested, per Model Evaluation Standard
 - **Verdict**: Ruled out on hardware grounds before any pull — smallest available quants
   (19GB/21.2GB) exceed this card's 17.1GB VRAM budget. No GPU time spent on either.
 
+### Candidate shortlist, researched 2026-08-19 (web search, no GPU time spent yet)
+Compiled after `qwen3-4b-combined-v2-lora`'s clean disqualification closed off the 4B fine-tune
+path — looking for a lighter-than-`gpt-oss:20b` GENERAL-PURPOSE candidate, ranked by promise:
+- **`Ornith-1.0-9B` clean re-test — highest priority, already in-repo, cheapest.** Not a new
+  candidate: this project's own strongest-ever cold-start synthesis result, left INCONCLUSIVE (see
+  entry above) pending a re-test with two fixes shipped since 2026-07-29. No new research needed,
+  just GPU time.
+- **Ministral-8B-Instruct-2410** (Mistral AI, Apache-2.0 weights, Mistral Research License for the
+  instruct checkpoint) — general-purpose, NOT a narrow function-calling finetune (unlike xLAM-2/
+  watt-tool-8B below). Native long context (128k), interleaved sliding-window attention. Not in
+  Ollama's core library — community GGUF tags exist (`nchapman/ministral-8b-instruct-2410`,
+  `QuantFactory/Ministral-8B-Instruct-2410-GGUF`). Known quirk: vLLM's native Mistral-tokenizer
+  mode has the same `chat_template_kwargs`-rejection restriction `mistral:7b-instruct` hit — this
+  project already has the fix (`settings.skip_chat_template_kwargs`, 2026-07-26), so it's a known,
+  already-solved cost, not a new blocker. Genuinely untested — never pulled this session.
+- **Falcon3-10B-Instruct** (TII, Apache-2.0/Falcon license) — published BFCL 86.3, native Ollama
+  tag (`falcon3:7b`/presumably a `10b` tag), state-of-the-art among sub-13B models on several
+  published benchmarks (MMLU 73.1, MBPP 73.8). Closest published size to the ~14B capacity-floor
+  evidence this project already has (arXiv:2601.16280) while staying meaningfully lighter than
+  `gpt-oss:20b`. Never pulled this session.
+- **Phi-4-Mini (14B variant, not the already-disqualified 3.8B)** — real caveat, not a fresh lead:
+  `phi4-mini:3.8b` already failed this project's tool-call SMOKE TEST (narrates the call as literal
+  text despite the model card claiming function-calling support) — a family-wide architectural
+  trait is a real risk the 14B size doesn't automatically fix. Worth one cheap isolated tool-call
+  smoke test before any full benchmark, not a priority pull.
+- **Deprioritized, not re-litigating**: `xLAM-2-8b-fc-r`, `watt-tool-8B`, `ToolACE-8B` — narrow
+  function-calling-specialist finetunes (Llama-3.1-8B base), already surfaced by a prior session's
+  research pass (`ROADMAP.md`, 2026-07-18) and explicitly deprioritized then: "a real risk for the
+  writer role per this project's own repeated lesson [narrow fine-tunes overfit to schema
+  correctness at the cost of general instruction-following] — not worth GPU time until a
+  general-purpose candidate looks more promising." Still true; the four candidates above are all
+  general-purpose.
+- **Literature lead, not yet read in full (per this project's own citation-verification rule —
+  do NOT cite its findings as verified until it is)**: *AgentFloor: How Far Up the Tool Use Ladder
+  Can Small Open-Weight Models Go?* (arXiv:2605.00334) — title is a direct match for this exact
+  question. Worth a full read before committing further GPU cycles to this search, not just this
+  session's web-search snippet.
+
 ---
 
 ## Hosted
