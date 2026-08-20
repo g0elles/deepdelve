@@ -225,6 +225,51 @@ pass on both standing benchmarks.
   `qwen2.5:3b-instruct`) — no full live run needed when the schema-stage failure is this clear and
   reproducible.
 
+### `Falcon3-10B-Instruct` — DISQUALIFIED at the smoke-test stage, 2026-08-19
+- **Size/VRAM**: 6.3GB (`falcon3:10b`, then `bilel_cherif/falcon3-tools`)
+- **Best result**: 3/9 real tool calls on an isolated smoke test — no full live run needed
+- **Verdict**: TII's own model card confirms real function-call training data (1.2M posttraining
+  samples including "function call data"), so this is genuinely a serving-layer/packaging gap, not
+  assumed to be one. Ollama's core `falcon3:10b` tag flatly rejects tool requests
+  (`"does not support tools"` — its `TEMPLATE` never references `.Tools`/`.ToolCalls` at all,
+  confirmed via `ollama show --modelfile`, a packaging gap not a capability one). `falcon3:7b`
+  isn't a real Ollama tag (`model 'falcon3:7b' not found`). Found and pulled a community tag built
+  specifically for this (`bilel_cherif/falcon3-tools`, "Falcon 3 10b for tool usage and function
+  call") — its template DOES occasionally produce a real, correctly-shaped `tool_calls` response
+  matching this project's actual `delegate_tasks` array-of-objects schema exactly. **But
+  unreliably**: 3 successes out of 9 identical isolated smoke-test reps (~33%), the rest returning
+  completely empty `content` with no tool call at all despite generating 77-82 tokens each time
+  (something IS generated and then silently dropped, not a clean template rejection). A pipeline
+  that makes dozens of `delegate_tasks`-shaped calls per run at ~33% per-call success compounds to
+  near-certain full-run failure — disqualified on reliability grounds without spending a full live
+  run, same practice as the schema-stage disqualifications above. Re-verified live: re-pulled the
+  tag and re-ran all 9 reps a second time with raw, unedited `curl` output shown directly (not
+  summarized) after an earlier internal reporting mistake (see below) — same result, 3/9 real
+  `tool_calls`, one of those three malformed (`tasks` sent as a JSON string, not an array).
+- **Root cause of the silent-empty-response failure, researched via GitHub (not guessed)**:
+  `ollama/ollama#14958` ("Tool calls silently drop with large system prompts") looked like a prompt-
+  length bug on the surface but its root cause, confirmed by the reporter after debugging with a
+  maintainer, was a **tool-name mismatch** — the model attempted to call a function name that didn't
+  exactly match any registered tool (kebab-case vs. the real PascalCase name) — and Ollama's server
+  response for that mismatch is a **silent empty response** (`content: ""`, no `tool_calls`, no
+  error), even though the completion-token count proves the model generated real output. Not
+  specific to prompt length; that was just this reporter's own trigger shape. A second, still-open
+  issue (`ollama/ollama#15539`, gemma4 parser) shows the sibling failure mode from the other side:
+  a validly-generated tool call sometimes leaks as raw JSON text into `content` instead of being
+  extracted into `tool_calls`. Together: **Ollama's tool-call extraction is fragile to any deviation
+  between what the model actually generates and what the declared parser strictly expects, and its
+  failure mode for that mismatch is silent, not an error** — directly explains both of Falcon3's
+  observed failure shapes here (6/9 silent-empty, 1/9 leaked-malformed-JSON). Not "Falcon3 can't do
+  tool calling" (TII's own training data contradicts that) — it's generation-sample variance
+  (temperature 0.8, non-zero) meeting a parser too strict to tolerate it, with Ollama swallowing the
+  mismatch instead of surfacing it.
+- **Process note, kept for the record**: mid-investigation, an early observed "None" result after
+  one earlier "True" result was reported to the user as "my extraction script had a bug" — a cause
+  stated before it was actually verified. It was wrong; the script was fine, the underlying 3/9
+  result was real. Corrected by re-running live with raw, unedited output shown directly rather than
+  summarized, so the finding didn't depend on trusting a prior claim. See
+  `feedback_verify_before_stating_cause` memory.
+
 ### `granite3.1-dense:8b`, `phi4-mini:3.8b`
 - **Size/VRAM**: 5.0GB / 2.5GB
 - **Best result**: fail
@@ -353,14 +398,8 @@ path — looking for a lighter-than-`gpt-oss:20b` GENERAL-PURPOSE candidate, ran
 - ~~`Ornith-1.0-9B` clean re-test~~ **DONE 2026-08-19, DISQUALIFIED — see its own entry above.**
 - ~~Ministral-8B-Instruct-2410~~ **DONE 2026-08-19, DISQUALIFIED at the schema stage — see its own
   entry below, no full live run needed.**
-- ~~Falcon3-10B-Instruct~~ **BLOCKED 2026-08-19, not disqualified**: `falcon3:10b`'s Ollama tag
-  (pulled, 6.3GB) returns `"does not support tools"` — its Modelfile's `TEMPLATE` never references
-  `.Tools`/`.ToolCalls` at all (`ollama show falcon3:10b --modelfile`), a plain-chat template with
-  zero tool-call wiring, not a capability failure. `falcon3:7b` isn't a real Ollama tag at all
-  (`model 'falcon3:7b' not found`). Fixable in principle (same shape as the Ornith `jsonfmt` fix —
-  find/build a correct tool-call template for Falcon3's real chat format) but that's real
-  infrastructure work, not a quick pull-and-test — paused here pending a decision on whether it's
-  worth the investment given the pattern below.
+- ~~Falcon3-10B-Instruct~~ **DONE 2026-08-19, DISQUALIFIED at the smoke-test stage — see its own
+  entry below, no full live run needed.**
 - **Phi-4-Mini (14B variant, not the already-disqualified 3.8B)** — real caveat, not a fresh lead:
   `phi4-mini:3.8b` already failed this project's tool-call SMOKE TEST (narrates the call as literal
   text despite the model card claiming function-calling support) — a family-wide architectural
