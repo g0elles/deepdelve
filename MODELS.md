@@ -183,6 +183,29 @@ pass on both standing benchmarks.
   failure modes — are still broken at 4B scale even with reasoning cleanly isolated. Closes the
   "not yet done" clean-re-test caveat that stood since 2026-07-28.
 
+### `Ornith-1.0-9B` (deepreinforce-ai, dense, Qwen3.5-arch, MIT) — DISQUALIFIED, clean, 2026-08-19
+- **Size/VRAM**: 9.5GB (Q8_0 GGUF, `deepdelve-ornith-9b-jsonfmt`)
+- **Best result**: score 0.000, `final_report.md` is the deterministic-salvage banner
+- **Verdict**: Closes the long-standing INCONCLUSIVE status (every prior run had an independent,
+  non-model confound attached — see `RESEARCH.md` §14/§15 for the full trail: chat-template
+  empty-`<think>`-injection defect, a native-backend tool-call corruption bug, two DeepDelve
+  architecture bugs). All of those are fixed. This re-test used the fully-patched
+  `deepdelve-ornith-9b-jsonfmt` tag (0/18 `web_search` failures in its own prior live-verification)
+  via `api.backend: "ollama"` with `enable_thinking: false` — confirmed via direct curl that
+  `think: false` is the CLEAN setting for this model on the native endpoint even with tools present
+  (the opposite of what `qwen3-4b-combined-v2-lora` needed; verify per-model, don't assume).
+  **Result**: real research happened cleanly (17 sources fetched, 22 findings, no tool-call
+  corruption, no infinite loop) — but at the delegation-quota-exhaustion point, the Planner
+  narrated its wrap-up as chat prose instead of ever calling `write_workspace_file`, exhausting the
+  full writer-retry budget; `findings.md` never got accepted at all. Same "narrate instead of call"
+  failure class this project has now seen across the large majority of sub-14B candidates tried
+  (Bonsai-8B, `qwen2.5:3b-instruct`, `mistral:7b-instruct`, `mistral-nemo:12b`, `hermes3:8b`, this
+  candidate too) — independently corroborated for this specific model family by two Reddit threads
+  (§14f) as a harness-agnostic trait, not something a serving-layer or template fix reaches.
+  **Genuinely the strongest research-quality candidate tested at this size** (matches its own
+  earlier INCONCLUSIVE runs' cold-start synthesis strength) — the ceiling isn't research capability,
+  it's converting research into a written artifact under real task-completion pressure.
+
 ### `granite3.1-dense:8b`, `phi4-mini:3.8b`
 - **Size/VRAM**: 5.0GB / 2.5GB
 - **Best result**: fail
@@ -245,30 +268,6 @@ model's actual capability was ever cleanly tested, per Model Evaluation Standard
   calls, 2/4 returned empty `arguments: "{}"` despite a normal completion-token count) — real
   capability was never cleanly established either way.
 
-### `Ornith-1.0-9B` (deepreinforce-ai, dense, Qwen3.5-arch, MIT)
-- **Size/VRAM**: fits comfortably (GGUF)
-- **Result**: **INCONCLUSIVE**, not disqualified, not passed
-- **Detail**: The untested middle ground between the exhausted sub-14B local-model space and paid
-  frontier APIs (GLM-4.7-Flash and Ornith-1.0-35B were both ruled out on hardware grounds first,
-  19GB/21.2GB quants over this card's 17.1GB VRAM budget, no GPU time spent on either). Cold-start
-  synthesis from real evidence was the **strongest of any candidate tested** (45 real sources,
-  correct architecture-family coverage matching the benchmark's own gold reference), but never
-  converged on a clean, fully-verified `final_report.md` across five live runs. Root cause of the
-  looping/self-rejection pattern traced to the stock chat template's empty-`<think>`-injection
-  defect — independently corroborated by the model author's own GitHub issues (#4, #16) and two
-  Reddit threads (r/LocalLLaMA) as a real, model-family-wide trait, not DeepDelve-specific. Fixed
-  via `froggeric/Qwen-Fixed-Chat-Templates`, patched directly into the GGUF's chat-template
-  metadata. Two real, model-independent DeepDelve architecture bugs were found and fixed along the
-  way (resume-scoped delegation check, Builder given an instruction it structurally cannot
-  follow — see `ARCHITECTURE.md` §2/§4), plus a real Ollama serving-layer gap (thinking
-  suppression leaks through the OpenAI-compat endpoint specifically when tools are present, clean
-  on the native endpoint — see `api.backend: "ollama"` below). Every failure mode hit had an
-  independent non-model explanation attached, so no run constituted a clean, unconfounded test of
-  this candidate's real ceiling. A native-backend tool-call corruption bug (root-caused, two
-  hypotheses ruled out) was later live-verified fixed, 0/18 failures. A clean re-test with the
-  URL-case grounding fix and retry-budget bonus (both from 2026-07-29's engineering pass) in place
-  is the natural next step — not yet done. Full trail: `RESEARCH.md` §14/§15.
-
 ### MiniCPM3-4B (single-model candidate)
 - **Result**: **BLOCKED, not disqualified and not re-testable as-is** — a real infrastructure
   hang, not a capability verdict
@@ -329,13 +328,10 @@ model's actual capability was ever cleanly tested, per Model Evaluation Standard
 - **Verdict**: Ruled out on hardware grounds before any pull — smallest available quants
   (19GB/21.2GB) exceed this card's 17.1GB VRAM budget. No GPU time spent on either.
 
-### Candidate shortlist, researched 2026-08-19 (web search, no GPU time spent yet)
+### Candidate shortlist, researched 2026-08-19 (web search)
 Compiled after `qwen3-4b-combined-v2-lora`'s clean disqualification closed off the 4B fine-tune
 path — looking for a lighter-than-`gpt-oss:20b` GENERAL-PURPOSE candidate, ranked by promise:
-- **`Ornith-1.0-9B` clean re-test — highest priority, already in-repo, cheapest.** Not a new
-  candidate: this project's own strongest-ever cold-start synthesis result, left INCONCLUSIVE (see
-  entry above) pending a re-test with two fixes shipped since 2026-07-29. No new research needed,
-  just GPU time.
+- ~~`Ornith-1.0-9B` clean re-test~~ **DONE 2026-08-19, DISQUALIFIED — see its own entry above.**
 - **Ministral-8B-Instruct-2410** (Mistral AI, Apache-2.0 weights, Mistral Research License for the
   instruct checkpoint) — general-purpose, NOT a narrow function-calling finetune (unlike xLAM-2/
   watt-tool-8B below). Native long context (128k), interleaved sliding-window attention. Not in
