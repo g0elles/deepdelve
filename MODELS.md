@@ -206,6 +206,25 @@ pass on both standing benchmarks.
   earlier INCONCLUSIVE runs' cold-start synthesis strength) — the ceiling isn't research capability,
   it's converting research into a written artifact under real task-completion pressure.
 
+### `Ministral-8B-Instruct-2410` — DISQUALIFIED at the schema stage, 2026-08-19
+- **Size/VRAM**: 4.9GB (community tag `nchapman/ministral-8b-instruct-2410:8b`)
+- **Best result**: fail, isolated smoke test, no full live run spent
+- **Verdict**: General-purpose (not a narrow function-calling finetune), Apache-2.0/Mistral
+  Research License, native long context (128k). Not in Ollama's core library — used the community
+  GGUF tag. **First smoke test** (OpenAI-compat endpoint, simple single-string-arg `web_search`
+  tool) failed even with `tool_choice: "required"` — narrated a fake JSON schema as plain text.
+  **Native `/api/chat` endpoint smoke test with the same simple tool passed cleanly** (real
+  structured `tool_calls`), confirming an OpenAI-compat translation-layer issue for the simple
+  case, same class as this project's other Mistral-family findings. **But the REAL disqualifier**:
+  tested against DeepDelve's own actual `delegate_tasks` schema (array-of-task-objects, not a
+  single string) — failed 3/3 on the native endpoint too, narrating valid-looking JSON as markdown
+  text (`\`\`\`json {"tasks": [...]}\`\`\``) instead of a real tool call, every time. The model can
+  call a trivial single-arg tool but breaks down specifically on the array-of-objects shape that IS
+  the Planner's first and most critical call in this project's whole pipeline. Disqualified at the
+  smoke-test stage per this project's own established practice (same as `llama3.2:3b`,
+  `qwen2.5:3b-instruct`) — no full live run needed when the schema-stage failure is this clear and
+  reproducible.
+
 ### `granite3.1-dense:8b`, `phi4-mini:3.8b`
 - **Size/VRAM**: 5.0GB / 2.5GB
 - **Best result**: fail
@@ -332,14 +351,8 @@ model's actual capability was ever cleanly tested, per Model Evaluation Standard
 Compiled after `qwen3-4b-combined-v2-lora`'s clean disqualification closed off the 4B fine-tune
 path — looking for a lighter-than-`gpt-oss:20b` GENERAL-PURPOSE candidate, ranked by promise:
 - ~~`Ornith-1.0-9B` clean re-test~~ **DONE 2026-08-19, DISQUALIFIED — see its own entry above.**
-- **Ministral-8B-Instruct-2410** (Mistral AI, Apache-2.0 weights, Mistral Research License for the
-  instruct checkpoint) — general-purpose, NOT a narrow function-calling finetune (unlike xLAM-2/
-  watt-tool-8B below). Native long context (128k), interleaved sliding-window attention. Not in
-  Ollama's core library — community GGUF tags exist (`nchapman/ministral-8b-instruct-2410`,
-  `QuantFactory/Ministral-8B-Instruct-2410-GGUF`). Known quirk: vLLM's native Mistral-tokenizer
-  mode has the same `chat_template_kwargs`-rejection restriction `mistral:7b-instruct` hit — this
-  project already has the fix (`settings.skip_chat_template_kwargs`, 2026-07-26), so it's a known,
-  already-solved cost, not a new blocker. Genuinely untested — never pulled this session.
+- ~~Ministral-8B-Instruct-2410~~ **DONE 2026-08-19, DISQUALIFIED at the schema stage — see its own
+  entry below, no full live run needed.**
 - **Falcon3-10B-Instruct** (TII, Apache-2.0/Falcon license) — published BFCL 86.3, native Ollama
   tag (`falcon3:7b`/presumably a `10b` tag), state-of-the-art among sub-13B models on several
   published benchmarks (MMLU 73.1, MBPP 73.8). Closest published size to the ~14B capacity-floor
