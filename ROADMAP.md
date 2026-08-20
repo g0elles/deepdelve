@@ -442,6 +442,46 @@ deepdelve-qwen3-4b-combined-v2`, deleted `qwen3-4b-combined-v2-merged` (7.6GB) a
 (`qwen3-4b-combined-v2-lora`, 132MB) as the training artifact. `config.yaml` restored to
 `deepdelve-gpt-oss:latest`.
 
+### 2026-08-19: v2 combined LoRA re-tested clean through `api.backend: "ollama"` — DISQUALIFIED, not confounded this time
+
+Closes the "clean re-test, not yet done" caveat this entry carried since 2026-07-28. Re-merged the
+still-on-disk LoRA adapter (`merge_and_unload()` on CPU → `convert_hf_to_gguf.py --outtype q8_0`,
+4.27GB) → redeployed as `deepdelve-qwen3-4b-combined-v2` via `llama.cpp-convert` (already set up on
+`/mnt/nuevovol/llm-models`) → confirmed via direct curl against the live tag that `think: true`
+(NOT `false`) correctly isolates reasoning into its own field on the native `/api/chat` endpoint,
+`think: false` reproduces the identical known bug. Ran one clean trial via `eval/evaluate.py
+--config` pointed at a dedicated config (`backend: ollama`, `enable_thinking: true`, model
+`deepdelve-qwen3-4b-combined-v2`) against the standing visa/rent ablation benchmark.
+
+**One real process mistake along the way, worth recording**: the first attempt at this re-test
+edited the LIVE `~/.deepdelve/config.yaml` and launched `eval/evaluate.py` WITHOUT `--config` —
+`evaluate.py` never reads the live config at all, it always builds its own from
+`src/tools/config_template.yaml` unless `--config` is passed explicitly (`_resolve_base_config_path`,
+`eval/evaluate.py:77`). That entire ~47min run silently re-benchmarked `deepdelve-gpt-oss` again,
+not the candidate — a wasted run, caught only by checking the run's own `eval_agent_config.yaml`
+after the fact. Corrected by building a dedicated `eval/qwen3-4b-combined-v2-config.yaml` and
+passing it via `--config`, confirmed correct by re-checking the new run's own materialized config
+before trusting the result.
+
+**Result: score 0.25 (worse than the confounded run's 0.5)**, run finished on its own in 1513.8s
+(well under the 2820s ceiling, no resume needed). `final_report.md` is the deterministic-salvage
+banner — the model narrated in chat instead of ever calling `write_workspace_file` across its full
+writer-retry budget. `findings.md` repeatedly failed grounding on the same fabricated URLs
+(`rentremote.com`, `nomadsembassy.com`) across consecutive rebuild attempts, the same citation-
+fabrication shape as the original 2026-07-28 disqualification. **Verdict confirmed, cleanly**: the
+fine-tune's targeted objectives are real (held-out gains hold), but citation fabrication and
+writer-dispatch convergence — dimensions the combined reward never targeted — are still broken at
+4B scale even with reasoning cleanly isolated from `.content`. Not a serving-layer artifact this
+time; a real capability ceiling for this base size on these specific failure modes.
+
+**Cleanup**: `ollama rm deepdelve-qwen3-4b-combined-v2`, deleted the re-generated
+`qwen3-4b-combined-v2-merged` and `qwen3-4b-combined-v2.q8_0.gguf`, `~/.deepdelve/config.yaml`
+restored to `deepdelve-gpt-oss:latest`/`backend: openai`/`enable_thinking: false`. LoRA adapter
+kept (training artifact). `eval/qwen3-4b-combined-v2-config.yaml` kept in the repo as a reusable
+template for the next candidate's clean re-test, since building it correctly (targeting the right
+line, not a comment that happens to contain the same substring) took one real mistake to get right
+too.
+
 **Root-caused same day**: retries "not recovering" was NOT a model-capability problem — it was a
 structural bug. The known Qwen3 think-passthrough Ollama bug (see below) inflated every turn's
 token/char count 2-3x, blowing through `context_budget_chars` (50000, calibrated for nothink

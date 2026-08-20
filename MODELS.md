@@ -164,19 +164,24 @@ pass on both standing benchmarks.
   pipeline's own `enable_thinking=False` (applied directly via HF's chat template, no Ollama
   involved) is unaffected by the † caveat — the live Ollama benchmark run itself is not.
 
-### `qwen3-4b-combined-v2-lora` (7-dimension combined GRPO, 2026-07-28) †
-- **Size/VRAM**: 4.0GB (Q8_0 GGUF)
-- **Best result**: held-out eval 0.615→0.781 (real generalization, not ceiling); live benchmark
-  DISQUALIFIED
-- **Verdict**: Disqualified live, but the verdict is **confounded, not clean** — root-caused and
-  fixed the same day, not re-benchmarked since. The run executed under the known Qwen3
-  think-mode-passthrough Ollama bug (confirmed via raw API test on both this candidate and plain
-  `qwen3:4b`), burning 2-3x more tokens on reasoning than intended, which blew
-  `context_budget_chars` in 2/8 attempts and triggered a genuine DeepDelve bug (found and fixed
-  same day: `_yield_to_starved_check` let a documented-non-blocking check
-  (`check_untracked_delegation`) override the real, still-retriable terminal verdict once
-  `ctx.attempt >= ctx.max_attempts`). Do not treat this as a settled discard — a clean re-test
-  through `api.backend: "ollama"` (below) is the natural next step, not yet done.
+### `qwen3-4b-combined-v2-lora` (7-dimension combined GRPO, 2026-07-28) — DISQUALIFIED, clean
+- **Size/VRAM**: 4.3GB (Q8_0 GGUF, merged+redeployed 2026-08-19 as `deepdelve-qwen3-4b-combined-v2`)
+- **Best result**: held-out eval 0.615→0.781 (real generalization, not ceiling); TWO live
+  benchmarks, both DISQUALIFIED
+- **Verdict**: First live benchmark (2026-07-28) was confounded by the Qwen3 think-mode-passthrough
+  Ollama bug (burned 2-3x more tokens on reasoning than intended, tripped an unrelated DeepDelve
+  bug too — both root-caused and fixed the same day). **Clean re-test done 2026-08-19**: merged the
+  still-on-disk LoRA fresh, deployed via `api.backend: "ollama"` with `enable_thinking: true`
+  (confirmed via direct curl that `think: true` correctly isolates reasoning into its own field on
+  this exact tag — `think: false` reproduces the bug, dumping raw CoT into `.content`). Result:
+  score 0.25 (worse than the confounded run's 0.5), `final_report.md` is the deterministic-salvage
+  banner — the model narrated in chat instead of ever calling `write_workspace_file` across its
+  full writer-retry budget, and `findings.md` repeatedly failed grounding on the same fabricated
+  URLs (`rentremote.com`, `nomadsembassy.com`) across consecutive rebuild attempts. **Confirmed
+  disqualification, not confounded this time**: the fine-tune's targeted objectives held (the
+  held-out gains are real), but citation fabrication and writer-dispatch convergence — untouched
+  failure modes — are still broken at 4B scale even with reasoning cleanly isolated. Closes the
+  "not yet done" clean-re-test caveat that stood since 2026-07-28.
 
 ### `granite3.1-dense:8b`, `phi4-mini:3.8b`
 - **Size/VRAM**: 5.0GB / 2.5GB
@@ -388,10 +393,15 @@ benchmarked run — a real, previously-unknown contributing factor to these disq
 of, not instead of, the capacity-floor evidence in `README.md`'s References section). **Confirmed via
 a direct vLLM test that this is Ollama's bug, not a Qwen3 model limitation**: `enable_thinking: false`
 against `Qwen/Qwen3-4B` on a real vLLM server (genuine chat-template evaluation) gives a clean answer
-with zero `<think>` content and correct, unpolluted tool-calling. None of the rows above have
-actually been re-benchmarked through DeepDelve with this working nothink mode yet, though — their
-existing scores stand as the best available evidence, just not as clean evidence as previously
-assumed. Full trace in `ROADMAP.md`.
+with zero `<think>` content and correct, unpolluted tool-calling. One row below (`qwen3-4b-combined-v2-lora`)
+has now been re-benchmarked through this clean path — see its entry above; the rest of the rows
+above still haven't, and their existing scores stand as the best available evidence, just not as
+clean evidence as previously assumed. Full trace in `ROADMAP.md`. **Note discovered doing that
+re-test (2026-08-19): "clean" via `api.backend: "ollama"` means `enable_thinking: true`, not
+`false` — `think: false` on the native endpoint reproduces the identical bug (raw CoT dumped into
+`.content`, confirmed via direct curl); only `think: true` correctly isolates reasoning into its
+own field. The token-budget cost this implies (reasoning always on) is a real, accepted trade-off
+for a clean measurement, not a bug to work around.**
 
 **Lower-cost re-test path available since 2026-07-28**: at the time the think-mode bug above was
 found, the only known fix was switching the whole serving stack to vLLM — a big step, since reverted
