@@ -3828,3 +3828,88 @@ symptom stop recurring."
 `rename_reject_escalation`/`tool_failure_streak_guard` (lower priority — both already
 live-validated against a real incident when they were built, unlike the two above) not yet run at
 all as of this writing.
+
+## 19. AgentFloor: a capability-threshold benchmark directly on-topic for this project's model search (2026-08-19) ✅ read in full
+
+**Paper**: *AgentFloor: How Far Up the Tool Use Ladder Can Small Open-Weight Models Go?* (Karmakar
+& Chatterjee, arXiv:2605.00334, May 2026). Downloaded to `papers/agentfloor_2605.00334.pdf`.
+**Page count confirmed via `pdfinfo` (15 pages), all 15 read in full** — not the abstract, not a
+`WebSearch` summary (a prior turn in this same session cited it from a search snippet without
+having read it; that citation is now backed by the actual read, per this project's own standing
+rule after three prior incidents of exactly this shortcut).
+
+**What it is**: a deterministic 30-task, six-tier capability ladder (A0 instruction-following →
+A single-tool-call → B two-tool chain → C branching → D multi-source synthesis with conflict
+recovery → E long-horizon planning under persistent constraints, 8-12 tool calls), evaluated
+against 16 open-weight models (0.27B-32B) plus GPT-5, 16,542 scored runs, native tool-calling only
+(no prompt-based emulation, no provider-specific repair logic), with paired bootstrap CIs and
+pre-registered equivalence margins.
+
+**Findings directly relevant to this project's own model search (2026-08-19: Ornith-1.0-9B,
+Ministral-8B, Falcon3-10B, Phi-4 14B, qwen3-4b-combined-v2-lora all disqualified today)**:
+
+1. **The complexity wall this paper measures matches exactly where this project's own candidates
+   keep failing.** Sub-5B models clear 80-90%+ on A0/A (instruction-following, single tool call).
+   The B→C transition is "the steepest single column-step in the corpus." At C/D/E (branching,
+   multi-source synthesis, long-horizon planning) — **no model in their 16-model + GPT-5 corpus
+   clears even a 60% reliability bar, zero-shot** (Table 3: every cell in that range is "—", no
+   zero-shot recipe). DeepDelve's real workload (branching decisions, multi-source synthesis with
+   conflict recovery, coordinating a whole multi-hour run) sits exactly at C/D/E. This reframes
+   this project's entire model search: the problem was never "gpt-oss:20b is unusually weak," it's
+   that **no current model — including frontier GPT-5 — handles this task class reliably
+   zero-shot.** This is real, external, quantified validation that DeepDelve's heavy
+   completion-check/retry/salvage architecture is the correct response to a genuine, externally-
+   measured capability gap, not overengineering for a problem a better model would make
+   unnecessary.
+
+2. **"Narrate/resign instead of execute" is GPT-5's own dominant failure mode on the hardest tier,
+   not just something small open-weight models do.** On tier E, GPT-5's failure mass is F5 (early
+   resignation, 39%) + F5b (plans without ever executing, 24%) = 63% of its failures — the model
+   engages, sometimes partially executes, then stops without calling the required tool. This is
+   structurally the SAME shape this project has now seen across Bonsai-8B, `qwen2.5:3b-instruct`,
+   `mistral:7b-instruct`, `hermes3:8b`, `Ornith-1.0-9B`, and `qwen3-4b-combined-v2-lora` — a
+   dispatch narrating what it would do in prose instead of calling `write_workspace_file`. GPT-5
+   does this LESS often than small models, but the same failure class, at the frontier, under real
+   long-horizon pressure. Reframes those disqualifications: not purely "too small to understand the
+   tool," but a general property of long-horizon agentic tasks that scale reduces the RATE of, not
+   eliminates.
+
+3. **Directly actionable: "structured prompts hurt every model tested."** A plan→execute→submit
+   phase-decomposition system prompt (the obvious-seeming fix for early resignation) REGRESSED
+   every single model in their sweep, up to -33pp on one candidate. Trace inspection showed the
+   mechanism: the model complies faithfully with "plan before executing," writes a careful plan,
+   and then emits a prose final-text answer without ever entering the EXECUTE phase — "the
+   intervention designed to reduce early resignation produces more of it."
+   **Checked against this project's own architecture** (`src/prompts.py`): `PLANNER_INSTRUCTIONS`
+   itself is a genuine cross-agent architectural boundary ("your job ends at delegation, stop
+   here — findings.md/final_report.md are produced by a SEPARATE process"), not the same shape as
+   the paper's harmful single-agent in-task phase prompt — that boundary is between different
+   dispatches, not a "plan phase" the SAME agent is meant to exit. But `BUILDER_INSTRUCTIONS`
+   (and `FINDINGS_WRITER_INSTRUCTIONS`, same shape) DOES contain a `<Show Your Thinking>` block:
+   "Before writing, use `think_tool` to check: does every claim I'm about to write trace back to a
+   specific line in `findings.md`?... If yes, remove or flag it" — a lighter-weight but structurally
+   similar "deliberate before acting" instruction, immediately before the exact tool call
+   (`write_workspace_file`) this project has repeatedly seen candidates narrate instead of calling.
+   **Not proven as the cause** — this is a plausible contributing factor consistent with the
+   paper's evidence, not a demonstrated one; the paper's own harmful intervention was a much
+   heavier, formally-separated PLAN/EXECUTE/SUBMIT phase structure, not a one-line reflective
+   check. **A cheap, testable next step, not yet done**: A/B a Builder/FindingsWriter dispatch with
+   and without the `<Show Your Thinking>` block on a candidate known to narrate (e.g. re-run
+   `qwen3-4b-combined-v2-lora`'s smoke-test-scale scenario) to see if removing the explicit
+   "deliberate first" framing changes the narrate-vs-call rate. Do not remove the block from
+   production based on this reading alone — it also serves a real, separate purpose (grounding
+   discipline) that a live test would need to confirm isn't lost.
+
+4. Their own design recommendation ("route the broad base of routine actions to small open-weight
+   models, reserve large frontier models for the narrower class that truly demands deep
+   planning/control") matches DeepDelve's own Planner/Searcher/Analyzer/Writer role split in
+   principle. Does **not** reopen the heterogeneous-tiering door — that was closed on VRAM-
+   contention grounds (`gpt-oss:20b` never unloads between specialist dispatches on this hardware),
+   a hardware fact independent of which small model is paired, not a question this paper's findings
+   change. It does validate the DIRECTION (tiered model use by task complexity) was architecturally
+   sound, just blocked here specifically by VRAM, not by the idea being wrong.
+
+**Not yet done**: the A/B test in point 3, and reading whether their released benchmark/harness
+(mentioned as released alongside the paper) could itself seed a lighter internal regression check
+for this project's own candidate evaluations instead of relying only on the one visa/rent live
+benchmark query.

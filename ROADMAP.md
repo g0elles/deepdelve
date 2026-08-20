@@ -4074,6 +4074,22 @@ tried, twice, not merely proposed):
 
 ## Pending
 
+- **Test whether `BUILDER_INSTRUCTIONS`/`FINDINGS_WRITER_INSTRUCTIONS`'s `<Show Your Thinking>`
+  block contributes to the recurring "narrate instead of call `write_workspace_file`" failure —
+  new, 2026-08-19, NOT yet tested.** AgentFloor (arXiv:2605.00334, read in full — see `RESEARCH.md`
+  §19) found a plan-before-execute structured prompt regressed EVERY model in its sweep (up to
+  -33pp) by teaching the model to fully comply with "plan first" and then stop there, never
+  entering EXECUTE. DeepDelve's Builder/FindingsWriter instructions carry a lighter-weight but
+  structurally similar "deliberate before acting" block immediately before the exact tool call this
+  project has repeatedly seen candidates narrate instead of calling (Bonsai-8B,
+  `qwen2.5:3b-instruct`, `mistral:7b-instruct`, `hermes3:8b`, `Ornith-1.0-9B`,
+  `qwen3-4b-combined-v2-lora` — all hit this same shape on different days). **Not proven as the
+  cause, a plausible contributing factor consistent with the paper's evidence.** Cheap next step:
+  A/B a known-narrating candidate's writer dispatch with and without the block via an isolated
+  smoke test (not a full live run) to see if the narrate-vs-call rate changes. Do not remove the
+  block from production based on the paper reading alone — it also serves a real, separate
+  grounding-discipline purpose that a live test would need to confirm isn't lost by removing it.
+
 - **UNIFIED LIST, 2026-08-17 — every open gap and literature-derived candidate improvement from
   today's session in one place, prioritized.** Consolidated at the user's request after a full
   literature-completeness audit plus a real citation audit of the ablation smoke-test's own
