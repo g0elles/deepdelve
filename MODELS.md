@@ -276,6 +276,24 @@ pass on both standing benchmarks.
 - **Verdict**: Disqualified at the tool-call smoke test itself: both narrate the call as literal
   text despite each model card explicitly claiming function-calling support.
 
+### `Phi-4` 14B (Microsoft, MIT) — DISQUALIFIED at the smoke-test stage, 2026-08-19
+- **Size/VRAM**: 9.1GB (`jacob-ebey/phi4-tools`)
+- **Best result**: 0/9 real tool calls on an isolated smoke test — no full live run needed
+- **Verdict**: Researched before pulling anything: `Phi-4` (14B) and `Phi-4-mini` (3.8B, the
+  candidate already disqualified above) are DIFFERENT models, not two sizes of the same one —
+  Microsoft's own function-calling support is documented for `phi4-mini` specifically; the 14B
+  `phi4` has no official tool-calling support on Ollama at all (confirmed via
+  `ollama/ollama#9647`, closed as "not planned" by maintainers). The one community fix
+  (`jacob-ebey/phi4-tools`, referenced directly in that same GitHub issue as "the only phi4 with
+  tool calling support") was pulled and smoke-tested against the real `delegate_tasks` schema, 9
+  reps, raw output shown live. **Result: 0/9** — every single response explained the correct JSON
+  as prose ("Here's how you can format it: \`\`\`json {...}\`\`\`") instead of ever emitting a real
+  `tool_calls` field. Worse than Falcon3's intermittent 3/9: this is fully deterministic narration,
+  not a parser-extraction reliability problem — the community template doesn't appear to actually
+  wire tool-call output at all, or the base 14B model (unlike `phi4-mini`) was never trained to
+  invoke tools rather than describe them. Disqualified without a full live run, same practice as
+  the other schema/reliability-stage disqualifications above.
+
 ### `llama3-groq-tool-use:8b`
 - **Best result**: fail
 - **Verdict**: Rejected at the tool-call-schema stage.
@@ -400,11 +418,8 @@ path — looking for a lighter-than-`gpt-oss:20b` GENERAL-PURPOSE candidate, ran
   entry below, no full live run needed.**
 - ~~Falcon3-10B-Instruct~~ **DONE 2026-08-19, DISQUALIFIED at the smoke-test stage — see its own
   entry below, no full live run needed.**
-- **Phi-4-Mini (14B variant, not the already-disqualified 3.8B)** — real caveat, not a fresh lead:
-  `phi4-mini:3.8b` already failed this project's tool-call SMOKE TEST (narrates the call as literal
-  text despite the model card claiming function-calling support) — a family-wide architectural
-  trait is a real risk the 14B size doesn't automatically fix. Worth one cheap isolated tool-call
-  smoke test before any full benchmark, not a priority pull.
+- ~~Phi-4 14B~~ **DONE 2026-08-19, DISQUALIFIED at the smoke-test stage — see its own entry below,
+  no full live run needed.**
 - **Deprioritized, not re-litigating**: `xLAM-2-8b-fc-r`, `watt-tool-8B`, `ToolACE-8B` — narrow
   function-calling-specialist finetunes (Llama-3.1-8B base), already surfaced by a prior session's
   research pass (`ROADMAP.md`, 2026-07-18) and explicitly deprioritized then: "a real risk for the
