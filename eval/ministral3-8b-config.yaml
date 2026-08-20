@@ -1,0 +1,605 @@
+api:
+  openai_base_url: http://localhost:11434/v1   # Ollama's OpenAI-compatible endpoint
+  # Default per the 13-run Colombia B2B benchmark (2026-07-11, manual rubric vs gold reference —
+  # see README "Model choice"): gpt-oss is the only model in the "usable with verification" band
+  # (best 7/10, high run-to-run variance but honest-empty on bad runs). mistral-nemo:12b passes the
+  # delegate_tasks schema test 3/3 but benchmarks at a 2/10 ceiling with loud fabrication;
+  # qwen3.6 researches well but fails synthesis at scale (1/10); hermes3:8b 0/3 on the schema.
+  openai_model: ministral-3:8b
+  # OpenAI-SDK retry budget for 429/5xx (exponential backoff, honors Retry-After). Hosted
+  # endpoints (e.g. NVIDIA NIM's free tier) throttle far below what concurrent sub-agents
+  # generate — a run died to a single unretried 429 before this existed.
+  max_retries: 6
+  # backend: "openai" (default) talks OpenAI-compat (openai_base_url/openai_model above, works for
+  # Ollama's /v1 endpoint, vLLM, LM Studio, real OpenAI, etc). "ollama" talks Ollama's own native
+  # /api/chat instead (agent_framework.ollama.OllamaChatClient) — confirmed live 2026-07-28
+  # (RESEARCH.md §14e) that the OpenAI-compat endpoint leaks a short reasoning field back into
+  # tool-calling turns even with enable_thinking:false, while the native endpoint suppresses it
+  # cleanly in the identical scenario. When set to "ollama", openai_base_url can keep its existing
+  # /v1 suffix — _build_client strips it automatically.
+  # "openai_hosted" (2026-08-04): for a REAL hosted frontier API (DeepSeek, and whatever's tested
+  # next) as opposed to local/self-hosted OpenAI-compat serving. "openai"'s thinking-mode control
+  # (chat_template_kwargs + reasoning_effort="none") is a vLLM/local-serving convention a real
+  # hosted API silently ignores, leaving thinking mode stuck at that provider's own default —
+  # confirmed live against DeepSeek (thinking defaults ON at effort "high" there). This backend
+  # skips that local-serving dance entirely and looks up the provider's OWN documented thinking
+  # toggle from orchestrator.py's _HOSTED_PROVIDER_THINKING_EXTRA_BODY, keyed by openai_base_url.
+  backend: ollama
+settings:
+  enable_thinking: false
+  # Set true ONLY when api.openai_model (or settings.specialist_model) points at a genuine
+  # Mistral-family checkpoint served via vLLM's native Mistral tokenizer mode -- that tokenizer
+  # unconditionally rejects any request containing chat_template_kwargs (confirmed at the vLLM
+  # source, and confirmed intentional/permanent via vLLM PR #26358, not a bug that a version
+  # bump fixes). Every other model/backend should leave this false (the default).
+  skip_chat_template_kwargs: false
+  temperature: 0.2
+  # Optional: use a different (typically lighter/faster) model for the leaf specialist roles
+  # (WebSearcher/AcademicSearcher/DocumentAnalyzer/DataAnalyzer) than api.openai_model, which stays
+  # reserved for the Planner + writer/review roles (Builder/FindingsWriter/PeerReviewer) that need
+  # multi-step self-correction — the bake-off's own repeated finding is that small local models are
+  # reliable at single tool calls and unreliable at that coordination work. Falls back to
+  # api.openai_model when unset (the default, single-model behavior, unchanged).
+  # Real cost, not free: confirmed live this project's own dev GPU (16GB) does NOT keep two
+  # different models loaded in VRAM simultaneously — a 12GB + 5GB model pair already exceeds the
+  # budget, so every switch between the two models triggers a real reload (~5-23s measured). This
+  # is paid once per delegate_tasks ROUND (the Planner boundary), not per individual specialist
+  # tool call, so the tax scales with how many rounds a run needs, not how many sources it fetches.
+  # Verify with a real timed A/B against your own hardware before assuming it's a net win.
+  # specialist_model: deepdelve-qwen3-4b
+  # specialist_base_url: escape hatch for a specialist model that isn't OpenAI-tool-calling
+  # compatible on the SAME endpoint as api.openai_base_url (e.g. a local translation proxy in
+  # front of a model with its own native tool-call format). Only meaningful together with
+  # specialist_model above; falls back to api.openai_base_url when unset.
+  # specialist_base_url: http://localhost:8800/v1
+  concurrency:
+    # Must not exceed your backend's REAL concurrent-request serving capacity, not just a number
+    # that "sounds reasonable." Confirmed live 2026-07-14: a single-GPU Ollama instance serving a
+    # 20B model with OLLAMA_NUM_PARALLEL=1 (the default for VRAM-constrained local setups) can
+    # only ever generate for ONE of these concurrent dispatches at a time — the others sit queued
+    # at the HTTP layer with zero streamed tokens, silently burning their own
+    # sub_agent_timeout_minutes deadline (which starts once this semaphore is acquired, not once
+    # Ollama actually starts serving the request) before ever producing real output. Root-caused
+    # via a run where every 'background' sub-agent dispatch failed with "stream produced no
+    # update before the deadline" despite the model being healthy. Set this to your backend's
+    # actual OLLAMA_NUM_PARALLEL (or hosted-endpoint concurrency limit), not higher.
+    max_concurrent_tasks: 3
+  # Structural fix for the #1 unresolved reliability issue found via extensive live testing
+  # (README "Known limitation" / ROADMAP.md): across every model tried, the Searcher would
+  # reliably stop at search snippets and never call fetch_url_to_workspace, then fabricate
+  # specifics the snippets didn't contain. web_search now auto-fetches the full content of its
+  # top N results itself — there is no snippet-only path left to take. Costs one
+  # fetch_url_to_workspace quota unit per auto-fetch (skipped gracefully if that quota is
+  # exhausted). Set to 0 to disable and restore the old search-then-optionally-fetch behavior.
+  web_search:
+    auto_fetch_top: 1
+    # Outer timeout on a single search call (also reused by the pre-run search-health probe in
+    # engine/tui.py) — confirmed live 2026-07-13 (a run stalled indefinitely) and root-caused
+    # against two real GitHub issues (HKUDS/nanobot#2804, microsoft/amplifier#219): ddgs's
+    # underlying `primp` Rust HTTP client can block in a way a plain asyncio.to_thread background
+    # thread never returns from — and never returns to Python control at all, which would leave
+    # the process unable to exit cleanly even after the model gets its error back. Enforced via
+    # tools/web.py::_run_with_daemon_timeout (a real daemon thread, not just an async cancel) —
+    # see its docstring for why a bare asyncio.wait_for isn't enough on its own.
+    timeout_seconds: 20
+  # "light" (default): behavior unchanged. "heavy": web_search searches deeper (max_results >= 8)
+  # and auto-fetches more of the top results (>= 3) per call — a larger verified data pool per
+  # search, for queries where thoroughness matters more than tool-call/token economy. Costs more
+  # fetch_url_to_workspace quota per call; raise that quota if you enable this.
+  search_mode: light
+  # "standard" (default): free-format report shape (short answer or generic structured sections,
+  # Planner's own judgment) with the default `- **[Title](URL)**` inline citation format.
+  # "academic": a literature-review paper shape (Abstract, Introduction, thematic sections,
+  # Cross-Cutting Synthesis, Quantitative Benchmarking, Challenges & Future Directions,
+  # Conclusion, References) with `(Author, Year)` in-text citations resolved against a numbered
+  # References list — see src/prompts.py's ACADEMIC_REPORT_STYLE_INSTRUCTIONS /
+  # ACADEMIC_CITATION_FORMAT_INSTRUCTIONS and utils/grounding.py's parse_academic_references.
+  # "answer": a 1-3 sentence direct answer instead of a full report, for simple factual queries —
+  # ROADMAP.md candidate from dzhng/deep-research's writeFinalAnswer. Cites inline as
+  # `(Source: [Title](URL))` on the answer's own sentence — no separate References section. Does
+  # NOT relax any grounding check, only the report's SHAPE (see ANSWER_REPORT_STYLE_INSTRUCTIONS).
+  # Orthogonal to --depth (that only changes tool budgets, this changes report SHAPE); set via
+  # --style on the CLI or this key directly.
+  report_style: standard
+  # Optional PDF export of the final report, alongside references.bib (always generated once a
+  # report cites at least one real source, no config needed). Off (null) by default: needs the
+  # `pandoc` system binary, which this project can't bundle via pip. Set to a pandoc
+  # --pdf-engine value: "weasyprint" (pip-installable, no system TeX needed — `pip install
+  # weasyprint`) or "xelatex"/"pdflatex" (best typesetting, needs a full TeX install, e.g.
+  # `apt install pandoc texlive-xetex`). If pandoc itself isn't found on PATH, export is skipped
+  # with a one-line notice — never hard-fails a run. See engine/tui.py's _export_pdf.
+  pdf_engine: null
+  # Which real search PROVIDER answers web_search — invisible to the model, which only ever sees
+  # one tool ("web_search") regardless of this setting. "auto" (default) picks the best configured
+  # provider by which API key is set below: tavily_api_key > brave_api_key > ddgs (free, no key).
+  # Or pin one explicitly: "tavily" | "brave" | "ddgs".
+  #
+  # Deliberately NOT exposed as a second/third MCP tool the model chooses between — that was tried
+  # (brave_web_search, then tavily_search, both as separate MCP-provided tools) and confirmed live
+  # 2026-08-01 not to work: across three live runs, one with an explicit "prefer it over
+  # web_search" prompt instruction, the model called web_search 100% of the time and the
+  # alternate tool zero times. Prompted tool preference is not a reliable lever on small local
+  # models — this project's whole design philosophy already says so (see CLAUDE.md's project
+  # rules on structural vs. prompted enforcement). Full writeup: RESEARCH.md §16,
+  # session_status/CURRENT.md.
+  web_search_backend: auto
+  # Tavily: https://app.tavily.com/home (free tier). Dedicated search API, not a scrape. Also
+  # powers a third fetch-retry rung in tools/web.py::_fetch_raw (Tavily's own /extract API,
+  # tried only after the plain fetch AND the headless-browser retry both still look like a
+  # stub/bot-wall) — same key, no separate setting. See _fetch_raw's own comment at that site
+  # (RESEARCH.md §16) for the live incident that motivated it.
+  tavily_api_key: ""
+  # Brave Search API: https://brave.com/search/api/ (free tier). A real search index.
+  brave_api_key: ""
+  # ddgs (free, no API key required) is the zero-config fallback when neither key above is set —
+  # "auto" here lets ITS OWN internal metasearcher rotate/fall back across 10+ engines (google,
+  # bing, brave, yahoo, startpage, mojeek, duckduckgo, ...) rather than pinning one. A single
+  # pinned provider is a single point of failure: DDG throttling after a search-heavy day made
+  # whole runs fail in ways that looked like model fabrication (see search_health in
+  # _run_state.json). A comma list pins specific engines in order, e.g. "google,brave,duckduckgo".
+  # Only consulted when ddgs is the active provider (see web_search_backend above) — unrelated to
+  # the tavily/brave/ddgs provider choice itself, just ddgs's own internal engine-rotation knob.
+  search_backend: auto
+  fetch:
+    # Headless-browser (Playwright) retry when a plain HTTP fetch comes back looking like a
+    # bot-wall stub — Akamai/Cloudflare JS challenges, browser-version-sniffing blocks. Confirmed
+    # live 2026-07-14: real, citable papers on Springer, ScienceDirect, and MDPI were all getting
+    # marked as fake/stub sources because the plain fetch never received real content (a stripped
+    # shell, an "unsupported browser" block page, and a JS interstitial respectively) — see
+    # tools/web.py::_fetch_raw and ROADMAP.md. No-op with zero latency cost if Playwright isn't
+    # installed (`pip install deepdelve[browser] && playwright install chromium`).
+    headless_fallback: true
+  quotas:
+    # Quotas are GLOBAL — shared cumulatively across the Planner and every dispatched specialist
+    # (WebSearcher, AcademicSearcher, DocumentAnalyzer, DataAnalyzer). Each key becomes a prompt
+    # format variable {key_quota}.
+    delegate_tasks: 15
+    web_search: 15
+    fetch_url_to_workspace: 15
+    search_verified_findings: 10
+    write_workspace_file: 10
+    edit_workspace_file: 10
+    list_workspace_files: 10
+    write_todos: 10
+    read_todos: 10
+    think_tool: 30
+    read_workspace_file:
+      limit: 30
+      rules:
+        max_lines: 300
+    grep_workspace_file:
+      limit: 30
+      rules:
+        max_matches: 10
+  # Per-task cap (NOT part of the global quotas pool above) on how many Analyzer children ONE
+  # Tier-2 specialist task (WebSearcher/AcademicSearcher) may spawn via its own delegate_tasks
+  # call. Added 2026-07-26: a live smoke test on a trivial single-fact query saw one WebSearcher
+  # task delegate 6+ Analyzer sub-tasks despite its own prompt saying "ONE authoritative source is
+  # sufficient" — a soft "stop early" instruction the local model didn't reliably follow, burning
+  # most of the run's entire global delegate_tasks budget on one facet before the Planner got
+  # another turn. This is a structural backstop, independent of the global quotas above.
+  #
+  # Bumped 3 -> 4 (2026-08-19): the 2026-08-18 ablation study's own run data showed every
+  # visa/regulatory-topic task (digital_nomad_visa_mexico/_portugal, all 6 runs) hitting this cap
+  # and then burning multiple turns on rejected delegate_tasks retries instead of ever completing
+  # real analysis -- a genuinely more source-diverse topic (official gov page + 2-3 third-party
+  # guides) than the trivial single-fact query this cap was tightened for. A deliberate, small,
+  # evidence-based trade-off, not a reversal of the original fix: 4 still stops the 6+-Analyzer
+  # runaway case, while giving real regulatory topics one more source than they were structurally
+  # denied. Revisit if a live run shows trivial queries over-delegating again at this value.
+  specialist_delegation_cap: 4
+  # Per-task cap (NOT part of the global quotas pool above) on how many real sources ONE Tier-1
+  # specialist task (WebSearcher/AcademicSearcher) may fetch directly via web_search/
+  # fetch_url_to_workspace. Added 2026-08-01 — the sibling fix to specialist_delegation_cap above
+  # for the DIRECT-fetch half of the same recurring failure shape (RESEARCH.md Sec.15): a single
+  # WebSearcher task fetched 11 distinct URLs for one uncontested fact despite
+  # WEB_SEARCHER_INSTRUCTIONS already saying "ONE source is sufficient... STOP EARLY", exhausting
+  # context_budget_chars and cascading into an unforced Planner re-verification round. A soft
+  # prompt-level "stop early" instruction is documented (RESEARCH.md Sec.15's literature review) as
+  # an unreliable stopping mechanism on its own — this is the structural backstop.
+  specialist_fetch_cap: 5
+  # Per-dispatch cap (NOT part of the global quotas pool above) on how many combined
+  # read_workspace_file + grep_workspace_file calls ONE research-role dispatch (DocumentAnalyzer/
+  # DataAnalyzer in practice — Builder/FindingsWriter/PeerReviewer are deliberately excluded, see
+  # engine/orchestrator.py's _run_single_task reset site) may make. Added 2026-08-01 — the third
+  # instance of the same recurring failure shape as specialist_delegation_cap/specialist_fetch_cap
+  # above (RESEARCH.md Sec.16): grep_workspace_file/read_workspace_file's own quota is GLOBAL,
+  # shared across every dispatch of the whole run, which let ONE Analyzer dispatch struggling with
+  # a hard document (a 3,800-line Spanish-language legal PDF, repeated grep misses) burn 34-40 of
+  # the shared grep_workspace_file budget, leaving every OTHER Analyzer dispatched afterward in the
+  # same run unable to search or read its own, perfectly readable, unrelated source at all.
+  analyzer_read_cap: 8
+  # Hard cap on how many top-level delegate_tasks rounds the PLANNER itself may run in one call
+  # (initial dispatch + replans combined), NOT part of the global quotas pool above. Added
+  # 2026-08-01 — live-tested AFTER specialist_fetch_cap/the softened context-budget-cutoff wording
+  # above: both fixed the ORIGINAL traced incident, but two smoke-test reruns still timed out
+  # anyway because the Planner kept redispatching tasks (up to 6 total delegate_tasks rounds on a
+  # 2-task query) with NO cutoff marker or other specific signal involved — a general
+  # ADAPTIVE PLANNING LOOP over-replanning tendency, not just a reaction to that one wording
+  # (RESEARCH.md Sec.15). Modeled directly on langchain-ai/open_deep_research's
+  # max_researcher_iterations (a real, working precedent for this exact problem shape, checked
+  # directly against its source, not inferred).
+  max_planner_delegate_rounds: 4
+  # How much extra headroom a completion-check retry gets on top of whatever's left in the shared
+  # pool, per tool. Fixes the old project's bug where all 3 retries drew from the same
+  # already-exhausted budget as the failed first attempt (see README "Completion Checks").
+  retry_quota_topup:
+    delegate_tasks: 3
+    web_search: 3
+    fetch_url_to_workspace: 3
+    # Added 2026-07-29: read_workspace_file previously had NO per-attempt topup at all (only the
+    # narrower per-cycle _ensure_reader_quota_headroom guard) -- confirmed live 2026-07-27 that a
+    # long Write->Review->Fix escalation chain (8 completion-check attempts) still exhausted the
+    # shared pool and left a late Builder Fix pass unable to re-read its own source material.
+    read_workspace_file: 3
+  # How many completion-check attempts a run gets before giving up with an unresolved issue
+  # (missing_artifact / not_grounded / etc.) instead of continuing to retry. The old fixed default
+  # of 3 could cut a run off with real sources already sitting in findings.md, well before any
+  # real hardware constraint — raise this if you have compute/time to spare and would rather the
+  # agent keep revising than stop early. Each extra attempt costs wall-clock time and the
+  # retry_quota_topup allowance above, not memory — this is not a resource-limited setting.
+  max_completion_check_attempts: 3
+  # ROADMAP Phase 5 ("Coverage accounting / ResearchMap"): distinct from every grounding_check
+  # below, which all verify content that ALREADY EXISTS is properly cited -- this instead asks
+  # whether the Planner's own top-level delegated research plan actually paid off. A report can be
+  # perfectly grounded (every citation traces to a real fetch) yet still be thin because most of
+  # the Planner's own delegated angles came back with nothing usable and got silently dropped.
+  # Built entirely from already-reliable, model-independent structural data (utils/run_state.py's
+  # RunState.coverage(): per-task fetch attribution + delegation depth, not a new Planner-authored
+  # schema). Conservative: fires only when a MAJORITY of top-level tasks came back with no real
+  # source AND there are enough of them for that to mean something -- a single-task query (the
+  # common case for a simple factual lookup) that succeeded is never affected by this at all.
+  coverage_check:
+    enabled: true
+    threshold: 0.5    # fire when covered/total top-level tasks falls below this
+    min_tasks: 2       # never fire with fewer top-level tasks than this -- not enough signal
+  # check_uneven_task_investment (2026-07-23): coverage_check's blind spot -- a task with just 1
+  # thin source still counts as "covered" there. This instead compares real-source COUNTS across
+  # covered tasks, catching a task starved relative to its siblings even though it's technically
+  # covered (e.g. Colombia-culture tasks getting 6 sources while the deep-learning task got 1).
+  uneven_coverage_check:
+    enabled: true
+    threshold: 0.3        # fire when a covered task's count is below this fraction of the richest task's
+    min_tasks: 2           # need at least this many covered tasks to compare
+    min_total_sources: 4   # need at least this many real sources total -- guards against flagging
+                            # a small/simple query where every task naturally has 1-2 sources
+  # check_task_verification_flagged (2026-07-26, VERIMAP-inspired, RESEARCH.md Sec.9): a
+  # structural per-task verification ledger (_update_task_verification, engine/completion.py) --
+  # fires when a delegated task's EVERY finding was excluded by _is_citable_finding (fabricated,
+  # off-topic, or contradicted), naming that specific task rather than nudging the whole run.
+  task_verification_check:
+    enabled: true
+  # check_stale_findings (2026-07-24): findings.md is only ever existence-checked once written --
+  # nothing previously caught the Planner delegating MORE research after that first write, so a
+  # findings.md that's genuinely gone stale (real findings recorded but never included) was never
+  # refreshed before the final report got built from it. Fires only when the number of real,
+  # distinct, citable findings has grown since findings.md's own last write -- never on intentional
+  # budget truncation within a single write (that's already surfaced to the model separately).
+  stale_findings_check:
+    enabled: true
+  # check_findings_underuses_evidence (2026-07-26): findings.md can silently drop an ENTIRE
+  # delegated task's real research while consolidating -- confirmed live, a balanced 2-facet run
+  # (7 sources one topic, 5 the other, both fully "covered" per coverage()) produced a findings.md
+  # covering only one topic, with nothing anywhere (not check_thin_coverage, not
+  # check_report_underuses_findings) catching that the second topic vanished outright. Fires when
+  # a covered top-level task has ZERO of its real fetched URLs cited anywhere in findings.md.
+  findings_evidence_check:
+    enabled: true
+    min_tasks: 2  # need at least this many covered tasks -- can't detect "one topic missing" with just one
+  # check_findings_underuses_evidence's own sibling, one stage downstream (2026-07-29): findings.md
+  # underuses_evidence guarantees every covered task reaches findings.md, but nothing then
+  # guarantees Builder's report actually cites every task's surviving sources -- report_coverage_check's
+  # flat ratio can pass while one whole task's citations are zero (RESEARCH.md Sec.14h).
+  report_evidence_check:
+    enabled: true
+    min_tasks: 2
+  # Near-duplicate heading-delimited sections within the SAME report (self-consistency, not
+  # citation grounding). Confirmed live (2026-08-17): a Builder Fix-pass's own edit_workspace_file
+  # call retyped an existing section's content into new_string while appending a new subsection
+  # next to it, producing two near-identical "### Mexico City" / "### Mexico City – Central
+  # Districts" sections. Prompt-level guidance (BUILDER_INSTRUCTIONS/FINDINGS_WRITER_INSTRUCTIONS)
+  # was given the matching fix the same day; this is the structural backstop (see
+  # engine/completion.py::find_duplicate_report_sections).
+  duplicate_section_check:
+    enabled: true
+  # Engine-driven iterative deepening (2026-07-19, ROADMAP item 10, dzhng/deep-research pattern):
+  # when a thin_coverage retry fires AND a Searcher's own real "FOLLOW-UP DIRECTIONS:" section
+  # named a real lead, the ENGINE dispatches those directions directly as new tasks (geometric
+  # narrowing, ceil(prior_breadth/2)) instead of nudging the Planner and hoping it acts on a lead
+  # buried in its own conversation -- local models demonstrably under-loop on this (ROADMAP: run
+  # 15 found 1 niche of 4-6 required). Bounded per run by this many rounds; 0 disables it entirely
+  # (falls back to the classic Planner nudge unchanged). --depth overrides this: quick=0, deep=2 --
+  # see engine/tui.py's _DEPTH_PRESETS.
+  max_deepening_rounds: 1
+  # Wall-clock budget in minutes for headless runs (0 = no limit; TUI ignores this — a user at
+  # the keyboard can /stop). Not a hard kill: on expiry the current turn is cut short and the
+  # completion check jumps straight to its final verdict, so labeling and report salvage still
+  # run and the run ends with an explicit outcome. A qwen3.6 run once ran 64 minutes unbounded.
+  max_run_minutes: 45
+  # Wall-clock budget in minutes for EACH sub-agent dispatch (Searcher/Analyzer/Builder/
+  # FindingsWriter/PeerReviewer) — independent of max_run_minutes above, deliberately: that's a
+  # whole-RUN ceiling shared by every turn, so a single runaway sub-agent call racing against it
+  # (both anchored to roughly the same run-start clock) gets cancelled by whichever fires first,
+  # not necessarily this one — which means it provides no protection against ONE slow call among
+  # MANY quick ones early in a long run with plenty of budget still left. This is a fresh,
+  # independent per-dispatch timer instead (0 = no limit). Confirmed live 2026-07-14: a single
+  # sub-agent turn continuously, validly decoded 19,908+ tokens (steady ~33 tok/s per
+  # journalctl -u ollama's own print_timing log — not stuck, just an unusually long generation)
+  # before the openai SDK's own blunt ~600s default connection timeout killed it and threw a raw
+  # exception, which then triggered an ungraceful retry that hit the same pattern again. Not a
+  # hard kill, same policy as max_run_minutes: the turn is cut short gracefully (whatever text was
+  # generated so far is kept, with a clear marker), not lost to a raw connection error.
+  sub_agent_timeout_minutes: 10
+  # Per-agent-stream context budget in CHARACTERS (0 = off). Local models run at num_ctx ~16384
+  # tokens (~65K chars); on overflow Ollama silently truncates from the TOP — eating the system
+  # prompt mid-run, which looks exactly like model collapse. When an agent's streamed content
+  # (text + tool args + tool results) exceeds this, its turn is cut short: sub-agents return their
+  # findings immediately; the headless Planner's turn just ends (it stops delegating), and the
+  # completion-check system then dispatches FindingsWriter/Builder to write findings.md + the
+  # report from whatever real research was actually delegated before the cutoff — never the
+  # Planner itself, which has no write_workspace_file tool (see README "Context management").
+  # Idea from Tongyi DeepResearch's react_agent.py (see README References). Applies to sub-agent
+  # tasks everywhere and to the Planner in headless mode; the TUI Planner is exempt (a user can
+  # /stop), same policy as max_run_minutes. 50000 ≈ safe margin under a 16K-token num_ctx.
+  context_budget_chars: 50000
+  # Session compaction for the Planner's own conversation (2026-07-23; only load-bearing when
+  # enable_conversational_memory is true). context_budget_chars above only guards a single
+  # agent-stream's OUTPUT; nothing capped the accumulated session INPUT across many turns of a
+  # long, retry-heavy run until this. 0/absent disables compaction entirely, same opt-out
+  # convention as context_budget_chars. 16384 matches this project's current model's real
+  # num_ctx (same number context_budget_chars is calibrated against); max_output_tokens 4096
+  # leaves a ~12K-token input budget, consistent with context_budget_chars: 50000 above rather
+  # than an independently-invented number.
+  max_context_window_tokens: 16384
+  max_output_tokens: 4096
+  # When true, the Planner's write_todos call requires human approval before it commits (TUI mode
+  # shows the plan content in an interactive approve/deny widget; headless/--prompt mode falls back
+  # to the existing --auto-approve flag). Lets you review/reject the research plan before quota is
+  # spent on delegate_tasks, reusing the same tool-approval machinery as settings.permissions.
+  human_in_the_loop: false
+  # TUI only: before the first research run of a conversation, one tool-less intake call either
+  # replies CLEAR or asks up to 3 scoping questions (subject boundaries, geography, timeframe,
+  # deliverable focus) — a mis-scoped run costs its full 15-60 minutes, the intake call costs
+  # seconds. Fail-open by design: an error, empty reply, or rambling reply from the intake model
+  # falls straight through to research. Headless runs (--prompt/--resume-run) never clarify.
+  clarify_before_research: true
+  # Per-tool approval gate (engine/orchestrator.py::apply_tool_permissions). remove_workspace_file's
+  # own docstring calls it "a destructive action that mandates human oversight" — that claim is only
+  # actually true if it's listed here. No agent currently has this tool wired in (see app.py), but
+  # it's in the shared WORKSPACE_TOOLS/tools/__init__.py export list for future use, so the default
+  # config gates it now rather than leaving a documented-but-unenforced safety guarantee.
+  permissions:
+    remove_workspace_file: require_approval
+  enable_conversational_memory: true
+  enable_session_persistence: true
+  # src/api.py's optional HTTP API + web UI: unset (default) = no auth, matching the API's
+  # loopback-only-by-default posture (see api.py's --i-understand-the-risk guard for binding
+  # anywhere else). Set this to require a matching X-API-Password header (or ?pw= for the SSE
+  # stream endpoint, which can't set custom headers) on every request except the static UI itself
+  # -- worth setting once you bind a non-loopback host (e.g. for LAN/phone access), since the API
+  # now also supports full settings edits (api.py's /settings, including API keys).
+  api_password: null
+  workspace:
+    type: disk
+    dir: "./research_output"
+    session_isolation: true
+    required_artifact: "final_report.md"
+  # Real grounding check: cross-references every URL cited in final_report.md against the URLs the
+  # engine actually saw fetch_url_to_workspace fetch this run (logged centrally, not model-reported).
+  grounding_check:
+    enabled: true
+    live_http_verify: true       # also HEAD-request each cited URL to confirm it still resolves
+    live_http_timeout: 5
+    # Second, deeper layer beyond URL-presence: for a citation that WAS actually fetched, does its
+    # content share any checkable fact (number, version, proper noun) with what the report claims?
+    # Catches "cited a real fetched source without actually reading it" — inspired by CYC2002tommy's
+    # SKILL.md claim-grounding phase, scoped to a cheap deterministic check rather than another LLM
+    # call (see utils/grounding.py::claim_grounding_problem). Deliberately conservative (zero-overlap
+    # only) to keep false positives rare — set false to disable if it proves too noisy in practice.
+    content_level_check: true
+    # Third, deepest layer beyond URL-presence and term-overlap: for a claim line whose citation
+    # WAS fetched and DOES share a checkable term with the source (so content_level_check passed),
+    # does a small NLI cross-encoder actually judge the claim as entailed by the source's most
+    # relevant paragraph — not just coincidentally overlapping? Catches a claim wearing a citation
+    # to a real, fetched, topically-similar source whose specific claim text isn't actually
+    # supported (e.g. a wrong paper title/attribute swap that still shares generic terms).
+    # Runs a small CPU-only NLI model (sentence-transformers cross-encoder/nli-deberta-v3-small,
+    # ~550MB checkpoint downloaded from HuggingFace on first use, ~2.5GB additional disk for the
+    # torch/transformers/sentence-transformers dependency stack itself — see pyproject.toml) —
+    # explicit device="cpu", never competes for GPU/VRAM already budgeted for the main research
+    # LLM. Confirmed live 2026-07-12 (NVIDIA NIM gpt-oss-20b benchmark): term-overlap alone passed
+    # a citation whose claim sentence directly contradicted its cited source's real title
+    # ("Dual Causal Network" quoted vs. the source's actual "Dual Correlation Network"). Fails
+    # open (skips silently, never crashes or blocks a run) if the model/dependency isn't
+    # available — an offline/air-gapped run is never blocked by this. Set false to disable if it
+    # proves noisy, or if sentence-transformers isn't installed.
+    nli_verify: true
+    # Fourth layer, beyond term-overlap AND entailment: for a claim that passed BOTH of those (the
+    # cited source shares terms and doesn't contradict the claim), is the source actually about
+    # the SAME SUBJECT, or just superficially similar? Catches acronym/homograph collisions term-
+    # overlap and entailment both miss by construction — e.g. a claim about the Grasshopper
+    # Optimization Algorithm ("GOA") citing a source that's actually about the Indian state of Goa
+    # ("Goa"): 'GOA'/'Goa' term-overlap passes, and an EV-policy sentence about Goa doesn't
+    # CONTRADICT an algorithm claim (it's just unrelated), so NLI never flags it either. A
+    # cross-encoder reranker (BAAI/bge-reranker-v2-m3, sentence-transformers, same soft dependency
+    # as nli_verify above -- NOT an additional pip package, just a second checkpoint through the
+    # same already-installed library, ~1.1GB additional download on first use) scores each
+    # (claim, source-passage) pair for topical relevance directly. Conservative threshold (only a
+    # CLEARLY unrelated pair, near 0, fires -- see topical_relevance_threshold below). Fails open
+    # if the model/dependency isn't available. Set false to disable if it proves noisy, or if
+    # sentence-transformers isn't installed.
+    topical_relevance_check: true
+    topical_relevance_threshold: 0.1   # 0-1 relevance score below which a pair is flagged (lower = stricter gate, fewer false positives)
+    # Catches a claim attributed to something that isn't a URL at all — a bare "(DANE, 2020)"
+    # parenthetical or a "Source: <prose>" line — which extract_cited_urls never sees since it only
+    # recognizes https?:// patterns. Confirmed live: a report can have real, fetched-and-verified
+    # URL citations for most claims while smuggling in an unverifiable non-URL attribution for
+    # others (see utils/grounding.py::find_non_url_citations). Set false to disable if a legitimate
+    # report style trips it too often.
+    non_url_citation_check: true
+    # A regulation identifier ("Ley 1906 de 2021", "Directive 2014/55/EU") cited to a fetched
+    # source whose content never mentions that regulation's number — a misattributed or invented
+    # law number wearing a real citation. Confirmed live (run 12): the report's flagship niche
+    # hung on a law number that appears nowhere in its own cited source; the URL-presence gate
+    # passed (real fetch) and the zero-overlap content check passed (shared generic terms), so
+    # only this check catches it (see utils/grounding.py::find_unsupported_regulation_ids).
+    regulation_id_check: true
+    # A specific dollar figure, fee, or day/month-count claim ("$53", "300 days") cited to a
+    # fetched source whose content never mentions that exact figure — most often because the claim
+    # actually belongs to a DIFFERENT, also-genuinely-fetched source on the same narrow topic.
+    # Confirmed live (2026-08-17 ablation smoke-test): a report's Mexico visa income/fee/duration
+    # figures were all real, but attributed to the wrong one of two similar sources — the
+    # URL-presence gate and content_level_check's term-overlap gate both passed on nothing but a
+    # coincidentally shared bare year (both sources being 2026-dated). extract_salient_terms's own
+    # number regex doesn't extract figures like '300' or '53' at all, so this sibling check to
+    # regulation_id_check exists specifically for that gap (see
+    # utils/grounding.py::find_unsupported_specific_figures).
+    specific_figure_check: true
+    # Text inside quotation marks (implying "the source's own exact words") that doesn't actually
+    # appear verbatim in the cited source -- a paraphrase dressed up as a direct quote. Confirmed
+    # live (2026-07-24): the underlying claim was true and traceable to a real passage in the
+    # source, so content_level_check's term-overlap check passed -- this catches textual
+    # EXACTNESS specifically, which nothing else here checks (see
+    # utils/grounding.py::find_paraphrased_quotes). Ellipsis-joined quotes (a real quoting
+    # convention for omitted material) are checked segment-by-segment, not as one contiguous
+    # string, so a genuine elision isn't false-flagged.
+    quote_fidelity_check: true
+    # A cited URL whose fetch returned only a soft-404/paywall shell (HTTP 200 but no real
+    # article content — detected at fetch time by tools/web.py::_stub_reason and recorded as
+    # stub in _run_state.json's fetched_urls). Confirmed live (run 14): a model-invented URL
+    # answered 200 with 5KB of subscription chrome, counted as a real fetch, and passed the
+    # URL-presence gate. With this on, citing a stub-only URL fails the completion check, and
+    # stub content can't satisfy the claim/regulation checks either.
+    stub_detection: true
+    # Citation-format enforcement: >=3 figure-bearing claim lines with no citation on the line
+    # fail the check even when every URL in the report is real. The line-scoped checks above all
+    # assume claim+citation on one line; a model that writes a table of figures plus a detached
+    # "### Source URLs" list (run 14's exact shape) passes them all vacuously — nothing ties any
+    # figure to any source (see utils/grounding.py::find_uncited_claim_lines).
+    citation_format_check: true
+    # Runs the same URL-presence + content-level check on each Searcher specialist's summary
+    # before it reaches the Planner, not just on the final report — catches a hallucinated
+    # citation at the source instead of letting it poison findings.md first (see
+    # engine/orchestrator.py::_run_single_task). Set false to restore final-report-only checking.
+    verify_specialist_output: true
+    # For each Searcher-tier task, checks whether anything it actually fetched even mentions the
+    # scope entity (e.g. a country name) required by the task's own delegation instructions —
+    # confirmed live that instruction wording alone ("...in Colombia") doesn't stop search+fetch
+    # from surfacing an off-topic or wrong-country source anyway (see engine/orchestrator.py::
+    # _extract_scope_entities). A soft warning appended to the specialist's summary, not a hard
+    # block — the Planner still decides what to do with it.
+    verify_scope_relevance: true
+    # Wholesale-fabrication gate on findings.md (Pass 1), which was previously never checked at
+    # all — only final_report.md was. Flags a findings.md with zero source URLs, or where not one
+    # cited URL matches anything actually fetched this run (a Planner that abandons delegation and
+    # writes Pass 1 from memory — confirmed live). Laxer than the final-report check on purpose:
+    # Pass-1 notes may legitimately mention extra search-snippet URLs that were never fetched.
+    check_findings: true
+  # Non-generative routing classifier for delegate_tasks's agent_id (RESEARCH.md §6, ROADMAP.md
+  # "Planned", 2026-07-20) — a frozen sentence-embedding model + logistic regression trained
+  # offline (finetune/train_agent_routing_classifier.py) on real historical (instructions,
+  # agent_id) pairs from this project's own session logs. Motivation: ~4.9% of real historical
+  # delegate_tasks calls used a syntactically well-formed but hallucinated agent_id ("searcher",
+  # "PeerReviewer", invented role names) — a routing decision over a fixed, tiny label set that a
+  # generative model keeps getting wrong in a way more fine-tuning data can't structurally fix
+  # (two independent papers found this failure persists even after a 6,000-sample SFT run, since
+  # it happens downstream of anything fine-tuning touches — see RESEARCH.md §1). Default OFF: new,
+  # unvalidated against live traffic, and requires running the training scripts first to produce
+  # finetune/artifacts/agent_routing_classifier.joblib — an install that skips this entirely runs
+  # unaffected (see utils/agent_routing.py::predict_agent_id, fails open, same philosophy as
+  # grounding_check above).
+  agent_routing_classifier:
+    enabled: false
+    # Decided policy (not advisory-only, not silent override): only intervenes when the declared
+    # agent_id isn't a real known role, OR the classifier disagrees strongly (confidence above
+    # min_confidence on a DIFFERENT class than declared) — in either case the task is added to
+    # delegate_tasks's existing error-accumulation path, forcing a Planner retry with an explicit
+    # reason, rather than silently substituting a value the Planner never chose. This is the only
+    # mode implemented; the field exists for a future advisory/override mode, not as a live toggle.
+    mode: "reject"
+    # Below this confidence, the classifier abstains (same "none apply" pattern ATLAS/AdaMAST uses,
+    # RESEARCH.md §1) and the Planner's own agent_id is used untouched, even if it disagrees with
+    # the classifier's best (low-confidence) guess.
+    min_confidence: 0.6
+    # Override for testing a differently-trained artifact without touching the default path
+    # (finetune/artifacts/agent_routing_classifier.joblib).
+    artifact_path: null
+  # Persistent cross-run cache of VERIFIED findings (ROADMAP.md "Strategic options" item 5,
+  # RESEARCH.md §8, 2026-07-20) — real semantic retrieval via frozen sentence-embeddings
+  # (all-MiniLM-L6-v2, already a proven dependency), exposed to WebSearcher/AcademicSearcher as the
+  # search_verified_findings tool, so a topic already researched and verified in a past run doesn't
+  # need to be re-fetched/re-analyzed from scratch. Deliberately NOT the same design as the
+  # deleted knowledge_cache/experience_cache (commit 929b987, 2026-07-11), which stored whole final
+  # ANSWERS keyed by raw query text and was confirmed live to contaminate model bake-off
+  # comparisons (a later model's trial would hit an earlier model's cached answer and reproduce it
+  # near-verbatim). This cache stores one verified ATOMIC FINDING (source_url + summary) per topic
+  # — a cache hit still requires the Searcher to cite and incorporate it itself, exactly like a
+  # fresh web_search result, which is what makes it safe across different models. A cache entry is
+  # only ever written after a finding passes the SAME grounding+relevance check every live finding
+  # already goes through (see engine/orchestrator.py::_run_single_task's write hook) — never less
+  # verified than a same-run finding. Default OFF: new, unvalidated against live traffic.
+  rag_cache:
+    enabled: false
+    path: ~/.{APP_NAME}/rag_cache.json
+    # A cached finding older than this is excluded from search_verified_findings results — most
+    # research topics have a real staleness horizon (a "current version" fact goes stale fast).
+    # Same default as the deleted knowledge_cache used, kept for continuity, actually enforced this
+    # time (utils/rag_cache.py::lookup filters on this before returning anything).
+    max_age_days: 7
+    # Cosine-similarity threshold (0-1) a cached finding's task_context must clear against the new
+    # query to be considered a match. 0.75 is a conservative starting point (favors precision over
+    # recall) — a query with no match above this returns nothing rather than a loosely-related hit.
+    min_similarity: 0.75
+    # Maximum number of matches search_verified_findings returns per call.
+    top_k: 3
+  # External MCP servers, scoped to specific sub-agents by name (omit 'agents' to expose to all).
+  # Connected only for the lifetime of each delegated task (see
+  # engine/orchestrator.py::_run_single_task). Empty by default — none of this runs unless you add
+  # an entry AND install the corresponding server yourself.
+  #
+  # NOTE: Brave and Tavily used to be documented here as MCP servers (a second/third tool the
+  # model picks between). That's now handled instead by settings.web_search_backend +
+  # tavily_api_key/brave_api_key above — web_search itself calls the configured provider's REST
+  # API directly, invisibly to the model. Use THAT for search. This mcp_servers section remains
+  # for genuinely different, non-search MCP tools:
+  #   - Semantic Scholar MCP for AcademicSearcher (200M+ papers, citations, authors — no API key
+  #     needed for the public tier): https://github.com/xiuyechen/semantic-scholar-mcp
+  #     mcp_servers:
+  #       - name: semantic-scholar
+  #         transport: stdio
+  #         command: uvx
+  #         args: ["semantic-scholar-mcp"]
+  #         agents: ["AcademicSearcher"]
+  mcp_servers: []
+  # Controlled-ablation switches for the completion-check coordination layer (2026-08-17,
+  # RESEARCH.md §18f) -- every mechanism here was validated only by "did the specific live-observed
+  # symptom stop recurring," never by a with/without comparison (the standard MAST's own causal
+  # intervention evidence, and the Illusion-of-Multi-Agent-Advantage paper's own audit methodology,
+  # both hold coordination-layer complexity to). Default False for every key (current, full
+  # behavior, completely unaffected unless explicitly opted into) -- set one True and run
+  # `eval/evaluate.py --runs 3` against the standing benchmark to measure whether that specific
+  # mechanism is genuinely load-bearing.
+  ablation:
+    # Disables completion.py::run_completion_check's force_whole_rebuild escalation entirely --
+    # both its original 3-consecutive-same-problem trigger AND the 2026-08-17 content-identity
+    # trigger (_content_unchanged_since_last_quarantine). With this True, a stuck retry loop just
+    # keeps issuing the same targeted-fix nudge every attempt instead of ever escalating to a
+    # full-rebuild instruction, until max_attempts is reached.
+    disable_force_whole_rebuild: false
+    # Disables tools/core.py::check_quota's no-progress guard (the general "same (tool, args)
+    # failed with the same error N times in a row -> halt" mechanism). With this True, a tool call
+    # can keep retrying with identical arguments against the same error indefinitely, spending one
+    # quota unit per attempt, until the tool's own numeric quota naturally runs out. Does NOT
+    # affect the separate read_workspace_file/grep_workspace_file exact-repeat-is-free dedup.
+    disable_no_progress_guard: false
+    # Disables engine/orchestrator.py::delegate_tasks' escalation of a task-rename advisory into a
+    # hard reject on a SECOND match against the same prior task (MAST FM-1.3/FM-2.5). With this
+    # True, a renamed-task match is always just an advisory note, never blocking dispatch, no
+    # matter how many times the Planner ignores it (pre-2026-08-17 behavior).
+    disable_rename_reject_escalation: false
+    # Disables tools/core.py::check_quota's tool-failure streak guard (N consecutive FAILURES to
+    # the same tool regardless of differing arguments -> halt; a hallucination-spiral guard,
+    # distinct from the exact-repeat no-progress guard above). With this True, a tool call can keep
+    # failing with a NEW set of wrong arguments every time indefinitely, spending one quota unit
+    # per attempt, until the tool's own numeric quota naturally runs out.
+    disable_tool_failure_streak_guard: false
