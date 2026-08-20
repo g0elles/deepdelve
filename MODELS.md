@@ -353,11 +353,14 @@ path — looking for a lighter-than-`gpt-oss:20b` GENERAL-PURPOSE candidate, ran
 - ~~`Ornith-1.0-9B` clean re-test~~ **DONE 2026-08-19, DISQUALIFIED — see its own entry above.**
 - ~~Ministral-8B-Instruct-2410~~ **DONE 2026-08-19, DISQUALIFIED at the schema stage — see its own
   entry below, no full live run needed.**
-- **Falcon3-10B-Instruct** (TII, Apache-2.0/Falcon license) — published BFCL 86.3, native Ollama
-  tag (`falcon3:7b`/presumably a `10b` tag), state-of-the-art among sub-13B models on several
-  published benchmarks (MMLU 73.1, MBPP 73.8). Closest published size to the ~14B capacity-floor
-  evidence this project already has (arXiv:2601.16280) while staying meaningfully lighter than
-  `gpt-oss:20b`. Never pulled this session.
+- ~~Falcon3-10B-Instruct~~ **BLOCKED 2026-08-19, not disqualified**: `falcon3:10b`'s Ollama tag
+  (pulled, 6.3GB) returns `"does not support tools"` — its Modelfile's `TEMPLATE` never references
+  `.Tools`/`.ToolCalls` at all (`ollama show falcon3:10b --modelfile`), a plain-chat template with
+  zero tool-call wiring, not a capability failure. `falcon3:7b` isn't a real Ollama tag at all
+  (`model 'falcon3:7b' not found`). Fixable in principle (same shape as the Ornith `jsonfmt` fix —
+  find/build a correct tool-call template for Falcon3's real chat format) but that's real
+  infrastructure work, not a quick pull-and-test — paused here pending a decision on whether it's
+  worth the investment given the pattern below.
 - **Phi-4-Mini (14B variant, not the already-disqualified 3.8B)** — real caveat, not a fresh lead:
   `phi4-mini:3.8b` already failed this project's tool-call SMOKE TEST (narrates the call as literal
   text despite the model card claiming function-calling support) — a family-wide architectural
