@@ -128,15 +128,20 @@ tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
   picked up: `test_structural_checks.py` imports 40+ private names directly across five modules; any
   split must update that file's imports in lockstep.
 
-- **Config accessor migration, partially done, and the raw call-site count has grown since the
-  original audit (85 in 2026-07-29, ~95 by a fresh grep on 2026-08-20), not shrunk.** Scattered
-  `config.cfg.get("settings", {}).get(...)` call sites across the codebase, no single accessor, no
-  consistent default handling, confirmed a real bug source (not just duplication) via
+- **Config accessor migration, partially done, ~95 raw call sites, most still unaddressed.**
+  Scattered `config.cfg.get("settings", {}).get(...)` call sites across the codebase, no single
+  accessor, no consistent default handling, confirmed a real bug source (not just duplication) via
   `required_artifact`, which had 3 different literal fallback values scattered across 4 call sites.
-  Fixed for that one setting (`config.get_required_artifact()`, still the only dedicated accessor);
-  the rest are unaddressed. Recommend incremental migration, add an accessor the next time any of
-  these call sites needs touching for an unrelated reason, rather than a big-bang rewrite most of
-  them don't demonstrably need.
+  Two accessors exist now: `config.get_required_artifact()` (2026-07-29) and, added 2026-08-20,
+  `config.get_workspace_dir()`/`config.get_workspace_type()`, which collapsed the single largest
+  duplicate cluster (12 raw chains across `api.py`, `orchestrator.py`, `tui.py`; `tools/fs.py`'s
+  own private `_get_workspace_dir`/`_get_workspace_type` now delegate to these instead of
+  duplicating the lookup). No divergent-default bug found in that cluster this time, unlike
+  `required_artifact`'s. The rest (`grounding_check`, `quotas`, `specialist_*`, `max_run_minutes`,
+  etc., each 2-9 raw sites, all confirmed self-consistent on defaults) are still unaddressed.
+  Recommend continuing incrementally, add an accessor the next time any of these call sites needs
+  touching for an unrelated reason, rather than a big-bang rewrite most of them don't demonstrably
+  need.
 
 - **`run_cli`/`BasicTuiAgent` full run-lifecycle unification, re-scoped 2026-07-29, still open.** A
   dedicated audit found the two entry points aren't just stylistic duplicates in places that matter:

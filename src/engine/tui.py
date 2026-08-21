@@ -730,8 +730,8 @@ class BasicTuiAgent(App):
         headless_fallback_color = "green" if headless_on else "red"
 
         config_path = getattr(config, "_CONFIG_PATH", "Unknown")
-        workspace_type = config.cfg.get("settings", {}).get("workspace", {}).get("type", "memory")
-        workspace_dir = config.cfg.get("settings", {}).get("workspace", {}).get("dir", ".")
+        workspace_type = config.get_workspace_type()
+        workspace_dir = config.get_workspace_dir()
         workspace_disp = f"Disk ({workspace_dir})" if workspace_type == "disk" else "In-Memory"
 
         status_line = f"  [dim]Config Loaded:[/dim] [bright_black]{config_path}[/bright_black]  [dim]Workspace:[/dim] [yellow]{workspace_disp}[/yellow]\n  [dim]Endpoint:[/dim] [cyan]{endpoint}[/cyan]  [dim]Model:[/dim] [cyan]{model}[/cyan]  [dim]Thinking:[/dim] [{thinking_color}]{thinking}[/{thinking_color}]  [dim]Conv Memory:[/dim] [{memory_color}]{memory}[/{memory_color}]\n  [dim]Session ID:[/dim] [bright_black]{_current_session_id}[/bright_black]  [dim]Persistence:[/dim] [{persistence_color}]{persistence_val}[/{persistence_color}]  [dim]Headless Fetch:[/dim] [{headless_fallback_color}]{headless_fallback}[/{headless_fallback_color}]"
@@ -1771,7 +1771,7 @@ class BasicTuiAgent(App):
         had any equivalent — a run that ends in quarantine-restore with real work already done
         (fetches, findings.md) is exactly what it's for, but a TUI user previously had no way to
         invoke it without dropping to a separate headless command."""
-        base = config.cfg.get("settings", {}).get("workspace", {}).get("dir", ".")
+        base = config.get_workspace_dir()
         req_artifact = config.get_required_artifact()
         chat = self.query_one("#chat-container", VerticalScroll)
         if not os.path.isdir(base):
@@ -1998,8 +1998,7 @@ def _export_pdf(run_dir_name: str | None) -> tuple[str | None, str | None]:
         engine = config.cfg.get("settings", {}).get("pdf_engine")
         if not engine:
             return None, None
-        from tools.fs import _get_workspace_type
-        if _get_workspace_type() != "disk":
+        if config.get_workspace_type() != "disk":
             return None, None
         import shutil
         if not shutil.which("pandoc"):
@@ -2030,7 +2029,7 @@ def _export_pdf(run_dir_name: str | None) -> tuple[str | None, str | None]:
 
 
 def _current_run_dir(run_dir_name: str | None) -> str:
-    base = config.cfg.get("settings", {}).get("workspace", {}).get("dir", ".")
+    base = config.get_workspace_dir()
     if run_dir_name:
         return os.path.join(base, run_dir_name)
     return base
@@ -2351,8 +2350,8 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
 
     # Print Headless Configuration Banner
     config_path = getattr(config, "_CONFIG_PATH", "Unknown")
-    workspace_type = config.cfg.get("settings", {}).get("workspace", {}).get("type", "memory")
-    workspace_dir = config.cfg.get("settings", {}).get("workspace", {}).get("dir", ".")
+    workspace_type = config.get_workspace_type()
+    workspace_dir = config.get_workspace_dir()
     workspace_disp = f"Disk ({workspace_dir})" if workspace_type == "disk" else "In-Memory"
 
     endpoint = config.cfg.get("api", {}).get("openai_base_url", "Unknown")
@@ -2765,7 +2764,7 @@ def cli_main(builder):
         config.cfg.setdefault("settings", {})["report_style"] = args.style
 
     if args.list_runs:
-        base = config.cfg.get("settings", {}).get("workspace", {}).get("dir", ".")
+        base = config.get_workspace_dir()
         req_artifact = config.get_required_artifact()
         if not os.path.isdir(base):
             sys.stdout.write(f"No runs found ({base} does not exist).\n")

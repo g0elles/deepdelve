@@ -54,6 +54,20 @@ cfg: dict = {}
 # save_config() persists against THIS, not `cfg` — see its docstring.
 _file_cfg: dict = {}
 
+def get_workspace_dir() -> str:
+    """settings.workspace.dir, the base directory for disk-mode workspace/report files.
+    Extracted 2026-08-20: this exact chain was copy-pasted at 10+ call sites across
+    api.py/orchestrator.py/tui.py/tools/fs.py, all with the same "." fallback (no divergence
+    found, unlike get_required_artifact()'s, but still worth collapsing to one accessor)."""
+    return cfg.get("settings", {}).get("workspace", {}).get("dir", ".")
+
+
+def get_workspace_type() -> str:
+    """settings.workspace.type ("memory" or "disk"). Same duplication rationale as
+    get_workspace_dir()."""
+    return cfg.get("settings", {}).get("workspace", {}).get("type", "memory")
+
+
 def get_required_artifact() -> str:
     """The filename a run's completion checks treat as the mandatory final deliverable
     (settings.workspace.required_artifact). Extracted 2026-07-29: this exact

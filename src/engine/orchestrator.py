@@ -1145,7 +1145,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                         target_config.instructions,
                         date=current_date,
                         task_name=task_name,
-                        workspace_dir=config.cfg.get("settings", {}).get("workspace", {}).get("dir", "."),
+                        workspace_dir=config.get_workspace_dir(),
                         delegation_instructions=SUBAGENT_DELEGATION_INSTRUCTIONS.format(
                             max_concurrency=config.cfg.get("settings", {}).get("concurrency", {}).get("max_concurrent_tasks", 1)
                         ),
@@ -1158,7 +1158,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                         SUBAGENT_INSTRUCTIONS,
                         date=current_date,
                         task_name=task_name,
-                        workspace_dir=config.cfg.get("settings", {}).get("workspace", {}).get("dir", "."),
+                        workspace_dir=config.get_workspace_dir(),
                         delegation_instructions=SUBAGENT_DELEGATION_INSTRUCTIONS.format(
                             max_concurrency=config.cfg.get("settings", {}).get("concurrency", {}).get("max_concurrent_tasks", 1)
                         ),
@@ -2016,7 +2016,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
     # Set the Planner's available sub-agents for scoped delegation
     available_sub_agents_ctx.set(builder.sub_agents)
     current_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    workspace_dir = config.cfg.get("settings", {}).get("workspace", {}).get("dir", ".")
+    workspace_dir = config.get_workspace_dir()
 
     agent = client.as_agent(
         name=_sanitize_name(builder.name),

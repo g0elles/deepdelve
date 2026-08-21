@@ -465,7 +465,7 @@ async def active_research():
 
 @app.get("/runs")
 async def list_runs():
-    base = config.cfg.get("settings", {}).get("workspace", {}).get("dir", ".")
+    base = config.get_workspace_dir()
     req_artifact = config.get_required_artifact()
     if not os.path.isdir(base):
         return []

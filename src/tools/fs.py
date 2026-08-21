@@ -10,12 +10,12 @@ _IN_MEMORY_FS: Dict[str, str] = {}
 session_dir_ctx = contextvars.ContextVar('session_dir', default="")
 
 def _get_workspace_type() -> str:
-    from config import cfg
-    return cfg.get("settings", {}).get("workspace", {}).get("type", "memory")
+    import config
+    return config.get_workspace_type()
 
 def _get_workspace_dir() -> str:
-    from config import cfg
-    return cfg.get("settings", {}).get("workspace", {}).get("dir", ".")
+    import config
+    return config.get_workspace_dir()
 
 def _get_safe_path(filename: str) -> str:
     # Safely allow subdirectories while blocking traversal hacks. Drive-letter names are matched
