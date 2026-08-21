@@ -140,12 +140,6 @@ tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
   strategy interface first, then extract the loop body to take it as a parameter, not "extract the
   whole function and see what breaks."
 
-- **A finer-grained, in-turn repetition guard, an unbuilt idea.** The completion-check-level
-  full-rebuild escalation already shipped (see Completed), but a narrower, one-level-lower guard
-  (catching e.g. a single dispatch calling `fetch_url_to_workspace` on the same URL 6 times within
-  its own turn, the exact shape of a couple of real disqualifying incidents) is still a real,
-  distinct, unbuilt idea if ever worth pursuing. Would be new, DeepDelve-original work.
-
 - **RAG-augmented small model, raised 2026-07-20, not yet scoped.** The project's own prior "RAG
   failure" turned out to be a benchmark-isolation bug in a deleted exact-string-match cache, not a
   real RAG failure, see the wiki's [Architecture Synthesis](https://github.com/g0elles/deepdelve/wiki/Literature-Review-Architecture-Synthesis)
