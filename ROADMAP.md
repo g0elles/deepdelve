@@ -149,14 +149,19 @@ tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
   during comparative benchmarking or the same contamination bug recurs regardless of the retrieval
   technique underneath it. That's the one non-negotiable constraint from this project's own history.
 
-- **TUI QoE improvements, researched 2026-07-14, not yet scoped.** A framework capability survey
-  (Textual's own source, not assumed from memory) found several likely-already-working features
-  needing live confirmation (click-drag select + copy) and several unused framework capabilities not
-  yet scoped into concrete work (command palette, widget maximize, theming, inline autocomplete,
-  `Tree`/`DataTable`/`TabbedContent`/`SelectionList` for existing ad hoc UI). The two smallest,
-  most directly requested items (message copy button, right-click paste) have since shipped, see
-  Completed. Next session should scope a concrete subset of what's left, not the whole survey at
-  once.
+- **TUI QoE improvements, researched 2026-07-14, partially closed 2026-08-20.** A framework
+  capability survey (Textual's own source, not assumed from memory) found several likely-
+  already-working features needing live confirmation and several unused framework capabilities
+  not yet scoped into concrete work. Two smallest, most directly requested items (message copy
+  button, right-click paste) shipped earlier, see Completed. Two more closed 2026-08-20:
+  click-drag select + copy confirmed already working with zero code needed (`ALLOW_SELECT` is
+  `True` by default on both `App` and every widget in this Textual version, confirmed directly via
+  `textual.app.App.ALLOW_SELECT`/`Static.ALLOW_SELECT`, not overridden anywhere in `tui.py`); the
+  command palette (`ctrl+p`, also on by default) got a real `SlashCommandProvider` wiring
+  `SLASH_COMMANDS` into it, live-verified with Textual's own Pilot test harness, see Completed.
+  Still open, not yet scoped into concrete work: widget maximize, theming, inline autocomplete,
+  `Tree`/`DataTable`/`TabbedContent`/`SelectionList` for existing ad hoc UI. Next session should
+  scope a concrete subset of what's left, not the whole remaining survey at once.
 
 - **Fine-tuning, deferred pending a viable base model size, see [Stretch](#stretch).** The
   correctness gate that used to block resuming fine-tuning is confirmed clear as of 2026-08-19, a
