@@ -767,9 +767,27 @@ async def fetch_url_to_workspace(url: str | list, filename: str = "", convert_to
     # checks) -- exact string match is enough since _slugify_for_filename's own sha1(url) already
     # produces IDENTICAL digests for these real duplicates, confirming the URLs really were
     # byte-identical, not just similar.
-    from utils.run_state import get_fetched_urls
+    from utils.run_state import get_fetched_urls, task_dedup_fetch_repeat_ctx
     for entry in get_fetched_urls():
         if entry.get("url") == url:
+            # In-turn repetition guard (2026-08-20, see task_dedup_fetch_repeat_ctx's own header
+            # comment in utils/run_state.py) -- escalates once THIS task has been told about the
+            # SAME url more than once. Deliberately per-task, not folded into tools/core.py's
+            # shared no-progress/tool-failure-streak guards: those are keyed on the run-wide quota
+            # pool, and would false-positive on this tool's normal cross-agent overlap case (a
+            # DIFFERENT sub-agent hitting this same dedup branch for an unrelated URL it has no
+            # way to know a sibling already fetched).
+            repeat_counts = task_dedup_fetch_repeat_ctx.get()
+            if repeat_counts is not None:
+                repeat_counts[url] = repeat_counts.get(url, 0) + 1
+                if repeat_counts[url] >= 2:
+                    return (
+                        f"You have now been told {repeat_counts[url]} times that this exact URL "
+                        f"was already fetched this run (see workspace file "
+                        f"'{entry.get('filename')}'). Calling fetch_url_to_workspace on it again "
+                        f"will not produce a different result -- read/grep that file directly, or "
+                        f"move on to a different URL or step."
+                    )
             return (
                 f"Already fetched this run — see workspace file '{entry.get('filename')}'. "
                 f"Read/grep that file directly instead of fetching this URL again."

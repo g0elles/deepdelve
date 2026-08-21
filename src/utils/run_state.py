@@ -52,6 +52,19 @@ task_fetched_urls_ctx = contextvars.ContextVar('task_fetched_urls_ctx', default=
 # object in place is.
 task_read_grep_count_ctx = contextvars.ContextVar('task_read_grep_count_ctx', default=None)
 
+# In-turn repetition guard for fetch_url_to_workspace (2026-08-20, ROADMAP "finer-grained
+# repetition guard"): a single dispatch calling fetch_url_to_workspace on a URL it has ALREADY
+# fetched (or a sibling task already fetched) repeatedly. Deliberately NOT built on top of
+# tools/core.py's existing no-progress/tool-failure-streak guards -- those are keyed on the
+# SHARED run-wide quota pool, and the tool-failure-streak guard in particular counts ANY failure
+# to a tool regardless of args, which would false-positive on the tool's own documented normal
+# case: multiple DIFFERENT sub-agents independently fetching the same URL is expected cross-agent
+# overlap, not a stuck loop (see fetch_url_to_workspace's own "Cross-agent dedup" comment). This
+# needs to distinguish "this ONE dispatch keeps re-requesting the same URL it was already told
+# about" from that legitimate cross-agent case, which only a per-task, per-URL counter can do.
+# Dict (not the single-element-list pattern above), mutated in place, never reassigned mid-task.
+task_dedup_fetch_repeat_ctx = contextvars.ContextVar('task_dedup_fetch_repeat_ctx', default=None)
+
 # Stable per-dispatch identity for the quota ring-fence (tools/core.py::check_quota, 2026-07-19 QA
 # audit fix). ROADMAP's tracked open angle (a): the ring-fence originally rescued only the FIRST
 # task per tool/run to hit the wall while showing real progress (a single `_rescued` bool on the

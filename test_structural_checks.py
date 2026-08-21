@@ -1105,6 +1105,39 @@ def main():
             _config.cfg["settings"]["workspace"] = _orig_ws
         reset_fetched_urls()
 
+    # --- fetch_url_to_workspace's in-turn repetition guard (2026-08-20, ROADMAP "finer-grained
+    # repetition guard"): a task re-requesting a URL it (or a sibling) already fetched gets a
+    # plain redirect the first time, an escalated "stop repeating this" message from the SECOND
+    # redirect onward -- scoped per-task (task_dedup_fetch_repeat_ctx) so an unrelated task's own
+    # first dedup hit on a DIFFERENT already-fetched URL never escalates. ---
+    from utils.run_state import task_dedup_fetch_repeat_ctx as _dedup_repeat_ctx14
+    _q_ctx14 = _q_ctx13
+    _orig_ws14 = _config.cfg.get("settings", {}).get("workspace")
+    _config.cfg.setdefault("settings", {})["workspace"] = {"type": "memory"}
+    try:
+        reset_fetched_urls()
+        record_fetched_url("https://example.com/repeat", filename="sources/repeat.md")
+        _q_ctx14.set({"fetch_url_to_workspace": {"used": 0, "limit": 15}})
+        _dedup_repeat_ctx14.set({})
+        _first14 = _asyncio13.run(fetch_url_to_workspace.func(url="https://example.com/repeat"))
+        assert "already fetched" in _first14.lower(), _first14
+        assert "You have now been told" not in _first14, _first14
+        _second14 = _asyncio13.run(fetch_url_to_workspace.func(url="https://example.com/repeat"))
+        assert "You have now been told" in _second14, _second14
+        # A DIFFERENT already-fetched URL, same task's own repeat-count dict, must NOT inherit
+        # the first URL's escalated count.
+        record_fetched_url("https://example.com/repeat-other", filename="sources/other.md")
+        _other14 = _asyncio13.run(fetch_url_to_workspace.func(url="https://example.com/repeat-other"))
+        assert "You have now been told" not in _other14, _other14
+    finally:
+        _dedup_repeat_ctx14.set(None)
+        _q_ctx14.set(None)
+        if _orig_ws14 is None:
+            _config.cfg["settings"].pop("workspace", None)
+        else:
+            _config.cfg["settings"]["workspace"] = _orig_ws14
+        reset_fetched_urls()
+
     # --- read_workspace_file/grep_workspace_file per-dispatch analyzer_read_cap (2026-08-01,
     # RESEARCH.md Sec.16): once task_read_grep_count_ctx (THIS dispatch's own combined read+grep
     # call count) is at the configured cap, a call for either tool must be rejected outright, no

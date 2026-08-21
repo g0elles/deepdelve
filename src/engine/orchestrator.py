@@ -8,7 +8,7 @@ from typing import Optional
 from agent_framework.openai import OpenAIChatCompletionClient
 from agent_framework import tool, AgentSession, Message, ContextWindowCompactionStrategy
 from tools import with_quota, think_tool, QuotaAbortException, tool_quotas_ctx
-from utils.run_state import run_state_ctx, task_fetched_urls_ctx, task_read_grep_count_ctx, scope_entities_ctx, task_id_ctx, _next_task_id
+from utils.run_state import run_state_ctx, task_fetched_urls_ctx, task_read_grep_count_ctx, scope_entities_ctx, task_id_ctx, _next_task_id, task_dedup_fetch_repeat_ctx
 from prompts import (
     SUBAGENT_INSTRUCTIONS, SUBAGENT_DELEGATION_INSTRUCTIONS,
     STANDARD_REPORT_STYLE_INSTRUCTIONS, ACADEMIC_REPORT_STYLE_INSTRUCTIONS, ANSWER_REPORT_STYLE_INSTRUCTIONS,
@@ -1079,6 +1079,10 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
             # header comment) — NOT a before/after length delta on the shared run-wide list, which
             # races under concurrent delegate_tasks dispatch.
             task_urls_token = task_fetched_urls_ctx.set([])
+            # In-turn fetch-repetition guard (see utils/run_state.py's task_dedup_fetch_repeat_ctx
+            # header comment) — fresh empty dict per task, same per-dispatch-scoping need as
+            # task_urls_token just above.
+            dedup_fetch_repeat_token = task_dedup_fetch_repeat_ctx.set({})
             # Stable per-dispatch identity for the quota ring-fence's per-task rescue tracking
             # (tools/core.py::check_quota) — see utils/run_state.py's task_id_ctx header comment.
             task_id_token = task_id_ctx.set(_next_task_id())
@@ -1590,6 +1594,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                 if top_level_token is not None:
                     top_level_task_name_ctx.reset(top_level_token)
                 task_fetched_urls_ctx.reset(task_urls_token)
+                task_dedup_fetch_repeat_ctx.reset(dedup_fetch_repeat_token)
                 task_id_ctx.reset(task_id_token)
                 specialist_delegate_task_count_ctx.reset(specialist_delegate_count_token)
                 task_read_grep_count_ctx.reset(read_grep_count_token)
