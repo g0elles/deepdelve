@@ -50,8 +50,10 @@ flowchart TD
         EMBED["all-MiniLM-L6-v2<br/>sentence embeddings<br/>(rag_cache lookup + agent_routing_classifier)"]
     end
 
-    WRF -. "grounding checks on<br/>final_report.md content" .-> NLI
-    WRF -. "grounding checks on<br/>final_report.md content" .-> RERANK
+    WRF -. "grounding checks on<br/>findings.md / final_report.md" .-> NLI
+    WRF -. "grounding checks on<br/>findings.md / final_report.md" .-> RERANK
+    Tier2 -. "same grounding checks, run on<br/>each specialist's own summary" .-> NLI
+    Tier2 -. "same grounding checks, run on<br/>each specialist's own summary" .-> RERANK
     Planner -. "delegate_tasks agent_id<br/>prediction (optional)" .-> EMBED
 ```
 
