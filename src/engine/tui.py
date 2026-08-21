@@ -2,6 +2,7 @@ from datetime import datetime
 from textual import work, on
 from textual.app import App, ComposeResult
 from textual.widgets import Input, OptionList, Static, Collapsible, RichLog, Button
+from textual.command import Hit, Hits, Provider
 from textual.containers import VerticalScroll, Horizontal, Vertical
 from rich.markdown import Markdown
 from engine.orchestrator import create_local_agent, reset_session, delegation_depth_ctx, build_quota_pool, iter_agent_stream
@@ -199,6 +200,46 @@ def log_stream_content(source: str, content_type: str, raw_data_dict: dict, dept
         _session_events.append(entry)
 
     _write_log()
+
+# Commands that need no argument the palette has no UI to collect -- filled AND auto-submitted
+# on selection. Every other SLASH_COMMANDS entry (/depth, /style, /seed-url, /seed-doc, /resume)
+# takes a value the user still has to type, so those are filled into the prompt input and
+# focused instead, left for the user to complete and press Enter -- one uniform "fill, don't
+# guess" rule rather than special-casing which commands are "safe" to blind-run.
+_PALETTE_ZERO_ARG_COMMANDS = frozenset({
+    "/stop", "/new", "/exit", "/config", "/files", "/sessions", "/resume-run",
+    "/toggle_thinking", "/toggle_persistence", "/toggle_headless_fetch",
+})
+
+
+class SlashCommandProvider(Provider):
+    """Exposes BasicTuiAgent's own SLASH_COMMANDS to Textual's built-in command palette
+    (ctrl+p by default -- ENABLE_COMMAND_PALETTE, confirmed still Textual's own unmodified
+    default this app never overrides), closing the "command palette... not yet scoped" ROADMAP
+    QoE item: a user who doesn't remember the exact slash syntax can fuzzy-search for it here
+    instead of guessing at "/" in the prompt box."""
+
+    async def search(self, query: str) -> Hits:
+        matcher = self.matcher(query)
+        app = self.app
+        for cmd, desc in getattr(app, "SLASH_COMMANDS", []):
+            score = matcher.match(cmd)
+            if score > 0:
+                yield Hit(score, matcher.highlight(cmd), self._make_select(cmd), help=desc)
+
+    def _make_select(self, cmd: str):
+        async def _select() -> None:
+            prompt = self.app.query_one("#prompt-input", PromptInput)
+            prompt.value = cmd if cmd in _PALETTE_ZERO_ARG_COMMANDS else cmd + " "
+            prompt.focus()
+            prompt.cursor_position = len(prompt.value)
+            if cmd in _PALETTE_ZERO_ARG_COMMANDS:
+                # Input's own built-in action (async in this Textual version) -- reads
+                # prompt.value and posts Submitted through the normal message loop, same as the
+                # user pressing Enter. Simpler and safer than hand-constructing the event.
+                await prompt.action_submit()
+        return _select
+
 
 class PromptInput(Input):
     """An Input that maintains command history navigated with Up/Down arrows."""
@@ -647,6 +688,7 @@ class ToolCallWidget(Collapsible):
         self.title = f"\N{HAMMER AND WRENCH} \\[{agent_label}] {self.tool_name} \N{OCTAGONAL SIGN} ({elapsed.total_seconds():.1f}s)"
 
 class BasicTuiAgent(App):
+    COMMANDS = App.COMMANDS | {SlashCommandProvider}
     CSS = """
     #chat-container { height: 1fr; scrollbar-color: green; }
     .user-bubble { margin: 1 2; padding: 1; background: #333333; color: white; text-align: right; }

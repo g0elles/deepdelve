@@ -8483,6 +8483,53 @@ def main():
 
     _starvation_audit_scenario()
 
+    # --- TUI command palette (2026-08-20, ROADMAP QoE item): Textual's built-in command palette
+    # (ctrl+p, ENABLE_COMMAND_PALETTE default True, never overridden by this app) now surfaces
+    # BasicTuiAgent's own SLASH_COMMANDS via a registered Provider, live-verified end to end with
+    # Textual's own Pilot test harness -- a zero-arg command (/toggle_thinking) must actually
+    # execute on selection, an arg-taking one (/depth) must fill the prompt and focus it without
+    # auto-submitting (no UI to collect the argument in the palette itself). ---
+    def _command_palette_scenario():
+        import asyncio as _asyncio_cp
+        import engine.tui as _tui_cp
+        from textual.command import CommandPalette as _CommandPalette
+
+        async def _run():
+            app = _tui_cp.BasicTuiAgent(builder=None)
+            async with app.run_test(size=(100, 40)) as pilot:
+                await pilot.pause()
+                await pilot.press("ctrl+p")
+                await pilot.pause()
+                assert any(isinstance(s, _CommandPalette) for s in app.screen_stack), (
+                    "ctrl+p did not open the command palette"
+                )
+                await pilot.press("escape")
+                await pilot.pause()
+
+                provider = _tui_cp.SlashCommandProvider(app.screen)
+                before = _config.cfg["settings"].get("enable_thinking")
+                thinking_hits = [h async for h in provider.search("toggle_thinking")]
+                assert thinking_hits, "expected /toggle_thinking to fuzzy-match"
+                await thinking_hits[0].command()
+                await pilot.pause()
+                after = _config.cfg["settings"].get("enable_thinking")
+                assert before != after, "palette-selected zero-arg command did not execute"
+                _config.cfg["settings"]["enable_thinking"] = before  # restore
+
+                prompt = app.query_one("#prompt-input")
+                depth_hits = [h async for h in provider.search("depth")]
+                assert depth_hits, "expected /depth to fuzzy-match"
+                await depth_hits[0].command()
+                await pilot.pause()
+                assert prompt.value == "/depth ", (
+                    "an arg-taking command must fill, not auto-submit: " + repr(prompt.value)
+                )
+                assert app.focused is prompt
+
+        _asyncio_cp.run(_run())
+
+    _command_palette_scenario()
+
     print("All structural-check assertions passed.")
 
 
