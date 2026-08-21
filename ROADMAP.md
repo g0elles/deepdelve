@@ -1,6 +1,6 @@
 # DeepDelve Roadmap
 
-Status as of 2026-07-20.
+Status as of 2026-08-20.
 
 
 This file is organized into: a standing methodology section (applies to all future model
@@ -107,12 +107,13 @@ here got moved out, most already live in the wiki's [Completed](https://github.c
 or [Changelog](https://github.com/g0elles/deepdelve/wiki/Changelog); anything not yet migrated is
 tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
 
-- **`create_local_agent`'s 963-line nested-closure god-function, scoped 2026-07-29, not attempted.**
-  `_run_single_task` (~490 lines) and `delegate_tasks` (~280 lines) are deeply nested closures
-  inside `create_local_agent`, capturing dozens of enclosing locals by reference rather than as
-  parameters. `test_structural_checks.py` never imports either closure directly, only small pure
-  fragments already pulled out of it, the actual per-task dispatch/quota-ring-fencing/specialist-
-  tiering behavior has zero direct test coverage. Recommended approach when picked up: write
+- **`create_local_agent`'s nested-closure god-function, scoped 2026-07-29, still not attempted, and
+  has since grown, not shrunk (963 lines then, 1093 lines checked directly as of 2026-08-20).**
+  `_run_single_task` and `delegate_tasks` are deeply nested closures inside `create_local_agent`,
+  capturing dozens of enclosing locals by reference rather than as parameters.
+  `test_structural_checks.py` never imports either closure directly, only small pure fragments
+  already pulled out of it, the actual per-task dispatch/quota-ring-fencing/specialist-tiering
+  behavior has zero direct test coverage. Recommended approach when picked up: write
   characterization tests first, pinning current behavior end to end since none exist, then
   decompose, attempting decomposition without a safety net on a function this size is exactly the
   kind of change that creates a new incident rather than closing one.
@@ -127,13 +128,15 @@ tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
   picked up: `test_structural_checks.py` imports 40+ private names directly across five modules; any
   split must update that file's imports in lockstep.
 
-- **Config accessor migration, partially done.** 85 scattered `config.cfg.get("settings", {}).get(...)`
-  call sites across the codebase, no single accessor, no consistent default handling, confirmed a
-  real bug source (not just duplication) via `required_artifact`, which had 3 different literal
-  fallback values scattered across 4 call sites. Fixed for that one setting
-  (`config.get_required_artifact()`); the other ~81 sites are unaddressed. Recommend incremental
-  migration, add an accessor the next time any of these call sites needs touching for an unrelated
-  reason, rather than a big-bang rewrite most of them don't demonstrably need.
+- **Config accessor migration, partially done, and the raw call-site count has grown since the
+  original audit (85 in 2026-07-29, ~95 by a fresh grep on 2026-08-20), not shrunk.** Scattered
+  `config.cfg.get("settings", {}).get(...)` call sites across the codebase, no single accessor, no
+  consistent default handling, confirmed a real bug source (not just duplication) via
+  `required_artifact`, which had 3 different literal fallback values scattered across 4 call sites.
+  Fixed for that one setting (`config.get_required_artifact()`, still the only dedicated accessor);
+  the rest are unaddressed. Recommend incremental migration, add an accessor the next time any of
+  these call sites needs touching for an unrelated reason, rather than a big-bang rewrite most of
+  them don't demonstrably need.
 
 - **`run_cli`/`BasicTuiAgent` full run-lifecycle unification, re-scoped 2026-07-29, still open.** A
   dedicated audit found the two entry points aren't just stylistic duplicates in places that matter:
