@@ -481,32 +481,29 @@ heuristic making a PERMANENT decision about a task without enough context to kno
 
 `run_state.data` is a flat dict, persisted to `_run_state.json` on essentially every mutation. Most
 consumers read the live in-memory object and never think about it again. The trap is **anything
-that copies a SUBSET of this dict across a process boundary** — currently, exactly one such copy
-exists, but it exists in TWO places that must independently stay in sync:
+that copies a SUBSET of this dict across a process boundary** — a real, previously-hand-duplicated
+copy exists for the resume path.
 
-- `src/engine/tui.py`'s `run_cli` (headless `--resume-run`)
-- `src/engine/tui.py`'s `BasicTuiAgent._resume_run` (interactive `/resume-run`)
+**Updated 2026-07-29 — this used to be two independently-hardcoded tuples (one in `run_cli`'s
+`--resume-run` branch, one in `BasicTuiAgent._resume_run`'s interactive `/resume-run`), each with
+its own comment warning the other must be updated by hand.** That duplication is exactly the
+"textbook forgotten-somewhere" pattern this document exists to catch, so it was extracted into one
+shared allowlist and function, `src/utils/run_state.py`'s `_RESUME_CARRYOVER_KEYS` (currently 10
+keys: `query`, `findings`, `fetched_urls`, `completion_check_attempts`, `search_health`,
+`started_at`, `plan`, `findings_written_citable_count`, `task_verification`, `no_urls_count`) and
+`merge_resumed_state(run_state, prior_state)`, called from both `run_cli`'s resume branch and
+`BasicTuiAgent._resume_run`. There is only one place to edit now, not two.
 
-Both contain a hardcoded tuple of keys copied from the interrupted run's `prior_state` into the new
-`RunState`:
-
-```python
-for key in ("query", "findings", "fetched_urls", "completion_check_attempts",
-            "search_health", "started_at", "plan", "findings_written_citable_count"):
-```
-
-**Any new `run_state.data` key that needs to survive a resume must be added to BOTH copies of this
-tuple.** This is exactly the bug found and fixed 2026-07-24: `findings_written_citable_count` was
-added to `run_state.data` (the staleness marker above) but initially left off both tuples, so every
-resume silently reset it, permanently disabling `check_stale_findings` for any resumed run. There
-is a unit test pinning both copies now
-(`test_structural_checks.py`: the TUI-side scenario asserts the marker survives resume; a
-source-inspection assertion separately pins `run_cli`'s own copy, since `run_cli` itself isn't
-easily unit-testable in isolation) — but a THIRD key added later still needs a THIRD manual edit in
-both places; the test only catches drift in keys it already knows about.
+**Any new `run_state.data` key that needs to survive a resume must be added to
+`_RESUME_CARRYOVER_KEYS`.** This is exactly the bug found and fixed 2026-07-24, before the
+extraction above: `findings_written_citable_count` was added to `run_state.data` (the staleness
+marker above) but initially left off both then-separate tuples, so every resume silently reset it,
+permanently disabling `check_stale_findings` for any resumed run. `test_structural_checks.py` pins
+the allowlist directly now that it's one real object, not two independent copies to keep pinned in
+sync.
 
 **Checklist for a new `run_state.data` key**: does an interrupted run's value need to survive
-`--resume-run`? If yes, add it to both tuples above, and extend the pinning tests.
+`--resume-run`? If yes, add it to `_RESUME_CARRYOVER_KEYS` and extend the pinning test.
 
 ## 4. The resume system (`--resume-run`)
 
@@ -542,11 +539,33 @@ Deliberate design choices, each with a real live-found failure mode when they co
   caught in this exact contradiction and spiraled into a `think_tool` reflection loop until it hit
   quota and was force-aborted): `Ctx.delegated`'s construction in `run_completion_check` now also
   treats a non-empty `run_state.data["fetched_urls"]` as proof delegation happened, in ANY session
-  — `fetched_urls` is already carried over via this section's own resume-carryover allowlist and
-  only a real specialist dispatch ever populates it, so it's ground truth regardless of which
-  process actually delegated. Single fix at the one construction site propagates to every reader
-  of `ctx.delegated` (`check_not_delegated` and `check_missing_artifact`'s redelegation-forbidding
+  — `fetched_urls` is already carried over via §3's `_RESUME_CARRYOVER_KEYS` allowlist and only a
+  real specialist dispatch ever populates it, so it's ground truth regardless of which process
+  actually delegated. Single fix at the one construction site propagates to every reader of
+  `ctx.delegated` (`check_not_delegated` and `check_missing_artifact`'s redelegation-forbidding
   message alike) — no other call site needed touching.
+- **A prose-only instruction not to redelegate on resume is not reliable, confirmed live** — even
+  the fix above (which stops the Planner from being *told* to delegate) doesn't stop the Planner
+  from *choosing* to anyway. `build_resume_input`'s own stage note already told a resumed Planner
+  in prose not to reopen broad research when a report already exists; live-confirmed 2026-08-01 it
+  ignored that and redelegated regardless, on a query where the existing report was missing a
+  whole facet `findings.md` already covered. The two new tasks it created to "fix" this got flagged
+  as fabricated (`check_task_verification_flagged`), and that `COMPLETION_CHECKS`-tier problem then
+  consumed the entire retry budget, 24 minutes, 8 completion-check attempts, since
+  `GROUNDING_CHECKS` (where `report_underuses_evidence`, the check actually built to fix a dropped
+  facet, lives) never got a single turn — `COMPLETION_CHECKS` always fully exhausts before
+  `GROUNDING_CHECKS` is even evaluated (§1's two-tier gate). **Fixed structurally, in
+  `merge_resumed_state` itself (`utils/run_state.py`, §3)**: if the required artifact already
+  exists on disk at resume time, `planner_delegate_rounds` gets pre-set to its own cap, so the
+  Planner's very first `delegate_tasks` call this run is already at the limit and gets rejected by
+  the existing `_planner_delegate_over_cap` predicate before it ever runs. A resumed run with an
+  existing report becomes fix-only (Builder/FindingsWriter dispatches via the completion-check
+  pipeline), never research-reopening, removing the Planner's *ability* to create a new,
+  unrelated problem instead of just asking it nicely not to. Live-confirmed: a resumed run under
+  this fix never delegated at all, finishing in 67 seconds instead of 24 minutes. **Any future
+  "don't redo work you've already done" instruction on resume should default to this shape**,
+  removing the capability at the source that populates `merge_resumed_state`'s own carryover keys,
+  not a prose instruction alone, per this whole document's own recurring lesson.
 
 **Checklist for anything new that touches "how much work has this run already done"**: does it need
 to behave differently on a fresh run vs. a resumed one? Check both `run_cli`'s resume branch and
@@ -605,7 +624,7 @@ it.
 | Adding... | Check these |
 |---|---|
 | A new completion-check problem | §1's four-tuple checklist + verdict-matrix test row |
-| A new `run_state.data` key that should survive `--resume-run` | §3: both resume-carryover tuples (`run_cli`, `_resume_run`) |
+| A new `run_state.data` key that should survive `--resume-run` | §3: `_RESUME_CARRYOVER_KEYS` (`utils/run_state.py`), shared by both `run_cli` and `_resume_run` via `merge_resumed_state` |
 | A new sub-agent dispatch role | Does its first message look like FindingsWriter's (one big self-contained blob) or like everyone else's (built up turn-by-turn)? → §2's compaction-exclusion question. Does it need `write_workspace_file` gated behind something else? → `writer_gate_ctx` pattern. |
 | A new entry point that dispatches research turns (beyond `run_cli`/`run_agent`) | §5: does it run turns concurrently in one process? The five module-level globals (`_session` and `tui.py`'s session-log state) are NOT contextvar-safe — either guarantee single-flight (the route `api.py` took) or make those globals contextvars first. Does it need follow-up/same-conversation continuation? → persist `AgentSession.to_dict()` per-run, don't trust the global to survive between calls. Does it need "Q&A on an existing report" semantics? → mirror `skip_completion_check`'s exact condition, don't approximate it. |
 | A new config key under `settings.*` | `config_template.yaml` (documented default) AND confirm it's read with a safe `.get(..., default)` — this project's convention is "absent in the live `~/.deepdelve/config.yaml` is fine," never require a live-config edit for a new default-on feature |
