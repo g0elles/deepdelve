@@ -140,14 +140,6 @@ tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
   strategy interface first, then extract the loop body to take it as a parameter, not "extract the
   whole function and see what breaks."
 
-- **`check_findings_underuses_evidence` evidence-dropping, a monitoring point, not an active fix
-  target.** One clean, non-overloaded 2-task run had FindingsWriter silently drop an entire covered
-  topic from `findings.md`, not thin, not truncated, gone outright, with no infra confound found.
-  Every other writer-stage failure investigated the same session traced to a specific, now-fixed
-  mechanism; this is the one exception. Deliberately not fixed via a blind prompt rewrite per the
-  Model Evaluation Standard's own "needs more than one occurrence" bar. Reopen trigger: a second
-  clean, unconfounded run showing the same whole-topic-dropping shape.
-
 - **A finer-grained, in-turn repetition guard, an unbuilt idea.** The completion-check-level
   full-rebuild escalation already shipped (see Completed), but a narrower, one-level-lower guard
   (catching e.g. a single dispatch calling `fetch_url_to_workspace` on the same URL 6 times within
