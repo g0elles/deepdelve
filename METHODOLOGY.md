@@ -63,20 +63,21 @@ together in a way nothing else surveyed was:
 
 ### 3.1 A priority-ordered bank of structural checks, not an LLM judge
 
-`src/engine/completion.py` runs 25 independent, pure-function checks (`COMPLETION_CHECKS` then
-`GROUNDING_CHECKS`, first-match-wins, exactly one `Verdict` per attempt — full mechanics in
+`src/engine/completion.py` runs 27 independent, pure-function checks (`COMPLETION_CHECKS`, 10, then
+`GROUNDING_CHECKS`, 17, first-match-wins, exactly one `Verdict` per attempt — full mechanics in
 `ARCHITECTURE.md` §1). Each targets one specific, previously *observed* failure mode against
 ground-truth run state — not a generic taxonomy classification, a concrete incident with a concrete
 fix.
 
-**Starvation prevention, generalized 2026-07-31 after this exact bug shape recurred eight times.**
-The mechanism this subsection originally described (`_yield_to_starved_check` giving one
-specific low-priority check a probe after a fixed attempt count) was a per-instance patch, not a
-structural fix — and it kept needing to be re-applied: a first-match-wins priority queue lets any
-check near the top permanently starve everything below it for a run's entire retry budget if it
-keeps re-firing on unchanged state, and eight separate real incidents hit this before it got a
-shared mechanism instead of a ninth patch. The generalized fix (`_consecutive_occurrences`,
-`_capped`, `CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD`, `_yield_to_starved_check`,
+**Starvation prevention, generalized 2026-07-31 after this exact bug shape recurred eight times,
+then extended cross-tier 2026-08-17 when it recurred a ninth time in a new shape.** The mechanism
+this subsection originally described (`_yield_to_starved_check` giving one specific low-priority
+check a probe after a fixed attempt count) was a per-instance patch, not a structural fix — and it
+kept needing to be re-applied: a first-match-wins priority queue lets any check near the top
+permanently starve everything below it for a run's entire retry budget if it keeps re-firing on
+unchanged state, and eight separate real incidents hit this before it got a shared mechanism
+instead of a ninth patch. The generalized fix (`_consecutive_occurrences`, `_capped`,
+`CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD`, `_yield_to_starved_check`,
 `_STARVATION_YIELD_TARGETS`+`_apply_starvation_yield` — all `completion.py`, full mechanics
 `ARCHITECTURE.md` §1) requires every non-self-resolving, non-self-clearing check to cap its own
 consecutive-firing count via one shared helper, pinned by a standing audit test that fails CI if a
@@ -88,6 +89,19 @@ The methodological lesson, not just the mechanism: **a structural fix that requi
 enforce compliance beats a structural fix that trusts every future check author to remember the
 convention** — two of the eight incidents were caught by the audit test before ever causing a live
 failure, not after.
+
+The generalized fix was itself insufficient once, confirming it was solving a real, recurring class
+of problem rather than one specific bug: `run_completion_check` only ever evaluates
+`GROUNDING_CHECKS` once `COMPLETION_CHECKS`'s own scan returns nothing, a hard two-tier gate, not
+just list-position priority within one list. A live-traced incident (2026-08-17) showed a
+`COMPLETION_CHECKS` problem recurring indefinitely could permanently prevent `GROUNDING_CHECKS`'
+own `report_underuses_evidence` check (a dropped-facet detector) from ever getting a turn, even
+though every individual check inside each tier was correctly capped. The existing
+`_yield_to_starved_check` mechanism, already proven safe as a speculative probe, needed no new
+machinery, just a second call site applied to the tier boundary itself. The lesson generalizes past
+this specific gate: a structural fix scoped to "checks within one list" does not automatically cover
+"tiers of lists," and the actual boundary of a starvation-prevention mechanism needs checking
+explicitly, not assumed from the fact that a version of it already shipped once.
 
 ### 3.2 Fresh-context, independent review — not same-context self-critique
 
@@ -171,6 +185,50 @@ clusters — named which of three distinct long-context failure modes this was, 
 hierarchical decomposition (what per-facet dispatch is a form of) as the literature's standard
 mitigation for that specific mode, not a guess at one of three.
 
+A follow-up, isolated A/B test (2026-08-19) sharpened rather than reopened the self-correction
+blind spot diagnosis. A plausible, cheap-to-test candidate contributor to a different but
+related-looking failure (a writer role narrating instead of calling `write_workspace_file`) was
+the `<Show Your Thinking>` prompt block AgentFloor (arXiv:2605.00334) suggested might be pushing
+models toward "plan, then stop" the same way a heavier plan/execute/submit phase structure
+regressed every model in that paper's own sweep. Built a faithful isolated harness reusing the real
+evidence base and tool schema from a model already live-disqualified for this exact failure, 9 reps
+with the block present versus stripped. Result: 9 of 9 real tool calls in both conditions, no
+difference. Genuine negative result, not left open: the block is not implicated, and the finding
+sharpens §3.6's own diagnosis rather than contradicting it — since an isolated single-turn dispatch
+converges cleanly regardless of the prompt block, the actual variable has to be something specific
+to a full run's multi-turn or retry dynamics, not the prompt content itself. Methodologically, this
+is the same discipline as the salvage/exclusion fixes above applied to a negative case: a plausible
+literature-suggested mechanism gets tested against the project's own real data before being acted
+on or ruled out, rather than assumed correct because the analogy was persuasive.
+
+### 3.7 Controlled ablation over plausible-sounding mechanisms, not just "did the symptom stop"
+
+Every mechanism in §§3.1-3.6 was originally validated the same way: implement it, re-run the
+benchmark that exposed the bug, confirm the target symptom didn't recur in one live trial. That is
+a real check, but it does not distinguish a genuinely load-bearing fix from a plausible-sounding
+addition that happened to coincide with the run converging for an unrelated reason — precisely the
+audit gap "The Illusion of Multi-Agent Advantage" (Jwalapuram et al., arXiv:2606.13003) identifies
+in other multi-agent systems: complexity added without verified causal contribution, "expensive
+witnesses" that cost real overhead but have near-zero measured influence on the outcome.
+
+Applied to this project's own completion-check pipeline for the first time 2026-08-18, using an
+adaptive-trial protocol (one run per condition, escalating to more only when an early trial
+disagreement needs resolving, per §5's own "a discard needs more than one run, a pass can stand on
+one" standard): two accumulated mechanisms, `force_whole_rebuild` (the full-artifact-rebuild
+escalation from §3, point 4 of `RESEARCH.md`'s four literature-backed candidates) and a
+`no_progress_guard` added the day before, were each run with and without, on the standing
+benchmark. Disabling `force_whole_rebuild` dropped the mean score from a 0.75 baseline to 0.25
+across 3 runs (escalated after run 1 and run 2 disagreed), both failing runs hitting the same
+underlying coordination failure the mechanism exists to break. Disabling `no_progress_guard`
+dropped the mean to 0.125 across 2 runs, both timing out for two different specific reasons, the
+guard's absence generically letting a run burn its whole time budget on unproductive retries
+regardless of which specific check triggers it. Both mechanisms confirmed genuinely load-bearing,
+not expensive witnesses, the first real controlled-ablation evidence for any of this project's own
+completion-check mechanisms, as opposed to the single-live-trial validation every other mechanism
+in this document still stands on. The remaining, larger mechanisms (per-facet dispatch, the
+starvation guards themselves) have not yet been put through the same ablation, a concrete,
+scoped-but-not-yet-executed next step, not a claim that everything else is unproven.
+
 ## 4. Recurring design principles, evidenced
 
 These are not abstract values — each is stated here because a specific, dated incident in this
@@ -194,6 +252,13 @@ project's own history demonstrated it, cited inline.
   were replayed directly against the actual `_run_state.json` of the run that originally exposed
   the bug, before being declared fixed — confirming the fix would have caught the exact real
   incident, not just a synthetic approximation of it.
+- **A mechanism surviving one live re-run is not the same claim as a mechanism being load-bearing.**
+  Every completion-check mechanism in §3 was validated by re-running the benchmark that exposed its
+  bug and confirming the symptom didn't recur once — real evidence, but not a controlled comparison.
+  The first genuine with-versus-without ablation (§3.7, 2026-08-18) confirmed two accumulated
+  mechanisms were in fact causally responsible for the score difference they were credited with, not
+  merely correlated with a run that happened to converge. This is the concrete demonstrated instance
+  of the general principle stated above, not just an aspiration.
 - **A discard verdict needs corroboration; a pass can stand on one clean run.** Formalized as the
   Model Evaluation Standard (§5) after two real fairness gaps were found on re-reading a past
   verdict critically — the standard exists because the project caught itself getting this wrong
