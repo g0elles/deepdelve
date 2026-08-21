@@ -102,7 +102,7 @@ def check_quota(tool_name: str, call_key: tuple | None = None) -> str | None:
         # differently-evidenced mechanism (real quota-exhaustion transcript data), not the one in
         # question here.
         no_progress_guard_disabled = bool(
-            config.cfg.get("settings", {}).get("ablation", {}).get("disable_no_progress_guard", False)
+            config.get_setting("ablation", {}).get("disable_no_progress_guard", False)
         )
         if (not no_progress_guard_disabled and call_key is not None
                 and entry.get("_error_streak_key") == call_key
@@ -121,7 +121,7 @@ def check_quota(tool_name: str, call_key: tuple | None = None) -> str | None:
         # consecutive FAILURES to this tool regardless of differing arguments (a hallucination
         # spiral, not a repeated identical mistake). Same ablation-switch convention, own flag.
         tool_failure_streak_guard_disabled = bool(
-            config.cfg.get("settings", {}).get("ablation", {}).get("disable_tool_failure_streak_guard", False)
+            config.get_setting("ablation", {}).get("disable_tool_failure_streak_guard", False)
         )
         if (not tool_failure_streak_guard_disabled
                 and entry.get("_tool_error_streak_count", 0) >= _TOOL_FAILURE_STREAK_LIMIT):

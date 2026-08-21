@@ -1158,7 +1158,7 @@ def topical_relevance_problem(report: str) -> str | None:
     if model is None:
         return None
 
-    threshold = config.cfg.get("settings", {}).get("grounding_check", {}).get(
+    threshold = config.get_setting("grounding_check", {}).get(
         "topical_relevance_threshold", 0.1)
     # bge-reranker convention is (query, passage) -- the CLAIM is the query, the source window is
     # the passage being judged relevant or not to it.
@@ -1310,7 +1310,7 @@ async def real_grounding_problem(content: str) -> str | None:
     fetched = {_normalize_url(entry["url"]) for entry in fetched_entries}
     unverified = [u for u in cited if not _url_is_grounded(_normalize_url(u), fetched)]
 
-    gc_cfg = config.cfg.get("settings", {}).get("grounding_check", {})
+    gc_cfg = config.get_setting("grounding_check", {})
 
     if unverified:
         detail = f"unverified_urls:{', '.join(unverified[:3])}"

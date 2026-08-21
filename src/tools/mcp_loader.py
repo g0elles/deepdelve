@@ -84,7 +84,7 @@ def _build_mcp_tool(spec: dict):
 def get_mcp_specs_for_agent(agent_name: str) -> list[dict]:
     """Returns settings.mcp_servers entries scoped to this sub-agent name via each entry's own
     'agents' allowlist, or entries with no 'agents' key (available to every sub-agent)."""
-    specs = app_config.cfg.get("settings", {}).get("mcp_servers", []) or []
+    specs = app_config.get_setting("mcp_servers", []) or []
     return [s for s in specs if not s.get("agents") or agent_name in s["agents"]]
 
 

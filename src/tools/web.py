@@ -386,7 +386,7 @@ def _fetch_raw(url: str, convert_to_md: bool = True, _redirect_depth: int = 0):
         # stub result (and its accurate stub flag) untouched.
         if _stub_reason(md_content):
             import config as app_config
-            headless_enabled = app_config.cfg.get("settings", {}).get("fetch", {}).get("headless_fallback", True)
+            headless_enabled = app_config.get_setting("fetch", {}).get("headless_fallback", True)
             if headless_enabled:
                 rendered_html = fetch_via_headless_browser(str(resp_url))
                 if rendered_html:
@@ -428,7 +428,7 @@ def _fetch_raw(url: str, convert_to_md: bool = True, _redirect_depth: int = 0):
         # latency to the common case.
         if _stub_reason(md_content):
             import config as app_config
-            tavily_key = app_config.cfg.get("settings", {}).get("tavily_api_key", "")
+            tavily_key = app_config.get_setting("tavily_api_key", "")
             if tavily_key:
                 try:
                     # The ORIGINAL url, not resp_url — a bot-walled page's plain-fetch redirect
@@ -662,7 +662,7 @@ def _scope_warning(query: str) -> str:
     live 2026-07-11, an entire quota's worth of off-continent results). Same philosophy as the
     post-fetch verify_scope_relevance check: warn, never block — the model decides."""
     import config as app_config
-    if not app_config.cfg.get("settings", {}).get("grounding_check", {}).get("verify_scope_relevance", True):
+    if not app_config.get_setting("grounding_check", {}).get("verify_scope_relevance", True):
         return ""
     from utils.run_state import scope_entities_ctx
     entities = scope_entities_ctx.get()
@@ -783,7 +783,7 @@ async def fetch_url_to_workspace(url: str | list, filename: str = "", convert_to
     from utils.run_state import task_fetched_urls_ctx
     own_fetched = task_fetched_urls_ctx.get()
     if own_fetched is not None:
-        cap = app_config.cfg.get("settings", {}).get("specialist_fetch_cap", 5)
+        cap = app_config.get_setting("specialist_fetch_cap", 5)
         if _specialist_fetch_over_cap(len(own_fetched), cap):
             return (
                 f"Error: fetch_url_to_workspace call rejected — this task has already fetched "
@@ -897,7 +897,7 @@ async def web_search(
     streak_note = _note_search_streak(query)
 
     import config as app_config
-    search_mode = app_config.cfg.get("settings", {}).get("search_mode", "light")
+    search_mode = app_config.get_setting("search_mode", "light")
     if search_mode == "heavy":
         # Test-time search scaling (inspired by Tongyi DeepResearch's "Heavy Mode"): search deeper
         # and auto-fetch more of the top results per call, rather than fabricating fake
@@ -931,9 +931,9 @@ async def web_search(
         # structural is not. "auto" picks the best configured provider without the model ever
         # knowing a choice was made: Tavily (dedicated search API) > Brave (real search index) >
         # ddgs (free, no key, metasearch scrape — the original zero-config fallback).
-        backend_choice = app_config.cfg.get("settings", {}).get("web_search_backend", "auto")
-        tavily_key = app_config.cfg.get("settings", {}).get("tavily_api_key", "")
-        brave_key = app_config.cfg.get("settings", {}).get("brave_api_key", "")
+        backend_choice = app_config.get_setting("web_search_backend", "auto")
+        tavily_key = app_config.get_setting("tavily_api_key", "")
+        brave_key = app_config.get_setting("brave_api_key", "")
         provider = backend_choice
         if provider == "auto":
             provider = "tavily" if tavily_key else ("brave" if brave_key else "ddgs")
@@ -991,7 +991,7 @@ async def web_search(
             # (e.g. "google,brave,duckduckgo") pins specific engines in order. Unrelated to, and
             # not to be confused with, settings.web_search_backend above — this is ddgs's own
             # internal engine-rotation knob, only consulted when ddgs is the active provider.
-            ddgs_engine = app_config.cfg.get("settings", {}).get("search_backend", "auto")
+            ddgs_engine = app_config.get_setting("search_backend", "auto")
 
             if topic == "news":
                 search_results = client.news(query, max_results=max_results, backend=ddgs_engine)
@@ -1029,7 +1029,7 @@ async def web_search(
     # (test_structural_checks.py) since a subprocess re-imports fresh, unpatched modules — the
     # daemon-thread approach solves the same user-visible symptom (including the exit-hang) without
     # that test-compatibility cost.
-    timeout_s = app_config.cfg.get("settings", {}).get("web_search", {}).get("timeout_seconds", 20)
+    timeout_s = app_config.get_setting("web_search", {}).get("timeout_seconds", 20)
     results, err = [], None
     try:
         results = await asyncio.to_thread(_run_with_daemon_timeout, _do_search, timeout_s)
@@ -1076,12 +1076,12 @@ async def web_search(
     # model not to take it — the same category of fix as the delegate_tasks schema validation and
     # the narrated-report salvage.
     # -------------------------------------------------------------
-    auto_fetch_top = app_config.cfg.get("settings", {}).get("web_search", {}).get("auto_fetch_top", 1)
+    auto_fetch_top = app_config.get_setting("web_search", {}).get("auto_fetch_top", 1)
     if search_mode == "heavy":
         auto_fetch_top = max(auto_fetch_top, 3)
     auto_fetch_note = ""
     from utils.run_state import task_fetched_urls_ctx
-    _fetch_cap = app_config.cfg.get("settings", {}).get("specialist_fetch_cap", 5)
+    _fetch_cap = app_config.get_setting("specialist_fetch_cap", 5)
     for i, r in enumerate(results[:max(auto_fetch_top, 0)]):
         if not r["url"]:
             continue

@@ -61,7 +61,7 @@ async def _require_api_password(request: Request, call_next):
     included) combined with LAN/phone reachability: without this, anyone on the same network who
     finds the port can read and rewrite those keys. Still layered on top of, not instead of, the
     --i-understand-the-risk non-loopback bind guard in main() below."""
-    required = config.cfg.get("settings", {}).get("api_password")
+    required = config.get_setting("api_password")
     if required and request.url.path != "/":
         supplied = request.headers.get("X-API-Password") or request.query_params.get("pw")
         if supplied != required:
@@ -166,7 +166,7 @@ async def _run_research(run_id: str, query: str, opts: dict, events: asyncio.Que
                     "result": str(getattr(content, "result", ""))[:500],
                 })
 
-    max_run_minutes = config.cfg.get("settings", {}).get("max_run_minutes", 0) or 0
+    max_run_minutes = config.get_setting("max_run_minutes", 0) or 0
     budget_deadline = (time.monotonic() + max_run_minutes * 60) if max_run_minutes else None
 
     from utils.run_state import run_state_ctx

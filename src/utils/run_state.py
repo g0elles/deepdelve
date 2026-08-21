@@ -488,7 +488,7 @@ def merge_resumed_state(run_state: "RunState", prior_state: dict) -> None:
         if key in prior_state:
             run_state.data[key] = prior_state[key]
     run_state.data["resumed_at"] = time.time()
-    req_artifact = config.cfg.get("settings", {}).get("workspace", {}).get("required_artifact", "final_report.md")
+    req_artifact = config.get_setting("workspace", {}).get("required_artifact", "final_report.md")
     if os.path.exists(os.path.join(run_state.run_dir, req_artifact)):
-        run_state.data["planner_delegate_rounds"] = config.cfg.get("settings", {}).get("max_planner_delegate_rounds", 4)
+        run_state.data["planner_delegate_rounds"] = config.get_setting("max_planner_delegate_rounds", 4)
         run_state.data["resumed_with_existing_report"] = True

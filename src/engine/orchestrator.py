@@ -192,7 +192,7 @@ _SPECIALIST_MODEL_ROLES = frozenset({"WebSearcher", "AcademicSearcher", "Documen
 
 def apply_tool_permissions(tools: list) -> list:
     """Dynamically applies approval boundaries mapped in config.yaml."""
-    perms = config.cfg.get("settings", {}).get("permissions", {})
+    perms = config.get_setting("permissions", {})
     for t in tools:
         if hasattr(t, "name") and hasattr(t, "approval_mode"):
             if perms.get(t.name) == "require_approval":
@@ -467,23 +467,23 @@ def _get_quota_format_vars() -> dict:
     named '{web_search_quota}' with its integer limit value. Both flat integers
     and dict-with-limit configs are handled transparently.
     """
-    quotas = config.cfg.get("settings", {}).get("quotas", {})
+    quotas = config.get_setting("quotas", {})
     result = {}
     for key, val in quotas.items():
         result[key + "_quota"] = val.get("limit", 0) if isinstance(val, dict) else val
     # Not part of settings.quotas (a separate, per-task-instance cap, not a global pool entry --
     # see specialist_delegate_task_count_ctx's header comment) but exposed the same way so
     # WEB_SEARCHER_INSTRUCTIONS/ACADEMIC_SEARCHER_INSTRUCTIONS can reference it as a real number.
-    result["specialist_delegation_cap"] = config.cfg.get("settings", {}).get("specialist_delegation_cap", 3)
+    result["specialist_delegation_cap"] = config.get_setting("specialist_delegation_cap", 3)
     # Same treatment as specialist_delegation_cap just above (a per-task cap, not a settings.quotas
     # pool entry, exposed the same way so WEB_SEARCHER_INSTRUCTIONS/ACADEMIC_SEARCHER_INSTRUCTIONS
     # can tell the model its real per-task fetch ceiling instead of silently enforcing it) — see
     # tools/web.py's _specialist_fetch_over_cap.
-    result["specialist_fetch_cap"] = config.cfg.get("settings", {}).get("specialist_fetch_cap", 5)
+    result["specialist_fetch_cap"] = config.get_setting("specialist_fetch_cap", 5)
     # Same treatment again, one tier further downstream — a per-dispatch cap (not a settings.quotas
     # pool entry) exposed so DOCUMENT_ANALYZER_INSTRUCTIONS/DATA_ANALYZER_INSTRUCTIONS can tell the
     # model its real per-dispatch read/grep ceiling — see tools/fs.py's _analyzer_read_over_cap.
-    result["analyzer_read_cap"] = config.cfg.get("settings", {}).get("analyzer_read_cap", 8)
+    result["analyzer_read_cap"] = config.get_setting("analyzer_read_cap", 8)
     return result
 
 def _safe_format(template: str, **kwargs) -> str:
@@ -516,7 +516,7 @@ _HOSTED_PROVIDER_THINKING_EXTRA_BODY = {
 
 
 def _get_default_options():
-    options = {"temperature": config.cfg.get("settings", {}).get("temperature", 0.0)}
+    options = {"temperature": config.get_setting("temperature", 0.0)}
     backend = config.cfg.get("api", {}).get("backend", "openai")
     # api.backend: "ollama" (2026-07-28) -- OllamaChatOptions has a genuine, already-correctly-
     # implemented `think: bool` field (agent_framework_ollama's _chat_client.py maps it straight
@@ -526,7 +526,7 @@ def _get_default_options():
     # equivalent first-class option, which is exactly why RESEARCH.md §14e found it leaks
     # reasoning back in on tool-calling turns even with enable_thinking:false.
     if backend == "ollama":
-        options["think"] = config.cfg.get("settings", {}).get("enable_thinking", False)
+        options["think"] = config.get_setting("enable_thinking", False)
         return options
     if backend == "openai_hosted":
         if not config.cfg["settings"].get("enable_thinking", False):
@@ -548,7 +548,7 @@ def _get_default_options():
     # this exact 400 despite passing an isolated tool-call smoke test cleanly. No model-family
     # auto-detection (this project has repeatedly found string-matching model-family guesses
     # unreliable) -- set this explicitly per config, same philosophy as settings.specialist_model.
-    if config.cfg.get("settings", {}).get("skip_chat_template_kwargs", False):
+    if config.get_setting("skip_chat_template_kwargs", False):
         return options
     base_url = config.cfg.get("api", {}).get("openai_base_url", "")
     # OpenAI's official API rejects "chat_template_kwargs"
@@ -582,10 +582,10 @@ def _get_compaction_strategy():
     own context_budget_chars comment, calibrated against the same number); default
     max_output_tokens 4096 leaves a ~12K-token input budget, consistent with the existing
     context_budget_chars: 50000 calibration rather than an independently-invented number."""
-    max_ctx = config.cfg.get("settings", {}).get("max_context_window_tokens", 16384) or 0
+    max_ctx = config.get_setting("max_context_window_tokens", 16384) or 0
     if not max_ctx:
         return None
-    max_output = config.cfg.get("settings", {}).get("max_output_tokens", 4096)
+    max_output = config.get_setting("max_output_tokens", 4096)
     return ContextWindowCompactionStrategy(
         max_context_window_tokens=max_ctx,
         max_output_tokens=max_output,
@@ -635,7 +635,7 @@ def get_context_budget() -> int:
     TOP, which can eat the system prompt mid-run and looks exactly like model collapse. This is a
     conservative proxy (per-stream streamed chars, not true prompt size): when exceeded, the turn
     is cut and the agent gets ONE wrap-up turn to return/write what it already has."""
-    return config.cfg.get("settings", {}).get("context_budget_chars", 0) or 0
+    return config.get_setting("context_budget_chars", 0) or 0
 
 
 # Minimum real sources a task must have already fetched (task_fetched_urls_ctx) for a
@@ -910,8 +910,8 @@ def _build_client(model_override: str | None = None, base_url_override: str | No
     # those mechanisms dead code in realistic configs, only ever exercised by an artificially short
     # override like a quick smoke test. Setting the SDK's timeout to run comfortably past both
     # ensures OUR explicit, graceful cutoffs are what actually fire first.
-    _max_run_minutes = config.cfg.get("settings", {}).get("max_run_minutes", 0) or 0
-    _sub_timeout_minutes = config.cfg.get("settings", {}).get("sub_agent_timeout_minutes", 0) or 0
+    _max_run_minutes = config.get_setting("max_run_minutes", 0) or 0
+    _sub_timeout_minutes = config.get_setting("sub_agent_timeout_minutes", 0) or 0
     sdk_timeout = max(_max_run_minutes * 60, _sub_timeout_minutes * 60, 0) + 300
     sdk_timeout = max(sdk_timeout, 3600)
     return OpenAIChatCompletionClient(
@@ -930,7 +930,7 @@ def _build_client(model_override: str | None = None, base_url_override: str | No
 def build_quota_pool() -> dict:
     """Build the initial {tool_name: {used, limit, rules}} quota pool from config.yaml.
     Shared across the Planner and every dispatched specialist for the life of one run."""
-    quotas = config.cfg.get("settings", {}).get("quotas", {})
+    quotas = config.get_setting("quotas", {})
     pool = {}
     for key, val in quotas.items():
         if isinstance(val, dict):
@@ -947,7 +947,7 @@ def topup_quota_pool(pool: dict) -> dict:
     `tool_quotas_ctx.set(...)` happened once before the whole retry loop and was never replenished
     between attempts (see plan doc diagnosis point 2) — a complex query that burned its budget on a
     flawed first pass never got a real second chance."""
-    topup = config.cfg.get("settings", {}).get("retry_quota_topup", {})
+    topup = config.get_setting("retry_quota_topup", {})
     for tool_name, amount in topup.items():
         if tool_name in pool:
             pool[tool_name]["limit"] += amount
@@ -984,7 +984,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
     # 2026-07-12 fix docstring describes and was built to prevent, just never propagated to this
     # sibling code path -- see _build_client's own sdk_timeout comment for the matching fix on the
     # SDK's own blunt timeout, which would otherwise still win the race in realistic configs).
-    _sub_agent_timeout_minutes = config.cfg.get("settings", {}).get("sub_agent_timeout_minutes", 0) or 0
+    _sub_agent_timeout_minutes = config.get_setting("sub_agent_timeout_minutes", 0) or 0
 
     # Absolute ceiling for the one-time deadline ring-fence below (see task_deadline/
     # deadline_extended in _run_single_task) -- mirrors _build_client's own sdk_timeout formula
@@ -993,7 +993,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
     # ring-fenced extension would silently reintroduce the exact SDK-wins-the-race bug
     # _build_client's sdk_timeout comment already documents fixing once (SDK timeout fires first,
     # discards the whole response, throws a raw exception instead of our graceful cutoff).
-    _max_run_minutes_for_sdk_cap = config.cfg.get("settings", {}).get("max_run_minutes", 0) or 0
+    _max_run_minutes_for_sdk_cap = config.get_setting("max_run_minutes", 0) or 0
     _sdk_timeout_ceiling_seconds = max(
         _max_run_minutes_for_sdk_cap * 60, _sub_agent_timeout_minutes * 60, 0
     ) + 300
@@ -1003,7 +1003,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
     # Builder sub-agent's instructions (formatted inside _run_single_task below) can reference
     # {report_style_instructions}/{citation_format_instructions} — Builder is now the only role
     # that writes final_report.md, so it needs the same style vars the Planner used to.
-    report_style = config.cfg.get("settings", {}).get("report_style", "standard")
+    report_style = config.get_setting("report_style", "standard")
     _REPORT_STYLE_INSTRUCTIONS = {
         "academic": ACADEMIC_REPORT_STYLE_INSTRUCTIONS,
         "answer": ANSWER_REPORT_STYLE_INSTRUCTIONS,
@@ -1033,8 +1033,8 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
     # simultaneously (a 12GB + 5GB pair already exceeds this card's ~16GB budget) — every switch
     # between this client and the main one costs a real model reload (~5-23s measured), paid once
     # per delegate_tasks round (Planner boundary), not per individual specialist tool call.
-    specialist_model = config.cfg.get("settings", {}).get("specialist_model")
-    specialist_base_url = config.cfg.get("settings", {}).get("specialist_base_url")
+    specialist_model = config.get_setting("specialist_model")
+    specialist_base_url = config.get_setting("specialist_base_url")
     if specialist_model and specialist_model != config.cfg["api"]["openai_model"]:
         specialist_client = _build_client(
             model_override=specialist_model, base_url_override=specialist_base_url
@@ -1054,7 +1054,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
     # -------------------------------------------------------------
     # Bounded Concurrent Sub-Agent Dispatcher
     # Utilizes inherited contextvars for shared cumulative quotas to prevent limit overruns.
-    sem = asyncio.Semaphore(config.cfg.get("settings", {}).get("concurrency", {}).get("max_concurrent_tasks", 1))
+    sem = asyncio.Semaphore(config.get_setting("concurrency", {}).get("max_concurrent_tasks", 1))
 
     holds_token = contextvars.ContextVar('holds_token', default=False)
 
@@ -1147,7 +1147,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                         task_name=task_name,
                         workspace_dir=config.get_workspace_dir(),
                         delegation_instructions=SUBAGENT_DELEGATION_INSTRUCTIONS.format(
-                            max_concurrency=config.cfg.get("settings", {}).get("concurrency", {}).get("max_concurrent_tasks", 1)
+                            max_concurrency=config.get_setting("concurrency", {}).get("max_concurrent_tasks", 1)
                         ),
                         report_style_instructions=report_style_instructions,
                         citation_format_instructions=citation_format_instructions,
@@ -1160,7 +1160,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                         task_name=task_name,
                         workspace_dir=config.get_workspace_dir(),
                         delegation_instructions=SUBAGENT_DELEGATION_INSTRUCTIONS.format(
-                            max_concurrency=config.cfg.get("settings", {}).get("concurrency", {}).get("max_concurrent_tasks", 1)
+                            max_concurrency=config.get_setting("concurrency", {}).get("max_concurrent_tasks", 1)
                         ),
                         report_style_instructions=report_style_instructions,
                         citation_format_instructions=citation_format_instructions,
@@ -1408,7 +1408,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                 # check at all — it looks like defense-in-depth while doing nothing.
                 verification_warnings = ""
 
-                gc_cfg = config.cfg.get("settings", {}).get("grounding_check", {})
+                gc_cfg = config.get_setting("grounding_check", {})
                 # enabled is the grounding_check section's master switch (2026-07-12 audit, G2)
                 if target_children and gc_cfg.get("enabled", True) and gc_cfg.get("verify_specialist_output", True):
                     from utils.grounding import real_grounding_problem
@@ -1571,7 +1571,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                 # future cache hit still requires the Searcher to incorporate/cite it itself, the
                 # same as a fresh web_search result — this is what makes it safe across different
                 # models, unlike the deleted knowledge_cache (929b987) it replaces.
-                rag_cfg = config.cfg.get("settings", {}).get("rag_cache", {})
+                rag_cfg = config.get_setting("rag_cache", {})
                 if _should_cache_finding(
                     verification_warnings, new_urls, rag_cfg.get("enabled", False), finding_summary
                 ):
@@ -1614,7 +1614,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
         specialist_delegation_counter = None
         _rs_for_cap = None
         if delegation_depth_ctx.get() > 0:
-            cap = config.cfg.get("settings", {}).get("specialist_delegation_cap", 3)
+            cap = config.get_setting("specialist_delegation_cap", 3)
             specialist_delegation_counter = specialist_delegate_task_count_ctx.get()
             current = specialist_delegation_counter[0] if specialist_delegation_counter is not None else 0
             if _specialist_delegation_over_cap(current, len(tasks), cap):
@@ -1633,7 +1633,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
             # fixed the ORIGINAL traced incident but both smoke-test reruns still timed out because
             # the Planner kept redispatching with no cutoff signal involved at all -- see
             # _planner_delegate_over_cap's own docstring.
-            planner_cap = config.cfg.get("settings", {}).get("max_planner_delegate_rounds", 4)
+            planner_cap = config.get_setting("max_planner_delegate_rounds", 4)
             _rs_for_cap = run_state_ctx.get()
             _planner_rounds = _rs_for_cap.data.get("planner_delegate_rounds", 0) if _rs_for_cap else 0
             if _planner_delegate_over_cap(_planner_rounds, planner_cap):
@@ -1841,7 +1841,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
             # _run_single_task's own exact-string lookup fails per-task post-dispatch. Decision
             # logic lives in _agent_routing_rejection_reason (pure function, directly testable) —
             # this closure only gathers the caller's real roster and the classifier's prediction.
-            agent_routing_cfg = config.cfg.get("settings", {}).get("agent_routing_classifier", {})
+            agent_routing_cfg = config.get_setting("agent_routing_classifier", {})
             if agent_routing_cfg.get("enabled", False):
                 from utils.agent_routing import predict_agent_id, KNOWN_AGENT_IDS
                 caller_role_names = frozenset(c.name for c in available_sub_agents_ctx.get())
@@ -1916,7 +1916,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                 # running is the unlikely case, not the common one, so escalating only on a repeat
                 # against the same target keeps the false-positive cost to a single wasted advisory.
                 rename_reject_escalation_disabled = bool(
-                    config.cfg.get("settings", {}).get("ablation", {}).get(
+                    config.get_setting("ablation", {}).get(
                         "disable_rename_reject_escalation", False
                     )
                 )
@@ -2007,7 +2007,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
     # which is a single closure shared across every tier — gating it there would pause EVERY
     # delegation at every depth, not just the Planner's initial one). Only the Planner holds
     # write_todos (see app.py), so this can't accidentally gate a sub-agent's tool calls.
-    if config.cfg.get("settings", {}).get("human_in_the_loop", False):
+    if config.get_setting("human_in_the_loop", False):
         for t in tools_list:
             if getattr(t, "name", None) == "write_todos" and hasattr(t, "approval_mode"):
                 t.approval_mode = "always_require"
@@ -2025,7 +2025,7 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
             date=current_date,
             workspace_dir=workspace_dir,
             delegation_instructions=SUBAGENT_DELEGATION_INSTRUCTIONS.format(
-                max_concurrency=config.cfg.get("settings", {}).get("concurrency", {}).get("max_concurrent_tasks", 1)
+                max_concurrency=config.get_setting("concurrency", {}).get("max_concurrent_tasks", 1)
             ),
             report_style_instructions=report_style_instructions,
             citation_format_instructions=citation_format_instructions,

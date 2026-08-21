@@ -167,8 +167,8 @@ def _check_analyzer_read_cap(tool_name: str) -> str | None:
     counter = task_read_grep_count_ctx.get()
     if counter is None:
         return None
-    from config import cfg
-    cap = cfg.get("settings", {}).get("analyzer_read_cap", 8)
+    import config
+    cap = config.get_setting("analyzer_read_cap", 8)
     if _analyzer_read_over_cap(counter[0], cap):
         return (
             f"Error: {tool_name} call rejected — this dispatch has already made {counter[0]} "

@@ -54,6 +54,17 @@ cfg: dict = {}
 # save_config() persists against THIS, not `cfg` — see its docstring.
 _file_cfg: dict = {}
 
+def get_setting(key: str, default=None):
+    """settings.<key>, the single top-level lookup underneath every one of the ~85 remaining
+    `config.cfg.get("settings", {}).get(key, default)` call sites (2026-08-20 migration). Not a
+    per-key accessor like get_workspace_dir()/get_required_artifact() below, those exist because
+    their keys had real duplicated defaults worth naming; most settings keys are read from only
+    1-3 places with a single, already-consistent default, so a bespoke named function per key
+    would just be indirection. This collapses the boilerplate `.get("settings", {})` prefix
+    everywhere without inventing 40+ near-identical wrapper functions."""
+    return cfg.get("settings", {}).get(key, default)
+
+
 def get_workspace_dir() -> str:
     """settings.workspace.dir, the base directory for disk-mode workspace/report files.
     Extracted 2026-08-20: this exact chain was copy-pasted at 10+ call sites across

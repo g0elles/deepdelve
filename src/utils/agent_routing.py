@@ -45,7 +45,7 @@ _load_failed = False
 
 
 def _get_classifier_settings() -> dict:
-    return config.cfg.get("settings", {}).get("agent_routing_classifier", {})
+    return config.get_setting("agent_routing_classifier", {})
 
 
 def _load():

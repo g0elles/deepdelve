@@ -42,7 +42,7 @@ def _ablation_disabled(name: str) -> bool:
     turned off, to measure whether it's genuinely load-bearing. Deliberately a single shared
     lookup (not a new config key per mechanism scattered across the file) so a NEW ablation
     candidate is a one-line call here, not a new plumbing pattern each time."""
-    return bool(config.cfg.get("settings", {}).get("ablation", {}).get(f"disable_{name}", False))
+    return bool(config.get_setting("ablation", {}).get(f"disable_{name}", False))
 
 
 class Verdict(NamedTuple):
@@ -144,7 +144,7 @@ def check_thin_coverage(ctx: Ctx) -> Optional[Verdict]:
     (a genuine, self-resolving recovery attempt, up to max_deepening_rounds) still gets its own
     turn first — this cap only stops the CLASSIC Planner-nudge path once that budget and the
     redo/acknowledge cycle are both exhausted."""
-    cov_cfg = config.cfg.get("settings", {}).get("coverage_check", {})
+    cov_cfg = config.get_setting("coverage_check", {})
     if not cov_cfg.get("enabled", True):
         return None
     threshold = cov_cfg.get("threshold", 0.5)
@@ -220,7 +220,7 @@ def check_task_verification_flagged(ctx: Ctx) -> Optional[Verdict]:
     missing_artifact -- see ARCHITECTURE.md for the full incident writeup and the standing test
     that enforces every non-self-resolving check in COMPLETION_CHECKS/GROUNDING_CHECKS calls
     _capped, not a hand-rolled equivalent."""
-    cfg = config.cfg.get("settings", {}).get("task_verification_check", {})
+    cfg = config.get_setting("task_verification_check", {})
     if not cfg.get("enabled", True):
         return None
     ledger = ctx.run_state.data.get("task_verification", {})
@@ -352,7 +352,7 @@ def check_uneven_task_investment(ctx: Ctx) -> Optional[Verdict]:
     escalate-after-3-consecutive/force_whole_rebuild machinery already caps how many attempts
     get burned once this check is actually allowed to fire; both bugs were about firing too
     EARLY, never about an unbounded retry count."""
-    cov_cfg = config.cfg.get("settings", {}).get("uneven_coverage_check", {})
+    cov_cfg = config.get_setting("uneven_coverage_check", {})
     if not cov_cfg.get("enabled", True):
         return None
     if "findings.md" not in ctx.files or ctx.req_artifact not in ctx.files:
@@ -424,7 +424,7 @@ def check_findings_ungrounded(ctx: Ctx) -> Optional[Verdict]:
     checks each entry's OWN heading URL, not every URL mentioned in a summary body — see that
     function's own docstring for why the original 'legitimately-mixed notes' tolerance still holds
     at the body-text level, just not for an entry's own claimed source."""
-    gc_cfg = config.cfg.get("settings", {}).get("grounding_check", {})
+    gc_cfg = config.get_setting("grounding_check", {})
     if not (gc_cfg.get("enabled", True) and gc_cfg.get("check_findings", True)):
         return None
     if "findings.md" not in ctx.files:
@@ -465,7 +465,7 @@ def check_missing_findings(ctx: Ctx) -> Optional[Verdict]:
     run_completion_check applies to missing_artifact; it only strengthens the wording and, on
     repeat, hands the model concrete proof real material already exists (its actual fetched
     URLs), mirroring check_no_urls's own escalation for the same reason."""
-    if not config.cfg.get("settings", {}).get("grounding_check", {}).get("check_findings", True):
+    if not config.get_setting("grounding_check", {}).get("check_findings", True):
         return None
     if "findings.md" in ctx.files:
         return None
@@ -539,7 +539,7 @@ def check_stale_findings(ctx: Ctx) -> Optional[Verdict]:
     earlier write. Uses the same _is_citable_finding/_dedupe_findings definitions
     _build_findings_source_material itself uses, so "citable" means the same thing everywhere in
     this module."""
-    if not config.cfg.get("settings", {}).get("stale_findings_check", {}).get("enabled", True):
+    if not config.get_setting("stale_findings_check", {}).get("enabled", True):
         return None
     if "findings.md" not in ctx.files:
         return None  # check_missing_findings's job
@@ -653,7 +653,7 @@ def check_findings_underuses_evidence(ctx: Ctx) -> Optional[Verdict]:
     NOT apply here: a task with ZERO of its real URLs surviving isn't a partial/budget-truncated
     inclusion (_build_findings_source_material keeps whole entries, never truncates one
     mid-way -- see its own docstring), it's total omission."""
-    cfg = config.cfg.get("settings", {}).get("findings_evidence_check", {})
+    cfg = config.get_setting("findings_evidence_check", {})
     if not cfg.get("enabled", True):
         return None
     if "findings.md" not in ctx.files:
@@ -856,7 +856,7 @@ def check_report_underuses_findings(ctx: Ctx) -> Optional[Verdict]:
     real sources never made it into the report (ratio below threshold, default 0.5) AND there are
     enough of them for that ratio to mean something (min_sources, default 3) -- a findings.md with
     only 1-2 real sources being used at ratio 1.0 or 0.5 is expected, not evidence of abandonment."""
-    cov_cfg = config.cfg.get("settings", {}).get("report_coverage_check", {})
+    cov_cfg = config.get_setting("report_coverage_check", {})
     if not cov_cfg.get("enabled", True):
         return None
     if "findings.md" not in ctx.files or ctx.content is None:
@@ -1029,7 +1029,7 @@ def check_report_underuses_evidence(ctx: Ctx) -> Optional[Verdict]:
     own (report_underuses_findings' ratio can clear while this check's own per-task gap remains) --
     at which point, uncapped, it could starve check_not_grounded (the generic catch-all, last in
     GROUNDING_CHECKS) the same way its sibling used to starve it."""
-    cov_cfg = config.cfg.get("settings", {}).get("report_evidence_check", {})
+    cov_cfg = config.get_setting("report_evidence_check", {})
     if not cov_cfg.get("enabled", True):
         return None
     if "findings.md" not in ctx.files or "final_report.md" not in ctx.files or ctx.content is None:
@@ -1121,7 +1121,7 @@ def find_duplicate_report_sections(report: str) -> list[str]:
 
 def check_duplicate_report_sections(ctx: Ctx) -> Optional[Verdict]:
     """See find_duplicate_report_sections' own docstring for the live incident this exists for."""
-    if not config.cfg.get("settings", {}).get("duplicate_section_check", {}).get("enabled", True):
+    if not config.get_setting("duplicate_section_check", {}).get("enabled", True):
         return None
     if ctx.content is None:
         return None
@@ -3200,7 +3200,7 @@ def _other_grounding_problems(ctx: Ctx, exclude_problem: str) -> list[str]:
     Calls utils.grounding.cheap_grounding_problems directly instead -- see its own docstring for
     exactly which sub-checks it covers (the pure string/regex ones) and which it deliberately
     excludes (NLI/reranker model inference, to avoid multiplying that cost every attempt)."""
-    gc_cfg = config.cfg.get("settings", {}).get("grounding_check", {})
+    gc_cfg = config.get_setting("grounding_check", {})
     raw = cheap_grounding_problems(ctx.content or "", gc_cfg, get_fetched_urls())
     return [p for p in raw if p.split(":", 1)[0] != exclude_problem][:_OTHER_ACTIVE_PROBLEMS_CAP]
 
@@ -3289,7 +3289,7 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
     # (confirmed live: an 11-source run exhausted its budget at ~11% system memory usage while the
     # model still hadn't complied with two explicit "add real citation links" nudges in a row).
     # Raising this trades wall-clock time and tool-call quota for more chances to self-correct.
-    max_attempts = config.cfg.get("settings", {}).get(
+    max_attempts = config.get_setting(
         "max_completion_check_attempts", DEFAULT_MAX_COMPLETION_CHECK_ATTEMPTS
     )
     # 2026-07-29: distinguish "still making genuine progress" (each retry fixes a DIFFERENT
@@ -3314,7 +3314,7 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
     # budget_deadline is checked independently, below, regardless of how many attempts remain.
     # Each bonus attempt also earns a proportional slice of extra wall-clock time (this run's own
     # configured per-attempt pace), not a flat guess.
-    _configured_run_minutes = config.cfg.get("settings", {}).get("max_run_minutes", 0) or 0
+    _configured_run_minutes = config.get_setting("max_run_minutes", 0) or 0
     _bonus_seconds_per_attempt = (
         (_configured_run_minutes * 60) / max_attempts if (_configured_run_minutes and max_attempts) else 0
     )
@@ -3392,7 +3392,7 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
             # report_underuses_evidence only conceptually belongs to that tier by list membership,
             # it doesn't itself require ctx.grounding_problem, so it would otherwise bypass the
             # master switch entirely.
-            if verdict is not None and config.cfg.get("settings", {}).get("grounding_check", {}).get("enabled", True):
+            if verdict is not None and config.get_setting("grounding_check", {}).get("enabled", True):
                 verdict = _yield_to_starved_check(verdict, ctx, check_report_underuses_evidence,
                                                    tier_problems=_COMPLETION_TIER_PROBLEMS)
             if verdict is not None:
@@ -3400,7 +3400,7 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
             # grounding_check.enabled is the section's master switch — before this guard it was a
             # documented no-op (config_template.yaml shipped it, nothing read it; 2026-07-12 audit,
             # G2). The pre-grounding checks above are structural, not grounding, and still run.
-            if verdict is None and config.cfg.get("settings", {}).get("grounding_check", {}).get("enabled", True):
+            if verdict is None and config.get_setting("grounding_check", {}).get("enabled", True):
                 ctx.grounding_problem = await real_grounding_problem(ctx.content or "")
                 verdict = next((v for check in GROUNDING_CHECKS if (v := check(ctx)) is not None), None)
                 # Both siblings share the same starvation risk (2026-07-24's finding, applied
@@ -3657,7 +3657,7 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                     # deepening round there would contradict the Planner's own "STOP EARLY"
                     # instruction and this project's anti-over-research stance). A clean/sufficient
                     # run never reaches a completion-check retry at all, so this never fires on one.
-                    max_deepening_rounds = config.cfg.get("settings", {}).get("max_deepening_rounds", 1)
+                    max_deepening_rounds = config.get_setting("max_deepening_rounds", 1)
                     if run_state.data.get("deepening_round", 0) < max_deepening_rounds:
                         try:
                             dispatched = await _dispatch_deepening_round(dispatch_task, run_state, notify)

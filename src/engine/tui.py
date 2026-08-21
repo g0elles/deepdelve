@@ -713,7 +713,7 @@ class BasicTuiAgent(App):
 
         endpoint = config.cfg["api"]["openai_base_url"]
         model = config.cfg["api"]["openai_model"]
-        specialist_model = config.cfg.get("settings", {}).get("specialist_model")
+        specialist_model = config.get_setting("specialist_model")
         if specialist_model and specialist_model != model:
             model = f"{model} [dim](+specialist: {specialist_model})[/dim]"
         backend = config.cfg.get("api", {}).get("backend", "openai")
@@ -966,7 +966,7 @@ class BasicTuiAgent(App):
                 self.run_agent(
                     f"{original}\n\nUSER CLARIFICATIONS (answers to the intake questions above):\n{query}"
                 )
-            elif not self._clarify_done and config.cfg.get("settings", {}).get("clarify_before_research", True):
+            elif not self._clarify_done and config.get_setting("clarify_before_research", True):
                 self.clarify_query(query)
             else:
                 self.run_agent(query)
@@ -1278,7 +1278,7 @@ class BasicTuiAgent(App):
         session_token = None
         run_dir_name = None
         is_followup = self._active_run_dir is not None
-        if config.cfg.get("settings", {}).get("workspace", {}).get("session_isolation", False):
+        if config.get_setting("workspace", {}).get("session_isolation", False):
             from tools.fs import session_dir_ctx
             run_dir_name = self._active_run_dir if is_followup else _slugify_run_dir_name(query)
             self._active_run_dir = run_dir_name
@@ -1995,7 +1995,7 @@ def _export_pdf(run_dir_name: str | None) -> tuple[str | None, str | None]:
     export off, workspace isn't disk-backed so there's no file for pandoc to point at, or the
     report doesn't exist yet)."""
     try:
-        engine = config.cfg.get("settings", {}).get("pdf_engine")
+        engine = config.get_setting("pdf_engine")
         if not engine:
             return None, None
         if config.get_workspace_type() != "disk":
@@ -2343,7 +2343,7 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
             _scale_resume_quota_pool(resume_pool)
     # Deferred until here (not right at function start) so a --prompt-file run's folder name is
     # slugified from the actual resolved prompt text, not generated before it's known.
-    elif config.cfg.get("settings", {}).get("workspace", {}).get("session_isolation", False):
+    elif config.get_setting("workspace", {}).get("session_isolation", False):
         from tools.fs import session_dir_ctx
         run_dir_name = _slugify_run_dir_name(prompt or prompt_file or "query")
         session_token = session_dir_ctx.set(run_dir_name)
@@ -2356,23 +2356,23 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
 
     endpoint = config.cfg.get("api", {}).get("openai_base_url", "Unknown")
     model = config.cfg.get("api", {}).get("openai_model", "Unknown")
-    specialist_model = config.cfg.get("settings", {}).get("specialist_model")
+    specialist_model = config.get_setting("specialist_model")
     if specialist_model and specialist_model != model:
         model = f"{model} (+specialist: {specialist_model})"
     backend = config.cfg.get("api", {}).get("backend", "openai")
     if backend != "openai":
         model = f"{model} ({backend})"
 
-    thinking = "ON" if config.cfg.get("settings", {}).get("enable_thinking", False) else "OFF"
+    thinking = "ON" if config.get_setting("enable_thinking", False) else "OFF"
     thinking_color = "32" if thinking == "ON" else "31"
 
-    memory = "ON" if config.cfg.get("settings", {}).get("enable_conversational_memory", False) else "OFF"
+    memory = "ON" if config.get_setting("enable_conversational_memory", False) else "OFF"
     memory_color = "32" if memory == "ON" else "31"
 
-    persistence_val = "ON" if config.cfg.get("settings", {}).get("enable_session_persistence", True) else "OFF"
+    persistence_val = "ON" if config.get_setting("enable_session_persistence", True) else "OFF"
     persistence_color = "32" if persistence_val == "ON" else "31"
 
-    headless_fallback = "ON" if config.cfg.get("settings", {}).get("fetch", {}).get("headless_fallback", True) else "OFF"
+    headless_fallback = "ON" if config.get_setting("fetch", {}).get("headless_fallback", True) else "OFF"
     headless_fallback_color = "32" if headless_fallback == "ON" else "31"
 
     sid = "N/A (Memory disabled)" if not session else _current_session_id
@@ -2400,7 +2400,7 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
     # On expiry the run is not hard-killed: the current turn is cut, then the completion check is
     # forced straight to its final-verdict path, so salvage/labeling still runs and the run ends
     # with an explicit verdict instead of a silent overrun (a qwen run once ran 64 minutes).
-    max_run_minutes = config.cfg.get("settings", {}).get("max_run_minutes", 0) or 0
+    max_run_minutes = config.get_setting("max_run_minutes", 0) or 0
     budget_deadline = (time.monotonic() + max_run_minutes * 60) if max_run_minutes else None
 
     run_state = None
@@ -2441,7 +2441,7 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
         # exit cleanly afterward once the hung DDGS call's thread is orphaned).
         from tools.web import probe_search_health, _run_with_daemon_timeout
         from utils.run_state import record_search_health
-        probe_timeout_s = config.cfg.get("settings", {}).get("web_search", {}).get("timeout_seconds", 20)
+        probe_timeout_s = config.get_setting("web_search", {}).get("timeout_seconds", 20)
         try:
             probe_err = await asyncio.to_thread(_run_with_daemon_timeout, probe_search_health, probe_timeout_s)
         except TimeoutError:

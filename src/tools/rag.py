@@ -14,7 +14,7 @@ def search_verified_findings(query: str) -> str:
     relevant comes back, or a result looks stale/off-topic, proceed with web_search as normal."""
     import config as app_config
 
-    settings = app_config.cfg.get("settings", {}).get("rag_cache", {})
+    settings = app_config.get_setting("rag_cache", {})
     results = rag_cache.lookup(
         query,
         top_k=settings.get("top_k", 3),

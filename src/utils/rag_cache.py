@@ -42,7 +42,7 @@ _matrix = None  # numpy float32 (N, 384) matrix of normalized embeddings, parall
 
 
 def _get_cache_settings() -> dict:
-    return config.cfg.get("settings", {}).get("rag_cache", {})
+    return config.get_setting("rag_cache", {})
 
 
 def _cache_path() -> str:
