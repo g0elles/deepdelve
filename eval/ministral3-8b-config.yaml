@@ -5,7 +5,7 @@ api:
   # (best 7/10, high run-to-run variance but honest-empty on bad runs). mistral-nemo:12b passes the
   # delegate_tasks schema test 3/3 but benchmarks at a 2/10 ceiling with loud fabrication;
   # qwen3.6 researches well but fails synthesis at scale (1/10); hermes3:8b 0/3 on the schema.
-  openai_model: ministral-3:8b
+  openai_model: deepdelve-ministral3-8b
   # OpenAI-SDK retry budget for 429/5xx (exponential backoff, honors Retry-After). Hosted
   # endpoints (e.g. NVIDIA NIM's free tier) throttle far below what concurrent sub-agents
   # generate — a run died to a single unretried 429 before this existed.
@@ -24,7 +24,15 @@ api:
   # confirmed live against DeepSeek (thinking defaults ON at effort "high" there). This backend
   # skips that local-serving dance entirely and looks up the provider's OWN documented thinking
   # toggle from orchestrator.py's _HOSTED_PROVIDER_THINKING_EXTRA_BODY, keyed by openai_base_url.
-  backend: ollama
+  backend: openai
+  # 2026-08-20: switched from "ollama" to test whether the OpenAI-compat /v1 endpoint avoids
+  # ollama/ollama#6351 / #12064 (open, unfixed native /api/chat 500 on tool-call args containing a
+  # raw newline -- hit twice live via backend:ollama, most recently deep into a FindingsWriter
+  # dispatch at ministral-3-8b-temp0.08). Confirmed via a raw curl smoke test that /v1 handles a
+  # multi-line write_file-shaped call cleanly. The known tradeoff (RESEARCH.md §14e, reasoning-field
+  # leak on tool-calling turns) was found on a DIFFERENT candidate; ministral-3:8b runs with
+  # enable_thinking: false and isn't a Qwen3-family reasoning model, so that leak may not even
+  # apply here -- this run is exactly to check that empirically, not assumed either way.
 settings:
   enable_thinking: false
   # Set true ONLY when api.openai_model (or settings.specialist_model) points at a genuine
@@ -33,7 +41,15 @@ settings:
   # source, and confirmed intentional/permanent via vLLM PR #26358, not a bug that a version
   # bump fixes). Every other model/backend should leave this false (the default).
   skip_chat_template_kwargs: false
-  temperature: 0.2
+  # Overrides this project's normal 0.2 baseline (used for every other candidate) SPECIFICALLY for
+  # ministral-3:8b: Mistral's own docs (docs.mistral.ai/models/ministral-3-8b-25-12) explicitly say
+  # "use a temperature below 0.1 for daily-driver and production environments" -- a documented,
+  # model-specific operating-mode requirement, the same category of thing as the enable_thinking
+  # special-case above, not an unfair advantage over other candidates. 0.2 was used for the first
+  # two live runs (2026-08-20) before this was checked; both scored 0.0 with erratic
+  # over-delegation/replanning behavior consistent with too-high sampling temperature for agentic
+  # tool-call convergence, though not proven to be the cause yet.
+  temperature: 0.08
   # Optional: use a different (typically lighter/faster) model for the leaf specialist roles
   # (WebSearcher/AcademicSearcher/DocumentAnalyzer/DataAnalyzer) than api.openai_model, which stays
   # reserved for the Planner + writer/review roles (Builder/FindingsWriter/PeerReviewer) that need

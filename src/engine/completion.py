@@ -886,7 +886,12 @@ def check_report_underuses_findings(ctx: Ctx) -> Optional[Verdict]:
         return None
     ratio = (len(findings_urls) - len(unused)) / len(findings_urls)
     threshold = cov_cfg.get("threshold", 0.5)
-    if ratio >= threshold:
+    # `>` not `>=` (2026-08-20 live incident): a ministral-3:8b run with 4 real findings.md
+    # sources dropped an entire city (2 of 4) from a two-city comparison query, landing EXACTLY
+    # on ratio == 0.5 == threshold -- the old `>=` treated that boundary as a pass and let a
+    # report missing half its requested comparison through with no report_underuses_findings
+    # verdict ever firing. `>` means landing exactly on the threshold now fails closed.
+    if ratio > threshold:
         return None
 
     prior_same = 0
@@ -1793,6 +1798,32 @@ def _ensure_reader_quota_headroom(pool: dict, needed: int = 2) -> None:
         entry["limit"] += (needed - headroom)
 
 
+def _is_transient_ollama_json_error(exc: Exception) -> bool:
+    """ollama/ollama#6351 / #12064 (open, unfixed upstream, checked live 2026-08-20): a raw,
+    unescaped newline the model emits inside a tool-call argument string can break Ollama's own
+    JSON serialization on EITHER endpoint (native /api/chat or OpenAI-compat /v1) -- confirmed
+    live via ministral-3:8b, 3 of 4 full runs hit this exact signature
+    ("invalid character '\\n' in string literal", HTTP 500), regardless of endpoint, temperature,
+    or context settings. Content-dependent, not deterministic: a fresh generation attempt has a
+    real chance of not reproducing the exact same invalid byte sequence, unlike a genuine,
+    reproducible failure -- this narrow string match deliberately does NOT swallow those."""
+    msg = str(exc)
+    return "invalid character" in msg and "string literal" in msg
+
+
+async def _dispatch_task_retrying_transient_json_error(dispatch_task, *args, **kwargs):
+    """Thin wrapper around dispatch_task: retries ONCE, unchanged, if the call raises the known
+    transient Ollama JSON-serialization bug (see _is_transient_ollama_json_error) -- every other
+    exception, and a second occurrence of this same one, propagates immediately so this can never
+    mask a real, reproducible failure or loop unboundedly."""
+    try:
+        return await dispatch_task(*args, **kwargs)
+    except Exception as e:
+        if not _is_transient_ollama_json_error(e):
+            raise
+        return await dispatch_task(*args, **kwargs)
+
+
 # How many retries a writer dispatch gets after producing nothing usable (zero tool calls, zero
 # trailing text) before falling back to deterministic salvage or raising -- see the retry loop
 # inside _dispatch_writer_review_fix for the live incident that motivated raising this above 1.
@@ -1858,7 +1889,7 @@ async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artif
         {"write_done": False, "recommended_tool": recommended_tool, "target_file": req_artifact}
     ) if writer_role == "FindingsWriter" else None
     try:
-        write_result = await dispatch_task(f"{writer_role}Fix_attempt{attempt + 1}", write_instructions, writer_role)
+        write_result = await _dispatch_task_retrying_transient_json_error(dispatch_task, f"{writer_role}Fix_attempt{attempt + 1}", write_instructions, writer_role)
     finally:
         if gate_token is not None:
             writer_gate_ctx.reset(gate_token)
@@ -1949,8 +1980,8 @@ async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artif
                         f"no other tool call before it, no exceptions.\n\n{write_instructions}"
                     )
                 try:
-                    write_result = await dispatch_task(
-                        f"{writer_role}Fix_attempt{attempt + 1}_retry{retry_num}", retry_instructions, writer_role)
+                    write_result = await _dispatch_task_retrying_transient_json_error(
+                        dispatch_task, f"{writer_role}Fix_attempt{attempt + 1}_retry{retry_num}", retry_instructions, writer_role)
                 finally:
                     if retry_gate_token is not None:
                         writer_gate_ctx.reset(retry_gate_token)
@@ -2017,7 +2048,8 @@ async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artif
     # `pool` object already fetched above for the think_tool snapshot (same object, same run).
     reads_before = pool.get("read_workspace_file", {}).get("used") if pool else None
 
-    review = await dispatch_task(
+    review = await _dispatch_task_retrying_transient_json_error(
+        dispatch_task,
         f"ReviewFix_attempt{attempt + 1}",
         f"Review '{req_artifact}' for accuracy and coherence. "
         f"Start your response with exactly 'REVIEW: CLEAN' or 'REVIEW: ISSUES FOUND:'.",
@@ -2094,7 +2126,7 @@ async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artif
         {"write_done": False, "recommended_tool": recommended_tool, "target_file": req_artifact}
     ) if writer_role == "FindingsWriter" else None
     try:
-        await dispatch_task(f"{writer_role}Fix_attempt{attempt + 1}_reviewed", fix_instructions, writer_role)
+        await _dispatch_task_retrying_transient_json_error(dispatch_task, f"{writer_role}Fix_attempt{attempt + 1}_reviewed", fix_instructions, writer_role)
     finally:
         if gate_token is not None:
             writer_gate_ctx.reset(gate_token)
@@ -3528,8 +3560,8 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                             # Chained, not returned — see docstring. Loops straight into the next
                             # completion-check iteration instead of handing a turn back to the Planner.
                             continue
-                        except Exception:
-                            notify(f"**System ({attempt + 1}/{max_attempts}):** Builder dispatch failed — falling back to asking the Planner directly.")
+                        except Exception as e:
+                            notify(f"**System ({attempt + 1}/{max_attempts}):** Builder dispatch failed ({type(e).__name__}: {e}) — falling back to asking the Planner directly.")
 
                 elif dispatch_task is not None and problem in _FINDINGS_WRITER_FIXABLE_PROBLEMS:
                     has_findings_writer_pair = has_peer_reviewer and any(c.name == "FindingsWriter" for c in caller_sub_agents)
@@ -3613,8 +3645,8 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                             # Chained, not returned — see docstring. Loops straight into the next
                             # completion-check iteration instead of handing a turn back to the Planner.
                             continue
-                        except Exception:
-                            notify(f"**System ({attempt + 1}/{max_attempts}):** FindingsWriter dispatch failed — falling back to asking the Planner directly.")
+                        except Exception as e:
+                            notify(f"**System ({attempt + 1}/{max_attempts}):** FindingsWriter dispatch failed ({type(e).__name__}: {e}) — falling back to asking the Planner directly.")
 
                 elif dispatch_task is not None and problem == "thin_coverage":
                     # Engine-driven iterative deepening (ROADMAP item 10, dzhng/deep-research
@@ -3636,8 +3668,8 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                                 # coverage() is re-evaluated against the new findings before the
                                 # next verdict is decided.
                                 continue
-                        except Exception:
-                            notify(f"**System ({attempt + 1}/{max_attempts}):** Deepening round dispatch failed — falling back to the classic nudge.")
+                        except Exception as e:
+                            notify(f"**System ({attempt + 1}/{max_attempts}):** Deepening round dispatch failed ({type(e).__name__}: {e}) — falling back to the classic nudge.")
                     # No real directions to act on, or round budget exhausted: fall through to the
                     # unchanged classic thin_coverage Planner nudge below — zero behavior change.
 
@@ -3673,8 +3705,8 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                                 # thin_coverage above. Loops straight into the next completion-check
                                 # iteration.
                                 continue
-                            except Exception:
-                                notify(f"**System ({attempt + 1}/{max_attempts}):** Per-facet Builder dispatch failed — falling back to asking the Planner directly.")
+                            except Exception as e:
+                                notify(f"**System ({attempt + 1}/{max_attempts}):** Per-facet Builder dispatch failed ({type(e).__name__}: {e}) — falling back to asking the Planner directly.")
                     # No Builder pair registered, no dropped facets (shouldn't happen — verdict
                     # already required dropped to fire), or dispatch failed: fall through to the
                     # unchanged classic inject-into-Planner nudge below.
@@ -3710,8 +3742,8 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                                 # Chained, not returned — same pattern as every other bespoke branch
                                 # above. Loops straight into the next completion-check iteration.
                                 continue
-                            except Exception:
-                                notify(f"**System ({attempt + 1}/{max_attempts}):** Per-facet FindingsWriter dispatch failed — falling back to asking the Planner directly.")
+                            except Exception as e:
+                                notify(f"**System ({attempt + 1}/{max_attempts}):** Per-facet FindingsWriter dispatch failed ({type(e).__name__}: {e}) — falling back to asking the Planner directly.")
                     # No FindingsWriter pair registered, no dropped facets (shouldn't happen —
                     # verdict already required dropped to fire), or dispatch failed: fall through
                     # to the unchanged classic inject-into-Planner nudge below.

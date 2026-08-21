@@ -3328,7 +3328,11 @@ def main():
                 assert recorded != "report_underuses_findings", (
                     "too few real sources in findings.md for the ratio to mean anything", recorded, msgs)
 
-            # (c) ratio exactly AT threshold (2 of 4 cited, 0.5) -> must NOT fire, only below it.
+            # (c) ratio exactly AT threshold (2 of 4 cited, 0.5) -> MUST fire (2026-08-20 live
+            # incident: a ministral-3:8b run dropped an entire city -- 2 of 4 real findings.md
+            # sources -- from a two-city comparison query, landing exactly on ratio == 0.5. The
+            # old `>=` treated the boundary as a pass and let it through with no verdict at all;
+            # `>` now fails closed on the boundary instead of silently accepting it.
             with tempfile.TemporaryDirectory() as tmpdir_c:
                 rs = RunState(tmpdir_c)
                 run_state_ctx.set(rs)
@@ -3342,8 +3346,10 @@ def main():
                 should_retry, _ = _asyncio.run(run_completion_check(
                     query="q", current_input="q", run_state=rs, notify=msgs.append))
                 recorded = rs.data["completion_check_attempts"][-1]["problem"]
-                assert recorded != "report_underuses_findings", (
-                    "ratio exactly AT threshold (0.5) must not fire -- only below it", recorded, msgs)
+                assert recorded == "report_underuses_findings", (
+                    "ratio exactly AT threshold (0.5) must now fail closed, not pass", recorded, msgs)
+                assert should_retry
+                assert urls[2] in msgs[-1] and urls[3] in msgs[-1], msgs
 
             # (d) every real source cited -> clean, never fires.
             with tempfile.TemporaryDirectory() as tmpdir_d:
