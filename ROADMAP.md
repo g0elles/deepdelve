@@ -102,711 +102,105 @@ Finished items moved to the wiki, 2026-08-20, to keep this file focused on what 
 
 ## Pending
 
-- ~~Test whether `<Show Your Thinking>` contributes to the narrate-instead-of-call failure~~
-  **TESTED 2026-08-19, HYPOTHESIS NOT CONFIRMED -- real negative result, block stays as-is.**
-  Built a faithful isolated harness (`eval/ab_show_thinking_harness.py`): real
-  `FINDINGS_WRITER_INSTRUCTIONS`, real evidence base (`_build_findings_source_material` called
-  directly against `qwen3-4b-combined-v2`'s OWN saved `_run_state.json` from the exact run where it
-  was live-disqualified for this failure), real `write_workspace_file` tool schema, 9 reps each
-  with the block present vs. stripped via regex. **Result: 9/9 real `tool_calls` in BOTH
-  conditions** -- no difference at all. The block does not cause this failure, at least not in an
-  isolated single-turn dispatch. This means the live disqualification failure (the same model,
-  same evidence, narrating instead of writing during the actual multi-attempt benchmark run) comes
-  from something specific to the FULL run's multi-turn/retry dynamics -- accumulated context,
-  budget/quota pressure across several completion-check attempts, or conversation-length effects --
-  not from this one prompt block in isolation. Genuine negative result, not a re-open: no code
-  change made, the block is not implicated. If this failure mode gets root-caused later, look at
-  what differs between an isolated first-shot dispatch (which converges cleanly, per this test) and
-  attempt N of a real run (which doesn't) -- that's the actual variable, not the prompt content.
+Genuinely open items only. Closed items that were still narrating their full resolution history
+here got moved out, most already live in the wiki's [Completed](https://github.com/g0elles/deepdelve/wiki/Completed)
+or [Changelog](https://github.com/g0elles/deepdelve/wiki/Changelog); anything not yet migrated is
+tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
 
-- **UNIFIED LIST, 2026-08-17 — every open gap and literature-derived candidate improvement from
-  today's session in one place, prioritized.** Consolidated at the user's request after a full
-  literature-completeness audit plus a real citation audit of the ablation smoke-test's own
-  output. Individual items are detailed in their own dated entries elsewhere in this file /
-  `RESEARCH.md` / `session_status/CURRENT.md` — this entry is the index, not a duplicate write-up.
+- **`create_local_agent`'s 963-line nested-closure god-function, scoped 2026-07-29, not attempted.**
+  `_run_single_task` (~490 lines) and `delegate_tasks` (~280 lines) are deeply nested closures
+  inside `create_local_agent`, capturing dozens of enclosing locals by reference rather than as
+  parameters. `test_structural_checks.py` never imports either closure directly, only small pure
+  fragments already pulled out of it, the actual per-task dispatch/quota-ring-fencing/specialist-
+  tiering behavior has zero direct test coverage. Recommended approach when picked up: write
+  characterization tests first, pinning current behavior end to end since none exist, then
+  decompose, attempting decomposition without a safety net on a function this size is exactly the
+  kind of change that creates a new incident rather than closing one.
 
-  **A. New correctness bugs found via manual claim audit — both items below CLOSED:**
-  1. ~~Citation misattribution: a real, correctly-fetched claim gets attached to the WRONG cited
-     URL...~~ **RESOLVED 2026-08-17, see "Completed" above** (`find_unsupported_specific_figures`
-     + `check_specific_figure_unsupported`). Live-confirmed
-     (2026-08-17 ablation smoke-test re-run, `final_report.md`'s "Mexico Digital Nomad Visa"
-     section): 4 specific claims (the "300 days minimum wage/UMA" income formula, the sworn-
-     translator requirement, the $53 fee/MiConsulado interview detail, the 180-day sticker
-     validity) are all real and accurately worded — but every one of them was traced verbatim to
-     `themexicohandbook.com`'s fetched content, while the report cited `esimcard.com` instead
-     (whose actual content explicitly says Mexico has NO official digital nomad visa and gives
-     DIFFERENT, consulate-varying income figures). Both URLs were genuinely fetched this run, so
-     `real_grounding_problem`'s hard gate passed; the specific-number term overlap between the
-     claim and its WRONG source's shared generic vocabulary ("income," "monthly," "USD," "months,"
-     "2026") plausibly let `claim_grounding_problem`'s cheap term-overlap gate pass too, before NLI
-     ever got a chance to judge entailment against the correct evidence window. **This is the SAME
-     failure shape `find_unsupported_regulation_ids` was built for** (its own docstring: "the
-     URL-presence gate passed... and the zero-overlap content check passed (shared generic terms)...
-     so a misattributed law number sailed through both," live-confirmed 2026-07-11) — but that fix
-     is scoped narrowly to `_REGULATION_ID_RE`-shaped identifiers (e.g. "Ley 1906 de 2021"), not to
-     general numeric/factual claims (dollar amounts, day counts, named-requirement phrases). **The
-     generalization WAS built, same day**: `find_unsupported_specific_figures`
-     (`src/utils/grounding.py:544`) applies the identical "does THIS claim's specific, checkable
-     token appear in ITS OWN cited source's content" check to dollar/fee/day-count figures, not just
-     regulation IDs — confirmed by reading the shipped function, not just the changelog claim.
-     Directly the mechanism Rasheed et al.'s claim-level-auditability paper (arXiv:2602.13855, §1
-     above) formalizes as claim-node → typed-edge → source-node provenance.
-     **Residual gap closed 2026-08-19**: the same function now also flags mixed-case named-entity
-     TOKENS (`_NAMED_TOKEN_RE` — a lowercase letter followed by an uppercase one mid-word, e.g.
-     "MiConsulado") verbatim-absent from their cited source — the exact same incident's
-     "MiConsulado" reference was misattributed alongside its numeric figures, and a named
-     portal/program name is just as checkable (can't be paraphrased) as a number. Deliberately
-     still NOT generalized to arbitrary named-requirement PHRASES ("sworn translator requirement")
-     — a phrase can be paraphrased without changing its truth, so a verbatim check there would
-     over-fire; that remains a real, permanent design boundary, not a gap to close later.
-     `test_structural_checks.py`'s `_specific_figure_scenario` covers the new token case plus a
-     negative check (a plain capitalized word like "Mexico" with no internal case switch never
-     fires). Full suite passes.
-  2. **Portugal visa research shallowness** (same run): the agent fetched Portugal's official visa
-     category-index page, correctly found it named "Remote Work / Digital Nomad" as a residency-visa
-     category but had no income/process specifics, and reported "No specific visa data was
-     retrieved" rather than following the page's own "Necessary Documentation" link to the real
-     requirements. Consistent with (not a new bug beyond) the `uneven_task_investment` problem this
-     exact run's final completion-check attempt already flagged for the Portugal sub-task (1 fetch
-     vs. siblings' 3-5) — the existing check correctly detected thin research, it just didn't get
-     resolved before `max_run_minutes`. No new fix needed here beyond what's already tracked; noted
-     for completeness since it was found during the same claim audit.
+- **`completion.py`'s mixed responsibilities, scoped 2026-07-29, not attempted.** The file's own
+  header describes it as a clean list of pure `Ctx -> Optional[Verdict]` check functions, but it
+  also contains findings-authoring/evidence-assembly logic, disk-touching quarantine/restore/salvage
+  helpers that reach into a private name in `tools.fs` at four call sites, async sub-agent dispatch
+  orchestration, the task-verification ledger mutator, and the completion-check state machine tying
+  all of it together, none individually bug-prone, but "add a new completion check" now requires
+  understanding all of the above living in one namespace. Blast radius warning for whenever this is
+  picked up: `test_structural_checks.py` imports 40+ private names directly across five modules; any
+  split must update that file's imports in lockstep.
 
-  **B. Live-confirmed but only CONTAINED, not eliminated:**
-  3. ~~PeerReviewer's hallucinated-filename churn...~~ **PROMPT-LEVEL NUDGE ADDED 2026-08-17**:
-     `PEER_REVIEWER_INSTRUCTIONS`' Workflow step 1 (`src/prompts.py`) now explicitly says not to
-     call `read_workspace_file`/`grep_workspace_file` again with a different filename once the
-     first read succeeds — write the verdict from what's already been read. This project's own
-     standing skepticism of prompt-only nudges on small local models means this should NOT be
-     treated as closing the item on its own — `tools/core.py`'s tool-failure-streak guard remains
-     the real structural backstop (containment, not elimination, per item above). Not yet live-
-     tested whether the prompt change measurably reduces how often the guard even needs to fire.
-  4. ~~Duplicate/redundant report content from a task that got through as the FIRST rename
-     match...~~ **RESOLVED 2026-08-17, real root cause traced from the session transcript itself,
-     structural fix built and live-validated against the actual incident data.** `_dedupe_findings`
-     (`src/engine/completion.py`) also now collapses near-identical findings across DIFFERENT
-     task_names (reusing `_content_word_overlap`) — a real, defensively-valuable general fix for the
-     rename-retry-produces-a-separate-near-duplicate-finding mechanism this item originally
-     described, though tracing didn't confirm that mechanism as THIS incident's actual cause (see
-     below).
-     **The real root cause, found by reading the live session transcript event-by-event**: the very
-     last action in the run, `BuilderFix_attempt3_reviewed`'s own `edit_workspace_file` call,
-     anchored `old_string` on the bare heading `"### Mexico City"` alone, then wrote a `new_string`
-     that retyped the heading's own PRE-EXISTING bullet verbatim before appending a new, more
-     specific `"### Mexico City – Central Districts"` subsection next to it — since the original
-     bullet was never part of `old_string`, it stayed in place, and the retyped copy landed right in
-     front of it. Not a research/dispatch bug at all — a tool-usage mistake in how Builder
-     constructed a single edit.
-     **Two-layer fix, matching this project's own "prompt nudge alone is unreliable, back it with a
-     structural check" standing pattern**: (1) `BUILDER_INSTRUCTIONS`/`FINDINGS_WRITER_INSTRUCTIONS`
-     (`src/prompts.py`) now explicitly say to anchor an ADDING edit on the boundary of existing
-     content and never retype it into `new_string`; (2) `find_duplicate_report_sections` +
-     `check_duplicate_report_sections` (`src/engine/completion.py`, new `settings.
-     duplicate_section_check.enabled` config flag) — a structural, self-consistency check comparing
-     every h3+ subsection of the SAME report against every other (via `_content_word_overlap`,
-     threshold 0.6), registered in `GROUNDING_CHECKS`/`_QUARANTINE_PROBLEMS`/
-     `_BUILDER_FIXABLE_PROBLEMS`. **Live-validated directly against the real incident's
-     `final_report.md`**: correctly flags exactly `"### Mexico City – Central Districts"` and
-     nothing else (no false positives on the genuinely-distinct Lisbon/Portugal sections). Full
-     `test_structural_checks.py` coverage: a direct `find_duplicate_report_sections` unit scenario
-     and a new verdict-matrix row.
+- **Config accessor migration, partially done.** 85 scattered `config.cfg.get("settings", {}).get(...)`
+  call sites across the codebase, no single accessor, no consistent default handling, confirmed a
+  real bug source (not just duplication) via `required_artifact`, which had 3 different literal
+  fallback values scattered across 4 call sites. Fixed for that one setting
+  (`config.get_required_artifact()`); the other ~81 sites are unaddressed. Recommend incremental
+  migration, add an accessor the next time any of these call sites needs touching for an unrelated
+  reason, rather than a big-bang rewrite most of them don't demonstrably need.
 
-  **C. Literature-derived, actionable, NOT YET implemented, NOT fine-tuning (each already detailed
-  in its own RESEARCH.md/README.md entry, listed here just for the consolidated view):**
-  5. ~~Append "Wait"...~~ **IMPLEMENTED 2026-08-17**: the Fix-pass dispatch (after PeerReviewer
-     flags issues) now leads with "Wait." — Self-Correction Bench's single most actionable,
-     training-free finding (89.3% blind-spot reduction). Adapted, not a literal replication: the
-     paper's own harness appends it mid-generation as a continuation cue; DeepDelve's dispatch is a
-     fresh turn, so it's applied as a deliberation cue at the start of the correction ask instead.
-     Covered by `test_structural_checks.py`'s `_clean_check_read_verification_scenario`.
-  8. ~~Run the full controlled-ablation study...~~ **BACKLOGGED 2026-08-17 — real, not skipped:
-     genuinely needs proper time budget, not a same-session push.** (`eval/ablation_configs/
-     *.yaml`, built earlier this session, 4 mechanisms: `force_whole_rebuild`, `no_progress_guard`,
-     `rename_reject_escalation`, `tool_failure_streak_guard`) — only single-trial smoke tests have
-     been run so far (baseline k=1 twice), never a real k≥3 with/without comparison per any
-     mechanism. This is the standard MAST's own causal-intervention methodology and the Illusion-
-     of-Multi-Agent-Advantage paper's own audit methodology both hold coordination-layer complexity
-     to (RESEARCH.md §18f) — DeepDelve's completion-check mechanisms have accumulated for months
-     validated only by "did today's specific symptom stop recurring." **Real cost, computed
-     honestly**: a full flat 4 mechanisms × (enabled/disabled) × k≥3 = 24 runs, at the ~46-50
-     min/run observed today, is ~19-20 hours of unattended runtime — not something to push through
-     in one sitting. **When picked back up, scope it down, don't run the naive full matrix**: (a)
-     prioritize `force_whole_rebuild`/`no_progress_guard` first — older, never measured with-vs-
-     without at all, unlike `rename_reject_escalation`/`tool_failure_streak_guard` which were JUST
-     live-validated against a real incident today; (b) adaptive trial count per this project's own
-     Model Evaluation Standard point 4 ("a discard claim needs more than one run, a clean pass can
-     stand off one") — one trial per condition first, escalate to the full k≥3 only where a
-     with/without difference actually shows up, not a flat count for all 8 conditions upfront;
-     (c) run unattended in the background across however many sessions it takes, not blocked on in
-     one sitting. **IN PROGRESS 2026-08-18, first two mechanisms both CONFIRMED load-bearing — see
-     RESEARCH.md §18f's own results table for the full writeup**: baseline 0.75.
-     `disable_force_whole_rebuild` **mean 0.25 across k=3 (0.75, 0.00, 0.00)** — started at k=1
-     (0.75, matched baseline), escalated after a k=2 second trial disagreed (0.00), k=3 confirmed
-     the majority: 2 of 3 runs hit a completion-check verdict (`task_verification_flagged`/
-     `thin_coverage`) repeating 3+ times without the mechanism ever forcing a real change of
-     strategy, ending with an incomplete or entirely missing report. `disable_no_progress_guard`
-     **mean 0.125 across k=2 (0.00, 0.25)**, both runs timed out at the 47min ceiling — not
-     escalated to k=3 (2/2 already failed the same way, a 3rd run offers little new information).
-     `disable_no_progress_guard`'s run 1 also surfaced and got a real fix for a separate bug along
-     the way (FindingsWriter re-citing the same hallucinated URL across rebuild attempts because
-     the retry directive never named which source failed — see "Completed" section for the fix).
-     **CLOSED 2026-08-19 — not running `rename_reject_escalation`/`tool_failure_streak_guard`.**
-     Both were built in direct response to a real live incident already (see (a) above), so their
-     load-bearing-ness already has direct evidence independent of this study; an ablation run would
-     only re-confirm that at ~47min/run, and any new run is now confounded (next paragraph) anyway.
-     The study's actual goal — MAST/Illusion-of-Multi-Agent-Advantage-style causal validation of
-     coordination-layer complexity — is satisfied by the two mechanisms tested: both confirmed
-     load-bearing, same underlying failure mode (stuck repetition) recurring at two different
-     layers (tool-call level vs. completion-check-verdict level).
-     **CONFOUND, 2026-08-19**: `settings.specialist_delegation_cap` was bumped 3 -> 4 (see
-     `session_status/CURRENT.md` item 2) after a fork analysis of these same 6 runs found visa/
-     regulatory tasks structurally starved by the old cap. Every result recorded above ran at
-     `cap: 3` — noted for the historical record, not something a future run needs to reconcile
-     since no further ablation runs are planned.
-  9. ~~Hierarchical/divide-and-conquer decomposition for the consolidation stage...~~ **CORRECTED
-     2026-08-17, was NOT actually open — this list entry was written from a stale premise, no new
-     code needed.** The escalation this item described already happened, in an earlier ROADMAP
-     entry this list failed to cross-reference before listing it here: the "Multi-facet task
-     abandonment" entry below already tried the smaller `edit_workspace_file` directive fix,
-     confirmed it live-tested negative, and escalated to real per-facet dispatch
-     (`_dispatch_per_facet_builder_fix`/`_dispatch_per_facet_findings_writer_fix`) — which IS the
-     hierarchical/divide-and-conquer mechanism this item was asking for, already shipped. The one
-     narrower gap that entry left open (a whole-rebuild dispatch reproducing byte-identical
-     rejected content) is also already closed, by `_content_unchanged_since_last_quarantine`
-     (built and live-validated earlier this SAME session — see that entry's own "RESOLVED" update).
-     The three literature papers cited here (MARL, Illusion-of-Multi-Agent-Advantage,
-     Divide-and-Conquer noise) remain valid, real evidence for why per-facet dispatch was the right
-     call — just evidence for something already built, not a case for building something new.
+- **`run_cli`/`BasicTuiAgent` full run-lifecycle unification, re-scoped 2026-07-29, still open.** A
+  dedicated audit found the two entry points aren't just stylistic duplicates in places that matter:
+  the TUI's approval handling actually executes tools client-side and constructs full message pairs,
+  the CLI's doesn't; the TUI has no context-budget/wall-clock-deadline concept by design, since a
+  human can just stop it. The genuinely safe subset (the resume-merge allowlist, the
+  `required_artifact` lookup, a missing `QuotaAbortException` handler, a missing crash-time
+  `run_state.save()`) is already fixed and merged. Still open: unifying the stream-consumption loop
+  and the approval-handling block behind explicit strategy objects, a real design decision (what
+  varies between TUI and CLI), not a mechanical extraction. Recommended approach: design the
+  strategy interface first, then extract the loop body to take it as a parameter, not "extract the
+  whole function and see what breaks."
 
-  **BACKLOG, deferred by explicit user decision 2026-08-17 — "I do not want to fine tune a model if
-  the tool is not properly built."** Any fine-tuning-adjacent item goes here by default, below every
-  pipeline-correctness item above, until this project has no known open correctness gaps (item A.1
-  above is the current blocker for even considering re-opening this backlog):
-  6. Verify the AXPO resampling-reward mechanism against `finetune/reward.py`'s actual
-     `writer_role_response_reward` implementation before adapting it for a future GRPO round —
-     AXPO's own Appendix E Limitations (read in full 2026-08-17) confirms in the paper's own words
-     that its trigger mechanism assumes a binary verifiable-outcome reward, which DeepDelve's
-     structural (did-it-happen) reward doesn't have; the underlying "concentrate exploration at the
-     sparse action boundary" insight likely still transfers, the specific mechanics don't as-is.
-  7. Apply Iterative Reward Calibration's "always measure discriminative power before deploying a
-     denser reward" checklist to any future expansion of `writer_role_response_reward` beyond its
-     current single structural signal — the paper's own live finding was a naive dense reward
-     costing up to 14pp versus a sparse one, on the SAME Qwen3 family DeepDelve tests.
-  - Also backlogged under this same rule: starting any NEW GRPO training round at all (already
-    gated separately, see the "Fine-tuning" section's own standing pause/resume history above).
+- **`check_findings_underuses_evidence` evidence-dropping, a monitoring point, not an active fix
+  target.** One clean, non-overloaded 2-task run had FindingsWriter silently drop an entire covered
+  topic from `findings.md`, not thin, not truncated, gone outright, with no infra confound found.
+  Every other writer-stage failure investigated the same session traced to a specific, now-fixed
+  mechanism; this is the one exception. Deliberately not fixed via a blind prompt rewrite per the
+  Model Evaluation Standard's own "needs more than one occurrence" bar. Reopen trigger: a second
+  clean, unconfounded run showing the same whole-topic-dropping shape.
 
-  **D. Already implemented and live-validated this session, for context (not open items)**: the
-  rename-reject-escalation and tool-failure-streak guards (both fired correctly in the re-run
-  above); the `_content_unchanged_since_last_quarantine` escalation; the eval reliability harness
-  (`--runs`/pass@k/pass^k); the ablation-switch infrastructure itself. See `session_status/
-  CURRENT.md` for the full implementation write-up of each.
+- **A finer-grained, in-turn repetition guard, an unbuilt idea.** The completion-check-level
+  full-rebuild escalation already shipped (see Completed), but a narrower, one-level-lower guard
+  (catching e.g. a single dispatch calling `fetch_url_to_workspace` on the same URL 6 times within
+  its own turn, the exact shape of a couple of real disqualifying incidents) is still a real,
+  distinct, unbuilt idea if ever worth pursuing. Would be new, DeepDelve-original work.
 
-- **Multi-facet task abandonment under iterative self-correction — scoped 2026-07-31, literature
-  review DONE, first fix attempted and LIVE-TESTED: NEGATIVE RESULT, real per-facet dispatch is
-  next.** With the completion-check starvation bug class
-  fully fixed (see Completed above), a clean, unconfounded gpt-oss run against the standing
-  sales-forecasting benchmark converged on a real, honestly-caveated, correctly-grounded report —
-  but that report still answered only ~1/3 of the query (no "top 5 heuristic algorithms" list, no
-  Colombia cultural-pattern integration), despite `check_report_underuses_findings`/`_evidence`
-  correctly flagging the exact missing facets on every single attempt, 6+ Builder rewrites in a row
-  plateauing at the same low citation count each time. Same pattern first logged 2026-07-14/18 (see
-  MODELS.md's `gpt-oss:20b` entry), now reconfirmed clean of every structural confound found since.
+- **RAG-augmented small model, raised 2026-07-20, not yet scoped.** The project's own prior "RAG
+  failure" turned out to be a benchmark-isolation bug in a deleted exact-string-match cache, not a
+  real RAG failure, see the wiki's [Architecture Synthesis](https://github.com/g0elles/deepdelve/wiki/Literature-Review-Architecture-Synthesis)
+  page for the full literature review. Real RAG (embeddings/chunking/vector retrieval) is
+  architecturally different from what failed before, so the old rejection doesn't automatically
+  block it, but any persistent cross-run cache, RAG or not, must be explicitly isolated per model
+  during comparative benchmarking or the same contamination bug recurs regardless of the retrieval
+  technique underneath it. That's the one non-negotiable constraint from this project's own history.
 
-  **Ruled out first, not assumed**: stale/leaked sub-agent context. Traced `_run_single_task`
-  (`src/engine/orchestrator.py:803`, the closure every dispatch routes through, including every
-  Builder Write→Review→Fix call) — it constructs a genuinely new `dispatch_client.as_agent(...)`
-  and calls `.run(current_input, ...)` with only the fresh instructions text on EVERY dispatch, no
-  conversation/thread object reused across attempts, `session` (conversational memory) never
-  touches this path. Live logs confirm Builder actively calls `read_workspace_file` each dispatch
-  (not working from a memorized/stale findings.md). The abandonment is not a memory bug.
+- **TUI QoE improvements, researched 2026-07-14, not yet scoped.** A framework capability survey
+  (Textual's own source, not assumed from memory) found several likely-already-working features
+  needing live confirmation (click-drag select + copy) and several unused framework capabilities not
+  yet scoped into concrete work (command palette, widget maximize, theming, inline autocomplete,
+  `Tree`/`DataTable`/`TabbedContent`/`SelectionList` for existing ad hoc UI). The two smallest,
+  most directly requested items (message copy button, right-click paste) have since shipped, see
+  Completed. Next session should scope a concrete subset of what's left, not the whole survey at
+  once.
 
-  **Literature review** (before attempting a fix, per `feedback_read_docs_before_building`):
-  - [*Self-Correction Bench: Uncovering and Addressing the Self-Correction Blind Spot in Large
-    Language Models*](https://arxiv.org/abs/2507.02778) (Tsui, COLM 2026 — **corrected 2026-08-17**:
-    this file previously attributed the "self-correction blind spot" finding to the Kamoi et al.
-    TACL survey below; a literature-completeness audit found the 64.5% figure doesn't appear in
-    that paper at all, it's a pure methodology critique with no such measurement — Tsui's paper is
-    the actual, sole empirical source, see `RESEARCH.md` §18b) — models are measurably worse at
-    correcting errors in their OWN prior output than at correcting the identical error presented
-    as external input (~64.5% of self-generated errors survive self-checking across 14 open models
-    even though the same errors are caught when presented externally). Directly matches this
-    setup: Builder re-examines and "fixes" its own prior draft every retry, not someone else's.
-  - [*When Can LLMs Actually Correct Their Own Mistakes? A Critical Survey of Self-Correction of
-    LLMs*](https://arxiv.org/html/2406.01297v3) (Kamoi et al., TACL) — read in full 2026-08-17, does
-    NOT contain the 64.5% figure (see correction above); its real contribution is a taxonomy of
-    self-correction research questions (RQ1: can a model self-correct on inherent capability alone;
-    RQ2: with external info, on the best-possible initial response; RQ3: does the final result beat
-    other methods) and a Fair/Unfair, Intrinsic/Fair-asymmetric framework classifying HOW a
-    self-correction setup gets its feedback. Under this taxonomy, DeepDelve's PeerReviewer-critique
-    retry loop is "fair-asymmetric" (external feedback from an independent reviewer) — the pattern
-    this paper's own analysis found DOES work — not "intrinsic" self-correction (a model critiquing
-    itself with no external signal), which it found largely does not. Worth keeping in mind before
-    any redesign of this retry loop: don't accidentally shift it toward the intrinsic shape.
-  - [*Cross-Context Review: Improving LLM Output Quality by Separating Production and Review
-    Sessions*](https://arxiv.org/pdf/2603.12123) — proposes session-separation between production
-    and review as a mitigation. DeepDelve's PeerReviewer already does this partially (fresh-context
-    review dispatch), but the FIX step still routes back through Builder regenerating from its own
-    prior framing, not a genuinely independent producer.
-  - [*When Does Divide and Conquer Work for Long Context LLM? A Noise Decomposition
-    Framework*](https://arxiv.org/abs/2506.16411) — names three distinct long-context failure
-    modes (cross-chunk dependence / model confusion / **aggregator noise**). The observed pattern
-    (individual facts present and correctly grounded in findings.md, but the merge/synthesis step
-    drops whole topic clusters) is a clean match for aggregator noise specifically, not the other
-    two — useful for scoping WHICH fix family is relevant.
-  - Hierarchical/divide-and-conquer decomposition (task → parallel per-topic sub-generation →
-    merge) is the literature's standard mitigation for this failure shape in multi-topic
-    long-form generation.
+- **Fine-tuning, deferred pending a viable base model size, see [Stretch](#stretch).** The
+  correctness gate that used to block resuming fine-tuning is confirmed clear as of 2026-08-19, a
+  new round is blocked on a different, harder problem now, no viable small base model has yet
+  passed a real live benchmark, see the Stretch section below for the full status and the
+  standing "one combined retrain, never an isolated LoRA" methodology rule.
 
-  **First attempt: explicit `edit_workspace_file` directive, commit `67e4b00` — LIVE-TESTED,
-  NEGATIVE RESULT (2026-07-31→08-01).** Both `check_report_underuses_findings`/`check_report_
-  underuses_evidence` directives rewritten to explicitly name `edit_workspace_file` and instruct
-  "insert a new section covering ONLY {missing}, do not rewrite or touch any other part of the
-  report," on both the first-occurrence and escalated branches — the smallest, lowest-risk,
-  literature-grounded fix per this project's own escalation discipline, tried before the bigger
-  per-facet-dispatch rebuild. Live re-run confirmed the directive DID change Builder's tool
-  choice — it correctly called `edit_workspace_file` in direct response to the check firing
-  (`research_output/i_want_documentation_on_heuristic_algoritms_for_de_20260731_234906/`, attempts
-  5 and 7) — but the citation ratio stayed frozen at the identical 2/15 both times, and by the
-  run's end (attempt 14, retry budget exhausted on an unrelated `nli_unsupported` issue) the final
-  report had gone from "answers ~1/3 of the query" to answering **zero** of the ML/heuristics half —
-  100% Colombian-festivals content, the deep-learning/sales-forecasting facet not mentioned even
-  once, despite the explicit "do not touch any other part of the report" instruction. **Verdict:
-  prompt-level tool-routing does not fix this.** The model can be told which tool to use and still
-  fail to hold both facets simultaneously — confirms this is genuinely the self-correction blind
-  spot / aggregator noise the literature describes, not a tool-choice or wording gap, and prompt-
-  only fixes have hit their ceiling per that same literature.
+### Superseded, kept as a pointer so this doesn't get proposed again
 
-  **Next step, now justified by evidence, not skipped past**: the per-facet Builder dispatch
-  architecture. DeepDelve already has the data model it would need — `check_report_underuses_
-  evidence`'s per-task URL grouping (`src/engine/completion.py`) already tracks which real
-  findings.md sources belong to which facet/task. Dispatch Builder ONCE PER under-represented facet
-  (each a genuinely independent, externally-scoped "production" call, per the Cross-Context Review
-  framing) instead of one holistic whole-report rewrite hoping a single regeneration fixes
-  everything the correction flagged, then a lightweight merge/assembly pass. A real architecture
-  change to the writer-dispatch shape (new dispatch shape, a merge step, TUI/CLI parity per this
-  project's own mandatory rule, new quota accounting) — needs its own scoped plan before
-  implementation, not a small patch.
+- **The full 11-candidate local-model bake off re run via vLLM, and the `tool_choice: required`
+  fix that depended on it.** Both were scoped while vLLM was this project's serving backend
+  candidate. That effort was closed 2026-07-26: vLLM plus bitsandbytes on ROCm proved too immature
+  on this consumer GPU across 9 disqualified/discarded candidates, several with serving-layer-shaped
+  bugs, and Ollama was restored as the permanent backend, see the wiki's
+  [Changelog](https://github.com/g0elles/deepdelve/wiki/Changelog-Recent-2) for the full trace. Any
+  future vLLM-dependent idea needs a fresh justification to reopen that decision, not a resumption
+  of this old plan.
 
-  **UPDATE 2026-08-17**: `_dispatch_per_facet_builder_fix` and `_dispatch_per_facet_findings_
-  writer_fix` (`ARCHITECTURE.md` §1's routing section) now exist and are live — the "next step"
-  above shipped since this entry was last written. But the self-correction blind spot this
-  literature review names is NOT fully closed by per-facet dispatch alone: a live run
-  (`session_status/CURRENT.md`, run6) showed FindingsWriter reproduce the IDENTICAL hallucinated
-  citation across 3 consecutive WHOLE-REBUILD dispatches (`missing_findings`/`findings_ungrounded`
-  → `_dispatch_writer_review_fix`, not the per-facet ADD-ONLY path) — confirmed via 3
-  byte-identical `findings.md.rejected_attempt_N` snapshots on disk, so this wasn't even fresh
-  model generation reproducing the error, it was the SAME deterministic-fallback content getting
-  rejected on repeat with nothing changing between attempts. Per-facet dispatch fixes the
-  "aggregator noise drops a whole facet" shape this entry's literature review targeted; it does
-  NOT fix "a rebuild dispatch re-derives (or a fallback re-serves) the exact same wrong
-  conclusion from the exact same evidence." ~~Not yet investigated~~ **RESOLVED 2026-08-17, same
-  session, chain closed and confirmed by cross-referencing three ROADMAP entries that had drifted
-  out of sync with each other**: `_content_unchanged_since_last_quarantine` (`src/engine/
-  completion.py`) is exactly the change-detection this question asked for — it directly compares
-  the content about to be quarantined against the most recent already-quarantined snapshot for
-  the same artifact (byte-for-byte, regardless of whether the completion-check PROBLEM NAME
-  changes between attempts, which is what let the original 3-consecutive-same-problem counter miss
-  this exact "run6" case). On a match, it forces exactly ONE `force_whole_rebuild` attempt with
-  genuinely reframed instructions ("do NOT just patch the specific issue again... reconsidering
-  your whole approach"), then caps further looping (`whole_approach_retry_used_for`) rather than
-  repeating indefinitely — live-confirmed firing correctly on the ablation smoke-test re-run
-  (`session_status/CURRENT.md`). This was built and validated as its OWN fix earlier the same day,
-  before this cross-reference was drawn — the "hierarchical decomposition" item in the Pending
-  unified list's item C.9 is consequently NOT open work, it was already closed by the combination
-  of per-facet dispatch (above) and this mechanism; corrected there rather than building a
-  redundant third mechanism.
-
-- **Writer-role zero-trailing-text — found 2026-08-17, FIXED 2026-08-18, LIVE-CONFIRMED
-  2026-08-19.** This Pending entry was never updated when the fix shipped. The same "sub-agent
-  ends its own turn immediately after a tool call, zero trailing text" mechanism this project
-  already tracks for Searcher/Analyzer turns also hit a WRITER role (worse consequence: nothing
-  gets written at all, not just one empty finding). `_dispatch_writer_review_fix`'s one-shot retry
-  didn't reliably recover it (fired on 3 of 3 rounds in one run without success); replaced with a
-  bounded `_WRITER_EMPTY_RETRY_ATTEMPTS = 2` loop (`src/engine/completion.py`). Full detail and the
-  live confirmation (a real run's `_retry1`/`_retry2` both firing, then recovering usable content)
-  in `ARCHITECTURE.md` §2 and `session_status/CURRENT.md`. Closed — its sibling, the original,
-  longest-tracked instance of this mechanism (Searcher/Analyzer dispatches, not writer roles), was
-  also found and fixed 2026-08-19, live-confirmed the same day — see `ARCHITECTURE.md` §2 (no
-  separate Pending entry, it was found and closed within this same session).
-
-- **`create_local_agent`'s 963-line nested-closure god-function — new, scoped 2026-07-29, NOT
-  attempted, needs its own dedicated session.** A whole-repo structural audit
-  (`src/engine/orchestrator.py` ~698-1661) found this the single riskiest piece of code in the
-  repo to change: `_run_single_task` (~490 lines) and `delegate_tasks` (~280 lines) are defined as
-  deeply-nested closures INSIDE `create_local_agent`, capturing dozens of enclosing locals
-  (`client`, `specialist_client`, `sem`, `holds_token`, `report_style_instructions`,
-  `_sdk_timeout_ceiling_seconds`, etc.) by reference rather than as parameters. `test_structural_
-  checks.py` never imports either closure directly — only small pure helper fragments that were
-  pulled OUT of this function over time (`_extract_excluded_topics`, `_looks_like_renamed_task`,
-  `_ring_fenced_deadline`) are tested; the actual per-task dispatch/quota-ring-fencing/specialist-
-  tiering behavior this function implements has ZERO direct test coverage. Per extract-method/
-  extract-class refactoring literature checked this session (arXiv:2312.12600, arXiv:2303.14253):
-  long functions with implicit shared state directly drive up the number of tests needed for full
-  coverage and should be pulled into parameter objects, not left as closures — confirming this
-  audit's own assessment, not just restating it. **Recommended approach when picked up**: write
-  characterization tests FIRST (pinning current behavior end-to-end, since none exist), THEN
-  decompose — attempting decomposition without a safety net on a function this size, alongside
-  other unrelated work, is exactly the kind of change that creates a new incident rather than
-  closing one.
-
-- **`completion.py`'s mixed responsibilities — new, scoped 2026-07-29, NOT attempted.** The same
-  structural audit found this 2591-line file's own header describes it as a clean list of pure
-  `Ctx -> Optional[Verdict]` check functions, but it also contains, with no separation: findings-
-  authoring/evidence-assembly logic (`_dedupe_findings`, `_collapse_multi_url_task_findings`,
-  `_build_findings_source_material`, ~220 lines), disk-touching quarantine/restore/salvage helpers
-  that reach into `tools.fs._get_safe_path` (a private name) at four separate call sites, async
-  sub-agent dispatch orchestration (`_dispatch_writer_review_fix`, `_dispatch_deepening_round`),
-  the task-verification ledger mutator, and the 390-line `run_completion_check` state machine
-  tying all of it together. None of this is individually bug-prone (the docstrings show real
-  care), but it means "add a new completion check" (the one thing CLAUDE.md documents as routine)
-  requires understanding artifact quarantine, writer dispatch, and findings-material assembly
-  living in the same module namespace. **Blast-radius warning for whenever this is picked up**:
-  `test_structural_checks.py` imports 40+ private (`_`-prefixed) names directly from across
-  `orchestrator.py`/`completion.py`/`tui.py`/`tools.fs`/`tools.web`/`tools.core` — any module split
-  must update that test file's imports in lockstep, not as an afterthought, or the test suite
-  silently stops covering what it used to.
-
-- **Config accessor for the 85 scattered `config.cfg.get("settings", {}).get(...)`-style chains —
-  new, scoped 2026-07-29, PARTIALLY addressed.** The structural audit counted 85 call sites across
-  `orchestrator.py` (33), `tui.py` (27), `completion.py` (12), and the tools/utils modules, with no
-  single accessor and no consistent default handling — confirmed as a REAL bug source, not just
-  duplication, by the `required_artifact` case: 3 different literal fallback values (`"final_report
-  .md"` in most `tui.py` call sites, `None` in `completion.py`) scattered across the 4 call sites
-  for that ONE setting. **Fixed for that one instance** (`config.get_required_artifact()`, added
-  2026-07-29 as part of the `run_cli`/`BasicTuiAgent` safe-subset cleanup) — the other 81 call
-  sites are unaddressed. Recommend incremental migration (add an accessor the next time any of
-  these settings' call sites needs touching for an unrelated reason) rather than a big-bang
-  rewrite of every site in one pass — most are one-off reads with no demonstrated inconsistency
-  risk like `required_artifact` had.
-
-- **`check_findings_underuses_evidence` evidence-dropping — MONITORING POINT, not a fix target
-  yet (2026-07-29).** During the 2026-07-29 findings/report-writing diagnosis session (prompted by
-  a direct request to find out whether the writer turn is structurally overwhelming these models,
-  not assume it), this check's own docstring surfaced the single strongest piece of evidence found
-  for a genuine model synthesis-discipline weakness independent of any infra bug: a clean,
-  balanced, non-overloaded 2-task run (`explain_the_health_benefits_of_green_tea_and_separ_
-  20260726_113029`, 7 + 5 real sources, `run_state.coverage()` ratio 1.0, no research-volume
-  problem) still had FindingsWriter silently drop an ENTIRE covered topic (Roman Empire) from
-  `findings.md` — not thin, not truncated, gone outright. Every OTHER 2026-07-28 writer-stage
-  failure investigated in that same session (Ornith's URL-case rejection, its wall-clock cutoff,
-  qwen3-4b-combined-v2-lora's narration-instead-of-write) traced to a specific, non-model
-  mechanism, now fixed — this is the one exception. **Deliberately not fixed via a blind prompt
-  rewrite**: per this project's own Model Evaluation Standard reasoning (a discard/fix claim needs
-  more than one occurrence, one clean pass can't establish a pattern either), a single incident
-  isn't enough to design a targeted fix from without guessing. Concrete reopen trigger: if a
-  SECOND clean (non-overloaded, unconfounded) run shows the same whole-topic-dropping shape, it's
-  worth a targeted prompt reinforcement (e.g. an explicit per-task-name coverage checklist
-  FindingsWriter must satisfy before calling `write_workspace_file`) — not before.
-
-- **Backend-adapter abstraction for serving endpoints — CLOSED same day, see History
-  ("2026-07-28: pluggable api.backend").** `api.backend: "ollama"` now reuses
-  `agent_framework.ollama.OllamaChatClient` (already-installed sibling package to the default
-  `OpenAIChatCompletionClient`) to route around the OpenAI-compat endpoint's thinking-leak
-  confirmed in `RESEARCH.md` §14e. Live-verified end to end (see History entry) before being
-  considered done, not just unit-tested.
-
-- **FindingsWriter drops most real findings even when it writes the file correctly — CLOSED,
-  moved to Completed 2026-07-24** (see Completed's "FindingsWriter evidence-abandonment ROOT
-  CAUSE — CLOSED 2026-07-22" entry for the full fix and live-confirmed 5/5 coverage result; this
-  Pending entry was simply never updated when the fix shipped the day after the last negative
-  re-test). The one still-genuinely-open piece from that investigation: the chunked map-reduce
-  dispatch option (LLM×MapReduce-style, arXiv:2410.09342) named as a bigger, deferred alternative
-  if the gate/dedupe fix ever proves insufficient again — not built, not currently needed.
-
-- **`run_cli`/`BasicTuiAgent` run-lifecycle duplication in `src/engine/tui.py` — SAFE SUBSET
-  CLOSED 2026-07-29, full unification still open, re-scoped after a live transcript-level audit.**
-  A dedicated audit (2026-07-29) mapped the duplication precisely rather than re-deriving it from
-  outcomes: it found the two entry points aren't just stylistic duplicates in several places — TUI's
-  approval-handling actually executes tools client-side and constructs full message pairs, CLI's
-  doesn't; TUI has no context-budget/wall-clock-deadline concept by design (a human can `/stop`).
-  Full mechanical unification of those parts is genuinely risky, not just tedious. What WAS safe
-  and got fixed this pass:
-  - The 9-key `RunState` resume-merge allowlist, copy-pasted verbatim in both `_resume_run` and
-    `run_cli` with comments in both warning the other must be updated by hand — extracted into
-    `utils.run_state.merge_resumed_state`/`_RESUME_CARRYOVER_KEYS`, one source of truth.
-  - The `required_artifact` config lookup, copy-pasted 4x with THREE different literal fallback
-    values scattered across call sites (a real latent inconsistency) — extracted into
-    `config.get_required_artifact()`.
-  - TUI's `run_agent` had NO `QuotaAbortException` handling at all — worse than previously
-    documented: since it subclasses `BaseException` not `Exception`, it wasn't even being caught by
-    `run_agent`'s `except Exception`, so it would have propagated uncaught rather than degrading
-    gracefully like CLI does. Fixed by widening to `except BaseException`, with an explicit
-    `asyncio.CancelledError` re-raise guard added first so `/stop` (which relies on
-    `self.workers.cancel_all()`'s cancellation propagating) doesn't silently break.
-  - TUI's `run_agent` had no crash-time `run_state.save()` outside normal loop completion (CLI
-    guarantees one on any top-level crash, 2026-07-11 fix) — added a matching outer
-    `except Exception` that saves and re-raises, without swallowing the original exception the TUI
-    surface still needs to see.
-  **Still genuinely open, re-scoped not abandoned**: unifying the stream-consumption loop
-  (`iter_agent_stream`'s outer iteration is already shared, but per-update content dispatch is two
-  independent implementations) and the approval-handling block behind explicit strategy
-  objects/parameters (a `Presenter`/tool-execution-or-not design decision, not a mechanical
-  extraction) — this is the part CLAUDE.md's "own dedicated session" guidance still applies to.
-  Replacement when picked up: design the strategy-object interface FIRST (what varies between TUI
-  and CLI: tool execution on approval, budget/deadline presence, notify() rendering), then extract
-  the loop body to take that interface as a parameter — not "extract the whole function and see
-  what breaks."
-
-- **Sharper repetition-escalation idea, the NOT-adopted narrower granularity**: `NousResearch/
-  hermes-agent` issue #481's proposed SHA-256 tool-call fingerprint loop guard (per-tool-call, one
-  level below the completion-check layer) is confirmed CLOSED with "No branches or pull requests"
-  — never implemented, just a proposal. The completion-check-level escalation fix it inspired
-  shipped in a different, complementary shape (see Completed, "Full-artifact-rebuild
-  repetition-escalation"); this finer-grained IN-TURN loop guard (catching e.g. a Searcher calling
-  `fetch_url_to_workspace` on the same URL 6 times in one dispatch's own turn — the exact shape of
-  the `qwen3:8b`/MiniCPM4-MCP incidents in History) is still a real, distinct, un-built idea if
-  ever worth pursuing — would be new DeepDelve-original work, not an adaptation of anyone's code.
-
-- **Re-run the full 11-candidate local-model bake-off via vLLM instead of Ollama — IN PROGRESS,
-  most candidates now closed, moved to History as each verdict lands.** Two independent, confirmed
-  Ollama-serving-layer bugs (Qwen3 think-mode passthrough, `ollama/ollama#6155` nested-array
-  tool-parameter stringification affecting `mistral-nemo`/`llama3-groq-tool-use`/`llama3.2:3b`) mean
-  several of README.md's 11 bake-off disqualifications may reflect Ollama's own serving bugs rather
-  than genuine model incapability. Full plan in `~/.claude/plans/moonlit-plotting-simon.md`.
-  Pre-flight checks (HF repo IDs, `bitsandbytes`-on-ROCm) and every candidate tested so far
-  (`mistral-nemo:12b` BLOCKED, `llama3-groq-tool-use:8b` DISQUALIFIED, `qwen3:8b` killed mid-run
-  with a real DeepDelve-side fabrication bug found and fixed, MiniCPM5-1B DISQUALIFIED in both
-  paired and single-model forms, the Qwen3-family think-mode bug confirmed Ollama-specific via
-  vLLM, MiniCPM3-4B INCONCLUSIVE on a real infra hang, MiniCPM4-MCP not yet viable) are all fully
-  concluded — see `History`'s "Model bake-off & backend investigation log" for the complete
-  evidence trail. **Still genuinely open**:
-  - `qwen3:8b` retest — DONE 2026-07-24, DISQUALIFIED, same failure class as before, now
-    confirmed clean of every prior excuse. Full detail in the "qwen3:8b vLLM retest" History
-    entry below; see Completed/History for the run-by-run trace.
-  - `qwen3.6`/`Gemma 4 12B`/`llama3.2:3b` and the rest of the 11-candidate plan — not yet attempted.
-  - The Mistral family (`mistral-nemo:12b`, `devstral:24b`, `mistral:7b-instruct-v0.3`) stays
-    blocked until a DeepDelve-side fix makes `_get_default_options()`'s `chat_template_kwargs`
-    injection conditional — out of scope to hack in mid-benchmark without sign-off (touches every
-    model's request path).
-  - A clean Qwen3-family re-benchmark via vLLM (now proven to fix the think-mode bug) is a real,
-    low-friction option if it's ever worth revisiting — not committed to, since these are all still
-    below the literature's own capacity floor regardless.
-
-- **Forced `tool_choice` on vLLM as a structural fix for "narrate instead of write" — new candidate,
-  2026-07-19, not yet prototyped.** Found while investigating whether vLLM is a realistic Ollama
-  swap (see "Model bake-off" log below for the full investigation, including a real empirical test:
-  Ollama silently ignores `strict`/`enum` schema constraints on tool-call arguments — confirmed
-  live, `enum: ["Moscow","London"]` did not stop a `deepdelve-gpt-oss` call from returning
-  `"Rome"`. vLLM's `tool_choice: "required"` DOES enforce it, 5/5 runs at temperature 1.0 — a real
-  grammar-level constraint, not post-hoc parsing. `tool_choice: "auto"` on vLLM is exactly as
-  unconstrained as Ollama, so this only helps roles that should NEVER produce a text-only turn.
-  That description matches this project's single most-repeated small-model failure exactly:
-  Builder/FindingsWriter's "narrate instead of write" bug (Bonsai-8B, `qwen2.5:3b-instruct`,
-  `qwen3:8b`, all disqualified partly or wholly for this reason — see their bake-off entries
-  below). `tool_choice: required` would structurally prevent that failure class outright for those
-  two roles specifically, rather than detecting and salvaging it after the fact
-  (`_salvage_narrated_report`). The Planner itself is NOT a candidate for this — it must be free to
-  choose between delegating and stopping with plain text, which `required` forbids entirely.
-  **Real cost, not glossed over**: needs a working vLLM instance serving Builder/FindingsWriter
-  specifically while the Planner stays on Ollama — a mixed-backend architecture, not a config flag.
-  Standing up vLLM on this card was genuinely fragile this session (4 crash-fix cycles: missing
-  OpenMPI/hwloc/libevent, then a version-mismatched hipBLASLt segfault only resolved once the `.so`
-  and its Tensile kernel data came from the same `.deb` — see the vLLM investigation entry below
-  for the full resolution chain). A persistent venv (`~/.venvs/vllm`, ~10GB on root) and the
-  working env-var recipe (`HIP_VISIBLE_DEVICES=0`, `LD_LIBRARY_PATH`, `HIPBLASLT_TENSILE_LIBPATH`)
-  are kept from this session for a future prototype. **User decision 2026-07-19: fine-tuning stays
-  the priority (already scoped, proven once); this is a candidate to prototype later, not blocking
-  current work** — the cheapest first test would be standing up vLLM for ONE already-disqualified
-  small model in the Builder/FindingsWriter role only, with `tool_choice: required`, against the
-  exact benchmark query that disqualified it, before investing in a full mixed-backend build.
-
-  **Fresh data point + literature caveat, 2026-07-29**: a findings/report-writing diagnosis session
-  (prompted by a direct request to find out whether the writer turn is structurally overwhelming
-  these models, not assume it) reconfirmed this exact failure class live — `qwen3-4b-combined-v2
-  -lora`'s verbatim narration ("Since I cannot write or edit files directly, I will describe the
-  content...") — and it survived every OTHER fix made that same session (URL-case grounding
-  false-positive, retry-budget bonus, quota starvation), none of which touch narration avoidance
-  at all, confirming this remains the single most direct fix for that specific failure shape.
-  BUT: two real caveats surfaced this session, not previously in this entry's own citations:
-  (1) arXiv:2606.25605 ("Constraint Tax in Open-Weight LLMs," already cited elsewhere in this
-  project) documents forcing required fields via constrained decoding can make a model
-  **fabricate a plausible-sounding value instead of narrating uncertainty** when it doesn't
-  actually know the answer — `tool_choice: required` could trade "narrates instead of writing"
-  for "writes, but confidently fabricates a citation," arguably worse for a project whose
-  grounding checks specifically hunt fabricated citations. (2) vLLM's own tool-calling docs/RFC
-  #39848 confirm `tool_choice: required` enforces a JSON schema via guided decoding, and
-  explicitly warn a model expecting a different native format (e.g. XML) gets forced into JSON
-  with possible performance degradation — a concrete risk for THIS project specifically, since
-  Ornith and other Qwen3.5-architecture candidates use a native XML-style tool-call template (the
-  same family whose `PARSER`/`RENDERER qwen3.5` corruption bug was root-caused and fixed the same
-  week). **Any future prototype of this fix must test specifically against the candidate model's
-  native tool-call format, not assume JSON-schema forcing is free.**
-
-- **Strategic options for the "no small local model is reliable enough" gap** (decided 2026-07-18,
-  after the bake-off reached 10 tried candidates, 9 disqualified — full trial history in the
-  "Model bake-off & backend investigation log" section below). The project's own stated local-only
-  philosophy is already satisfied — `gpt-oss:20b` at 13GB, comfortably inside a 16-17GB VRAM
-  budget, is the one candidate with a full benchmark pass. The real open question is whether a
-  LIGHTER default is achievable, given every smaller candidate has failed at agentic coordination
-  specifically, not raw single-tool-call capability. **External validation, merged from the SOTA
-  literature review (`RESEARCH.md` §1, 2026-07-20)**: this project's own bake-off pattern (every
-  2-8B candidate disqualified, `gpt-oss:20b` the only pass) is not an idiosyncratic gap — a
-  published capacity-floor study (arXiv:2601.16280, invoice-reconciliation tool-use, admittedly a
-  narrower/more controlled domain than DeepDelve's own) found `qwen2.5:14b` as the "minimum viable
-  production" threshold for reliable tool invocation, with `qwen2.5:3b`/`7b` failing at 86.1%/42.7%
-  rates. Two constraint-tax papers (arXiv:2606.25605 + arXiv:2605.26128) independently found the
-  failure is specifically at STRUCTURED SERIALIZATION (schema-valid output, wrong content) — and
-  that a 6,000-sample SFT run could not fix it, because it happens downstream of anything
-  fine-tuning touches. Together: don't expect a lighter default to fully close this gap via more/
-  better fine-tuning data alone — see the new "Non-generative routing classifier" Planned item
-  above, which targets the routing sub-problem specifically because it's the piece that generative
-  fine-tuning structurally can't guarantee. Four options, in the order agreed to try them,
-  1-2 now DONE and tested, 3 still genuinely open:
-  1. **Structural fix instead of a new model — DONE.** The immediate narration-salvage fix (see
-     "Completed" above) — correct and shipped, but on live re-test didn't rescue its motivating case
-     (`qwen2.5:3b-instruct` returns genuinely empty responses, nothing to salvage). Full result in
-     the investigation log below.
-  2. **Heterogeneous role tiering — DONE, real negative result, and CLOSED as a strategy
-     (user decision, 2026-07-21): not worth retrying with any other small-model pairing.**
-     Implemented (`settings.specialist_model`, `src/engine/orchestrator.py`) and live A/B tested:
-     4.2x SLOWER than plain `gpt-oss:20b` and the report silently dropped the query's main topic.
-     The negative result isn't specific to `qwen3:4b` — it follows from `gpt-oss:20b` never being
-     unloaded between specialist dispatches (VRAM probe, investigation log below), so pairing it
-     with ANY smaller specialist model competes for the same fixed VRAM budget rather than freeing
-     any of it. Given that, the user does not want this pairing pursued further with a different
-     small model either (explicitly including MiniCPM5-1B, see its entry below) — the mechanism
-     only makes sense again if a future candidate can fully REPLACE `gpt-oss:20b` as a standalone
-     single model across all roles, not sit alongside it as a lighter specialist tier. Code kept
-     (reusable) for that different scenario, not adopted as a default, and not queued for further
-     specialist-pairing retests. Full implementation notes, VRAM probe, and A/B result in the
-     investigation log below.
-  3. **Targeted fine-tuning (SFT + GRPO) of an existing small checkpoint — PREP DONE, training not
-     started.** NOT training a foundation model from scratch, which would be disproportionate to a
-     coordination/instruction-following gap on top of an already-capable base. Scoped in the
-     "Fine-tuning" section's GRPO entry (now DEFERRED, see that section): target `qwen3:4b`, reward function built around its specific
-     documented failure (`thin_coverage` non-convergence). **`finetune/reward.py` and
-     `finetune/extract_dataset.py` built and validated against real run logs 2026-07-18** (5 real
-     examples extracted so far; public-dataset supplementation researched — see the Stretch entry
-     for the full recipe). The actual GPU training environment (venv-must-be-on-root-ext4, ~13GB+)
-     still waits on the user's own disk reorganization — the next concrete action once that's done.
-  4. **Stay on `gpt-oss:20b` as-is** — the fallback baseline that's already true today regardless
-     of how far 1-3 get: nothing is actually blocking the project's local-only goal right now.
-  5. **RAG-augmented small model — raised by the user 2026-07-20, not yet scoped.** Initially
-     framed as "identify what made the user's prior RAG attempt fail" without knowing the specifics
-     — **found the actual prior attempt already documented in this same "Rejected"
-     section below, and it's IN THIS PROJECT, not a different one**: `src/utils/knowledge_cache.py`
-     (deleted commit `929b987`, 2026-07-11). Confirmed via git history
-     (`session_status/2026-07-13.md`): **it wasn't real RAG at all** — no embeddings, no chunking,
-     no vector retrieval, just an exact-string-match `{normalized_question: answer}` JSON cache
-     plus a coarse keyword-heuristic "experience" cache of past successful plans (DelveAgent's
-     Dual-Granularity Memory pattern, arXiv:2606.18648). **The actual failure was narrower and more
-     specific than a general RAG problem**: during model bake-off benchmarking, a LATER model's
-     trial would hit the SAME cached "verified" answer from an EARLIER model's trial on the same
-     query and reproduce it near-verbatim — invalidating independent A/B comparison between
-     candidate models entirely (you'd think the later model performed well, when it just copied the
-     earlier one's cached answer). This is a benchmark-isolation bug, not a retrieval-quality,
-     hallucination, or embedding problem — the classic RAG failure taxonomy (see RESEARCH.md §8)
-     mostly doesn't apply to what actually broke here.
-     - **RESEARCH.md §8, 2026-07-20**: separately researched real RAG literature (3 primary
-       sources: a peer-reviewed 33-mode RAG failure taxonomy, an agentic-RAG architecture survey, a
-       small-language-model agentic-systems survey) before this git-history discovery landed.
-       Headline findings: (1) DeepDelve, already multi-agent, would land in "Agentic RAG" — the
-       taxonomy's own finding is this is the LEAST empirically validated RAG category (all 8
-       agentic failure modes have zero peer-reviewed evidence); (2) two of those unstudied agentic
-       failure modes (Recursive Hallucination Cascades, Unbounded Cost/Latency Spirals) are
-       near-exact matches for bugs DeepDelve already found and fixed independently (the
-       narrated-report/phantom-document bug, today's MiniCPM quota-exhaustion loops); (3) the SLM
-       survey's own ablation data shows grammar/schema-constrained decoding, not RAG or model size,
-       is the most load-bearing lever for small-model tool-use reliability — directly reinforcing
-       the still-open "Forced `tool_choice` on vLLM" candidate above as a more targeted fix for
-       today's actual observed failures than RAG would be.
-     - **Combined implication**: real RAG (embeddings/chunking/vector retrieval, unlike the deleted
-       cache) is architecturally a DIFFERENT thing than what failed before, so the old rejection
-       doesn't automatically block it — but ANY persistent cross-run cache, real-RAG or not, must
-       be explicitly disabled or isolated per-model during comparative benchmarking, or the EXACT
-       same contamination bug recurs regardless of what retrieval technique sits underneath it.
-       That's the one concrete, non-negotiable design constraint from this project's own history.
-
-- **TUI QoE improvements** (researched 2026-07-14, not yet scoped/implemented) — triggered by a
-  real usability complaint mid-Phase-6 smoke test ("copying from the console, not only the
-  prompt", right-click paste, "a lot of QoE changes"). Investigated the actual installed Textual
-  8.2.8 source (not assumed from memory) rather than guessing at framework capabilities:
-  - **Likely already works, needs live confirmation, not new code**: click-drag text selection +
-    `Ctrl+C` copy — `ALLOW_SELECT = True` is the framework default at `Widget`/`Screen`/`App`
-    level, and `Screen.BINDINGS` already binds `ctrl+c` → `action_copy_text`
-    (`textual/screen.py`); `BasicTuiAgent` doesn't override any of this.
-  - **Unused framework capabilities surfaced, not yet scoped into concrete work**: command palette
-    (`ENABLE_COMMAND_PALETTE`, `Ctrl+P`, separate from the hand-built `/`-command `OptionList`
-    picker); widget maximize/minimize (`action_maximize`/`action_minimize`, blow up one
-    `RichLog`/`AgentMessageWidget` to full-screen); theming system (`register_theme`/
-    `available_themes` — currently one fixed CSS theme); `textual.suggester.Suggester`/
-    `SuggestFromList` (inline autocomplete-as-you-type, vs. the hand-rolled `_render_cmd_list`
-    filtering); `notify()` toasts (used only in copy-error paths today — could surface background
-    events, e.g. a sub-agent finishing while scrolled away); unused built-in widgets that map onto
-    real needs (`Tree` for `_todos.md`'s plan or the workspace file list; `DataTable` for fetched-
-    source metadata; `TabbedContent` to split findings/report/sources instead of one scrolling
-    feed; `SelectionList` for multi-file/multi-seed-URL picking).
-  - **Explicitly deferred, not scoped into a phase yet** — user chose to record as a backlog item
-    rather than implement immediately, given Phase 6 (now shipped, see "Completed") and the model
-    bake-off (see the "Model bake-off & backend investigation log" section) were the priority at
-    the time. The two smallest, most directly user-requested items (`AgentMessageWidget` copy
-    button + right-click paste) have since shipped — see "Completed". Next session should scope a
-    concrete subset of the remaining framework-capability survey items, which need real
-    prioritization first.
-
-
-
-- **VERIMAP Phase 2 — CLOSED as documented no-go, 2026-07-29, real live-run evidence gathered,
-  not left open on a "need more data" pretext the data itself now contradicts.** Phase 1
-  (`_update_task_verification`/`check_task_verification_flagged`, `src/engine/completion.py`) was
-  deliberately left deferred pending real data on whether `task_verification_flagged` recurs often
-  enough to justify redispatching ONLY the flagged task directly (bypassing the Planner's own turn,
-  similar in spirit to how `_dispatch_writer_review_fix` bypasses the Planner for artifact fixes) —
-  a real `run_completion_check` dispatch-loop rework, not an additive ledger. An audit of every
-  `research_output/` run where the flag actually fired (K-Pg boundary cluster 2026-07-26,
-  deep-learning-vs-2008-crisis cluster 2026-07-27, `qwen3-4b-combined-v2-lora` 2026-07-28) found
-  **zero clean, unconfounded cases** where the same task recurred 3+ times under a normal retry
-  budget with the Phase-1 nudge genuinely failing to resolve it. Every observed recurrence traced
-  to an independent, already-fixed root cause instead: quota exhaustion made the directive
-  structurally impossible to follow (fixed by making the check quota-aware) or a stale-task-rename
-  loop (fixed by adding the `superseded` ledger status) — and post-fix reruns on the same queries
-  show the flag resolving in 0-1 nudges. **Verdict: no-go for now.** Revisit only if a future clean
-  run (normal retry budget, no other confound) shows the identical task recurring 3+ times with the
-  Phase-1 directive genuinely unable to resolve it — that specific trigger, not elapsed time or
-  general "more data," is the reopen condition.
-
-### Candidates from the 2026-07-12 reference-repo review (see README References)
-
-### Candidates from the 2026-08-01 reference-repo survey (`RESEARCH.md` §16 — full detail there)
-
-Applied already, not just noted: `open_deep_research`'s per-comparison-subject task-naming rule
-(`src/prompts.py`'s `PLANNER_INSTRUCTIONS`, ~line 195) and the `web_search_backend` provider
-abstraction (`src/tools/web.py`, config-driven Tavily/Brave/ddgs selection invisible to the model
-— GPT Researcher's `Retriever` interface was the prompt to look at this, though the actual
-implementation is a lighter config-branch, not a full class hierarchy — 3 providers doesn't
-justify one). Noted here as candidates, deliberately NOT implemented this session (bigger
-architectural changes, or judged not to add real value over what DeepDelve already does):
-
-- **STORM's persona-diversity facet discovery** (`stanford-oval/storm`,
-  `knowledge_storm/storm_wiki/modules/persona_generator.py`/`knowledge_curation.py`): generate N
-  diverse "perspective" personas grounded in related-topic reference structure BEFORE
-  decomposition, each driving its own research thread via simulated Q&A. The most structurally
-  different, best-grounded idea surveyed for DeepDelve's still-open task-naming/facet-collapse
-  problem (item 0, `session_status/CURRENT.md`) — not adopted because it's a genuinely new
-  pre-Planner pipeline stage, not a tweak to the existing one. Revisit if the prompt-level fix
-  above (already applied) turns out insufficient on live re-test.
-- **GPT Researcher's `SourceCurator`** (`gpt_researcher/skills/curator.py`): a dedicated LLM pass
-  that ranks/filters sources by credibility before the writer sees them. Considered, not
-  recommended: it's pure LLM self-judgment with no structural backing (falls back to the unranked
-  list on any parse failure) — DeepDelve's existing grounding pipeline already does something
-  stronger downstream (NLI entailment, cross-source contradiction, stub-fetch rejection), so
-  adding a weaker upstream judgment call would be redundant, not additive.
-- **GPT Researcher's defensive multi-strategy structured-output parsing**
-  (`gpt_researcher/skills/deep_research.py:48-116` — `json_repair` → regex-line-fallback cascade):
-  a real hardening pattern, but not applicable to DeepDelve's current architecture — native
-  tool-calling schemas are framework-validated, not free-text-parsed, so this class of problem
-  mostly doesn't arise here. Worth remembering if a future DeepDelve code path does need to parse
-  free-text model output by hand.
-- **Host-driven shrinking-budget iteration** (`dzhng/deep-research` and GPT Researcher's own
-  `deep_research.py` lineage — breadth halves every recursion level, LLM never decides "should I
-  search more"): a genuinely different fix family from the hard replan-round cap already shipped
-  (`RESEARCH.md` §15, `max_planner_delegate_rounds`) for the SAME problem class (a model that
-  over-exercises iteration authority) — cap the model's authority (shipped) vs. never grant it in
-  the first place (this). Not adopted: would mean rearchitecting the Planner's `ADAPTIVE PLANNING
-  LOOP` away from genuine model-driven adaptation, a real capability trade-off, and the cap already
-  shipped is confirmed live-working (RESEARCH.md §15's live-test: 6 rounds → 4, no rejections
-  needed). Recorded as a fallback option if the cap alone ever proves insufficient the way the
-  fetch-cap-and-cutoff-wording fix alone did.
+- **Reference repo review candidates not adopted** (STORM's persona-diversity facet discovery, GPT
+  Researcher's `SourceCurator` and defensive multi-strategy parsing, host-driven shrinking-budget
+  iteration). All real, all considered, all recorded with the specific reason each wasn't adopted in
+  the wiki's [Literature Review](https://github.com/g0elles/deepdelve/wiki/Literature-Review-Bakeoff-Findings)
+  page. Kept here only as a pointer so they don't get re-proposed as fresh ideas.
 
 ## Rejected
 
