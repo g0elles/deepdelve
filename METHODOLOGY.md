@@ -153,8 +153,13 @@ first, not assumed: stale sub-agent context (`_run_single_task` constructs a gen
 client per call, confirmed by reading it, not inferred). The literature review done before attempting
 a fix, per this project's own standing rule, named the actual mechanism: the self-correction blind
 spot (Kamoi et al., arXiv:2406.01297, models are measurably worse at correcting errors in their own
-prior output than the identical error framed as external input, about 64.5% of self-generated errors
-survive self-checking across 14 open models). A first, smaller fix informed by that same literature
+prior output than the identical error framed as external input; this document previously attached a
+"64.5% across 14 open models" figure to this citation that does not appear anywhere in the paper's
+full 23/24-page text, corrected 2026-08-22 after a direct full-text re-read, `grep`-checked for
+"64.5", "fourteen", and "survive" with zero matches. The paper's own local copy is
+`papers/kamoi_survey_2406.01297.pdf`; this was the same fabricated-attribution class of error CLAUDE.md's
+citation-verification rule already names as a past incident, evidently never propagated back into this
+specific paragraph). A first, smaller fix informed by that same literature
 (an explicit `edit_workspace_file` directive naming exactly what to add, Song's Cross-Context Review
 framing, arXiv:2603.12123) was tried and live-tested to a clean negative result before escalating:
 the directive changed which tool Builder called, not what it produced, the citation ratio stayed
@@ -171,8 +176,12 @@ principle to "production must be too" once a single generation call is asked to 
 facets than it reliably can at once. A second literature match, found during scoping rather than
 after: Xu et al.'s aggregator noise framing (arXiv:2506.16411), individual facts correct, a merge or
 synthesis step drops whole clusters, named which of three distinct long-context failure modes this
-was, and confirmed hierarchical decomposition, what per-facet dispatch is a form of, as the
-literature's standard mitigation for that specific mode, not a guess at one of three.
+was, confirming which of three plausible mechanisms was actually responsible rather than leaving it a
+guess. Correction, 2026-08-22, after re-reading the paper directly rather than trusting the earlier
+summary: that paper's own mitigation for aggregator noise is single-stage aggregation with carefully
+designed prompts, not hierarchical decomposition; it does not recommend or test a hierarchical
+approach. Per-facet dispatch is this project's own fix, independently justified by the self-correction
+blind spot and Cross-Context Review literature above, not something Xu et al. themselves prescribe.
 
 A follow-up, isolated A/B test (2026-08-19) sharpened rather than reopened the self-correction blind
 spot diagnosis. A plausible, cheap-to-test candidate contributor to a different but related-looking
