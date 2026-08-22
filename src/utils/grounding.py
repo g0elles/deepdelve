@@ -1292,6 +1292,73 @@ def cheap_grounding_problems(content: str, gc_cfg: dict, fetched_entries: list) 
     return out
 
 
+_S2_LOOKUP_CACHE: dict[tuple[str, str], str | None] = {}
+
+
+def _semantic_scholar_lookup(author: str, year: str, timeout: float = 5) -> str | None:
+    """Queries Semantic Scholar's public paper-search API (no key needed for this tier) for a
+    candidate matching `author`/`year`, to catch the "real URL, fabricated attribution" mashup
+    pattern real_grounding_problem's URL-presence check cannot see (a citation whose URL was
+    genuinely fetched, but whose claimed author/year doesn't correspond to a real paper). Returns
+    "VERIFIED" (a plausibly matching candidate exists), "NOT_FOUND" (zero matches), or None on ANY
+    network/timeout/HTTP/parsing failure — fails open, same policy as verify_url_live above: an
+    unavailable check must never manufacture a flag. Per-process cache keyed on (author, year)
+    avoids repeat lookups across completion-check retries within a run."""
+    key = (author.lower(), year)
+    if key in _S2_LOOKUP_CACHE:
+        return _S2_LOOKUP_CACHE[key]
+
+    result = None
+    try:
+        import httpx
+        from difflib import SequenceMatcher
+
+        resp = httpx.get(
+            "https://api.semanticscholar.org/graph/v1/paper/search",
+            params={"query": f"{author} {year}", "fields": "title,authors,year", "limit": 5},
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        papers = resp.json().get("data", [])
+        author_lower = author.lower()
+        for paper in papers:
+            if str(paper.get("year") or "") != year:
+                continue
+            names = [a.get("name", "") for a in (paper.get("authors") or [])]
+            if any(SequenceMatcher(None, author_lower, n.lower()).ratio() >= 0.7 for n in names):
+                result = "VERIFIED"
+                break
+        else:
+            result = "NOT_FOUND"
+    except Exception:
+        result = None  # fail open — never flag on infra failure
+
+    _S2_LOOKUP_CACHE[key] = result
+    return result
+
+
+def academic_citation_existence_problem(content: str) -> str | None:
+    """Checks academic `(Author, Year)` citations that already have a resolved URL (a bare
+    non-URL citation is already caught earlier by find_non_url_citations/check_non_url_citation —
+    this check's job is specifically the citations that pass the URL-presence gate but whose
+    author/year attribution may not correspond to a real paper at all). WHITEPAPER.md §3.4 case:
+    structural exclusion of a fabricated/mismatched academic citation before it ever reaches
+    FindingsWriter's evidence pool, via the same [SYSTEM VERIFICATION WARNING] + URL-scoped
+    exclusion mechanism every other real_grounding_problem finding already uses."""
+    ref_map = parse_academic_references(content)
+    if not ref_map:
+        return None
+
+    flagged = []
+    for key, url in ref_map.items():
+        author, year = key.split(",", 1)
+        if _semantic_scholar_lookup(author, year) == "NOT_FOUND":
+            flagged.append(url)
+    if not flagged:
+        return None
+    return f"academic_citation_unverified:{', '.join(flagged[:3])}"
+
+
 async def real_grounding_problem(content: str) -> str | None:
     """Cross-references every URL cited in `content` against URLs the engine actually saw
     fetch_url_to_workspace fetch this run. A URL not in that verified set is ALWAYS a grounding
@@ -1333,6 +1400,11 @@ async def real_grounding_problem(content: str) -> str | None:
 
     if gc_cfg.get("topical_relevance_check", True):
         problem = topical_relevance_problem(content)
+        if problem:
+            return problem
+
+    if gc_cfg.get("academic_citation_verify", False):
+        problem = academic_citation_existence_problem(content)
         if problem:
             return problem
 

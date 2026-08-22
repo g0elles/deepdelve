@@ -430,6 +430,16 @@ settings:
     # sentence-transformers isn't installed.
     topical_relevance_check: true
     topical_relevance_threshold: 0.1   # 0-1 relevance score below which a pair is flagged (lower = stricter gate, fewer false positives)
+    # Fifth layer, specific to academic (Author, Year) citations that already have a resolved URL
+    # (a bare non-URL citation is already caught by non_url_citation_check below): calls Semantic
+    # Scholar's public paper-search API (no key needed for this tier) to check whether the cited
+    # author/year actually corresponds to a real paper, catching the "real URL, fabricated
+    # attribution" mashup pattern URL-presence and term-overlap checks cannot see on their own
+    # (see utils/grounding.py::academic_citation_existence_problem). Opt-in, default off: a real
+    # network dependency on an external service, unlike every check above it. Fails open on any
+    # network/timeout/HTTP error — an offline/air-gapped run or a rate-limited API call is never
+    # treated as a fabrication, just skipped silently.
+    academic_citation_verify: false
     # Catches a claim attributed to something that isn't a URL at all — a bare "(DANE, 2020)"
     # parenthetical or a "Source: <prose>" line — which extract_cited_urls never sees since it only
     # recognizes https?:// patterns. Confirmed live: a report can have real, fetched-and-verified

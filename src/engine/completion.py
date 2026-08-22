@@ -2323,7 +2323,7 @@ def _is_citable_finding(f: dict) -> bool:
 
 _WARNING_MARKER_RE = re.compile(r"\[SYSTEM (?:VERIFICATION|RELEVANCE) WARNING:.{0,160}")
 _VERIFICATION_WARNING_BLOCK_RE = re.compile(r"\[SYSTEM VERIFICATION WARNING:.*?\]", re.DOTALL)
-_VERIFICATION_FLAGGED_URLS_RE = re.compile(r"\((?:unverified_urls|stub_source|claim_unsupported):([^)]*)\)")
+_VERIFICATION_FLAGGED_URLS_RE = re.compile(r"\((?:unverified_urls|stub_source|claim_unsupported|academic_citation_unverified):([^)]*)\)")
 
 
 def _verification_warning_targets_url(summary: str, source_url: str) -> bool:

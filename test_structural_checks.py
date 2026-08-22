@@ -15,7 +15,10 @@ from engine.completion import (
     _CUTOFF_ONLY_SUMMARY_RE, _reorder_findings_for_position_bias, _find_propagated_bad_content,
     _is_citable_finding, _build_findings_source_material, _ablation_disabled,
 )
-from utils.grounding import find_non_url_citations, fully_ungrounded, partially_ungrounded, find_uncited_claim_lines, extract_cited_urls
+from utils.grounding import (
+    find_non_url_citations, fully_ungrounded, partially_ungrounded, find_uncited_claim_lines,
+    extract_cited_urls, academic_citation_existence_problem, real_grounding_problem,
+)
 from utils.run_state import record_fetched_url, reset_fetched_urls
 
 
@@ -369,6 +372,21 @@ def main():
         "summary": "No key findings extracted from this source during this research run.",
     }
     assert _is_citable_finding(null_finding) is False
+    # ACADEMIC CITATION EXISTENCE (2026-08-22): the academic_citation_unverified label added to
+    # _VERIFICATION_FLAGGED_URLS_RE for academic_citation_existence_problem must be recognized and
+    # URL-scoped by the same existing mechanism, not just wholesale-exclude every co-cited finding.
+    ac_bad_url = "https://example.com/fabricated-paper"
+    ac_real_url = "https://real.example.co/genuine-paper"
+    ac_summary = (
+        "Consolidated findings citing both a fabricated and a genuine academic reference.\n\n"
+        f"[SYSTEM VERIFICATION WARNING: this summary attributes a claim to a source that does not "
+        f"match anything actually fetched this run, or to something that isn't a real URL at all "
+        f"(academic_citation_unverified:{ac_bad_url}). Do not treat the associated claim as sourced "
+        f"when writing findings.md.]"
+    )
+    assert _is_citable_finding({"source_url": ac_bad_url, "summary": ac_summary}) is False
+    assert _is_citable_finding({"source_url": ac_real_url, "summary": ac_summary}) is True, (
+        "a co-cited real reference must not be swept up by another citation's fabricated-attribution flag")
 
     # --- _build_findings_source_material renders a real title when available (2026-07-21,
     # closing the format gap with FINDINGS_WRITER_INSTRUCTIONS' own required output shape), falls
@@ -8529,6 +8547,77 @@ def main():
         _asyncio_cp.run(_run())
 
     _command_palette_scenario()
+
+    # --- academic_citation_existence_problem / real_grounding_problem wiring (2026-08-22):
+    # a real, fetched URL whose academic (Author, Year) attribution doesn't correspond to any real
+    # paper -- the "real URL, fabricated attribution" mashup pattern URL-presence checks alone
+    # cannot see. The real Semantic Scholar API isn't called in this fast suite -- mocked at
+    # utils.grounding._semantic_scholar_lookup to test WIRING correctness (config opt-in gate ->
+    # academic_citation_existence_problem -> real_grounding_problem ordering), same boundary this
+    # project already draws for nli_unsupported_problem/topical_relevance_problem above. ---
+    def _academic_citation_verify_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        from unittest.mock import patch
+        import asyncio as _asyncio_ac
+        import config as _config_ac
+        import utils.grounding as _grounding_mod_ac
+
+        gov_url = "https://gov.example.co/ac-page"
+        ref_url = "https://example.com/fabricated-paper"
+        content = (
+            f"- The pilot program launched in 2020 (Smith, 2020) [gov]({gov_url})\n\n"
+            "## References\n"
+            f"1. Smith, J. (2020). A Fabricated Paper. {ref_url}\n"
+        )
+        source_text = ("Source-URL: " + gov_url + "\n\n"
+                        + "The pilot program launched in 2020 after extensive review. " * 3)
+
+        _orig_gc_ac = _config_ac.cfg.get("settings", {}).get("grounding_check")
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            _IN_MEMORY_FS.clear()
+            reset_fetched_urls()
+            record_fetched_url(gov_url, filename="sources/ac_page.md")
+            record_fetched_url(ref_url, filename="sources/ac_ref.md")
+            _IN_MEMORY_FS["sources/ac_page.md"] = source_text
+            _IN_MEMORY_FS["sources/ac_ref.md"] = "Source-URL: " + ref_url + "\n\nUnrelated placeholder content."
+
+            # Default off: even with a mocked NOT_FOUND lookup, the check must never run unless
+            # explicitly enabled -- opt-in default regression guard.
+            _config_ac.cfg["settings"]["grounding_check"] = {"nli_verify": False, "topical_relevance_check": False}
+            with patch.object(_grounding_mod_ac, "_semantic_scholar_lookup", return_value="NOT_FOUND"):
+                result = _asyncio_ac.run(real_grounding_problem(content))
+                assert result is None, ("academic_citation_verify must default off", result)
+
+            # Enabled + NOT_FOUND -> flags, URL-scoped detail.
+            _config_ac.cfg["settings"]["grounding_check"] = {
+                "nli_verify": False, "topical_relevance_check": False, "academic_citation_verify": True,
+            }
+            with patch.object(_grounding_mod_ac, "_semantic_scholar_lookup", return_value="NOT_FOUND"):
+                result = _asyncio_ac.run(real_grounding_problem(content))
+                assert result == f"academic_citation_unverified:{ref_url}", result
+                assert academic_citation_existence_problem(content) == f"academic_citation_unverified:{ref_url}"
+
+            # Enabled + VERIFIED -> clean pass, confirming the new check doesn't regress the
+            # existing clean-pass path once wired in.
+            with patch.object(_grounding_mod_ac, "_semantic_scholar_lookup", return_value="VERIFIED"):
+                result = _asyncio_ac.run(real_grounding_problem(content))
+                assert result is None, result
+
+            # Fail-open: the real lookup raising/timing out must never manufacture a flag.
+            with patch.object(_grounding_mod_ac, "_semantic_scholar_lookup", return_value=None):
+                result = _asyncio_ac.run(real_grounding_problem(content))
+                assert result is None, result
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            if _orig_gc_ac is None:
+                _config_ac.cfg["settings"].pop("grounding_check", None)
+            else:
+                _config_ac.cfg["settings"]["grounding_check"] = _orig_gc_ac
+
+    _academic_citation_verify_scenario()
 
     print("All structural-check assertions passed.")
 

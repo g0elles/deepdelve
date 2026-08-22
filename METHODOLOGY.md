@@ -224,6 +224,40 @@ other mechanism in this document still stands on. The remaining, larger mechanis
 dispatch, the starvation guards themselves) haven't yet been put through the same ablation, a
 concrete, scoped-but-not-yet-executed next step, not a claim that everything else is unproven.
 
+### 3.8 Academic citation existence verification, scoped proactively rather than incident-driven
+
+Unlike §§3.1-3.7, this mechanism was not built in response to a live production failure this
+project's own runs produced, it's the one deliberate exception to this document's own framing. It
+was scoped 2026-08-22 during the project's own citation-verification pass on this very document (see
+`WHITEPAPER.md`'s citation fixes the same day), where a real gap became visible by hand: the existing
+grounding checks (§3.1) verify that an academic `(Author, Year)` citation resolves to a URL that was
+actually fetched, but never that the citation's underlying identity, its claimed author and year,
+corresponds to a real paper at all. A citation can pass every existing check (real URL, real fetch,
+term-overlap, NLI entailment) while still attributing a genuinely fetched source to the wrong paper,
+the "mashup fabrication" pattern documented in academic-integrity literature and found by hand
+several times in this project's own reference lists this session, not yet caught by any structural
+check.
+
+The fix follows this document's own established principle rather than introducing a new one:
+`utils/grounding.py::academic_citation_existence_problem` queries Semantic Scholar's public
+paper-search API (no key required for this tier) for each academic citation that already has a
+resolved URL, and wires into `real_grounding_problem`, the single function shared by both
+per-dispatch verification (before a finding ever reaches `RunState.add_finding`) and final-report
+checking, behind a new opt-in `grounding_check.academic_citation_verify` flag (default `false`, this
+is the first grounding check with a genuine external-network dependency beyond URL-liveness). On a
+flagged citation, exclusion is structural, not a warning left for the model to heed (§3.4's own
+principle): the existing `[SYSTEM VERIFICATION WARNING]` + URL-scoped exclusion mechanism in
+`_is_citable_finding` needed exactly one new recognized label,
+`academic_citation_unverified`, no new exclusion code. Fails open on any network/timeout/HTTP
+error, live-confirmed against the real API rather than only a mock: manual testing hit a genuine 429
+rate-limit response from Semantic Scholar's unauthenticated tier, and the fail-open path correctly
+returned no verdict rather than a false flag.
+
+Not yet done, stated plainly per §7's own standard: a live end-to-end smoke test with the flag
+enabled against a real run. The public API's tight unauthenticated rate limit makes this awkward to
+exercise reliably in one sitting; this is a concrete, scoped next step, not a claim the mechanism has
+been proven in production the way §§3.1-3.7's incident-driven fixes have.
+
 ## 4. Recurring design principles, evidenced
 
 Each of these is stated here because a specific, dated incident in this project's own history
@@ -343,6 +377,12 @@ claim.
   literature), not an oversight, but it means the approach has a ceiling: below some model capability
   floor, no amount of downstream checking produces a usable result, only an honestly labeled failure
   instead of a silently accepted bad one.
+- **The academic citation existence check (§3.8) has not been live-smoke-tested end to end.** It's
+  verified by mocked unit tests (`test_structural_checks.py`) and confirmed to fail open against a
+  real 429 from the actual Semantic Scholar API, but not yet exercised against a real DeepDelve run
+  with the opt-in flag enabled, the public API's unauthenticated rate limit makes that awkward to do
+  reliably in one sitting. Unlike every other mechanism in §3, it was also scoped proactively rather
+  than from a live incident this project's own runs produced.
 - **This document itself has not been externally reviewed.** It's an internal synthesis, sourced
   from this project's own commits, tests, and a dedicated but necessarily time-bounded research pass,
   not a peer-reviewed claim.
