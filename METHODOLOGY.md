@@ -253,10 +253,25 @@ error, live-confirmed against the real API rather than only a mock: manual testi
 rate-limit response from Semantic Scholar's unauthenticated tier, and the fail-open path correctly
 returned no verdict rather than a false flag.
 
-Not yet done, stated plainly per §7's own standard: a live end-to-end smoke test with the flag
-enabled against a real run. The public API's tight unauthenticated rate limit makes this awkward to
-exercise reliably in one sitting; this is a concrete, scoped next step, not a claim the mechanism has
-been proven in production the way §§3.1-3.7's incident-driven fixes have.
+A live smoke test against the real API (2026-08-22, same day) found and fixed a real bug the mocked
+unit tests could not have caught, because they only ever fed in already-correctly-shaped fake
+responses. The initial matching logic compared a bare surname ("Vaswani") against a candidate's
+*entire* name string ("Ashish Vaswani") via `difflib.SequenceMatcher`, scoring only ~0.67, below the
+0.7 threshold, purely from the length mismatch, even though the surname is an exact match. Against
+the real "Attention is All you Need" (Vaswani et al., 2017) response, this would have false-flagged a
+completely genuine citation as unverified. Fixed by matching the surname against each individual name
+TOKEN in a candidate's name, not the whole string. Also newly surfaced: the public unauthenticated
+tier's rate limit is considerably tighter in practice than its documentation implies, repeated 429s
+during testing, sometimes 8-14 retries before a single request cleared, confirming the fail-open path
+fires correctly and often in real usage, not just in a contrived failure test, which is itself a
+practical limitation worth naming: an opt-in check this likely to be rate-limited will silently skip
+more often than it actually verifies, on the free tier, unless a paid/registered API key is used.
+
+Not yet done: a full agentic run (a real AcademicSearcher dispatch through Ollama) with the flag
+enabled, exercising the check through the orchestrator rather than by calling
+`real_grounding_problem` directly, this remains a smaller, scoped gap than "unproven in production"
+now that the actual matching logic has been validated against real API responses for both a genuine
+and a fabricated citation.
 
 ## 4. Recurring design principles, evidenced
 
@@ -377,12 +392,17 @@ claim.
   literature), not an oversight, but it means the approach has a ceiling: below some model capability
   floor, no amount of downstream checking produces a usable result, only an honestly labeled failure
   instead of a silently accepted bad one.
-- **The academic citation existence check (§3.8) has not been live-smoke-tested end to end.** It's
-  verified by mocked unit tests (`test_structural_checks.py`) and confirmed to fail open against a
-  real 429 from the actual Semantic Scholar API, but not yet exercised against a real DeepDelve run
-  with the opt-in flag enabled, the public API's unauthenticated rate limit makes that awkward to do
-  reliably in one sitting. Unlike every other mechanism in §3, it was also scoped proactively rather
-  than from a live incident this project's own runs produced.
+- **The academic citation existence check (§3.8) has been live-tested against the real Semantic
+  Scholar API, not just mocks, but not yet through a full agentic run.** The live pass caught and
+  fixed a real matching bug (surname-vs-full-name token comparison) the mocked unit tests could not
+  have surfaced, and confirmed correct classification against real API responses for both a genuine
+  and a fabricated citation. What remains is exercising it through an actual AcademicSearcher
+  dispatch via the orchestrator rather than calling `real_grounding_problem` directly, a smaller gap
+  than "unvalidated." Also confirmed live: the public unauthenticated tier's rate limit is tight
+  enough in practice (repeated 429s, sometimes 8-14 retries before a request cleared) that the
+  fail-open path will fire often on the free tier, worth knowing before relying on this check
+  catching every fabricated citation in a given run. Unlike every other mechanism in §3, it was also
+  scoped proactively rather than from a live incident this project's own runs produced.
 - **This document itself has not been externally reviewed.** It's an internal synthesis, sourced
   from this project's own commits, tests, and a dedicated but necessarily time-bounded research pass,
   not a peer-reviewed claim.

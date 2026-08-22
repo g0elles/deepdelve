@@ -1325,7 +1325,17 @@ def _semantic_scholar_lookup(author: str, year: str, timeout: float = 5) -> str 
             if str(paper.get("year") or "") != year:
                 continue
             names = [a.get("name", "") for a in (paper.get("authors") or [])]
-            if any(SequenceMatcher(None, author_lower, n.lower()).ratio() >= 0.7 for n in names):
+            # S2 returns full names ("Ashish Vaswani") while an in-text citation almost always
+            # gives a bare surname ("Vaswani") — matching the SURNAME against each individual name
+            # TOKEN, not the whole string, is required: comparing "vaswani" against the whole
+            # string "ashish vaswani" scores only ~0.67 (below threshold) purely from the length
+            # mismatch, even though the surname is an exact match. Confirmed live 2026-08-22: the
+            # whole-string comparison would have false-flagged a genuinely correct citation
+            # (Vaswani, 2017) as unverified against the real API's own response shape.
+            if any(
+                SequenceMatcher(None, author_lower, token).ratio() >= 0.7
+                for n in names for token in n.lower().split()
+            ):
                 result = "VERIFIED"
                 break
         else:
