@@ -15,10 +15,7 @@ from engine.completion import (
     _CUTOFF_ONLY_SUMMARY_RE, _reorder_findings_for_position_bias, _find_propagated_bad_content,
     _is_citable_finding, _build_findings_source_material, _ablation_disabled,
 )
-from utils.grounding import (
-    find_non_url_citations, fully_ungrounded, partially_ungrounded, find_uncited_claim_lines,
-    extract_cited_urls, academic_citation_existence_problem, real_grounding_problem,
-)
+from utils.grounding import find_non_url_citations, fully_ungrounded, partially_ungrounded, find_uncited_claim_lines, extract_cited_urls
 from utils.run_state import record_fetched_url, reset_fetched_urls
 
 
@@ -8586,7 +8583,7 @@ def main():
             # explicitly enabled -- opt-in default regression guard.
             _config_ac.cfg["settings"]["grounding_check"] = {"nli_verify": False, "topical_relevance_check": False}
             with patch.object(_grounding_mod_ac, "_semantic_scholar_lookup", return_value="NOT_FOUND"):
-                result = _asyncio_ac.run(real_grounding_problem(content))
+                result = _asyncio_ac.run(_grounding_mod_ac.real_grounding_problem(content))
                 assert result is None, ("academic_citation_verify must default off", result)
 
             # Enabled + NOT_FOUND -> flags, URL-scoped detail.
@@ -8594,19 +8591,19 @@ def main():
                 "nli_verify": False, "topical_relevance_check": False, "academic_citation_verify": True,
             }
             with patch.object(_grounding_mod_ac, "_semantic_scholar_lookup", return_value="NOT_FOUND"):
-                result = _asyncio_ac.run(real_grounding_problem(content))
+                result = _asyncio_ac.run(_grounding_mod_ac.real_grounding_problem(content))
                 assert result == f"academic_citation_unverified:{ref_url}", result
-                assert academic_citation_existence_problem(content) == f"academic_citation_unverified:{ref_url}"
+                assert _grounding_mod_ac.academic_citation_existence_problem(content) == f"academic_citation_unverified:{ref_url}"
 
             # Enabled + VERIFIED -> clean pass, confirming the new check doesn't regress the
             # existing clean-pass path once wired in.
             with patch.object(_grounding_mod_ac, "_semantic_scholar_lookup", return_value="VERIFIED"):
-                result = _asyncio_ac.run(real_grounding_problem(content))
+                result = _asyncio_ac.run(_grounding_mod_ac.real_grounding_problem(content))
                 assert result is None, result
 
             # Fail-open: the real lookup raising/timing out must never manufacture a flag.
             with patch.object(_grounding_mod_ac, "_semantic_scholar_lookup", return_value=None):
-                result = _asyncio_ac.run(real_grounding_problem(content))
+                result = _asyncio_ac.run(_grounding_mod_ac.real_grounding_problem(content))
                 assert result is None, result
         finally:
             _IN_MEMORY_FS.clear()
