@@ -124,9 +124,12 @@ in place, reasoning they "may still coexist with other real, usable content." Th
 falsified live, twice: a model handed its own embedded warning cited the flagged bad URL anyway,
 across 7 independent dispatches in one run. Researched before fixing, not guessed: naming forbidden
 content inside a "do not cite X" instruction is documented to risk priming its reproduction rather
-than preventing it (the "ironic rebound" effect, arXiv:2511.12381), and negation-following is
-separately documented as unreliable specifically in smaller models (arXiv:2601.21433). The failure
-has a real, cited mechanism, not just an anecdote.
+than preventing it (the "ironic rebound" effect, arXiv:2511.12381), and negated framing is separately
+documented as producing large, unstable swings in small open-weight models' judgments, in an ethical-
+stance framing study, not this project's own citation domain, but evidence in the same direction
+(arXiv:2601.21433, small 1-4B models swung up to 76 percentage points between affirmative and
+negated framings of the same question). The failure has a real, cited mechanism, not just an
+anecdote.
 
 ### 3.5 A per-task verification ledger, engine-computed rather than model-authored
 
@@ -279,8 +282,9 @@ unconfirmed.
 
 **Not novel at the level of individual components.** Deterministic verification layers over agent
 output exist (closest: a Claude Code coding-agent tool using deterministic test-pass/fail
-verification, industry tooling, not academic). NLI-based citation verification is published and
-active research (VeriCite, arXiv:2510.17853). Independent-context critics outperforming same-context
+verification, industry tooling, not academic). Retrieval-grounded citation attribution verification is
+published and active research (CiteGuard, arXiv:2510.17853, not "VeriCite" as an earlier draft of this
+document named it, corrected 2026-08-22 after re-reading the paper directly). Independent-context critics outperforming same-context
 self-critique is an established literature finding (§3.2). Small frozen classifiers replacing LLM
 judgment for a decision is precedented (RouteLLM-style routing). A separated citation-verification
 pipeline stage exists in a major published system (Anthropic's own CitationAgent).
