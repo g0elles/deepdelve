@@ -1,8 +1,10 @@
 from datetime import datetime
 from textual import work, on
 from textual.app import App, ComposeResult
-from textual.widgets import Input, OptionList, Static, Collapsible, RichLog, Button
+from textual.widgets import Input, OptionList, Static, Collapsible, RichLog, Button, DataTable, Tree
+from textual.widgets.tree import TreeNode
 from textual.command import Hit, Hits, Provider
+from textual.suggester import SuggestFromList
 from textual.containers import VerticalScroll, Horizontal, Vertical
 from rich.markdown import Markdown
 from engine.orchestrator import create_local_agent, reset_session, delegation_depth_ctx, build_quota_pool, iter_agent_stream
@@ -689,25 +691,32 @@ class ToolCallWidget(Collapsible):
 
 class BasicTuiAgent(App):
     COMMANDS = App.COMMANDS | {SlashCommandProvider}
+    # Theme-aware (2026-08-24 TUI QoE): Textual's theme switcher already works via the command
+    # palette (ThemeProvider is wired into App.COMMANDS by Textual itself, confirmed via source —
+    # same "already works, just needed live confirmation" category as widget-maximize/command-
+    # palette above), but every color here used to be a literal hex value, so switching themes
+    # changed nothing visually. Converted to Textual's theme CSS variables ($primary/$surface/
+    # $text/etc, confirmed present in this installed version via BUILTIN_THEMES) so Ctrl+P ->
+    # "Theme" actually re-colors the app now.
     CSS = """
-    #chat-container { height: 1fr; scrollbar-color: green; }
-    .user-bubble { margin: 1 2; padding: 1; background: #333333; color: white; text-align: right; }
-    .user-bubble:hover { background: #444444; color: #aaffaa; }
-    .agent-bubble { margin: 1 2; padding: 1; color: white; }
-    .orchestrator-tool { border-left: vkey blue; margin: 0 2 1 2; }
-    .subagent-tool { border-left: vkey purple; margin: 0 2 1 6; }
-    .thinking-collapsible { margin: 0 2 1 2; border-left: vkey #555555; }
-    .thinking-collapsible CollapsibleTitle { color: #777777; text-style: italic; }
+    #chat-container { height: 1fr; scrollbar-color: $success; }
+    .user-bubble { margin: 1 2; padding: 1; background: $panel; color: $text; text-align: right; }
+    .user-bubble:hover { background: $panel-lighten-1; color: $text-success; }
+    .agent-bubble { margin: 1 2; padding: 1; color: $text; }
+    .orchestrator-tool { border-left: vkey $primary; margin: 0 2 1 2; }
+    .subagent-tool { border-left: vkey $secondary; margin: 0 2 1 6; }
+    .thinking-collapsible { margin: 0 2 1 2; border-left: vkey $panel-lighten-2; }
+    .thinking-collapsible CollapsibleTitle { color: $text-muted; text-style: italic; }
     .thinking-collapsible Contents { padding: 0; margin: 0; }
-    .thinking-collapsible .thinking-text { color: #888888; margin: 0 1; height: auto; }
-    RichLog { height: auto; max-height: 20; margin: 0 1; border: solid #333; }
+    .thinking-collapsible .thinking-text { color: $text-muted; margin: 0 1; height: auto; }
+    RichLog { height: auto; max-height: 20; margin: 0 1; border: solid $panel-darken-1; }
     .approval-buttons { height: auto; margin-top: 1; margin-bottom: 1; }
-    .file-viewer-wrapper { border: solid #4CAF50; margin: 1 2; max-height: 25; height: auto; overflow: hidden; background: #222222; }
+    .file-viewer-wrapper { border: solid $success; margin: 1 2; max-height: 25; height: auto; overflow: hidden; background: $surface; }
     .file-viewer-collapsible { width: 1fr; height: auto; }
-    .file-viewer-collapsible CollapsibleTitle { color: #81C784; text-style: bold; }
+    .file-viewer-collapsible CollapsibleTitle { color: $text-success; text-style: bold; }
     .file-viewer-inner { position: relative; height: auto; }
-    .title-copy-btn { dock: right; width: auto; height: 1; min-width: 3; border: none; background: transparent; color: #888888; padding: 0; margin: 0 1 0 0; }
-    .title-copy-btn:hover { color: white; background: transparent; }
+    .title-copy-btn { dock: right; width: auto; height: 1; min-width: 3; border: none; background: transparent; color: $text-muted; padding: 0; margin: 0 1 0 0; }
+    .title-copy-btn:hover { color: $text; background: transparent; }
     #command-list { height: auto; max-height: 15; padding: 0 1; }
     """
 
@@ -748,7 +757,15 @@ class BasicTuiAgent(App):
         opt_list = OptionList(id="command-list")
         opt_list.display = False
         yield opt_list
-        yield PromptInput(id="prompt-input", placeholder="Type a message or /command...")
+        # Inline ghost-text completion for slash commands (2026-08-24 TUI QoE) -- complements,
+        # not replaces, the existing filtered-OptionList popup wired in on_input_changed below
+        # (that shows a scrollable list with descriptions; this shows one inline completion as
+        # you type). Textual's Input has native suggester support built in; SuggestFromList is
+        # the fixed-list variant, confirmed present in this installed version.
+        yield PromptInput(
+            id="prompt-input", placeholder="Type a message or /command...",
+            suggester=SuggestFromList([cmd for cmd, _ in self.SLASH_COMMANDS], case_sensitive=False),
+        )
 
     def _banner_widget(self) -> Static:
         ascii_art = BANNER_ASCII
@@ -1762,6 +1779,14 @@ class BasicTuiAgent(App):
         panel.display = True
 
     def _show_file_picker(self) -> None:
+        """Real `Tree` with row selection (2026-08-24 TUI QoE), same reasoning as the run
+        picker's DataTable conversion right below — genuinely selectable now, not a pure
+        display list requiring the exact filename typed. Workspace files nest one level deep in
+        practice (a `sources/` subdirectory is standard, confirmed via `get_workspace_files`),
+        so files sharing a directory prefix get grouped under one expandable branch node instead
+        of a flat list; a leaf node's `data` is the file's full relative path, used for
+        selection. Only leaf nodes (files) trigger `_open_selected_file` — selecting a folder
+        branch just expands/collapses it, Tree's own default behavior."""
         files = get_workspace_files()
         if not files:
             self._file_picker_files = []
@@ -1769,11 +1794,37 @@ class BasicTuiAgent(App):
             return
         self._file_picker_files = files
         self._file_picker_active = True
-        self._filtered_cmds = [
-            (f, f"{len((get_workspace_file_content(f) or '').encode('utf-8'))} bytes")
-            for f in files
-        ]
-        self._render_cmd_list()
+
+        tree: Tree[str] = Tree("Workspace", id="file-picker-tree")
+        tree.show_root = False
+        folders: dict[str, "TreeNode[str]"] = {}
+        for f in sorted(files):
+            size = len((get_workspace_file_content(f) or "").encode("utf-8"))
+            if "/" in f:
+                folder_name, base = f.split("/", 1)
+                folder = folders.get(folder_name)
+                if folder is None:
+                    folder = tree.root.add(folder_name, expand=True)
+                    folders[folder_name] = folder
+                folder.add_leaf(f"{base} ({size} bytes)", data=f)
+            else:
+                tree.root.add_leaf(f"{f} ({size} bytes)", data=f)
+
+        chat = self.query_one("#chat-container", VerticalScroll)
+        chat.mount(tree)
+        chat.scroll_end(animate=False)
+        tree.focus()
+
+    async def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
+        if (not getattr(self, "_file_picker_active", False)
+                or event.node.tree.id != "file-picker-tree" or event.node.data is None):
+            return
+        filename = event.node.data
+        tree = self.query("#file-picker-tree")
+        if tree:
+            await tree.remove()
+        self.query_one("#prompt-input", PromptInput).focus()
+        self._open_selected_file(filename)
 
     def _show_session_picker(self) -> None:
         log_dir = Path.home() / f".{config.APP_NAME}" / "sessions"
@@ -1812,7 +1863,17 @@ class BasicTuiAgent(App):
         2026-07-12: --resume-run existed in the headless CLI for a full session before the TUI
         had any equivalent — a run that ends in quarantine-restore with real work already done
         (fetches, findings.md) is exactly what it's for, but a TUI user previously had no way to
-        invoke it without dropping to a separate headless command."""
+        invoke it without dropping to a separate headless command.
+
+        Real `DataTable` with row selection (2026-08-24 TUI QoE), not the shared filtered-
+        OptionList mechanism the other pickers (file/session/slash-command) use: those are pure
+        display, selected only by typing the exact key text and pressing Enter (confirmed —
+        there was never an OptionList selection handler in this file at all). A run's key is an
+        ugly slugified timestamp-suffixed folder name, the worst candidate of the four pickers
+        for "type it exactly" — arrow-key navigation and a real Enter-to-select genuinely fits
+        here in a way it wouldn't add much for the others. Keeps the typed-fallback path working
+        too (on_input_submitted's existing `_run_picker_active` branch below), so nothing that
+        depended on typing an exact folder name breaks."""
         base = config.get_workspace_dir()
         req_artifact = config.get_required_artifact()
         chat = self.query_one("#chat-container", VerticalScroll)
@@ -1831,12 +1892,20 @@ class BasicTuiAgent(App):
             return
 
         self._run_picker_active = True
-        self._filtered_cmds = []
+        table = DataTable(id="run-picker-table", cursor_type="row")
+        table.add_columns("Run", "Timestamp", "Status")
         for d in run_dirs[:15]:
             ts = datetime.fromtimestamp(os.path.getmtime(d)).strftime("%Y-%m-%d %H:%M")
             status = "report" if (d / req_artifact).exists() else "NO REPORT"
-            self._filtered_cmds.append((d.name, f"{ts} — {status}"))
-        self._render_cmd_list()
+            table.add_row(d.name, ts, status, key=d.name)
+        chat.mount(table)
+        chat.scroll_end(animate=False)
+        table.focus()
+
+    async def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        if not getattr(self, "_run_picker_active", False) or event.data_table.id != "run-picker-table":
+            return
+        await self._open_selected_run(str(event.row_key.value))
 
     async def _open_selected_run(self, run_dir_name: str) -> None:
         if not getattr(self, "_run_picker_active", False):
@@ -1844,6 +1913,10 @@ class BasicTuiAgent(App):
         self._run_picker_active = False
         self._filtered_cmds = []
         self.query_one("#command-list", OptionList).display = False
+        table = self.query("#run-picker-table")
+        if table:
+            await table.remove()
+        self.query_one("#prompt-input", PromptInput).focus()
         await self._resume_run(run_dir_name)
 
     async def _resume_run(self, folder: str) -> None:

@@ -264,17 +264,25 @@ tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
   control) is the genuinely irreducible core, and the routing tuples correctly live beside their
   only consumer.
 
-- **`run_cli`/`BasicTuiAgent` full run-lifecycle unification, re-scoped 2026-07-29, still open.** A
-  dedicated audit found the two entry points aren't just stylistic duplicates in places that matter:
-  the TUI's approval handling actually executes tools client-side and constructs full message pairs,
-  the CLI's doesn't; the TUI has no context-budget/wall-clock-deadline concept by design, since a
-  human can just stop it. The genuinely safe subset (the resume-merge allowlist, the
-  `required_artifact` lookup, a missing `QuotaAbortException` handler, a missing crash-time
-  `run_state.save()`) is already fixed and merged. Still open: unifying the stream-consumption loop
-  and the approval-handling block behind explicit strategy objects, a real design decision (what
-  varies between TUI and CLI), not a mechanical extraction. Recommended approach: design the
-  strategy interface first, then extract the loop body to take it as a parameter, not "extract the
-  whole function and see what breaks."
+- **`run_cli`/`BasicTuiAgent`/`api.py` full run-lifecycle unification, re-scoped 2026-07-29,
+  widened 2026-08-24, still open.** A dedicated audit found the two entry points aren't just
+  stylistic duplicates in places that matter: the TUI's approval handling actually executes tools
+  client-side and constructs full message pairs, the CLI's doesn't; the TUI has no
+  context-budget/wall-clock-deadline concept by design, since a human can just stop it. The
+  genuinely safe subset (the resume-merge allowlist, the `required_artifact` lookup, a missing
+  `QuotaAbortException` handler, a missing crash-time `run_state.save()`) is already fixed and
+  merged. **2026-08-24 finding: `src/api.py`'s `_run_research` is a THIRD independent copy of this
+  exact run-lifecycle loop, not a unifying layer.** It correctly reuses the shared engine pieces
+  (`create_local_agent`, `run_completion_check`), but hand-duplicates the surrounding
+  stream-consumption loop, the context-budget nudge-then-cutoff mechanism, the wall-clock deadline
+  check, and its own `_find_substantial_text`/`_api_notify` pair — the same pattern this entry
+  already flagged between `run_cli`/`BasicTuiAgent`, now tripled rather than reduced by building a
+  web API on top. This makes the unification more valuable, not less, and widens its scope: any
+  future strategy-object design must account for THREE call sites, not two. Still open: unifying
+  the stream-consumption loop and the approval-handling block behind explicit strategy objects, a
+  real design decision (what varies between CLI/TUI/API), not a mechanical extraction. Recommended
+  approach: design the strategy interface first, then extract the loop body to take it as a
+  parameter, not "extract the whole function and see what breaks."
 
 - **RAG-augmented small model, raised 2026-07-20, not yet scoped.** The project's own prior "RAG
   failure" turned out to be a benchmark-isolation bug in a deleted exact-string-match cache, not a
@@ -285,19 +293,48 @@ tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
   during comparative benchmarking or the same contamination bug recurs regardless of the retrieval
   technique underneath it. That's the one non-negotiable constraint from this project's own history.
 
-- **TUI QoE improvements, researched 2026-07-14, partially closed 2026-08-20.** A framework
-  capability survey (Textual's own source, not assumed from memory) found several likely-
-  already-working features needing live confirmation and several unused framework capabilities
-  not yet scoped into concrete work. Two smallest, most directly requested items (message copy
-  button, right-click paste) shipped earlier, see Completed. Two more closed 2026-08-20:
-  click-drag select + copy confirmed already working with zero code needed (`ALLOW_SELECT` is
-  `True` by default on both `App` and every widget in this Textual version, confirmed directly via
+- **TUI QoE improvements, researched 2026-07-14 — CLOSED 2026-08-24.** A framework capability
+  survey (Textual's own source, not assumed from memory) found several likely-already-working
+  features needing live confirmation and several unused framework capabilities not yet scoped
+  into concrete work. Two smallest, most directly requested items (message copy button,
+  right-click paste) shipped earlier, see Completed. Two more closed 2026-08-20: click-drag
+  select + copy confirmed already working with zero code needed (`ALLOW_SELECT` is `True` by
+  default on both `App` and every widget in this Textual version, confirmed directly via
   `textual.app.App.ALLOW_SELECT`/`Static.ALLOW_SELECT`, not overridden anywhere in `tui.py`); the
   command palette (`ctrl+p`, also on by default) got a real `SlashCommandProvider` wiring
   `SLASH_COMMANDS` into it, live-verified with Textual's own Pilot test harness, see Completed.
-  Still open, not yet scoped into concrete work: widget maximize, theming, inline autocomplete,
-  `Tree`/`DataTable`/`TabbedContent`/`SelectionList` for existing ad hoc UI. Next session should
-  scope a concrete subset of what's left, not the whole remaining survey at once.
+  **Widget maximize was ALSO already confirmed working, same discipline, 2026-07-24** —
+  `test_structural_checks.py`'s own `_widget_maximize_scenario` (a real Pilot test, not a mock)
+  pins `RichLog.allow_maximize` defaulting True (falls back to `can_focus`),
+  `Screen.action_maximize()` walking up to the outermost maximizable ancestor (`ToolCallWidget`'s
+  `Collapsible`), reachable via the already-wired command palette — this entry just never got
+  updated to say so until a 2026-08-24 doc-drift catch.
+  **The remaining three items closed 2026-08-24, each confirmed against Textual 8.2.8's actual
+  installed source, not docs/memory:**
+  - **Theming**: `App.theme`/`available_themes` and the command palette's `ThemeProvider` already
+    worked with zero code (same "already works" category as widget-maximize) — the real gap was
+    `BasicTuiAgent.CSS` using literal hex values instead of theme variables, so switching themes
+    changed nothing visually. Converted every color to Textual's theme CSS variables (`$panel`,
+    `$primary`, `$secondary`, `$success`, `$text`, `$text-muted`, `$text-success`, `$panel-*`) —
+    live-verified via Pilot that a real rendered background color changes when `app.theme` switches
+    (deliberately did NOT assert `$text` itself changes — it stays similar across dark themes by
+    design, that's correct behavior, not a gap).
+  - **Inline autocomplete**: `PromptInput` now passes `suggester=SuggestFromList(...)` over
+    `SLASH_COMMANDS` — Textual's `Input` has native suggester support built in, confirmed via
+    source; this complements (doesn't replace) the existing filtered-`OptionList` popup in
+    `on_input_changed`. Live-verified: typing `/sto` shows an inline `/stop` ghost completion.
+  - **`Tree`/`DataTable` for the run and file pickers**: both were pure DISPLAY lists before this —
+    confirmed there was never an `OptionList` selection handler anywhere in this file at all;
+    selection only ever worked by typing the exact key text (a slugified run folder name, or a
+    filename) and pressing Enter. The run picker (`_show_run_picker`) now uses a real `DataTable`
+    with row selection (arrow keys + Enter), and the file picker (`_show_file_picker`) a real
+    `Tree` grouping files one directory level deep (confirmed via `get_workspace_files` — a
+    `sources/` subdirectory is the standard shape) — both live-verified via Pilot for genuine
+    keyboard row/leaf selection, not just that the widget renders. `TabbedContent`/`SelectionList`
+    were explicitly assessed and skipped — no multi-pane or multi-select UI exists anywhere in
+    this file to justify forcing them in.
+  All four items landed with direct Pilot-test coverage in `test_structural_checks.py` (no prior
+  test existed for any of them before this pass); `test_tools.py` and `ruff check .` also pass.
 
 - **Fine-tuning, deferred pending a viable base model size, see [Stretch](#stretch).** The
   correctness gate that used to block resuming fine-tuning is confirmed clear as of 2026-08-19, a

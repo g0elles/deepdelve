@@ -1503,7 +1503,13 @@ def main():
                 async with app.run_test():
                     app._show_run_picker()
                     assert app._run_picker_active
-                    assert app._filtered_cmds and app._filtered_cmds[0][0] == "my_interrupted_run"
+                    # 2026-08-24 TUI QoE: the run picker moved from the shared filtered-OptionList
+                    # mechanism (_filtered_cmds) to a real DataTable with row selection -- see
+                    # _show_run_picker's own docstring for why. Row key is the run's folder name.
+                    from engine.tui import DataTable
+                    table = app.query_one("#run-picker-table", DataTable)
+                    assert table.row_count == 1
+                    assert table.get_row_at(0)[0] == "my_interrupted_run", table.get_row_at(0)
 
                     await app._open_selected_run("my_interrupted_run")
                     assert len(resume_calls) == 1, resume_calls
@@ -1649,13 +1655,16 @@ def main():
     from engine.tui import ToolCallWidget
     from textual.containers import VerticalScroll
 
-    async def _widget_maximize_scenario():
-        class _FakeBuilder3:
-            name = "Planner"
-            instructions = "test"
-            tools = []
-            sub_agents = []
+    # Shared fake builder for this TUI QoE section's scenarios (widget-maximize, theming,
+    # autocomplete, run-picker DataTable, file-picker Tree) — hoisted out of
+    # _widget_maximize_scenario (2026-08-24) once sibling scenarios needed it too.
+    class _FakeBuilder3:
+        name = "Planner"
+        instructions = "test"
+        tools = []
+        sub_agents = []
 
+    async def _widget_maximize_scenario():
         app = BasicTuiAgent(_FakeBuilder3())
         async with app.run_test() as pilot:
             widget = ToolCallWidget("web_search", "call_1")
@@ -1678,6 +1687,140 @@ def main():
             assert app.screen.maximized is None, app.screen.maximized
 
     _asyncio_tui.run(_widget_maximize_scenario())
+
+    # --- TUI QoE: theming (2026-08-24) — converted BasicTuiAgent.CSS's hardcoded hex colors to
+    # Textual's theme CSS variables ($panel/$primary/etc). Confirms an actual rendered color
+    # genuinely changes when the theme switches (a background, not $text -- text stays similar
+    # across dark themes by design, that's correct, not a bug in this pin). ---
+    async def _theming_scenario():
+        app = BasicTuiAgent(_FakeBuilder3())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            from textual.widgets import Static as _Static
+            bubble = _Static("x", classes="user-bubble")
+            await app.query_one("#chat-container", VerticalScroll).mount(bubble)
+            await pilot.pause()
+            before_bg = bubble.styles.background
+            app.theme = "gruvbox"
+            await pilot.pause()
+            after_bg = bubble.styles.background
+            assert before_bg != after_bg, (
+                "switching themes must actually change .user-bubble's background — CSS still "
+                "hardcoded to a literal hex value instead of a theme variable")
+
+    _asyncio_tui.run(_theming_scenario())
+
+    # --- TUI QoE: inline autocomplete (2026-08-24) — PromptInput now wires a SuggestFromList
+    # suggester over SLASH_COMMANDS, complementing (not replacing) the existing filtered-
+    # OptionList popup in on_input_changed. ---
+    async def _autocomplete_scenario():
+        from engine.tui import PromptInput
+        app = BasicTuiAgent(_FakeBuilder3())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            prompt = app.query_one("#prompt-input", PromptInput)
+            assert prompt.suggester is not None, "PromptInput must have a suggester wired"
+            prompt.focus()
+            await pilot.pause()
+            await pilot.press("/", "s", "t", "o")
+            await pilot.pause()
+            assert prompt._suggestion == "/stop", (
+                f"expected inline suggestion '/stop' for '/sto', got {prompt._suggestion!r}")
+
+    _asyncio_tui.run(_autocomplete_scenario())
+
+    # --- TUI QoE: run picker -> real DataTable with row selection (2026-08-24). Replaced the
+    # shared filtered-OptionList mechanism (pure display, selected only by typing the exact
+    # folder name) — see _show_run_picker's own docstring for why this picker specifically
+    # benefits. Confirms rows populate correctly AND that pressing Enter on a focused row
+    # actually calls _open_selected_run with the right folder name (not just that the widget
+    # renders). ---
+    async def _run_picker_datatable_scenario():
+        with tempfile.TemporaryDirectory() as tmpdir_rp:
+            run_dir = os.path.join(tmpdir_rp, "a_test_run_20260101_120000")
+            os.makedirs(run_dir)
+            with open(os.path.join(run_dir, "_run_state.json"), "w") as f:
+                json.dump({"query": "test query"}, f)
+
+            _orig_ws_rp = _config.cfg.get("settings", {}).get("workspace")
+            _config.cfg["settings"]["workspace"] = {"type": "disk", "dir": tmpdir_rp}
+            try:
+                app = BasicTuiAgent(_FakeBuilder3())
+                resumed = {}
+
+                async def _fake_resume_run(folder):
+                    resumed["folder"] = folder
+                app._resume_run = _fake_resume_run
+
+                async with app.run_test() as pilot:
+                    await pilot.pause()
+                    app._show_run_picker()
+                    await pilot.pause()
+                    from engine.tui import DataTable as _DataTable
+                    table = app.query_one("#run-picker-table", _DataTable)
+                    assert table.row_count == 1, table.row_count
+                    assert table.has_focus, "run-picker table must be focused for arrow+Enter to work"
+                    assert table.get_row_at(0)[0] == "a_test_run_20260101_120000"
+                    await pilot.press("enter")
+                    await pilot.pause()
+                    assert resumed.get("folder") == "a_test_run_20260101_120000", resumed
+                    assert not app.query("#run-picker-table"), (
+                        "table must be removed from the DOM after a row is selected")
+            finally:
+                if _orig_ws_rp is None:
+                    _config.cfg["settings"].pop("workspace", None)
+                else:
+                    _config.cfg["settings"]["workspace"] = _orig_ws_rp
+
+    _asyncio_tui.run(_run_picker_datatable_scenario())
+
+    # --- TUI QoE: file picker -> real Tree with row selection (2026-08-24), same reasoning as
+    # the run-picker DataTable above. Workspace files nest one level deep in practice (a
+    # sources/ subdirectory) — confirms a nested file groups under its own folder branch AND
+    # that selecting a leaf node actually calls _open_selected_file. ---
+    async def _file_picker_tree_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        saved_fs = dict(_IN_MEMORY_FS)
+        _orig_ws_fp = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory"}
+        _IN_MEMORY_FS.clear()
+        _IN_MEMORY_FS["sources/a.md"] = "hello world content"
+        _IN_MEMORY_FS["plan.md"] = "top level file"
+        try:
+            app = BasicTuiAgent(_FakeBuilder3())
+            displayed = {}
+            app._display_file = lambda filename, collapsed_by_default=False: displayed.update(filename=filename)
+
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                app._show_file_picker()
+                await pilot.pause()
+                from engine.tui import Tree as _Tree
+                tree = app.query_one("#file-picker-tree", _Tree)
+                assert tree.has_focus, "file-picker tree must be focused"
+                root_labels = sorted(str(c.label) for c in tree.root.children)
+                assert any("plan.md" in lbl for lbl in root_labels), root_labels
+                assert any(lbl == "sources" for lbl in root_labels), (
+                    f"nested file must group under a 'sources' branch node, got {root_labels}")
+                sources_folder = next(c for c in tree.root.children if str(c.label) == "sources")
+                assert sources_folder.children[0].data == "sources/a.md", sources_folder.children[0].data
+
+                plan_node = next(c for c in tree.root.children if c.data == "plan.md")
+                tree.select_node(plan_node)
+                tree.action_select_cursor()
+                await pilot.pause()
+                assert displayed.get("filename") == "plan.md", displayed
+                assert not app.query("#file-picker-tree"), (
+                    "tree must be removed from the DOM after a leaf is selected")
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            if _orig_ws_fp is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws_fp
+
+    _asyncio_tui.run(_file_picker_tree_scenario())
 
     # --- B5: session log write throttling (2026-07-12) — _write_log serializes and rewrites the
     # WHOLE _session_events list every call; log_stream_content used to call it after EVERY
