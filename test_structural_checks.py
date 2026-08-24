@@ -8616,6 +8616,179 @@ def main():
 
     _academic_citation_verify_scenario()
 
+    # --- create_local_agent characterization tests (ROADMAP.md Pending: "create_local_agent's
+    # nested-closure god-function... zero direct test coverage"). These pin the CURRENT behavior
+    # of delegate_tasks' pre-dispatch validation gauntlet and _run_single_task's bad-agent_id early
+    # return -- the exact two closures the Pending entry names -- as a safety net before any future
+    # decomposition attempt, per that entry's own "characterization tests first" recommendation.
+    # Deliberately scoped to paths that reject/return BEFORE any real sub_agent.run() dispatch, so
+    # these run with zero network/model calls -- true end-to-end dispatch (the asyncio.gather over
+    # real sub-agent streams) is out of scope here and would need SDK-level mocking to add safely. ---
+    def _create_local_agent_characterization_scenario():
+        import asyncio as _asyncio_cla
+        import contextvars as _contextvars_cla
+        import tempfile as _tempfile_cla
+        import config
+        from unittest.mock import patch as _patch_cla
+        from engine.orchestrator import (
+            create_local_agent, delegation_depth_ctx, specialist_delegate_task_count_ctx,
+        )
+        from engine.sdk import AgentBuilder, SubAgentConfig
+        from utils.run_state import run_state_ctx, RunState, task_fetched_urls_ctx
+
+        def _get_delegate_tasks_tool(builder):
+            # delegate_tasks is a closure private to create_local_agent, never returned directly
+            # (only agent/session/_run_single_task are) -- capture it off the `tools` kwarg the
+            # SDK's own as_agent() receives, the one place the closure object crosses a boundary
+            # this test can intercept.
+            from agent_framework.openai import OpenAIChatCompletionClient
+            captured = {}
+            orig_as_agent = OpenAIChatCompletionClient.as_agent
+
+            def _patched(self, *args, **kwargs):
+                captured["tools"] = kwargs.get("tools")
+                return orig_as_agent(self, *args, **kwargs)
+
+            with _patch_cla.object(OpenAIChatCompletionClient, "as_agent", _patched):
+                agent, session, dispatch_task = create_local_agent(builder=builder)
+            dt = next(t for t in captured["tools"] if getattr(t, "name", None) == "delegate_tasks")
+            return dt, dispatch_task
+
+        def _scenario():
+            sub = SubAgentConfig(name="WebSearcher", instructions="x {date} {task_name}", tools=[])
+            builder = AgentBuilder(
+                name="Planner", description="d",
+                instructions=(
+                    "i {date} {workspace_dir} {delegation_instructions} "
+                    "{report_style_instructions} {citation_format_instructions}"
+                ),
+                tools=[], sub_agents=[sub],
+            )
+            dt, dispatch_task = _get_delegate_tasks_tool(builder)
+
+            async def _run_checks():
+                # Malformed schema (wrong field names) -> rejected wholesale, no dispatch.
+                r = await dt.func(tasks=[{"due": 1, "task": "x"}])
+                assert "missing or empty required field" in r, r
+
+                # Unresolved numeric/letter placeholder in instructions -> rejected.
+                r = await dt.func(tasks=[{
+                    "task_name": "t1", "instructions": "Analyze sector 3 in Colombia.",
+                    "agent_id": "WebSearcher",
+                }])
+                assert "unresolved placeholder" in r, r
+
+                # Pronoun with no concrete subject -> rejected.
+                r = await dt.func(tasks=[{
+                    "task_name": "t1", "instructions": "Summarize its headline feature.",
+                    "agent_id": "WebSearcher",
+                }])
+                assert "no concrete subject" in r, r
+
+                # Cross-task dependency phrasing ("for each identified ...") -> rejected, since
+                # delegate_tasks' own batch runs concurrently, not sequentially.
+                r = await dt.func(tasks=[{
+                    "task_name": "t1",
+                    "instructions": "For each identified sector, analyze the market size.",
+                    "agent_id": "WebSearcher",
+                }])
+                assert "SEQUENTIAL" in r, r
+
+                # Analyzer instructed to read a URL never fetched this task -> rejected.
+                r = await dt.func(tasks=[{
+                    "task_name": "t2",
+                    "instructions": "Read https://never-fetched.example.com/page for details.",
+                    "agent_id": "DocumentAnalyzer",
+                }])
+                assert "was never actually fetched" in r, r
+
+                # Analyzer instructed with a GUESSED filename for a URL that WAS really fetched
+                # (vs. the real hash-suffixed filename fetch_url_to_workspace actually returned).
+                task_fetched_urls_ctx.set([{
+                    "url": "https://real.example.com/page",
+                    "filename": "sources/real_example_abc123.md",
+                }])
+                r = await dt.func(tasks=[{
+                    "task_name": "t4",
+                    "instructions": (
+                        "Read the file 'sources/real_example_page.md'. "
+                        "Source URL: https://real.example.com/page"
+                    ),
+                    "agent_id": "DocumentAnalyzer",
+                }])
+                assert "was GUESSED" in r, r
+                task_fetched_urls_ctx.set([])
+
+                # Every task in the batch matches an explicit query exclusion -> full rejection,
+                # nothing dispatched (distinct code path from the per-task validation errors above).
+                r = await dt.func(tasks=[{
+                    "task_name": "t3",
+                    "instructions": "Research the Agritech sector market size.",
+                    "agent_id": "WebSearcher",
+                }])
+                assert "explicitly excluded" in r, r
+
+                # Planner replan-round hard cap (depth==0) -- rejected once the round count already
+                # meets the configured cap, no quota consumed.
+                _orig_cap = config.cfg["settings"].get("max_planner_delegate_rounds")
+                config.cfg["settings"]["max_planner_delegate_rounds"] = 1
+                try:
+                    rs = run_state_ctx.get()
+                    rs.data["planner_delegate_rounds"] = 1
+                    r = await dt.func(tasks=[{
+                        "task_name": "t5", "instructions": "Research fintech market size in Peru.",
+                        "agent_id": "WebSearcher",
+                    }])
+                    assert "already run 1 planning round" in r, r
+                finally:
+                    if _orig_cap is None:
+                        config.cfg["settings"].pop("max_planner_delegate_rounds", None)
+                    else:
+                        config.cfg["settings"]["max_planner_delegate_rounds"] = _orig_cap
+
+                # Specialist per-task delegation cap (depth>0, a Tier-2 specialist's own
+                # delegate_tasks call to its Analyzer children) -- separate cap/code path from the
+                # Planner's round cap above.
+                _orig_scap = config.cfg["settings"].get("specialist_delegation_cap")
+                config.cfg["settings"]["specialist_delegation_cap"] = 1
+                depth_token = delegation_depth_ctx.set(1)
+                count_token = specialist_delegate_task_count_ctx.set([1])
+                try:
+                    r = await dt.func(tasks=[{
+                        "task_name": "t6", "instructions": "Analyze a second market report.",
+                        "agent_id": "DocumentAnalyzer",
+                    }])
+                    assert "already delegated 1 source" in r, r
+                finally:
+                    delegation_depth_ctx.reset(depth_token)
+                    specialist_delegate_task_count_ctx.reset(count_token)
+                    if _orig_scap is None:
+                        config.cfg["settings"].pop("specialist_delegation_cap", None)
+                    else:
+                        config.cfg["settings"]["specialist_delegation_cap"] = _orig_scap
+
+                # _run_single_task (the dispatch_task closure): a hallucinated agent_id not matching
+                # any real sub-agent must hit the early-return error path cleanly, no crash -- this
+                # is the exact path a past latent bug lived in (children_token unset on this path
+                # made the `finally` block's reset crash with UnboundLocalError, see the closure's
+                # own header comment on `children_token`).
+                r = await dispatch_task("t7", "instr", agent_id="NonExistentAgent")
+                assert "does not exist" in r, r
+                assert "Available sub-agents" in r, r
+
+            with _tempfile_cla.TemporaryDirectory() as td:
+                rs = RunState(td)
+                rs.data["query"] = "Research Colombia markets, excluding Agritech."
+                tok = run_state_ctx.set(rs)
+                try:
+                    _asyncio_cla.run(_run_checks())
+                finally:
+                    run_state_ctx.reset(tok)
+
+        _contextvars_cla.copy_context().run(_scenario)
+
+    _create_local_agent_characterization_scenario()
+
     print("All structural-check assertions passed.")
 
 

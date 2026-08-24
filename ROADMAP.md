@@ -107,14 +107,28 @@ here got moved out, most already live in the wiki's [Completed](https://github.c
 or [Changelog](https://github.com/g0elles/deepdelve/wiki/Changelog); anything not yet migrated is
 tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
 
-- **`create_local_agent`'s nested-closure god-function, scoped 2026-07-29, still not attempted, and
-  has since grown, not shrunk (963 lines then, 1093 lines checked directly as of 2026-08-20).**
+- **`create_local_agent`'s nested-closure god-function, scoped 2026-07-29, decomposition itself
+  still not attempted (1098 lines checked directly as of 2026-08-23).**
   `_run_single_task` and `delegate_tasks` are deeply nested closures inside `create_local_agent`,
   capturing dozens of enclosing locals by reference rather than as parameters.
-  `test_structural_checks.py` never imports either closure directly, only small pure fragments
-  already pulled out of it, the actual per-task dispatch/quota-ring-fencing/specialist-tiering
-  behavior has zero direct test coverage. Recommended approach when picked up: write
-  characterization tests first, pinning current behavior end to end since none exist, then
+  **Characterization tests landed 2026-08-23** (`test_structural_checks.py`'s
+  `_create_local_agent_characterization_scenario`): captures the real `delegate_tasks` closure via
+  a patch on `OpenAIChatCompletionClient.as_agent` (it's never returned directly, only
+  `_run_single_task` is, as `create_local_agent`'s 3rd tuple element), then pins the pre-dispatch
+  validation gauntlet's current behavior (malformed-schema rejection, placeholder detection,
+  concrete-subject/pronoun check, cross-task-dependency phrasing, unfetched-URL and guessed-filename
+  checks for Analyzer targets, the exclusion-topic full-batch skip, the Planner round cap, the
+  specialist per-task delegation cap) end to end with zero network/model calls, since every one of
+  those paths returns before `sub_agent.run()` is ever reached. Also pins `_run_single_task`'s
+  bad-`agent_id` early-return (the exact path a past latent bug lived in — `children_token` unset on
+  that path once crashed the `finally` block's own reset with `UnboundLocalError`, see the closure's
+  header comment). **Explicitly out of scope**: true end-to-end dispatch through
+  `asyncio.gather`/`sub_agent.run()`'s real streaming loop — that would need SDK-level mocking this
+  pass didn't attempt, so the streaming/retry/grounding-check machinery inside the `while has_requests`
+  loop (malformed-tool-call nudges, budget nudges, zero-synthesis nudges, deadline extension) is
+  still uncovered by a direct test. Recommended approach for the actual decomposition, now that a
+  first characterization layer exists: extend coverage to the streaming loop (via SDK mocking) before
+  attempting any extraction, then
   decompose, attempting decomposition without a safety net on a function this size is exactly the
   kind of change that creates a new incident rather than closing one.
 
