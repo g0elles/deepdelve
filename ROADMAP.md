@@ -107,30 +107,23 @@ here got moved out, most already live in the wiki's [Completed](https://github.c
 or [Changelog](https://github.com/g0elles/deepdelve/wiki/Changelog); anything not yet migrated is
 tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
 
-- **`create_local_agent`'s nested-closure god-function: decomposition landed 2026-08-23, one
-  follow-up test gap left open.** `_run_single_task` and `delegate_tasks` used to be deeply nested
-  closures inside `create_local_agent` (1098 lines), capturing dozens of enclosing locals by
-  reference. Sequence that day: (1) three characterization-test layers added first, covering the
-  pre-dispatch validation gauntlet, the streaming/retry loop, and post-loop grounding/finding-
-  storage — see `test_structural_checks.py`'s `_create_local_agent_characterization_scenario`,
+- **`create_local_agent`'s nested-closure god-function — CLOSED 2026-08-24.** `_run_single_task` and
+  `delegate_tasks` were deeply nested closures inside `create_local_agent` (1098 lines), capturing
+  dozens of enclosing locals by reference, with zero direct test coverage. Resolved 2026-08-23/24:
+  four characterization-test layers landed first (pre-dispatch validation, the streaming/retry loop,
+  post-loop grounding/finding-storage, and the scope-relevance check — see
+  `test_structural_checks.py`'s `_create_local_agent_characterization_scenario`,
   `_run_single_task_streaming_characterization_scenario`, and
-  `_run_single_task_post_loop_characterization_scenario`; (2) the streaming-loop test suite caught a
-  real, previously-unknown `UnboundLocalError` on `Message` on first run (three branches inside the
-  function each did a redundant local `from agent_framework import Message`, which shadows the
-  already-imported module-level name for the WHOLE function — fixed by deleting the three redundant
-  imports, not adding a fourth); (3) the actual decomposition: `_run_single_task`'s body moved to a
-  module-level `_dispatch_single_task`, `delegate_tasks`'s body to module-level
-  `_dispatch_tasks_batch`, every implicit closure capture (`client`, `specialist_client`, `sem`,
-  `holds_token`, timeout/instruction-formatting values, `subagent_callback`, and the mutual
-  `delegate_tasks`/`_run_single_task` reference) turned into an explicit parameter.
-  `create_local_agent` still builds same-named thin closures that just forward to these (so mutual
-  late-binding and every external caller/return-value shape is unchanged) — `create_local_agent`
-  itself shrank from 1098 to 184 lines. All three characterization layers pass unchanged against
-  the decomposed code (confirming behavior-preserving), plus `test_tools.py` and `ruff check .`.
-  **Still open**: the scope-relevance check (`verify_scope_relevance`, inside
-  `_dispatch_single_task`) has no direct test — needs a real `get_workspace_file_content` fixture,
-  not built yet. Low risk (an isolated `if` block, not disturbed by the extraction), but worth
-  closing before further edits to that function.
+  `_run_single_task_post_loop_characterization_scenario`), catching one real previously-unknown
+  `UnboundLocalError` on `Message` along the way (root cause: three sibling branches each redundantly
+  re-imported `Message` locally, which shadows the module-level import for the whole function — fixed
+  by deleting the redundant imports, not adding a fourth). Then the actual decomposition: both
+  closures' bodies moved to module-level `_dispatch_single_task`/`_dispatch_tasks_batch`, every
+  implicit closure capture turned into an explicit parameter; `create_local_agent` now just builds
+  thin same-named forwarding closures (preserving mutual late-binding and every external call site
+  unchanged). `create_local_agent`: 1098 → 184 lines. All four characterization layers pass unchanged
+  against the decomposed code, plus `test_tools.py` and `ruff check .`. Full narrative belongs in the
+  wiki's Completed page on the next migration pass, not repeated here.
 
 - **`completion.py`'s mixed responsibilities, scoped 2026-07-29, not attempted.** The file's own
   header describes it as a clean list of pure `Ctx -> Optional[Verdict]` check functions, but it

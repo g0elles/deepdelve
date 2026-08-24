@@ -8978,10 +8978,12 @@ def main():
         import asyncio as _asyncio_pl
         import contextvars as _contextvars_pl
         import tempfile as _tempfile_pl
+        import config
         from unittest.mock import patch as _patch_pl, AsyncMock as _AsyncMock_pl
         from engine.orchestrator import create_local_agent
         from engine.sdk import AgentBuilder, SubAgentConfig
-        from utils.run_state import run_state_ctx, RunState
+        from utils.run_state import run_state_ctx, RunState, record_fetched_url
+        from tools.fs import _IN_MEMORY_FS
         import utils.grounding as _grounding_mod_pl
 
         class _FakeContentPl:
@@ -8991,9 +8993,15 @@ def main():
                 self.result = result
 
         class _FakeUpdatePl:
-            def __init__(self, contents=None, user_input_requests=None):
+            def __init__(self, contents=None, user_input_requests=None, side_effect=None):
                 self.contents = contents or []
                 self.user_input_requests = user_input_requests
+                # Optional zero-arg callable run when this update is consumed, in the SAME
+                # coroutine/contextvars.Context as the dispatch itself -- lets a scripted update
+                # simulate a real tool's side effect (e.g. record_fetched_url), since
+                # task_fetched_urls_ctx is reset fresh at the start of every real dispatch and
+                # can't be pre-seeded from outside it.
+                self.side_effect = side_effect
 
         class _FakeStreamPl:
             def __init__(self, updates=None):
@@ -9005,7 +9013,10 @@ def main():
             async def __anext__(self):
                 if not self._updates:
                     raise StopAsyncIteration
-                return self._updates.pop(0)
+                u = self._updates.pop(0)
+                if u.side_effect:
+                    u.side_effect()
+                return u
 
         class _FakeSubAgentPl:
             def __init__(self, turns):
@@ -9084,6 +9095,68 @@ def main():
                     "DocumentAnalyzer",
                 )
             assert "looks like a reconstructed or guessed URL" in r2, r2
+
+            # Scope-relevance check (verify_scope_relevance, the last still-uncovered branch this
+            # entry flagged): requires a REAL fetch this dispatch (new_urls, not reference_urls),
+            # so task_fetched_urls_ctx must be populated DURING the fake stream via
+            # record_fetched_url -- a plain pre-set before dispatch would be silently wiped, since
+            # _dispatch_single_task resets that contextvar to [] at the start of every real task.
+            # Needs settings.workspace switched to "memory" so get_workspace_file_content reads
+            # _IN_MEMORY_FS instead of real disk (default workspace type is "disk").
+            _orig_workspace_pl = config.cfg["settings"].get("workspace")
+            config.cfg["settings"]["workspace"] = {"type": "memory"}
+            saved_fs_pl = dict(_IN_MEMORY_FS)
+            try:
+                _IN_MEMORY_FS.clear()
+
+                # (a) fetched content does NOT mention the required scope entity -> flagged.
+                _IN_MEMORY_FS["sources/mismatch.md"] = "This page discusses general fintech trends worldwide."
+                child_a = SubAgentConfig(name="DocumentAnalyzer", instructions="z", tools=[])
+                fake_mismatch = _FakeSubAgentPl([_FakeStreamPl(updates=[
+                    _FakeUpdatePl(
+                        contents=[_FakeContentPl("function_result", result="fetched")],
+                        side_effect=lambda: record_fetched_url(
+                            "https://example.com/fintech", "sources/mismatch.md"),
+                    ),
+                    _FakeUpdatePl(contents=[_FakeContentPl("text", text="Found relevant fintech data.")]),
+                ])])
+                with _patch_pl.object(_grounding_mod_pl, "real_grounding_problem",
+                                       new=_AsyncMock_pl(return_value=None)):
+                    r3, _rs3 = await _dispatch_pl(
+                        fake_mismatch, "t_scope_mismatch", "Research the fintech market in Colombia.",
+                        "WebSearcher", sub_agents_children=[child_a],
+                    )
+                assert "SYSTEM RELEVANCE WARNING" in r3, r3
+                assert "Colombia" in r3, r3
+
+                # (b) fetched content DOES mention it -> no false-positive on a genuinely on-topic
+                # source, isolated from case (a) via a fresh _IN_MEMORY_FS entry/filename.
+                _IN_MEMORY_FS["sources/match.md"] = (
+                    "This report covers fintech adoption trends in Colombia specifically.")
+                child_b = SubAgentConfig(name="DocumentAnalyzer", instructions="z", tools=[])
+                fake_match = _FakeSubAgentPl([_FakeStreamPl(updates=[
+                    _FakeUpdatePl(
+                        contents=[_FakeContentPl("function_result", result="fetched")],
+                        side_effect=lambda: record_fetched_url(
+                            "https://example.com/fintech-co", "sources/match.md"),
+                    ),
+                    _FakeUpdatePl(contents=[_FakeContentPl(
+                        "text", text="Found relevant fintech data for Colombia.")]),
+                ])])
+                with _patch_pl.object(_grounding_mod_pl, "real_grounding_problem",
+                                       new=_AsyncMock_pl(return_value=None)):
+                    r4, _rs4 = await _dispatch_pl(
+                        fake_match, "t_scope_match", "Research the fintech market in Colombia.",
+                        "WebSearcher", sub_agents_children=[child_b],
+                    )
+                assert "SYSTEM RELEVANCE WARNING" not in r4, r4
+            finally:
+                _IN_MEMORY_FS.clear()
+                _IN_MEMORY_FS.update(saved_fs_pl)
+                if _orig_workspace_pl is None:
+                    config.cfg["settings"].pop("workspace", None)
+                else:
+                    config.cfg["settings"]["workspace"] = _orig_workspace_pl
 
         def _scenario():
             _asyncio_pl.run(_run_checks())
