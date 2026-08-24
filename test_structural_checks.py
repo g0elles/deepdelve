@@ -8963,6 +8963,135 @@ def main():
 
     _run_single_task_streaming_characterization_scenario()
 
+    # --- _run_single_task post-loop characterization tests: the grounding-check branches and
+    # finding-storage wiring that run AFTER the `while has_requests` loop ends (still flagged open
+    # by the entry above -- "real_grounding_problem, NLI/reranker... still untested directly").
+    # Mocks utils.grounding.real_grounding_problem itself (an AsyncMock) rather than the NLI/
+    # reranker models underneath it -- exercising the real model calls would need the local NLI/
+    # reranker weights loaded per-run, which the pure-function tests elsewhere in this file already
+    # avoid; this pass verifies real_grounding_problem's RETURN VALUE is correctly threaded into
+    # verification_warnings and RunState.add_finding, not the entailment model's own correctness
+    # (real_grounding_problem has its own coverage for that). Scope-relevance
+    # (verify_scope_relevance) is a separate check from real_grounding_problem and still NOT
+    # covered here -- it needs a real workspace-file content fixture, left for a future pass. ---
+    def _run_single_task_post_loop_characterization_scenario():
+        import asyncio as _asyncio_pl
+        import contextvars as _contextvars_pl
+        import tempfile as _tempfile_pl
+        from unittest.mock import patch as _patch_pl, AsyncMock as _AsyncMock_pl
+        from engine.orchestrator import create_local_agent
+        from engine.sdk import AgentBuilder, SubAgentConfig
+        from utils.run_state import run_state_ctx, RunState
+        import utils.grounding as _grounding_mod_pl
+
+        class _FakeContentPl:
+            def __init__(self, type, text=None, result=None):
+                self.type = type
+                self.text = text
+                self.result = result
+
+        class _FakeUpdatePl:
+            def __init__(self, contents=None, user_input_requests=None):
+                self.contents = contents or []
+                self.user_input_requests = user_input_requests
+
+        class _FakeStreamPl:
+            def __init__(self, updates=None):
+                self._updates = list(updates or [])
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if not self._updates:
+                    raise StopAsyncIteration
+                return self._updates.pop(0)
+
+        class _FakeSubAgentPl:
+            def __init__(self, turns):
+                self._turns = list(turns)
+
+            def run(self, current_input, stream=True):
+                return self._turns.pop(0)
+
+            def create_session(self):
+                return None
+
+        def _patch_as_agent_pl(fake_agent):
+            from agent_framework.openai import OpenAIChatCompletionClient
+            def _patched(self, *a, **k):
+                return fake_agent
+            return _patch_pl.object(OpenAIChatCompletionClient, "as_agent", _patched)
+
+        async def _dispatch_pl(fake_agent, task_name, instructions, agent_id, sub_agents_children=None):
+            sub = SubAgentConfig(
+                name=agent_id, instructions="y {date} {task_name}", tools=[],
+                sub_agents=sub_agents_children or [],
+            )
+            builder = AgentBuilder(
+                name="Planner", description="d",
+                instructions=(
+                    "i {date} {workspace_dir} {delegation_instructions} "
+                    "{report_style_instructions} {citation_format_instructions}"
+                ),
+                tools=[], sub_agents=[sub],
+            )
+            with _patch_as_agent_pl(fake_agent):
+                agent, session, dispatch_task = create_local_agent(builder=builder)
+                with _tempfile_pl.TemporaryDirectory() as td:
+                    rs = RunState(td)
+                    tok = run_state_ctx.set(rs)
+                    try:
+                        r = await dispatch_task(task_name, instructions, agent_id=agent_id)
+                    finally:
+                        run_state_ctx.reset(tok)
+            return r, rs
+
+        async def _run_checks():
+            # Searcher-tier (target_children truthy) grounding check: real_grounding_problem
+            # flags the summary -> SYSTEM VERIFICATION WARNING appended to the result AND to the
+            # stored finding's summary, and the finding is keyed to the URL named in the task's
+            # own instructions (reference_urls fallback -- no real fetch happened this dispatch).
+            fake = _FakeSubAgentPl([_FakeStreamPl(updates=[_FakeUpdatePl(contents=[_FakeContentPl(
+                "text", text="Found a report at https://example.com/report with key figures.")])])])
+            child = SubAgentConfig(name="DocumentAnalyzer", instructions="z", tools=[])
+            with _patch_pl.object(_grounding_mod_pl, "real_grounding_problem",
+                                   new=_AsyncMock_pl(return_value="fake_problem_reason")):
+                r, rs = await _dispatch_pl(
+                    fake, "t_search_ground", "Research https://example.com/report",
+                    "WebSearcher", sub_agents_children=[child],
+                )
+            assert "SYSTEM VERIFICATION WARNING" in r, r
+            assert any(
+                f["source_url"] == "https://example.com/report"
+                and "SYSTEM VERIFICATION WARNING" in f["summary"]
+                for f in rs.data["findings"]
+            ), rs.data["findings"]
+
+            # Analyzer-tier (DocumentAnalyzer/DataAnalyzer, no children) reconstructed-URL check:
+            # the summary cites a DIFFERENT URL than the one the task's own instructions named as
+            # the real source -- a guessed/hallucinated citation, not the URL actually handed to
+            # this Analyzer. real_grounding_problem mocked clean (None) so only this check's own
+            # warning is under test, isolated from the content-level check that runs after it in
+            # the same branch.
+            fake2 = _FakeSubAgentPl([_FakeStreamPl(updates=[_FakeUpdatePl(contents=[_FakeContentPl(
+                "text", text="According to https://fake-reconstructed.example.com/page, the figure is 42.")])])])
+            with _patch_pl.object(_grounding_mod_pl, "real_grounding_problem",
+                                   new=_AsyncMock_pl(return_value=None)):
+                r2, _rs2 = await _dispatch_pl(
+                    fake2, "t_analyzer",
+                    "Read the file 'sources/real_page.md'. Source URL: https://real.example.com/page",
+                    "DocumentAnalyzer",
+                )
+            assert "looks like a reconstructed or guessed URL" in r2, r2
+
+        def _scenario():
+            _asyncio_pl.run(_run_checks())
+
+        _contextvars_pl.copy_context().run(_scenario)
+
+    _run_single_task_post_loop_characterization_scenario()
+
     print("All structural-check assertions passed.")
 
 

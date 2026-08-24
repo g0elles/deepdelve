@@ -140,14 +140,22 @@ tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
   adding a fourth) so nothing shadows the module-level name — the actual root-cause fix, and the
   one most future branches can't re-break by construction. Both `test_structural_checks.py` and
   `test_tools.py` pass with the fix; the new test's own comment records this incident so a
-  regression of the shadowing is caught by the harness, not just the pure predicate tests. Remaining
-  gap: the real grounding-check calls (`real_grounding_problem`, NLI/reranker) after the loop ends
-  are still untested directly — deliberately not scripted into this pass, would need mocking those
-  models too. Recommended approach for the actual decomposition, now that both characterization
-  layers exist: extend coverage to the post-loop grounding/finding-storage section if that becomes
-  a decomposition target, then decompose, attempting decomposition without a safety net on a
-  function this size is exactly the kind of change that creates a new incident rather than closing
-  one.
+  regression of the shadowing is caught by the harness, not just the pure predicate tests.
+  **Post-loop coverage also landed same day** (`_run_single_task_post_loop_characterization_
+  scenario`): mocks `utils.grounding.real_grounding_problem` itself (an `AsyncMock`, not the NLI/
+  reranker models underneath it — those have their own separate coverage) to pin two branches:
+  the Searcher-tier grounding-warning path (flagged problem correctly threads into both the
+  returned text AND the stored `RunState` finding's summary, keyed to the instructions' own
+  reference URL since no real fetch happened this dispatch) and the Analyzer-tier reconstructed-
+  URL check (a summary citing a different URL than the one the task's instructions actually named
+  gets flagged as guessed/hallucinated). **Still explicitly open**: the scope-relevance check
+  (`verify_scope_relevance`) is a separate code path from `real_grounding_problem` and still has no
+  direct test — it needs a real workspace-file content fixture (`get_workspace_file_content`) this
+  pass didn't build. Recommended approach for the actual decomposition, now that three
+  characterization layers exist (pre-dispatch validation, the streaming loop, post-loop grounding/
+  storage): extend to scope-relevance if that becomes a decomposition target, then decompose,
+  attempting decomposition without a safety net on a function this size is exactly the kind of
+  change that creates a new incident rather than closing one.
 
 - **`completion.py`'s mixed responsibilities, scoped 2026-07-29, not attempted.** The file's own
   header describes it as a clean list of pure `Ctx -> Optional[Verdict]` check functions, but it
