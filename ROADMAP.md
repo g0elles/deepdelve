@@ -125,8 +125,8 @@ tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
   against the decomposed code, plus `test_tools.py` and `ruff check .`. Full narrative belongs in the
   wiki's Completed page on the next migration pass, not repeated here.
 
-- **`completion.py`'s mixed responsibilities, scoped 2026-07-29 — four slices extracted (2026-08-24),
-  the hazardous core deliberately still not attempted.** The file's own header describes it as a
+- **`completion.py`'s mixed responsibilities, scoped 2026-07-29 — five slices extracted (2026-08-24),
+  only `run_completion_check` and the routing tuples deliberately still untouched.** The file's own header describes it as a
   clean list of pure `Ctx -> Optional[Verdict]` check functions, but it also contains findings-
   authoring/evidence-assembly logic, disk-touching quarantine/restore/salvage helpers, async
   sub-agent dispatch orchestration, the task-verification ledger mutator, and the completion-check
@@ -198,21 +198,49 @@ tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
   `_dispatch_per_facet_findings_writer_fix`/`_dispatch_deepening_round`/`_MAX_FACET_DISPATCHES` by
   name. `math`/`os`/`asyncio` became dead imports in `completion.py` after the move (only these 5
   functions used them) — removed via `ruff check . --fix`.
-  All four slices verified by running the existing suite unmodified plus a before/after
+  **Slice 5 (group D — the starvation/capping state machine)**: unlike slices 1-4, this is the
+  ARCHITECTURE.md-flagged hazard itself (5 real bugs in one 2026-07-24 sitting), so per the
+  planning pass's own recommended sequencing this got a **coverage audit before any move**:
+  `_capped` had no direct behavior test (only a static grep enforcing that every non-self-resolving
+  check calls it), and `_apply_starvation_yield`/`_collect_other_active_problems`/
+  `_with_other_problems_addendum` had zero direct tests at all. Added characterization tests for
+  all three (committed separately, `520d08c`, before touching any structure) confirming the exact
+  behavior read from source: `_capped`'s threshold/skip_problems logic, `_apply_starvation_yield`'s
+  stuck-then-probe-target/no-target/target-returns-same-problem/target-empty branches, and
+  `_collect_other_active_problems`/`_with_other_problems_addendum`'s exclusion-of-the-winner/cap-
+  at-3/no-op-when-nothing-else-active behavior. Only THEN moved `_consecutive_occurrences`,
+  `_consecutive_tier_wins`, `_capped`, `_yield_to_starved_check`, `_STARVATION_YIELD_TARGETS`,
+  `_apply_starvation_yield`, `_collect_other_active_problems`, `_with_other_problems_addendum`,
+  `_other_grounding_problems`, `_with_other_grounding_addendum` + their 4 dedicated constants
+  (`_STARVATION_SKIP_THRESHOLD`, `CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD`,
+  `_OTHER_ACTIVE_PROBLEMS_CAP`) to a new module, `src/engine/completion_starvation.py`. No new
+  circularity beyond the established pattern: the new module imports `Ctx`/`Verdict`/
+  `check_report_underuses_evidence` from `completion_checks.py` (one-directional, no cycle);
+  `completion.py` re-exports everything moved, load-bearing for `completion_checks.py`'s own
+  group-A local imports of `_capped`/`_consecutive_occurrences` and for
+  `test_structural_checks.py`'s direct imports. `cheap_grounding_problems` (from `utils.grounding`)
+  stayed re-exported from `completion.py` too, even though nothing there calls it anymore, because
+  `test_structural_checks.py` imports it from `engine.completion` directly — caught by running the
+  suite, not just `ruff check .`, since an unused-import lint pass alone doesn't know an external
+  file depends on the re-export.
+  All five slices verified by running the existing suite unmodified plus a before/after
   sorted-line-set diff confirming no body line was dropped or duplicated (the only line-level
   diffs each time are import restructuring/header comments, never code content). `completion.py`:
-  3854 → 3650 (slice 1) → 2235 (slice 2) → 1618 (slice 3) → 1148 lines (slice 4). New
-  `completion_checks.py`: 1468 lines. New `findings_evidence.py`: 637 lines. New
-  `completion_dispatch.py`: 493 lines. `test_structural_checks.py`, `test_tools.py`, and
-  `ruff check .` all pass after each slice. **The higher-risk remainder — the four routing tuples
-  themselves, the starvation/capping state machine (group D), and `run_completion_check` (group E)
-  — is deliberately NOT attempted.** Any future slice of that core needs its own
-  characterization-test pass first (the `create_local_agent` precedent), not just a mechanical
-  move, since `ARCHITECTURE.md` §1's invariants are the actual hazard here, not the file's line
-  count. Blast radius reminder for whenever more of this is picked up: `test_structural_checks.py`
-  still imports 30+ other private names directly across these modules; any further split must
-  update that file's imports in lockstep (or add a re-export, matching the pattern all four slices
-  above already used).
+  3854 → 3650 (slice 1) → 2235 (slice 2) → 1618 (slice 3) → 1148 (slice 4) → 873 lines (slice 5).
+  New `completion_checks.py`: 1468 lines. New `findings_evidence.py`: 637 lines. New
+  `completion_dispatch.py`: 493 lines. New `completion_starvation.py`: 304 lines.
+  `test_structural_checks.py`, `test_tools.py`, and `ruff check .` all pass after each slice.
+  **The remainder — the four routing tuples (`COMPLETION_CHECKS`/`GROUNDING_CHECKS`/
+  `_QUARANTINE_PROBLEMS`/`_BUILDER_FIXABLE_PROBLEMS`/`_FINDINGS_WRITER_FIXABLE_PROBLEMS`) and
+  `run_completion_check` itself (group E, ~430 lines) — is deliberately NOT attempted.** These are
+  the most interconnected part of the file (every check is referenced by name, the dispatch/
+  starvation modules are all wired together here) and the lowest-value target per the planning
+  pass's own assessment; if picked up, treat it the same way as group D — audit test coverage of
+  `run_completion_check` itself first, since it's the one function tying every other extracted
+  module together. Blast radius reminder for whenever more of this is picked up:
+  `test_structural_checks.py` still imports 30+ other private names directly across these modules;
+  any further split must update that file's imports in lockstep (or add a re-export, matching the
+  pattern all five slices above already used).
 
 - **`run_cli`/`BasicTuiAgent` full run-lifecycle unification, re-scoped 2026-07-29, still open.** A
   dedicated audit found the two entry points aren't just stylistic duplicates in places that matter:
