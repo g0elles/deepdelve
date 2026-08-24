@@ -8789,6 +8789,180 @@ def main():
 
     _create_local_agent_characterization_scenario()
 
+    # --- _run_single_task streaming-loop characterization tests (extends the coverage above into
+    # the `while has_requests` loop itself -- malformed-tool-call nudges, budget nudges,
+    # zero-synthesis nudges, deadline extension -- the part the entry above explicitly flagged as
+    # still uncovered). Needs a fake streaming sub-agent since the real loop drives
+    # `sub_agent.run(...).__aiter__()`; patches `OpenAIChatCompletionClient.as_agent` to return a
+    # scripted fake for the ENTIRE create+dispatch call (not just agent construction) -- an earlier
+    # draft of this harness left the patch's `with` block around only `create_local_agent()` and
+    # let the dispatch itself fall through to the real backend, which actually round-tripped a live
+    # Ollama call before being caught; keep the patch scoped around the whole dispatch. ---
+    def _run_single_task_streaming_characterization_scenario():
+        import asyncio as _asyncio_st
+        import contextvars as _contextvars_st
+        import tempfile as _tempfile_st
+        import time as _time_st
+        import config
+        from unittest.mock import patch as _patch_st
+        from engine.orchestrator import create_local_agent
+        from engine.sdk import AgentBuilder, SubAgentConfig
+        from utils.run_state import run_state_ctx, RunState
+
+        class _FakeContent:
+            def __init__(self, type, text=None, result=None):
+                self.type = type
+                self.text = text
+                self.result = result
+
+        class _FakeUpdate:
+            def __init__(self, contents=None, user_input_requests=None):
+                self.contents = contents or []
+                self.user_input_requests = user_input_requests
+
+        class _FakeStream:
+            """One `sub_agent.run(...)` turn's worth of updates, or an exception to raise on the
+            first `__anext__` (malformed-tool-call path), or a `sleep` before ever yielding
+            (deadline path) -- mirrors the real stream's async-iterator shape closely enough to
+            drive `_run_single_task`'s manually-driven __anext__ + asyncio.wait_for loop."""
+            def __init__(self, updates=None, raise_exc=None, sleep=0):
+                self._updates = list(updates or [])
+                self._raise_exc = raise_exc
+                self._sleep = sleep
+                self._raised = False
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if self._sleep:
+                    await _asyncio_st.sleep(self._sleep)
+                if self._raise_exc is not None and not self._raised:
+                    self._raised = True
+                    raise self._raise_exc
+                if not self._updates:
+                    raise StopAsyncIteration
+                return self._updates.pop(0)
+
+        class _FakeSubAgent:
+            """One scripted `_FakeStream` per `.run()` call (i.e. per internal retry turn)."""
+            def __init__(self, turns):
+                self._turns = list(turns)
+
+            def run(self, current_input, stream=True):
+                return self._turns.pop(0)
+
+            def create_session(self):
+                return None  # settings.enable_conversational_memory defaults True
+
+        def _patch_as_agent(fake_agent):
+            from agent_framework.openai import OpenAIChatCompletionClient
+            def _patched(self, *a, **k):
+                return fake_agent
+            return _patch_st.object(OpenAIChatCompletionClient, "as_agent", _patched)
+
+        def _make_builder():
+            sub = SubAgentConfig(name="WebSearcher", instructions="x {date} {task_name}", tools=[])
+            return AgentBuilder(
+                name="Planner", description="d",
+                instructions=(
+                    "i {date} {workspace_dir} {delegation_instructions} "
+                    "{report_style_instructions} {citation_format_instructions}"
+                ),
+                tools=[], sub_agents=[sub],
+            )
+
+        async def _dispatch_within_patch(fake_agent, task_name):
+            # The patch MUST stay active across both create_local_agent() (which builds the
+            # Planner agent) and the dispatch call itself (which builds a FRESH sub-agent per
+            # dispatch via the same as_agent) -- see this scenario's own header note.
+            with _patch_as_agent(fake_agent):
+                agent, session, dispatch_task = create_local_agent(builder=_make_builder())
+                with _tempfile_st.TemporaryDirectory() as td:
+                    rs = RunState(td)
+                    tok = run_state_ctx.set(rs)
+                    try:
+                        return await dispatch_task(task_name, "instr", agent_id="WebSearcher")
+                    finally:
+                        run_state_ctx.reset(tok)
+
+        async def _run_checks():
+            # Malformed tool-call JSON on turn 1 -> one-turn nudge retry -> turn 2 succeeds.
+            fake = _FakeSubAgent([
+                _FakeStream(raise_exc=Exception("Error parsing tool call: bad escape")),
+                _FakeStream(updates=[_FakeUpdate(contents=[
+                    _FakeContent("text", text="Recovered findings from a real source.")])]),
+            ])
+            r = await _dispatch_within_patch(fake, "t_malformed")
+            assert "Recovered findings from a real source." in r, r
+
+            # Turn 1 calls a tool but returns zero narration text -> zero-synthesis nudge ->
+            # turn 2 actually synthesizes. This is the exact path that (before this session's fix)
+            # crashed with UnboundLocalError on `Message` -- three sibling branches in
+            # _run_single_task each did their own `from agent_framework import Message` inside the
+            # function body, which makes Python treat `Message` as function-local EVERYWHERE in
+            # that function, so this fourth branch (the only one without its own local import)
+            # threw instead of nudging whenever it fired as a dispatch's first retry. Fixed by
+            # deleting the three redundant local imports (Message is already imported at module
+            # scope) rather than adding a fourth copy — same class of bug can't recur in a future
+            # branch now that nothing shadows the module-level name. This assertion is what
+            # actually catches a regression of that shadowing, not just the pure predicate.
+            fake = _FakeSubAgent([
+                _FakeStream(updates=[_FakeUpdate(contents=[
+                    _FakeContent("function_result", result="Tool ran, found something.")])]),
+                _FakeStream(updates=[_FakeUpdate(contents=[
+                    _FakeContent("text", text="Real synthesized findings: X=42 (source: example).")])]),
+            ])
+            r = await _dispatch_within_patch(fake, "t_zero_synthesis")
+            assert "Real synthesized findings: X=42" in r, r
+
+            # Turn 1 overflows context_budget_chars -> one wrap-up nudge (with the softened/
+            # alarming cutoff marker chosen by real fetch count) -> turn 2 wraps up.
+            _orig_budget = config.cfg["settings"].get("context_budget_chars")
+            config.cfg["settings"]["context_budget_chars"] = 10
+            try:
+                fake = _FakeSubAgent([
+                    _FakeStream(updates=[_FakeUpdate(contents=[_FakeContent("text", text="A" * 50)])]),
+                    _FakeStream(updates=[_FakeUpdate(contents=[
+                        _FakeContent("text", text=" Final wrap-up findings.")])]),
+                ])
+                r = await _dispatch_within_patch(fake, "t_budget")
+                assert "hit its context budget" in r, r
+                assert "Final wrap-up findings." in r, r
+            finally:
+                if _orig_budget is None:
+                    config.cfg["settings"].pop("context_budget_chars", None)
+                else:
+                    config.cfg["settings"]["context_budget_chars"] = _orig_budget
+
+            # sub_agent_timeout_minutes fires on a stream that goes silent past its deadline (same
+            # manually-driven __anext__ + asyncio.wait_for mechanism as engine/tui.py's run_cli,
+            # 2026-07-12) -- no real sources fetched, so _try_extend_deadline_once's ring-fence
+            # must NOT extend it, and the cutoff must fire close to the deadline, not wait out the
+            # stream's full (much longer) sleep.
+            _orig_timeout = config.cfg["settings"].get("sub_agent_timeout_minutes")
+            config.cfg["settings"]["sub_agent_timeout_minutes"] = 0.2 / 60.0
+            try:
+                fake = _FakeSubAgent([_FakeStream(sleep=5)])
+                start = _time_st.monotonic()
+                r = await _dispatch_within_patch(fake, "t_deadline")
+                elapsed = _time_st.monotonic() - start
+                assert "cut short" in r, r
+                assert "sub_agent_timeout_minutes" in r, r
+                assert elapsed < 3, f"cutoff must fire near the 0.2s deadline, not the 5s stall ({elapsed}s)"
+            finally:
+                if _orig_timeout is None:
+                    config.cfg["settings"].pop("sub_agent_timeout_minutes", None)
+                else:
+                    config.cfg["settings"]["sub_agent_timeout_minutes"] = _orig_timeout
+
+        def _scenario():
+            _asyncio_st.run(_run_checks())
+
+        _contextvars_st.copy_context().run(_scenario)
+
+    _run_single_task_streaming_characterization_scenario()
+
     print("All structural-check assertions passed.")
 
 

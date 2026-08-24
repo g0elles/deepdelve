@@ -1320,7 +1320,6 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                             nudge = malformed_tool_call_nudge(e)
                             if nudge and malformed_retries < 2:
                                 malformed_retries += 1
-                                from agent_framework import Message
                                 new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
                                 new_inputs.append(Message("user", [{"type": "text", "text": nudge}]))
                                 current_input = new_inputs
@@ -1331,7 +1330,6 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                         if pending_tool_error_nudge and tool_error_retries < 2:
                             tool_error_retries += 1
                             nudge, pending_tool_error_nudge = pending_tool_error_nudge, None
-                            from agent_framework import Message
                             new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
                             new_inputs.append(Message("user", [{"type": "text", "text": nudge}]))
                             current_input = new_inputs
@@ -1345,7 +1343,6 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
                             # final_text accumulated — never loop on the nudge itself.
                             budget_nudged = True
                             stream_chars = 0
-                            from agent_framework import Message
                             new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
                             new_inputs.append(Message("user", [{"type": "text", "text": _select_budget_nudge(agent_id)}]))
                             current_input = new_inputs

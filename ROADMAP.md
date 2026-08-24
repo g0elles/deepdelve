@@ -122,15 +122,32 @@ tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
   those paths returns before `sub_agent.run()` is ever reached. Also pins `_run_single_task`'s
   bad-`agent_id` early-return (the exact path a past latent bug lived in — `children_token` unset on
   that path once crashed the `finally` block's own reset with `UnboundLocalError`, see the closure's
-  header comment). **Explicitly out of scope**: true end-to-end dispatch through
-  `asyncio.gather`/`sub_agent.run()`'s real streaming loop — that would need SDK-level mocking this
-  pass didn't attempt, so the streaming/retry/grounding-check machinery inside the `while has_requests`
-  loop (malformed-tool-call nudges, budget nudges, zero-synthesis nudges, deadline extension) is
-  still uncovered by a direct test. Recommended approach for the actual decomposition, now that a
-  first characterization layer exists: extend coverage to the streaming loop (via SDK mocking) before
-  attempting any extraction, then
-  decompose, attempting decomposition without a safety net on a function this size is exactly the
-  kind of change that creates a new incident rather than closing one.
+  header comment). **Streaming-loop coverage extended same day** (`_run_single_task_streaming_
+  characterization_scenario`): a fake `sub_agent.run()`/stream harness (scripted per-turn updates,
+  or a raised exception, or a pre-yield sleep) drives the real `while has_requests` loop end to end
+  for the malformed-tool-call nudge retry, the zero-synthesis nudge, the context-budget nudge +
+  cutoff-marker wording, and the `sub_agent_timeout_minutes` deadline cutoff — all with real
+  wall-clock timing on the deadline case (`asyncio.wait_for` cancels a 5s-sleeping fake stream at
+  the ~0.2s configured deadline, same mechanism/precedent as the existing `max_run_minutes` cutoff
+  test above). **This test suite found a real, previously-unknown production bug on first run**: the
+  zero-synthesis branch raised `UnboundLocalError` on `Message` whenever it fired as a dispatch's
+  FIRST retry (no prior malformed-tool-call/tool-error/budget nudge in the same call). Root cause:
+  `Message` is imported at module scope, but three OTHER branches in this same function each did
+  their own redundant `from agent_framework import Message` — Python treats a name as function-local
+  everywhere in a function if it's ever locally imported/assigned anywhere in that function's body,
+  which silently shadowed the module-level import for the whole closure and left the one branch
+  without its own local import broken. Fixed by deleting all three redundant local imports (not by
+  adding a fourth) so nothing shadows the module-level name — the actual root-cause fix, and the
+  one most future branches can't re-break by construction. Both `test_structural_checks.py` and
+  `test_tools.py` pass with the fix; the new test's own comment records this incident so a
+  regression of the shadowing is caught by the harness, not just the pure predicate tests. Remaining
+  gap: the real grounding-check calls (`real_grounding_problem`, NLI/reranker) after the loop ends
+  are still untested directly — deliberately not scripted into this pass, would need mocking those
+  models too. Recommended approach for the actual decomposition, now that both characterization
+  layers exist: extend coverage to the post-loop grounding/finding-storage section if that becomes
+  a decomposition target, then decompose, attempting decomposition without a safety net on a
+  function this size is exactly the kind of change that creates a new incident rather than closing
+  one.
 
 - **`completion.py`'s mixed responsibilities, scoped 2026-07-29, not attempted.** The file's own
   header describes it as a clean list of pure `Ctx -> Optional[Verdict]` check functions, but it
