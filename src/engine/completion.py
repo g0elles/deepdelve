@@ -237,6 +237,268 @@ from engine.completion_starvation import (  # noqa: F401,E402 — re-exported fo
 )
 
 
+async def _detect_verdict(req_artifact: str, attempt: int, max_attempts: int,
+                           run_state: "RunState") -> tuple["Ctx", Optional["Verdict"]]:  # noqa: F821
+    """Builds this attempt's `Ctx` and runs the full two-tier verdict scan (COMPLETION_CHECKS,
+    then — only if the whole first tier came back clean — GROUNDING_CHECKS), including every
+    starvation-yield/addendum wrapper each tier applies. Extracted from `run_completion_check`
+    (2026-08-24, group E) as the one purely-sequential, no-early-exit phase of that function's
+    loop body — detecting the problem (or lack of one) never consumes the retry budget or mutates
+    loop state, only actually retrying does, so this has no `continue`/`return` of its own and is
+    safe as a standalone step. See `run_completion_check`'s own body for what happens with the
+    (ctx, verdict) pair this returns."""
+    quotas = tool_quotas_ctx.get()
+    files = get_workspace_files()
+    _update_task_verification(run_state)
+    ctx = Ctx(
+        req_artifact=req_artifact,
+        attempt=attempt,
+        max_attempts=max_attempts,
+        # 2026-07-28 resume fix (ARCHITECTURE.md §4's own documented, previously-accepted
+        # gap): the live quota pool alone is always 0 at the start of a resumed process,
+        # even when the interrupted run already delegated real research -- a resumed
+        # Planner correctly told (via build_resume_input) not to re-delegate then gets
+        # check_not_delegated's "your ONLY next tool call must be delegate_tasks" directive
+        # anyway, a live-confirmed direct contradiction that derailed a resumed run into a
+        # think_tool reflection loop. fetched_urls is carried over via the resume-carryover
+        # allowlist (tui.py) and only ever gets populated by a real specialist dispatch, so
+        # a non-empty list is proof delegation genuinely happened in ANY session (this one
+        # or a resumed prior one) -- same "fetched_urls is ground truth" philosophy already
+        # used for grounding checks on resume.
+        delegated=bool(quotas and quotas.get("delegate_tasks", {}).get("used", 0) > 0)
+                  or bool(run_state.data.get("fetched_urls")),
+        files=files,
+        content=get_workspace_file_content(req_artifact) if req_artifact in files else None,
+        quotas=quotas,
+        run_state=run_state,
+    )
+
+    # Detecting the problem (or lack of one) never consumes the retry budget —
+    # only actually retrying does. Otherwise a success on the final allowed
+    # attempt is never recognized as a success (it just falls through silently).
+    verdict = next((v for check in COMPLETION_CHECKS if (v := check(ctx)) is not None), None)
+    verdict = _yield_to_starved_check(verdict, ctx, check_untracked_delegation, never_final_blocker=True)
+    # Cross-TIER starvation, not just within-list (2026-08-01, RESEARCH.md Sec.17f):
+    # GROUNDING_CHECKS is only ever evaluated at all when COMPLETION_CHECKS returns None
+    # for the whole scan below -- a hard two-tier gate, not just first-match priority
+    # within one list. Live-confirmed: a resumed run's check_task_verification_flagged
+    # (COMPLETION_CHECKS) recurred for 6 of 8 attempts on a genuinely real, still-unresolved
+    # problem -- not a bug, _capped()/_yield_to_starved_check above both worked as designed
+    # -- and report_underuses_evidence (GROUNDING_CHECKS, built specifically to catch a
+    # Builder draft dropping a covered facet) never got evaluated ONCE in the entire run, no
+    # matter how many attempts passed, because GROUNDING_CHECKS structurally never got a
+    # turn while ANYTHING in COMPLETION_CHECKS kept returning non-None -- old, carried-over,
+    # or brand new, it doesn't matter which. Reuses _yield_to_starved_check (same mechanism
+    # already protecting check_untracked_delegation above), now passing tier_problems=
+    # _COMPLETION_TIER_PROBLEMS (2026-08-16 follow-up incident: the ORIGINAL same-problem-
+    # only version of this call still missed the case where the winning problem CHANGES
+    # every attempt but always comes from COMPLETION_CHECKS -- a real run cycled
+    # missing_findings -> missing_artifact -> uneven_task_investment -> task_verification_
+    # flagged, never repeating, and report_underuses_evidence never got a single turn in
+    # the whole run despite the report on disk having dropped 3 of 4 requested facets; see
+    # _consecutive_tier_wins' own docstring for the full trace). never_final_blocker=False
+    # (the default): unlike
+    # check_untracked_delegation, a real dropped-facet problem winning as the run's
+    # terminal reported blocker is correct, not something to protect against. Gated on
+    # grounding_check.enabled for the same reason the real GROUNDING_CHECKS scan below is —
+    # report_underuses_evidence only conceptually belongs to that tier by list membership,
+    # it doesn't itself require ctx.grounding_problem, so it would otherwise bypass the
+    # master switch entirely.
+    if verdict is not None and config.get_setting("grounding_check", {}).get("enabled", True):
+        verdict = _yield_to_starved_check(verdict, ctx, check_report_underuses_evidence,
+                                           tier_problems=_COMPLETION_TIER_PROBLEMS)
+    if verdict is not None:
+        verdict = _with_other_problems_addendum(verdict, ctx, COMPLETION_CHECKS)
+    # grounding_check.enabled is the section's master switch — before this guard it was a
+    # documented no-op (config_template.yaml shipped it, nothing read it; 2026-07-12 audit,
+    # G2). The pre-grounding checks above are structural, not grounding, and still run.
+    if verdict is None and config.get_setting("grounding_check", {}).get("enabled", True):
+        ctx.grounding_problem = await real_grounding_problem(ctx.content or "")
+        verdict = next((v for check in GROUNDING_CHECKS if (v := check(ctx)) is not None), None)
+        # Both siblings share the same starvation risk (2026-07-24's finding, applied
+        # 2026-07-29 to the newer per-task check too) -- neither is meant to compete with a
+        # real correctness problem, but a run stuck on one OTHER recurring problem must not
+        # starve either of them for its whole retry budget.
+        #
+        # 2026-07-31: was a hand-written `lambda c: A(c) or B(c)` here, live-confirmed dead
+        # code (a run that dropped 4 whole tasks' worth of evidence, including the query's
+        # own Colombia angle, fired report_underuses_findings 4+ consecutive times and never
+        # once yielded, because `or` tried the already-winning check first and its condition
+        # was still true). Replaced with the declarative _STARVATION_YIELD_TARGETS registry
+        # + _apply_starvation_yield -- see that function's own docstring for why the dict
+        # form structurally cannot repeat this ordering bug the way a hand-written lambda
+        # could.
+        verdict = _apply_starvation_yield(verdict, ctx)
+        # 2026-07-29 (live incident, see _other_grounding_problems' docstring): check_
+        # stub_source shadowed check_uncited_claims for 3 whole attempts, silently, because
+        # both key off the single ctx.grounding_problem string real_grounding_problem
+        # computes as only its own first hit. Surfaces (not swaps in) whatever else is
+        # cheaply detectable in the same document.
+        if verdict is not None:
+            verdict = _with_other_grounding_addendum(verdict, ctx)
+    return ctx, verdict
+
+
+def _compute_force_whole_rebuild(run_state: "RunState", problem: Optional[str], attempt: int,  # noqa: F821
+                                  max_attempts: int, req_artifact: str) -> tuple[bool, int]:
+    """Escalate early rather than granting the full attempt budget to a nudge that's already
+    proven ineffective. Confirmed live 2026-07-12: missing_artifact repeated 5 times
+    verbatim in one run — the model answered each one with confident "no further action
+    needed" prose and never once attempted write_workspace_file, burning wall-clock and
+    tool-call quota on retries that had already shown they don't work. Once the SAME
+    problem has now fired this many times in a row, fall straight through to the
+    final-verdict path (quarantine-restore or salvage) instead of granting more identical
+    retries — it preserves whatever real content already exists rather than grinding an
+    already-exhausted approach further. Each check's own escalating wording (see its
+    docstring) still gets one shot at each of these attempts first; this only trims how
+    many total attempts a provably-stuck pattern gets to burn.
+
+    Generalized 2026-07-19 QA audit: originally hardcoded to problem == "missing_artifact"
+    only. Live-confirmed exposure: thin_coverage burned a full 8-attempt budget on a
+    verbatim-repeated narration with no guard at all; findings_ungrounded independently
+    confirmed 4 consecutive identical retries in a benchmark run. Every OTHER problem type
+    shares the same risk in principle (a Builder/Planner repeating an identical failed fix),
+    so the guard now covers every problem except the one deliberately-excluded case:
+    missing_findings — confirmed live (check_missing_findings's own docstring) to
+    genuinely self-correct after 6 identical-looking failures, on the 7th attempt; an
+    early cutoff here would have killed that exact run's real recovery.
+
+    force_whole_rebuild (2026-07-22, ACM CAIS '26 planning-horizon paper, RESEARCH.md
+    §1): single-step replanning (this project's own "ADAPTIVE PLANNING LOOP" shape) gets
+    stuck in repetitive identical-action loops far more than full-horizon replanning,
+    which instead regenerates the WHOLE plan on a repetition trigger and tends to revise
+    strategy rather than keep re-patching the same failed local fix. Bounded to exactly
+    ONE extra, more expensive attempt per problem type (whole_approach_retry_used_for,
+    on run_state.data) before falling through to the pre-existing early-exit behavior
+    unchanged -- never an unbounded loop. Threshold is the module-level
+    CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD (2026-07-31, hoisted out of local
+    scope) -- shared with _capped's own cap logic so the two can never silently disagree
+    on the number again (they did, once, before this fix: _capped's own threshold was
+    first set to 2, which pre-empted this exact escalation's one guaranteed shot).
+
+    Returns (force_whole_rebuild, attempt) — attempt is forced to max_attempts once a run has
+    already used its one force_whole_rebuild shot for this problem and is STILL stuck, the same
+    mutation `run_completion_check`'s own loop used to apply to its local `attempt` variable
+    inline. Extracted 2026-08-24 (group E) as a pure, no-early-exit computation over already-
+    available state — safe as a standalone step, same discipline as `_detect_verdict` above."""
+    if problem and problem != "missing_findings" and not _ablation_disabled("force_whole_rebuild"):
+        # 2026-07-31: uses the shared _consecutive_occurrences (same function _capped and
+        # check_task_verification_flagged/check_thin_coverage's own caps use, see that
+        # function's docstring) instead of a third hand-rolled copy of this loop -- this
+        # exact duplication (this counter had its own independent untracked_delegation-skip
+        # patch, added live the same night check_task_verification_flagged's own prior_same
+        # loop got the identical patch, in DIFFERENT code) was itself one of the incidents
+        # that motivated consolidating onto one shared definition. untracked_delegation is a
+        # direct symptom of the model failing to comply with task_verification_flagged's own
+        # "reuse the exact task_name" directive specifically, not an unrelated interruption
+        # -- scoped narrowly to that one problem, not generically for every problem pair.
+        skip = frozenset({"untracked_delegation"}) if problem == "task_verification_flagged" else frozenset()
+        consecutive = _consecutive_occurrences(run_state, problem, skip)
+        stuck = consecutive >= CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD
+        # Content-identity escalation (2026-08-17 live incident, see
+        # _content_unchanged_since_last_quarantine's own docstring): the SAME evidence
+        # producing the SAME rejected content is just as provably stuck as 3 consecutive
+        # occurrences of the SAME problem NAME, even when an unrelated problem interrupts
+        # the streak -- checked here (not just via the counter above) so this doesn't
+        # depend on the problem name repeating consecutively at all.
+        if not stuck:
+            quarantine_target = "findings.md" if problem == "findings_ungrounded" else (
+                req_artifact if problem in _QUARANTINE_PROBLEMS else None)
+            if quarantine_target:
+                stuck = _content_unchanged_since_last_quarantine(
+                    quarantine_target, get_workspace_file_content(quarantine_target))
+        if stuck:
+            whole_approach_used = run_state.data.setdefault("whole_approach_retry_used_for", {})
+            if not whole_approach_used.get(problem):
+                whole_approach_used[problem] = True
+                return True, attempt
+            else:
+                return False, max_attempts
+    return False, attempt
+
+
+def _notify_final_verdict(ctx: "Ctx", problem: Optional[str], req_artifact: str,  # noqa: F821
+                           run_state: "RunState", notify, last_assistant_text: str,  # noqa: F821
+                           find_substantial_text: Optional[Callable[[], str]]) -> None:
+    """Retry budget is exhausted and a real problem still exists. The old project silently
+    accepted whatever was left at this point with no indication to the user that the output
+    is unverified or even absent — a genuinely observed failure mode in testing (both
+    "wrote something ungrounded" and, separately, "never wrote anything at all" have been
+    seen live), not a hypothetical one. Surfaces exactly which case this is instead of
+    asserting a file exists when it might not, via `notify()` side effects only (this
+    function returns nothing — extracted 2026-08-24, group E, from `run_completion_check`'s
+    own terminal `if verdict:` branch, which unconditionally falls through to
+    `run_state.set_plan()`/`run_state.save()`/`return False, current_input` regardless of what
+    happens here, so this has no control-flow interaction with its caller beyond notify())."""
+    # Name a sick search layer explicitly — confirmed live (2026-07-11): DDG throttling made
+    # two different models' runs fail in ways that looked exactly like model fabrication.
+    health = get_search_health()
+    if health["calls"] >= 4 and health["failures"] * 2 >= health["calls"]:
+        notify(f"**System (final):** ⚠️ web_search failed {health['failures']}/{health['calls']} "
+               f"times this run (throttling or outage) — this failure is likely environmental, "
+               f"not a model problem. Re-run later before drawing conclusions about the model.")
+    # The check the quarantined draft actually failed (the final-turn problem is usually
+    # just missing_artifact — the model never rewrote after quarantine).
+    quarantine_reason = next(
+        (a["problem"] for a in reversed(run_state.data.get("completion_check_attempts", []))
+         if a.get("problem") in _QUARANTINE_PROBLEMS), problem)
+    if req_artifact in get_workspace_files():
+        # 2026-07-29 (live incident): this exact branch reported ONLY stub_source as
+        # "the" unresolved issue on a real run whose saved final_report.md ALSO had 6
+        # uncited-claims lines (check_uncited_claims never got a turn -- both key off
+        # the single ctx.grounding_problem string, see _other_grounding_problems'
+        # docstring). One-shot final branch, so recomputing both COMPLETION_CHECKS (a
+        # genuinely independent list, safe to re-walk directly) and the cheap grounding
+        # sub-checks (the correct layer for that list, NOT GROUNDING_CHECKS itself) here
+        # is cheap and honest about everything actually still wrong, not just whichever
+        # problem won last.
+        others_final = (
+            [o.problem for o in _collect_other_active_problems(ctx, COMPLETION_CHECKS, problem)]
+            + _other_grounding_problems(ctx, problem)
+        )[:_OTHER_ACTIVE_PROBLEMS_CAP]
+        others_note = (
+            " Also independently unresolved: " + "; ".join(others_final) + "."
+        ) if others_final else ""
+        notify(f"**System (final):** Retry budget exhausted with an unresolved issue ({problem}). "
+               f"`{req_artifact}` exists but could NOT be fully verified this run — treat its "
+               f"claims as unconfirmed. This was not silently accepted.{others_note}")
+    elif problem == "missing_artifact" and _restore_quarantined_draft(req_artifact, quarantine_reason):
+        notify(f"**System (final):** The model never rewrote `{req_artifact}` after its draft "
+               f"was quarantined ({quarantine_reason}) — restored the quarantined draft, "
+               f"loudly labeled with the unresolved check. A real draft that failed one "
+               f"known check beats salvaged narration; review the flagged claims before "
+               f"trusting it.")
+    else:
+        substantial_text = (find_substantial_text() if find_substantial_text else "") or last_assistant_text
+        # 2026-07-31: this salvage attempt used to be gated to a hardcoded tuple of
+        # problem names, widened three separate times in one session as new terminal
+        # problems were found unwritten-but-narrated (missing_artifact, then
+        # task_verification_flagged, then missing_findings). _salvage_narrated_report
+        # itself is generic and already has the real safety gate (refuses anything
+        # under 200 chars) -- it doesn't care WHY req_artifact is missing, only whether
+        # there's substantial narrated text to rescue. The tuple never added real
+        # protection, only a maintenance trap: every NEW problem that could legitimately
+        # end a run with req_artifact unwritten had to be remembered and added by hand,
+        # and each omission silently discarded a coherent narrated summary purely
+        # because a different check happened to be terminal. Now unconditional --
+        # applies whenever nothing else above handled it (req_artifact still doesn't
+        # exist, and the missing_artifact-specific quarantine-restore path didn't apply
+        # first) and there's real substantial text to salvage, for ANY problem.
+        if _salvage_narrated_report(req_artifact, substantial_text):
+            # Structural fallback, not another prompt nudge — see _salvage_narrated_report's
+            # docstring for why: nudging alone has proven insufficient for this exact pattern
+            # across two independent projects now.
+            notify(f"**System (final):** The model never called write_workspace_file despite "
+                   f"repeated nudges, but had already narrated a substantial response. "
+                   f"Auto-recovered it into `{req_artifact}`, clearly marked as unverified salvage "
+                   f"content — this bypassed the grounding check entirely and MUST be reviewed "
+                   f"before trusting it.")
+        else:
+            notify(f"**System (final):** Retry budget exhausted with an unresolved issue ({problem}). "
+                   f"`{req_artifact}` was never written — no report was produced this run. This was "
+                   f"not silently accepted as a success.")
+
+
 async def run_completion_check(query: str, current_input, run_state: "RunState", notify, last_assistant_text: str = "", dispatch_task=None, budget_deadline: float | None = None, find_substantial_text: Optional[Callable[[], str]] = None):  # noqa: F821 — utils.run_state.RunState, annotation only
     """Runs the 3-tier completion check (delegated? artifact exists? really grounded?) plus the
     structural fixes: per-attempt quota top-up, artifact quarantine, run-state persistence, and
@@ -354,95 +616,7 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                 notify("**System (final):** max_run_minutes exceeded mid-retry-chain — stopping "
                        "further Write/Review/Fix dispatches and finishing with whatever exists.")
                 attempt = max_attempts
-            quotas = tool_quotas_ctx.get()
-            files = get_workspace_files()
-            _update_task_verification(run_state)
-            ctx = Ctx(
-                req_artifact=req_artifact,
-                attempt=attempt,
-                max_attempts=max_attempts,
-                # 2026-07-28 resume fix (ARCHITECTURE.md §4's own documented, previously-accepted
-                # gap): the live quota pool alone is always 0 at the start of a resumed process,
-                # even when the interrupted run already delegated real research -- a resumed
-                # Planner correctly told (via build_resume_input) not to re-delegate then gets
-                # check_not_delegated's "your ONLY next tool call must be delegate_tasks" directive
-                # anyway, a live-confirmed direct contradiction that derailed a resumed run into a
-                # think_tool reflection loop. fetched_urls is carried over via the resume-carryover
-                # allowlist (tui.py) and only ever gets populated by a real specialist dispatch, so
-                # a non-empty list is proof delegation genuinely happened in ANY session (this one
-                # or a resumed prior one) -- same "fetched_urls is ground truth" philosophy already
-                # used for grounding checks on resume.
-                delegated=bool(quotas and quotas.get("delegate_tasks", {}).get("used", 0) > 0)
-                          or bool(run_state.data.get("fetched_urls")),
-                files=files,
-                content=get_workspace_file_content(req_artifact) if req_artifact in files else None,
-                quotas=quotas,
-                run_state=run_state,
-            )
-
-            # Detecting the problem (or lack of one) never consumes the retry budget —
-            # only actually retrying does. Otherwise a success on the final allowed
-            # attempt is never recognized as a success (it just falls through silently).
-            verdict = next((v for check in COMPLETION_CHECKS if (v := check(ctx)) is not None), None)
-            verdict = _yield_to_starved_check(verdict, ctx, check_untracked_delegation, never_final_blocker=True)
-            # Cross-TIER starvation, not just within-list (2026-08-01, RESEARCH.md Sec.17f):
-            # GROUNDING_CHECKS is only ever evaluated at all when COMPLETION_CHECKS returns None
-            # for the whole scan below -- a hard two-tier gate, not just first-match priority
-            # within one list. Live-confirmed: a resumed run's check_task_verification_flagged
-            # (COMPLETION_CHECKS) recurred for 6 of 8 attempts on a genuinely real, still-unresolved
-            # problem -- not a bug, _capped()/_yield_to_starved_check above both worked as designed
-            # -- and report_underuses_evidence (GROUNDING_CHECKS, built specifically to catch a
-            # Builder draft dropping a covered facet) never got evaluated ONCE in the entire run, no
-            # matter how many attempts passed, because GROUNDING_CHECKS structurally never got a
-            # turn while ANYTHING in COMPLETION_CHECKS kept returning non-None -- old, carried-over,
-            # or brand new, it doesn't matter which. Reuses _yield_to_starved_check (same mechanism
-            # already protecting check_untracked_delegation above), now passing tier_problems=
-            # _COMPLETION_TIER_PROBLEMS (2026-08-16 follow-up incident: the ORIGINAL same-problem-
-            # only version of this call still missed the case where the winning problem CHANGES
-            # every attempt but always comes from COMPLETION_CHECKS -- a real run cycled
-            # missing_findings -> missing_artifact -> uneven_task_investment -> task_verification_
-            # flagged, never repeating, and report_underuses_evidence never got a single turn in
-            # the whole run despite the report on disk having dropped 3 of 4 requested facets; see
-            # _consecutive_tier_wins' own docstring for the full trace). never_final_blocker=False
-            # (the default): unlike
-            # check_untracked_delegation, a real dropped-facet problem winning as the run's
-            # terminal reported blocker is correct, not something to protect against. Gated on
-            # grounding_check.enabled for the same reason the real GROUNDING_CHECKS scan below is —
-            # report_underuses_evidence only conceptually belongs to that tier by list membership,
-            # it doesn't itself require ctx.grounding_problem, so it would otherwise bypass the
-            # master switch entirely.
-            if verdict is not None and config.get_setting("grounding_check", {}).get("enabled", True):
-                verdict = _yield_to_starved_check(verdict, ctx, check_report_underuses_evidence,
-                                                   tier_problems=_COMPLETION_TIER_PROBLEMS)
-            if verdict is not None:
-                verdict = _with_other_problems_addendum(verdict, ctx, COMPLETION_CHECKS)
-            # grounding_check.enabled is the section's master switch — before this guard it was a
-            # documented no-op (config_template.yaml shipped it, nothing read it; 2026-07-12 audit,
-            # G2). The pre-grounding checks above are structural, not grounding, and still run.
-            if verdict is None and config.get_setting("grounding_check", {}).get("enabled", True):
-                ctx.grounding_problem = await real_grounding_problem(ctx.content or "")
-                verdict = next((v for check in GROUNDING_CHECKS if (v := check(ctx)) is not None), None)
-                # Both siblings share the same starvation risk (2026-07-24's finding, applied
-                # 2026-07-29 to the newer per-task check too) -- neither is meant to compete with a
-                # real correctness problem, but a run stuck on one OTHER recurring problem must not
-                # starve either of them for its whole retry budget.
-                #
-                # 2026-07-31: was a hand-written `lambda c: A(c) or B(c)` here, live-confirmed dead
-                # code (a run that dropped 4 whole tasks' worth of evidence, including the query's
-                # own Colombia angle, fired report_underuses_findings 4+ consecutive times and never
-                # once yielded, because `or` tried the already-winning check first and its condition
-                # was still true). Replaced with the declarative _STARVATION_YIELD_TARGETS registry
-                # + _apply_starvation_yield -- see that function's own docstring for why the dict
-                # form structurally cannot repeat this ordering bug the way a hand-written lambda
-                # could.
-                verdict = _apply_starvation_yield(verdict, ctx)
-                # 2026-07-29 (live incident, see _other_grounding_problems' docstring): check_
-                # stub_source shadowed check_uncited_claims for 3 whole attempts, silently, because
-                # both key off the single ctx.grounding_problem string real_grounding_problem
-                # computes as only its own first hit. Surfaces (not swaps in) whatever else is
-                # cheaply detectable in the same document.
-                if verdict is not None:
-                    verdict = _with_other_grounding_addendum(verdict, ctx)
+            ctx, verdict = await _detect_verdict(req_artifact, attempt, max_attempts, run_state)
             problem = verdict.problem if verdict else None
 
             run_state.sync_fetched_urls()
@@ -479,48 +653,12 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
             # §1): single-step replanning (this project's own "ADAPTIVE PLANNING LOOP" shape) gets
             # stuck in repetitive identical-action loops far more than full-horizon replanning,
             # which instead regenerates the WHOLE plan on a repetition trigger and tends to revise
-            # strategy rather than keep re-patching the same failed local fix. Bounded to exactly
-            # ONE extra, more expensive attempt per problem type (whole_approach_retry_used_for,
-            # on run_state.data) before falling through to the pre-existing early-exit behavior
-            # unchanged -- never an unbounded loop. Threshold is the module-level
-            # CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD (2026-07-31, hoisted out of local
-            # scope) -- shared with _capped's own cap logic so the two can never silently disagree
-            # on the number again (they did, once, before this fix: _capped's own threshold was
-            # first set to 2, which pre-empted this exact escalation's one guaranteed shot).
-            force_whole_rebuild = False
-            if problem and problem != "missing_findings" and not _ablation_disabled("force_whole_rebuild"):
-                # 2026-07-31: uses the shared _consecutive_occurrences (same function _capped and
-                # check_task_verification_flagged/check_thin_coverage's own caps use, see that
-                # function's docstring) instead of a third hand-rolled copy of this loop -- this
-                # exact duplication (this counter had its own independent untracked_delegation-skip
-                # patch, added live the same night check_task_verification_flagged's own prior_same
-                # loop got the identical patch, in DIFFERENT code) was itself one of the incidents
-                # that motivated consolidating onto one shared definition. untracked_delegation is a
-                # direct symptom of the model failing to comply with task_verification_flagged's own
-                # "reuse the exact task_name" directive specifically, not an unrelated interruption
-                # -- scoped narrowly to that one problem, not generically for every problem pair.
-                skip = frozenset({"untracked_delegation"}) if problem == "task_verification_flagged" else frozenset()
-                consecutive = _consecutive_occurrences(run_state, problem, skip)
-                stuck = consecutive >= CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD
-                # Content-identity escalation (2026-08-17 live incident, see
-                # _content_unchanged_since_last_quarantine's own docstring): the SAME evidence
-                # producing the SAME rejected content is just as provably stuck as 3 consecutive
-                # occurrences of the SAME problem NAME, even when an unrelated problem interrupts
-                # the streak -- checked here (not just via the counter above) so this doesn't
-                # depend on the problem name repeating consecutively at all.
-                if not stuck:
-                    quarantine_target = "findings.md" if problem == "findings_ungrounded" else (
-                        req_artifact if problem in _QUARANTINE_PROBLEMS else None)
-                    if quarantine_target:
-                        stuck = _content_unchanged_since_last_quarantine(
-                            quarantine_target, get_workspace_file_content(quarantine_target))
-                if stuck:
-                    whole_approach_used = run_state.data.setdefault("whole_approach_retry_used_for", {})
-                    if not whole_approach_used.get(problem):
-                        whole_approach_used[problem] = True
-                        force_whole_rebuild = True
-                    else:
-                        attempt = max_attempts
+            # strategy rather than keep re-patching the same failed local fix. See
+            # _compute_force_whole_rebuild's own docstring for the escalation logic itself
+            # (extracted 2026-08-24, group E — a pure, no-early-exit computation over
+            # run_state/problem/attempt, safe as a standalone step).
+            force_whole_rebuild, attempt = _compute_force_whole_rebuild(
+                run_state, problem, attempt, max_attempts, req_artifact)
 
             if verdict and attempt < max_attempts:
                 run_state.attempt = attempt + 1
@@ -786,79 +924,8 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                 return True, new_inputs
 
             if verdict:
-                # Retry budget is exhausted and a real problem still exists. The old project silently
-                # accepted whatever was left at this point with no indication to the user that the output
-                # is unverified or even absent — a genuinely observed failure mode in testing (both
-                # "wrote something ungrounded" and, separately, "never wrote anything at all" have been
-                # seen live), not a hypothetical one. Surface exactly which case this is instead of
-                # asserting a file exists when it might not.
-                # Name a sick search layer explicitly — confirmed live (2026-07-11): DDG throttling made
-                # two different models' runs fail in ways that looked exactly like model fabrication.
-                health = get_search_health()
-                if health["calls"] >= 4 and health["failures"] * 2 >= health["calls"]:
-                    notify(f"**System (final):** ⚠️ web_search failed {health['failures']}/{health['calls']} "
-                           f"times this run (throttling or outage) — this failure is likely environmental, "
-                           f"not a model problem. Re-run later before drawing conclusions about the model.")
-                # The check the quarantined draft actually failed (the final-turn problem is usually
-                # just missing_artifact — the model never rewrote after quarantine).
-                quarantine_reason = next(
-                    (a["problem"] for a in reversed(run_state.data.get("completion_check_attempts", []))
-                     if a.get("problem") in _QUARANTINE_PROBLEMS), problem)
-                if req_artifact in get_workspace_files():
-                    # 2026-07-29 (live incident): this exact branch reported ONLY stub_source as
-                    # "the" unresolved issue on a real run whose saved final_report.md ALSO had 6
-                    # uncited-claims lines (check_uncited_claims never got a turn -- both key off
-                    # the single ctx.grounding_problem string, see _other_grounding_problems'
-                    # docstring). One-shot final branch, so recomputing both COMPLETION_CHECKS (a
-                    # genuinely independent list, safe to re-walk directly) and the cheap grounding
-                    # sub-checks (the correct layer for that list, NOT GROUNDING_CHECKS itself) here
-                    # is cheap and honest about everything actually still wrong, not just whichever
-                    # problem won last.
-                    others_final = (
-                        [o.problem for o in _collect_other_active_problems(ctx, COMPLETION_CHECKS, problem)]
-                        + _other_grounding_problems(ctx, problem)
-                    )[:_OTHER_ACTIVE_PROBLEMS_CAP]
-                    others_note = (
-                        " Also independently unresolved: " + "; ".join(others_final) + "."
-                    ) if others_final else ""
-                    notify(f"**System (final):** Retry budget exhausted with an unresolved issue ({problem}). "
-                           f"`{req_artifact}` exists but could NOT be fully verified this run — treat its "
-                           f"claims as unconfirmed. This was not silently accepted.{others_note}")
-                elif problem == "missing_artifact" and _restore_quarantined_draft(req_artifact, quarantine_reason):
-                    notify(f"**System (final):** The model never rewrote `{req_artifact}` after its draft "
-                           f"was quarantined ({quarantine_reason}) — restored the quarantined draft, "
-                           f"loudly labeled with the unresolved check. A real draft that failed one "
-                           f"known check beats salvaged narration; review the flagged claims before "
-                           f"trusting it.")
-                else:
-                    substantial_text = (find_substantial_text() if find_substantial_text else "") or last_assistant_text
-                    # 2026-07-31: this salvage attempt used to be gated to a hardcoded tuple of
-                    # problem names, widened three separate times in one session as new terminal
-                    # problems were found unwritten-but-narrated (missing_artifact, then
-                    # task_verification_flagged, then missing_findings). _salvage_narrated_report
-                    # itself is generic and already has the real safety gate (refuses anything
-                    # under 200 chars) -- it doesn't care WHY req_artifact is missing, only whether
-                    # there's substantial narrated text to rescue. The tuple never added real
-                    # protection, only a maintenance trap: every NEW problem that could legitimately
-                    # end a run with req_artifact unwritten had to be remembered and added by hand,
-                    # and each omission silently discarded a coherent narrated summary purely
-                    # because a different check happened to be terminal. Now unconditional --
-                    # applies whenever nothing else above handled it (req_artifact still doesn't
-                    # exist, and the missing_artifact-specific quarantine-restore path didn't apply
-                    # first) and there's real substantial text to salvage, for ANY problem.
-                    if _salvage_narrated_report(req_artifact, substantial_text):
-                        # Structural fallback, not another prompt nudge — see _salvage_narrated_report's
-                        # docstring for why: nudging alone has proven insufficient for this exact pattern
-                        # across two independent projects now.
-                        notify(f"**System (final):** The model never called write_workspace_file despite "
-                               f"repeated nudges, but had already narrated a substantial response. "
-                               f"Auto-recovered it into `{req_artifact}`, clearly marked as unverified salvage "
-                               f"content — this bypassed the grounding check entirely and MUST be reviewed "
-                               f"before trusting it.")
-                    else:
-                        notify(f"**System (final):** Retry budget exhausted with an unresolved issue ({problem}). "
-                               f"`{req_artifact}` was never written — no report was produced this run. This was "
-                               f"not silently accepted as a success.")
+                _notify_final_verdict(ctx, problem, req_artifact, run_state, notify,
+                                       last_assistant_text, find_substantial_text)
 
             run_state.set_plan(get_workspace_file_content("_todos.md") or "")
             run_state.save()

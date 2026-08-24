@@ -1589,14 +1589,18 @@ def main():
     # this one or a resumed prior one) -- otherwise a resumed Planner correctly told not to
     # re-delegate gets check_not_delegated's "your ONLY next tool call must be delegate_tasks"
     # directive anyway, a live-confirmed contradiction that derailed a resumed Ornith-1.0-9B run
-    # into a think_tool reflection loop until it hit quota and was force-aborted. Ctx.delegated is
-    # constructed inline in run_completion_check (not a separately-callable unit), so this pins the
-    # OR-condition at the source level -- same "run_cli isn't easily unit-testable in isolation"
-    # precedent as the resume-carryover tuple assertions just above. ---
-    _run_completion_check_src = _inspect.getsource(_tui_mod_check.run_completion_check)
-    assert 'run_state.data.get("fetched_urls")' in _run_completion_check_src, (
-        "run_completion_check's Ctx.delegated construction must also check "
+    # into a think_tool reflection loop until it hit quota and was force-aborted. Ctx.delegated
+    # construction moved from run_completion_check's own inline body to the extracted
+    # _detect_verdict helper (2026-08-24, group E) -- this pins the OR-condition at the source
+    # level of its new home, same "not a separately-callable unit" precedent as the
+    # resume-carryover tuple assertions just above (still true for the OTHER inline logic that
+    # stayed in run_completion_check, e.g. _BUILDER_NO_DELEGATE_CLARIFICATION below). ---
+    from engine.completion import _detect_verdict
+    _detect_verdict_src = _inspect.getsource(_detect_verdict)
+    assert 'run_state.data.get("fetched_urls")' in _detect_verdict_src, (
+        "_detect_verdict's Ctx.delegated construction must also check "
         "run_state.data['fetched_urls'] (resume-safe), not just the live quota pool")
+    _run_completion_check_src = _inspect.getsource(_tui_mod_check.run_completion_check)
 
     # check_not_delegated itself must NOT fire once ctx.delegated is True, regardless of why --
     # confirms the consumer side still behaves correctly given the corrected Ctx construction.

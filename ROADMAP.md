@@ -230,17 +230,39 @@ tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
   New `completion_checks.py`: 1468 lines. New `findings_evidence.py`: 637 lines. New
   `completion_dispatch.py`: 493 lines. New `completion_starvation.py`: 304 lines.
   `test_structural_checks.py`, `test_tools.py`, and `ruff check .` all pass after each slice.
-  **The remainder — the four routing tuples (`COMPLETION_CHECKS`/`GROUNDING_CHECKS`/
-  `_QUARANTINE_PROBLEMS`/`_BUILDER_FIXABLE_PROBLEMS`/`_FINDINGS_WRITER_FIXABLE_PROBLEMS`) and
-  `run_completion_check` itself (group E, ~430 lines) — is deliberately NOT attempted.** These are
-  the most interconnected part of the file (every check is referenced by name, the dispatch/
-  starvation modules are all wired together here) and the lowest-value target per the planning
-  pass's own assessment; if picked up, treat it the same way as group D — audit test coverage of
-  `run_completion_check` itself first, since it's the one function tying every other extracted
-  module together. Blast radius reminder for whenever more of this is picked up:
-  `test_structural_checks.py` still imports 30+ other private names directly across these modules;
-  any further split must update that file's imports in lockstep (or add a re-export, matching the
-  pattern all five slices above already used).
+  **Group E (`run_completion_check` + the four routing tuples), 2026-08-24**: coverage-audited
+  first per the same discipline as group D — found `run_completion_check` already has 95
+  references in `test_structural_checks.py`, including dozens of direct end-to-end
+  `_asyncio.run(run_completion_check(...))` invocations across scenarios plus source-inspection
+  pins on specific internal details, the opposite situation from `create_local_agent`'s
+  near-zero coverage. Given that, the four routing tuples were left in place (they have exactly
+  one real consumer — `run_completion_check` itself — plus one audit test reading them via
+  `_comp.COMPLETION_CHECKS`/`_comp.GROUNDING_CHECKS`; moving them elsewhere would be pure
+  reshuffling with no complexity reduction, unlike groups A-D's helpers which had genuine
+  circular-import/logical-grouping reasons to relocate). Instead extracted the 3 genuinely
+  separable, no-early-exit/no-`continue` sub-phases of `run_completion_check`'s own
+  ~630-line loop body into module-level helpers, all still living in `completion.py` itself
+  (not a new file — they're tightly coupled to this one function's loop, so a new module would
+  just add indirection without reducing coupling): `_detect_verdict` (build `Ctx`, run the
+  two-tier COMPLETION_CHECKS/GROUNDING_CHECKS scan with all starvation/addendum wrappers),
+  `_compute_force_whole_rebuild` (the consecutive-same-problem escalation check, including its
+  `attempt = max_attempts` mutation, now returned as a tuple), `_notify_final_verdict` (the
+  terminal quarantine-restore/salvage/notify branch, side-effect-only). Deliberately did NOT
+  touch the dispatch branches (Builder/FindingsWriter/thin_coverage/report_underuses_evidence/
+  findings_underuses_evidence) — each ends in a `continue` back to the OUTER while loop, which a
+  nested helper cannot replicate without restructuring control flow into a return-a-sentinel
+  shape, a real behavior-change risk for a mechanical pass. One legitimate test update needed
+  (unlike groups A-D, which needed zero): a source-inspection test asserted
+  `'run_state.data.get("fetched_urls")' in inspect.getsource(run_completion_check)` — updated to
+  inspect `_detect_verdict`'s source instead, since that's where the logic legitimately now
+  lives; the sibling `_BUILDER_NO_DELEGATE_CLARIFICATION` count-2 assertion needed no change
+  since that logic stayed in `run_completion_check` itself. Verified via `ruff check .` and the
+  full existing suite (no behavior change, only 2 lines of test updated to point at the new
+  location). `run_completion_check` itself: ~633 → 432 lines.
+  **This closes out the completion.py decomposition plan.** No further splitting of this file
+  is planned — `run_completion_check`'s remaining body (the dispatch branches + final loop
+  control) is the genuinely irreducible core, and the routing tuples correctly live beside their
+  only consumer.
 
 - **`run_cli`/`BasicTuiAgent` full run-lifecycle unification, re-scoped 2026-07-29, still open.** A
   dedicated audit found the two entry points aren't just stylistic duplicates in places that matter:
