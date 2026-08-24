@@ -125,15 +125,36 @@ tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
   against the decomposed code, plus `test_tools.py` and `ruff check .`. Full narrative belongs in the
   wiki's Completed page on the next migration pass, not repeated here.
 
-- **`completion.py`'s mixed responsibilities, scoped 2026-07-29, not attempted.** The file's own
-  header describes it as a clean list of pure `Ctx -> Optional[Verdict]` check functions, but it
-  also contains findings-authoring/evidence-assembly logic, disk-touching quarantine/restore/salvage
-  helpers that reach into a private name in `tools.fs` at four call sites, async sub-agent dispatch
+- **`completion.py`'s mixed responsibilities, scoped 2026-07-29 — first slice extracted 2026-08-24,
+  the rest deliberately still not attempted.** The file's own header describes it as a clean list of
+  pure `Ctx -> Optional[Verdict]` check functions, but it also contains findings-authoring/evidence-
+  assembly logic, disk-touching quarantine/restore/salvage helpers, async sub-agent dispatch
   orchestration, the task-verification ledger mutator, and the completion-check state machine tying
-  all of it together, none individually bug-prone, but "add a new completion check" now requires
-  understanding all of the above living in one namespace. Blast radius warning for whenever this is
-  picked up: `test_structural_checks.py` imports 40+ private names directly across five modules; any
-  split must update that file's imports in lockstep.
+  all of it together — none individually bug-prone, but "add a new completion check" requires
+  understanding all of the above living in one namespace, and `ARCHITECTURE.md` §1 documents real,
+  delicate cross-cutting invariants here (four routing tuples that must all agree, the starvation/
+  capping machinery) that a 2026-07-24 session hit five real bugs in, in one sitting.
+  **Extracted the quarantine/restore/salvage group** (`_quarantine_artifact`,
+  `_content_unchanged_since_last_quarantine`, `_restore_quarantined_draft`, `_salvage_narrated_report`
+  + its two banner constants, `_ensure_writer_quota_headroom`, `_ensure_reader_quota_headroom`,
+  `_is_transient_ollama_json_error`, `_dispatch_task_retrying_transient_json_error`) to a new module,
+  `src/engine/artifact_salvage.py` — chosen as the first, lowest-risk slice specifically because it
+  has ZERO dependency on `Ctx`/`Verdict` or the check-list/starvation machinery (pure disk I/O +
+  quota-dict arithmetic + one retry wrapper, taking plain args), unlike everything else in the file.
+  `completion.py` imports the group back at module level, so every existing bare-name call site
+  inside `completion.py` and every existing EXTERNAL import path (`test_structural_checks.py`'s
+  direct `from engine.completion import _ensure_writer_quota_headroom` etc., and its
+  `from engine.tui import _restore_quarantined_draft`, which itself re-exports from
+  `engine.completion`) kept working unchanged — verified by running the existing suite unmodified
+  (no test edits needed) plus a before/after sorted-line-set diff confirming no body line was
+  dropped or duplicated. `completion.py`: 3854 → 3650 lines. `test_structural_checks.py`,
+  `test_tools.py`, and `ruff check .` all pass. **The higher-risk remainder — the check-function
+  list, the four routing tuples, and the starvation/capping state machine — is deliberately NOT
+  attempted.** Any future slice of that core needs its own characterization-test pass first (the
+  `create_local_agent` precedent above), not just a mechanical move, since `ARCHITECTURE.md` §1's
+  invariants are the actual hazard here, not the file's line count. Blast radius reminder for
+  whenever more of this is picked up: `test_structural_checks.py` still imports 30+ other private
+  names directly across five modules; any further split must update that file's imports in lockstep.
 
 - **`run_cli`/`BasicTuiAgent` full run-lifecycle unification, re-scoped 2026-07-29, still open.** A
   dedicated audit found the two entry points aren't just stylistic duplicates in places that matter:
