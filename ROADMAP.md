@@ -125,7 +125,7 @@ tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
   against the decomposed code, plus `test_tools.py` and `ruff check .`. Full narrative belongs in the
   wiki's Completed page on the next migration pass, not repeated here.
 
-- **`completion.py`'s mixed responsibilities, scoped 2026-07-29 — three slices extracted (2026-08-24),
+- **`completion.py`'s mixed responsibilities, scoped 2026-07-29 — four slices extracted (2026-08-24),
   the hazardous core deliberately still not attempted.** The file's own header describes it as a
   clean list of pure `Ctx -> Optional[Verdict]` check functions, but it also contains findings-
   authoring/evidence-assembly logic, disk-touching quarantine/restore/salvage helpers, async
@@ -182,19 +182,37 @@ tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
   (`_is_null_finding_summary`, `get_context_budget`, `_looks_like_renamed_task`,
   `_content_word_overlap` — only the moved functions used them), caught by `ruff check .` F401
   immediately after the move.
-  All three slices verified by running the existing suite unmodified plus a before/after sorted-line-set
-  diff confirming no body line was dropped or duplicated. `completion.py`: 3854 → 3650 (slice 1) →
-  2235 (slice 2) → 1618 lines (slice 3). New `completion_checks.py`: 1468 lines. New
-  `findings_evidence.py`: 637 lines. `test_structural_checks.py`, `test_tools.py`, and
+  **Slice 4 (group C — dispatch orchestration)**: `_dispatch_writer_review_fix`,
+  `_dispatch_per_facet_builder_fix`, `_dispatch_per_facet_findings_writer_fix`,
+  `_select_deepening_tasks`, `_dispatch_deepening_round` + `_WRITER_EMPTY_RETRY_ATTEMPTS`/
+  `_MAX_FACET_DISPATCHES` moved to a new module, `src/engine/completion_dispatch.py`. One real
+  circularity: `_dispatch_per_facet_builder_fix` uses `_BUILDER_NO_DELEGATE_CLARIFICATION`, a
+  constant defined in `completion.py` right alongside `_BUILDER_FIXABLE_PROBLEMS` (left there
+  deliberately — it's also used twice more in `run_completion_check` itself, group E, so moving it
+  would just create the reverse problem). Resolved the same way as slice 2's circularity: a local
+  (function-body) `from engine.completion import _BUILDER_NO_DELEGATE_CLARIFICATION` inside just
+  that one function. `completion.py` re-exports all 7 moved names — load-bearing for
+  `test_structural_checks.py`'s direct imports of `_dispatch_writer_review_fix`,
+  `_select_deepening_tasks`, and `_WRITER_EMPTY_RETRY_ATTEMPTS`, and for `run_completion_check`
+  itself (staying in `completion.py`) calling `_dispatch_per_facet_builder_fix`/
+  `_dispatch_per_facet_findings_writer_fix`/`_dispatch_deepening_round`/`_MAX_FACET_DISPATCHES` by
+  name. `math`/`os`/`asyncio` became dead imports in `completion.py` after the move (only these 5
+  functions used them) — removed via `ruff check . --fix`.
+  All four slices verified by running the existing suite unmodified plus a before/after
+  sorted-line-set diff confirming no body line was dropped or duplicated (the only line-level
+  diffs each time are import restructuring/header comments, never code content). `completion.py`:
+  3854 → 3650 (slice 1) → 2235 (slice 2) → 1618 (slice 3) → 1148 lines (slice 4). New
+  `completion_checks.py`: 1468 lines. New `findings_evidence.py`: 637 lines. New
+  `completion_dispatch.py`: 493 lines. `test_structural_checks.py`, `test_tools.py`, and
   `ruff check .` all pass after each slice. **The higher-risk remainder — the four routing tuples
-  themselves, dispatch orchestration (group C), the starvation/capping state machine (group D), and
-  `run_completion_check` (group E) — is deliberately NOT attempted.** Any future slice of that core
-  needs its own characterization-test pass first (the `create_local_agent` precedent), not just a
-  mechanical move, since `ARCHITECTURE.md` §1's invariants are the actual hazard here, not the
-  file's line count. Blast radius reminder for whenever more of this is picked up:
-  `test_structural_checks.py` still imports 30+ other private names directly across these modules;
-  any further split must update that file's imports in lockstep (or add a re-export, matching the
-  pattern all three slices above already used).
+  themselves, the starvation/capping state machine (group D), and `run_completion_check` (group E)
+  — is deliberately NOT attempted.** Any future slice of that core needs its own
+  characterization-test pass first (the `create_local_agent` precedent), not just a mechanical
+  move, since `ARCHITECTURE.md` §1's invariants are the actual hazard here, not the file's line
+  count. Blast radius reminder for whenever more of this is picked up: `test_structural_checks.py`
+  still imports 30+ other private names directly across these modules; any further split must
+  update that file's imports in lockstep (or add a re-export, matching the pattern all four slices
+  above already used).
 
 - **`run_cli`/`BasicTuiAgent` full run-lifecycle unification, re-scoped 2026-07-29, still open.** A
   dedicated audit found the two entry points aren't just stylistic duplicates in places that matter:
