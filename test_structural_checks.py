@@ -2243,6 +2243,164 @@ def main():
 
     _starvation_guard_scenario()
 
+    # --- _capped (2026-07-31): a non-self-resolving check (not Builder/FindingsWriter-fixable)
+    # must go quiet after CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD (3) consecutive same-problem
+    # occurrences, so first-match ordering in COMPLETION_CHECKS/GROUNDING_CHECKS can fall through to
+    # whatever's next instead of starving it forever. This was previously enforced only via a
+    # static grep ("every non-self-resolving check calls _capped") -- no test exercised _capped's
+    # OWN behavior directly, a gap flagged by the group-D coverage audit before any decomposition
+    # of the starvation/capping state machine was attempted (ARCHITECTURE.md's flagged hazard). ---
+    from engine.completion import _capped, CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD
+
+    def _capped_scenario():
+        with tempfile.TemporaryDirectory() as tmpdir_cap:
+            rs = RunState(tmpdir_cap)
+            rs.set_query("q")
+            ctx = Ctx(req_artifact="final_report.md", attempt=0, max_attempts=8, delegated=True,
+                      files=[], content=None, quotas={}, run_state=rs)
+            v = Verdict("thin_coverage", "w", "i")
+
+            # verdict is None -> no-op passthrough regardless of history.
+            assert _capped(ctx, "thin_coverage", None) is None
+
+            # Below threshold (2 consecutive) -> verdict passes through unchanged.
+            rs.data["completion_check_attempts"] = [
+                {"problem": "thin_coverage"}, {"problem": "thin_coverage"},
+            ]
+            assert _capped(ctx, "thin_coverage", v) is v
+
+            # At threshold (3 consecutive) -> goes quiet (None), letting the pipeline fall through
+            # to whatever check is next in COMPLETION_CHECKS/GROUNDING_CHECKS.
+            rs.data["completion_check_attempts"] = [
+                {"problem": "thin_coverage"}, {"problem": "thin_coverage"}, {"problem": "thin_coverage"},
+            ]
+            assert _consecutive_occurrences(rs, "thin_coverage") == CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD
+            assert _capped(ctx, "thin_coverage", v) is None
+
+            # skip_problems: an interrupting problem in the skip set doesn't break the streak.
+            rs.data["completion_check_attempts"] = [
+                {"problem": "thin_coverage"}, {"problem": "untracked_delegation"},
+                {"problem": "thin_coverage"}, {"problem": "thin_coverage"},
+            ]
+            assert _capped(ctx, "thin_coverage", v, skip_problems=frozenset({"untracked_delegation"})) is None
+
+            # A genuinely different interrupting problem (not in skip set) breaks the streak ->
+            # verdict passes through again instead of staying capped.
+            rs.data["completion_check_attempts"] = [
+                {"problem": "thin_coverage"}, {"problem": "missing_artifact"},
+                {"problem": "thin_coverage"}, {"problem": "thin_coverage"},
+            ]
+            assert _capped(ctx, "thin_coverage", v) is v
+
+    _capped_scenario()
+
+    # --- _apply_starvation_yield (2026-07-31): declarative sibling-yield -- report_underuses_
+    # findings must yield to report_underuses_evidence once stuck _STARVATION_SKIP_THRESHOLD times,
+    # structurally unable to repeat the old dead-code `lambda c: A(c) or B(c)` bug (A always wins
+    # the `or` since it's the same check already winning the scan, so B never actually runs). No
+    # prior test exercised this helper directly (another group-D coverage gap). ---
+    from engine.completion import _apply_starvation_yield, _STARVATION_YIELD_TARGETS, _STARVATION_SKIP_THRESHOLD
+
+    def _apply_starvation_yield_scenario():
+        with tempfile.TemporaryDirectory() as tmpdir_asy:
+            rs = RunState(tmpdir_asy)
+            rs.set_query("q")
+            ctx = Ctx(req_artifact="final_report.md", attempt=0, max_attempts=8, delegated=True,
+                      files=[], content=None, quotas={}, run_state=rs)
+            v = Verdict("report_underuses_findings", "w", "i")
+
+            # verdict is None -> no-op.
+            assert _apply_starvation_yield(None, ctx) is None
+
+            # A problem with no declared yield target -> unchanged regardless of history.
+            other = Verdict("missing_artifact", "w", "i")
+            rs.data["completion_check_attempts"] = [{"problem": "missing_artifact"}] * 5
+            assert _apply_starvation_yield(other, ctx) is other
+
+            orig_target = _STARVATION_YIELD_TARGETS["report_underuses_findings"]
+            called = []
+            try:
+                def _fake_target(_ctx):
+                    called.append(1)
+                    return Verdict("report_underuses_evidence", "w2", "i2")
+                _STARVATION_YIELD_TARGETS["report_underuses_findings"] = _fake_target
+
+                # Has a target, but not yet stuck -> unchanged, target never even consulted.
+                rs.data["completion_check_attempts"] = [{"problem": "report_underuses_findings"}]
+                assert _apply_starvation_yield(v, ctx) is v
+                assert not called, "target must not be probed before the threshold"
+
+                # Stuck (>= _STARVATION_SKIP_THRESHOLD consecutive) -> target gets probed and wins.
+                rs.data["completion_check_attempts"] = [
+                    {"problem": "report_underuses_findings"}
+                ] * _STARVATION_SKIP_THRESHOLD
+                result = _apply_starvation_yield(v, ctx)
+                assert called
+                assert result.problem == "report_underuses_evidence", result
+
+                # Target returns the SAME problem as the winner -> falls back to the original
+                # verdict rather than looping (structural guard, even though this specific pairing
+                # can't hit it in practice).
+                called.clear()
+                _STARVATION_YIELD_TARGETS["report_underuses_findings"] = lambda c: v
+                assert _apply_starvation_yield(v, ctx) is v
+
+                # Target has nothing to report -> falls back to the original verdict.
+                _STARVATION_YIELD_TARGETS["report_underuses_findings"] = lambda c: None
+                assert _apply_starvation_yield(v, ctx) is v
+            finally:
+                _STARVATION_YIELD_TARGETS["report_underuses_findings"] = orig_target
+
+    _apply_starvation_yield_scenario()
+
+    # --- _collect_other_active_problems / _with_other_problems_addendum (2026-07-29): a winning
+    # verdict must not silently shadow OTHER, simultaneously-true COMPLETION_CHECKS problems for an
+    # entire run -- confirmed live a real mid-priority check (check_uncited_claims) sat true for 3
+    # attempts behind a persistently-recurring stub_source and was never disclosed, even in the
+    # terminal "retry budget exhausted" message. No prior test exercised either helper directly. ---
+    from engine.completion import (
+        _collect_other_active_problems, _with_other_problems_addendum, _OTHER_ACTIVE_PROBLEMS_CAP,
+    )
+
+    def _other_active_problems_scenario():
+        with tempfile.TemporaryDirectory() as tmpdir_oap:
+            rs = RunState(tmpdir_oap)
+            rs.set_query("q")
+            ctx = Ctx(req_artifact="final_report.md", attempt=0, max_attempts=8, delegated=True,
+                      files=[], content=None, quotas={}, run_state=rs)
+            winner = Verdict("stub_source", "stub warning", "stub inject")
+
+            v_a = Verdict("uncited_claims", "wa", "ia")
+            v_b = Verdict("topical_mismatch", "wb", "ib")
+            v_same = Verdict("stub_source", "dup", "dup")  # same problem as the winner -> excluded
+            checks = [
+                lambda c: None,  # a clean check contributes nothing
+                lambda c: v_a,
+                lambda c: v_same,
+                lambda c: v_b,
+            ]
+
+            others = _collect_other_active_problems(ctx, checks, "stub_source")
+            assert others == [v_a, v_b], others
+
+            augmented = _with_other_problems_addendum(winner, ctx, checks)
+            assert augmented.inject.startswith("stub inject")
+            assert "ALSO currently true" in augmented.inject
+            assert "uncited_claims" in augmented.inject and "topical_mismatch" in augmented.inject
+            # The recorded problem/warning must stay untouched -- only inject text gains an addendum.
+            assert augmented.problem == "stub_source" and augmented.warning == "stub warning"
+
+            # Nothing else active -> no-op, byte-identical verdict object (not just equal content).
+            clean_checks = [lambda c: None, lambda c: v_same]
+            assert _with_other_problems_addendum(winner, ctx, clean_checks) is winner
+
+            # Cap: more active problems than _OTHER_ACTIVE_PROBLEMS_CAP (3) still returns at most 3.
+            many = [lambda c, i=i: Verdict(f"p{i}", f"w{i}", f"i{i}") for i in range(5)]
+            capped_others = _collect_other_active_problems(ctx, many, "nonexistent")
+            assert len(capped_others) == _OTHER_ACTIVE_PROBLEMS_CAP, capped_others
+
+    _other_active_problems_scenario()
+
     # --- find_cross_source_contradictions: citation-only lines must never be treated as claims.
     # Live-confirmed false positive (2026-07-14, real Iceland-population TUI run): an agency name
     # ("Statistics Iceland") appearing ONLY inside a `- Source: [Title - Statistics Iceland](url)`
