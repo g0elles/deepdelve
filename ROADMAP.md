@@ -107,55 +107,30 @@ here got moved out, most already live in the wiki's [Completed](https://github.c
 or [Changelog](https://github.com/g0elles/deepdelve/wiki/Changelog); anything not yet migrated is
 tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
 
-- **`create_local_agent`'s nested-closure god-function, scoped 2026-07-29, decomposition itself
-  still not attempted (1098 lines checked directly as of 2026-08-23).**
-  `_run_single_task` and `delegate_tasks` are deeply nested closures inside `create_local_agent`,
-  capturing dozens of enclosing locals by reference rather than as parameters.
-  **Characterization tests landed 2026-08-23** (`test_structural_checks.py`'s
-  `_create_local_agent_characterization_scenario`): captures the real `delegate_tasks` closure via
-  a patch on `OpenAIChatCompletionClient.as_agent` (it's never returned directly, only
-  `_run_single_task` is, as `create_local_agent`'s 3rd tuple element), then pins the pre-dispatch
-  validation gauntlet's current behavior (malformed-schema rejection, placeholder detection,
-  concrete-subject/pronoun check, cross-task-dependency phrasing, unfetched-URL and guessed-filename
-  checks for Analyzer targets, the exclusion-topic full-batch skip, the Planner round cap, the
-  specialist per-task delegation cap) end to end with zero network/model calls, since every one of
-  those paths returns before `sub_agent.run()` is ever reached. Also pins `_run_single_task`'s
-  bad-`agent_id` early-return (the exact path a past latent bug lived in — `children_token` unset on
-  that path once crashed the `finally` block's own reset with `UnboundLocalError`, see the closure's
-  header comment). **Streaming-loop coverage extended same day** (`_run_single_task_streaming_
-  characterization_scenario`): a fake `sub_agent.run()`/stream harness (scripted per-turn updates,
-  or a raised exception, or a pre-yield sleep) drives the real `while has_requests` loop end to end
-  for the malformed-tool-call nudge retry, the zero-synthesis nudge, the context-budget nudge +
-  cutoff-marker wording, and the `sub_agent_timeout_minutes` deadline cutoff — all with real
-  wall-clock timing on the deadline case (`asyncio.wait_for` cancels a 5s-sleeping fake stream at
-  the ~0.2s configured deadline, same mechanism/precedent as the existing `max_run_minutes` cutoff
-  test above). **This test suite found a real, previously-unknown production bug on first run**: the
-  zero-synthesis branch raised `UnboundLocalError` on `Message` whenever it fired as a dispatch's
-  FIRST retry (no prior malformed-tool-call/tool-error/budget nudge in the same call). Root cause:
-  `Message` is imported at module scope, but three OTHER branches in this same function each did
-  their own redundant `from agent_framework import Message` — Python treats a name as function-local
-  everywhere in a function if it's ever locally imported/assigned anywhere in that function's body,
-  which silently shadowed the module-level import for the whole closure and left the one branch
-  without its own local import broken. Fixed by deleting all three redundant local imports (not by
-  adding a fourth) so nothing shadows the module-level name — the actual root-cause fix, and the
-  one most future branches can't re-break by construction. Both `test_structural_checks.py` and
-  `test_tools.py` pass with the fix; the new test's own comment records this incident so a
-  regression of the shadowing is caught by the harness, not just the pure predicate tests.
-  **Post-loop coverage also landed same day** (`_run_single_task_post_loop_characterization_
-  scenario`): mocks `utils.grounding.real_grounding_problem` itself (an `AsyncMock`, not the NLI/
-  reranker models underneath it — those have their own separate coverage) to pin two branches:
-  the Searcher-tier grounding-warning path (flagged problem correctly threads into both the
-  returned text AND the stored `RunState` finding's summary, keyed to the instructions' own
-  reference URL since no real fetch happened this dispatch) and the Analyzer-tier reconstructed-
-  URL check (a summary citing a different URL than the one the task's instructions actually named
-  gets flagged as guessed/hallucinated). **Still explicitly open**: the scope-relevance check
-  (`verify_scope_relevance`) is a separate code path from `real_grounding_problem` and still has no
-  direct test — it needs a real workspace-file content fixture (`get_workspace_file_content`) this
-  pass didn't build. Recommended approach for the actual decomposition, now that three
-  characterization layers exist (pre-dispatch validation, the streaming loop, post-loop grounding/
-  storage): extend to scope-relevance if that becomes a decomposition target, then decompose,
-  attempting decomposition without a safety net on a function this size is exactly the kind of
-  change that creates a new incident rather than closing one.
+- **`create_local_agent`'s nested-closure god-function: decomposition landed 2026-08-23, one
+  follow-up test gap left open.** `_run_single_task` and `delegate_tasks` used to be deeply nested
+  closures inside `create_local_agent` (1098 lines), capturing dozens of enclosing locals by
+  reference. Sequence that day: (1) three characterization-test layers added first, covering the
+  pre-dispatch validation gauntlet, the streaming/retry loop, and post-loop grounding/finding-
+  storage — see `test_structural_checks.py`'s `_create_local_agent_characterization_scenario`,
+  `_run_single_task_streaming_characterization_scenario`, and
+  `_run_single_task_post_loop_characterization_scenario`; (2) the streaming-loop test suite caught a
+  real, previously-unknown `UnboundLocalError` on `Message` on first run (three branches inside the
+  function each did a redundant local `from agent_framework import Message`, which shadows the
+  already-imported module-level name for the WHOLE function — fixed by deleting the three redundant
+  imports, not adding a fourth); (3) the actual decomposition: `_run_single_task`'s body moved to a
+  module-level `_dispatch_single_task`, `delegate_tasks`'s body to module-level
+  `_dispatch_tasks_batch`, every implicit closure capture (`client`, `specialist_client`, `sem`,
+  `holds_token`, timeout/instruction-formatting values, `subagent_callback`, and the mutual
+  `delegate_tasks`/`_run_single_task` reference) turned into an explicit parameter.
+  `create_local_agent` still builds same-named thin closures that just forward to these (so mutual
+  late-binding and every external caller/return-value shape is unchanged) — `create_local_agent`
+  itself shrank from 1098 to 184 lines. All three characterization layers pass unchanged against
+  the decomposed code (confirming behavior-preserving), plus `test_tools.py` and `ruff check .`.
+  **Still open**: the scope-relevance check (`verify_scope_relevance`, inside
+  `_dispatch_single_task`) has no direct test — needs a real `get_workspace_file_content` fixture,
+  not built yet. Low risk (an isolated `if` block, not disturbed by the extraction), but worth
+  closing before further edits to that function.
 
 - **`completion.py`'s mixed responsibilities, scoped 2026-07-29, not attempted.** The file's own
   header describes it as a clean list of pure `Ctx -> Optional[Verdict]` check functions, but it

@@ -953,6 +953,957 @@ def topup_quota_pool(pool: dict) -> dict:
             pool[tool_name]["limit"] += amount
     return pool
 
+
+# Extracted from create_local_agent's nested-closure body (2026-08-23, ROADMAP.md Pending
+# "create_local_agent's nested-closure god-function") -- these two used to be `_run_single_task`
+# and `delegate_tasks`, deeply nested closures capturing dozens of create_local_agent locals by
+# reference. Behavior is UNCHANGED: create_local_agent still builds a thin same-named closure for
+# each (so `delegate_tasks` and `_run_single_task` still late-bind each other exactly as before,
+# and every external caller/return-value shape is untouched) that just forwards to these, with
+# every previously-implicit closure capture now an explicit parameter. This is what makes the
+# actual per-task dispatch/quota-ring-fencing/specialist-tiering logic directly importable and
+# unit-testable without the create_local_agent+as_agent-patch dance
+# test_structural_checks.py's characterization scenarios still use (kept as regression coverage
+# of the thin wrappers' forwarding, not replaced).
+async def _dispatch_single_task(
+    task_name: str, instructions: str, agent_id: str = None, *,
+    client, specialist_client, sem: asyncio.Semaphore, holds_token: contextvars.ContextVar,
+    _sub_agent_timeout_minutes: float, _sdk_timeout_ceiling_seconds: float,
+    report_style_instructions: str, citation_format_instructions: str,
+    subagent_callback, delegate_tasks_tool,
+) -> str:
+    async with sem:
+        parent_depth = delegation_depth_ctx.get()
+        depth_token = delegation_depth_ctx.set(parent_depth + 1)
+        # Only set (and later reset) at the depth 0 -> 1 transition -- a deeper nested call
+        # leaves this unset so it inherits the already-set value from its depth==1 ancestor's
+        # context, per top_level_task_name_ctx's own header comment.
+        top_level_token = top_level_task_name_ctx.set(task_name) if parent_depth == 0 else None
+        token_setter = holds_token.set(True)
+        # Pre-declared so the `finally` block's reset is always safe even on an early return
+        # below (bad agent_id) — found via a real end-to-end test: a model invented a fictional
+        # agent_id ("AI-3") not matching any real specialist, hit the early-return error path,
+        # and finally's `available_sub_agents_ctx.reset(children_token)` crashed with
+        # UnboundLocalError since children_token was never assigned on that path. This bug was
+        # latent in the reference project this was forked from too — never previously observed
+        # because bad agent_id values apparently never came up in its own testing.
+        children_token = None
+        # Per-task-scoped fetch tracking (see utils/run_state.py's task_fetched_urls_ctx
+        # header comment) — NOT a before/after length delta on the shared run-wide list, which
+        # races under concurrent delegate_tasks dispatch.
+        task_urls_token = task_fetched_urls_ctx.set([])
+        # In-turn fetch-repetition guard (see utils/run_state.py's task_dedup_fetch_repeat_ctx
+        # header comment) — fresh empty dict per task, same per-dispatch-scoping need as
+        # task_urls_token just above.
+        dedup_fetch_repeat_token = task_dedup_fetch_repeat_ctx.set({})
+        # Stable per-dispatch identity for the quota ring-fence's per-task rescue tracking
+        # (tools/core.py::check_quota) — see utils/run_state.py's task_id_ctx header comment.
+        task_id_token = task_id_ctx.set(_next_task_id())
+        # Fresh per-task-instance Analyzer-delegation counter (see this contextvar's own header
+        # comment — a mutable single-element list, mutated in place, never reassigned) — this
+        # dispatch may itself be a Tier-2 specialist about to call delegate_tasks.
+        specialist_delegate_count_token = specialist_delegate_task_count_ctx.set([0])
+        # Per-dispatch read_workspace_file/grep_workspace_file counter (see task_read_grep_
+        # count_ctx's own header comment). Deliberately left None (contextvar default, cap
+        # DISABLED) for Builder/FindingsWriter/PeerReviewer (_NON_RESEARCH_DISPATCH_ROLES) —
+        # their read/grep usage is reviewing findings.md/final_report.md, a different,
+        # legitimate pattern from an Analyzer chasing one hard external document, and this cap
+        # exists specifically for the latter. Set to [0] (cap ACTIVE) for every other role —
+        # in practice this only ever matters for DocumentAnalyzer/DataAnalyzer, since Searcher
+        # roles (WebSearcher/AcademicSearcher) don't have read_workspace_file/
+        # grep_workspace_file in their own tool list (app.py) at all.
+        read_grep_count_token = task_read_grep_count_ctx.set(
+            None if agent_id in _NON_RESEARCH_DISPATCH_ROLES else [0]
+        )
+        # Expose this task's scope entities to web_search for the query-level scope warning
+        # (see utils/run_state.py's scope_entities_ctx header comment).
+        scope_token = scope_entities_ctx.set(_extract_scope_entities(instructions))
+        try:
+            current_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            # Look up the target agent from the CALLER's available sub-agents (scoped, not global)
+            caller_sub_agents = available_sub_agents_ctx.get()
+            target_config = None
+            if agent_id and caller_sub_agents:
+                for conf in caller_sub_agents:
+                    if conf.name == agent_id:
+                        target_config = conf
+                        break
+                if target_config is None:
+                    return f"## Error for {task_name}\nFailed to delegate: Sub-agent named '{agent_id}' does not exist. Available sub-agents for this caller: {[c.name for c in caller_sub_agents]}.\n---"
+            else:
+                target_config = caller_sub_agents[0] if caller_sub_agents else None
+
+            sub_tools = apply_tool_permissions(target_config.tools.copy() if target_config else [])
+            # Only inject delegate_tasks if the TARGET agent has its own children
+            target_children = target_config.sub_agents if target_config else []
+            if target_children and delegate_tasks_tool not in sub_tools:
+                sub_tools.append(delegate_tasks_tool)
+            if think_tool not in sub_tools:
+                sub_tools.append(think_tool)
+
+            # Scope the available sub-agents for the target agent's own delegate_tasks calls
+            children_token = available_sub_agents_ctx.set(target_children)
+
+            # Disambiguate a task_name reused across multiple real dispatches (the original
+            # delegate_tasks batch, then again in a later re-delegation after a
+            # completion-check nudge) — e.g. 'SubAgent_background' -> 'SubAgent_background#2'.
+            # Without this the session log/UI shows two separate short invocations as one
+            # source label, making elapsed-time analysis meaningless (confirmed live: looked
+            # exactly like one continuous 19-minute sub-agent, was actually two ~2-3 minute
+            # ones with an 11-minute gap where the Planner was busy elsewhere).
+            raw_agent_name = f"SubAgent_{task_name}"
+            _rs = run_state_ctx.get()
+            agent_name = _rs.next_subagent_label(raw_agent_name) if _rs is not None else raw_agent_name
+
+            sub_instr = ""
+            if target_config:
+                sub_instr = _safe_format(
+                    target_config.instructions,
+                    date=current_date,
+                    task_name=task_name,
+                    workspace_dir=config.get_workspace_dir(),
+                    delegation_instructions=SUBAGENT_DELEGATION_INSTRUCTIONS.format(
+                        max_concurrency=config.get_setting("concurrency", {}).get("max_concurrent_tasks", 1)
+                    ),
+                    report_style_instructions=report_style_instructions,
+                    citation_format_instructions=citation_format_instructions,
+                    **_get_quota_format_vars()
+                )
+            else:
+                sub_instr = _safe_format(
+                    SUBAGENT_INSTRUCTIONS,
+                    date=current_date,
+                    task_name=task_name,
+                    workspace_dir=config.get_workspace_dir(),
+                    delegation_instructions=SUBAGENT_DELEGATION_INSTRUCTIONS.format(
+                        max_concurrency=config.get_setting("concurrency", {}).get("max_concurrent_tasks", 1)
+                    ),
+                    report_style_instructions=report_style_instructions,
+                    citation_format_instructions=citation_format_instructions,
+                    **_get_quota_format_vars()
+                )
+
+            # MCP tools (settings.mcp_servers, scoped per sub-agent name — see
+            # tools/mcp_loader.py) are connected only for the lifetime of this one delegated
+            # task and closed automatically on exit, success or failure. No-op when
+            # mcp_servers is unconfigured (the default) — AsyncExitStack does nothing.
+            from contextlib import AsyncExitStack
+            from tools.mcp_loader import build_mcp_tools_for_agent
+            mcp_tools = build_mcp_tools_for_agent(target_config.name if target_config else "SubAgent")
+
+            async with AsyncExitStack() as mcp_stack:
+                for mt in mcp_tools:
+                    await mcp_stack.enter_async_context(mt)
+
+                # settings.specialist_model tiering: leaf specialist roles (see
+                # _SPECIALIST_MODEL_ROLES) get the lighter/faster client when configured;
+                # every other role (Builder/FindingsWriter/PeerReviewer, or an unrecognized
+                # agent_id) stays on the main client — same object as `client` when tiering
+                # isn't configured, so this is a no-op in the common case.
+                dispatch_client = specialist_client if agent_id in _SPECIALIST_MODEL_ROLES else client
+                sub_agent = dispatch_client.as_agent(
+                    name=_sanitize_name(agent_name),
+                    instructions=sub_instr,
+                    tools=sub_tools + mcp_tools,
+                    default_options=_get_default_options(),
+                    compaction_strategy=_compaction_strategy_for_role(agent_id),
+                )
+                final_text = ""
+                current_input = instructions
+                has_requests = True
+                malformed_retries = 0
+                # Sibling of malformed_retries, for the in-band tool-error class
+                # tool_result_error_nudge covers (hallucinated tool name, rejected arguments,
+                # missing file) — see its docstring for why this needed its own counter/path
+                # rather than reusing the exception-only malformed_tool_call_nudge.
+                tool_error_retries = 0
+                pending_tool_error_nudge = None
+                # Context-budget guard (see get_context_budget): Analyzer-tier tasks are the
+                # likeliest overflow point — 30 capped reads of a 25KB source still exceed a
+                # 16K-token num_ctx inside ONE task stream. TUI main loop deliberately not
+                # guarded (a user at the keyboard can /stop), same policy as max_run_minutes.
+                context_budget = get_context_budget()
+                stream_chars = 0
+                budget_nudged = False
+                # Zero-synthesis retry state (2026-08-19) -- see the check itself, right after
+                # the per-iteration nudges below, for the full incident this exists for.
+                any_tool_call = False
+                synthesis_nudged = False
+                # Fresh per-DISPATCH deadline (not per internal retry-turn below, and not
+                # shared with any other concurrent/sequential dispatch) -- covers this whole
+                # sub-agent call's total wall-clock budget, same "one deadline for the whole
+                # thing" semantics max_run_minutes already applies to the Planner's own run.
+                task_start = time.monotonic()
+                task_deadline = (
+                    task_start + _sub_agent_timeout_minutes * 60
+                ) if _sub_agent_timeout_minutes else None
+                # Ring-fence, mirroring tools/core.py::check_quota's existing one-time-per-task
+                # rescue (2026-07-21, "4th synthesis-vanishing mechanism"): a dispatch that has
+                # already fetched something real (task_fetched_urls_ctx non-empty) but hasn't
+                # finished synthesizing it gets ONE deadline extension instead of being cut off
+                # mid-turn -- otherwise the real fetch and its summary permanently split across
+                # two un-mergeable findings entries (see ROADMAP.md's writeup). Bounded twice
+                # over: only fires once per dispatch (deadline_extended), and never past
+                # _sdk_timeout_ceiling_seconds minus a safety margin (see that variable's own
+                # comment for why).
+                deadline_extended = False
+
+                def _try_extend_deadline_once() -> bool:
+                    nonlocal task_deadline, deadline_extended
+                    if deadline_extended or not task_deadline:
+                        return False
+                    if not (task_fetched_urls_ctx.get() or None):
+                        return False
+                    extended = _ring_fenced_deadline(
+                        task_start, task_deadline, _sub_agent_timeout_minutes,
+                        _sdk_timeout_ceiling_seconds,
+                    )
+                    if extended is None:
+                        return False
+                    task_deadline = extended
+                    deadline_extended = True
+                    return True
+
+                while has_requests:
+                    has_requests = False
+                    user_input_requests = []
+
+                    try:
+                        stream = sub_agent.run(current_input, stream=True)
+                        # Manually driven __anext__ + asyncio.wait_for, NOT `async for update
+                        # in stream` -- same fix as engine/tui.py's run_cli (2026-07-12), now
+                        # ported here (2026-07-14) after the identical failure mode was
+                        # confirmed live at this exact call site: a plain async-for only
+                        # checks a deadline once it actually RECEIVES an update, so a stream
+                        # that goes a very long time between updates (or one single very long
+                        # generation) is invisible to any deadline until it finally yields
+                        # something. Racing each __anext__() against the remaining run budget
+                        # via asyncio.wait_for fires the cutoff on a real wall-clock timer
+                        # regardless of how long the stream goes quiet.
+                        stream_iter = stream.__aiter__()
+                        while True:
+                            if task_deadline:
+                                remaining = task_deadline - time.monotonic()
+                                if remaining <= 0:
+                                    if _try_extend_deadline_once():
+                                        continue
+                                    final_text += (
+                                        f"\n\n[SYSTEM: task '{task_name}' cut short -- "
+                                        f"sub_agent_timeout_minutes ({_sub_agent_timeout_minutes}) exceeded.]")
+                                    break
+                            else:
+                                remaining = None
+                            try:
+                                update = await asyncio.wait_for(stream_iter.__anext__(), timeout=remaining)
+                            except asyncio.TimeoutError:
+                                if _try_extend_deadline_once():
+                                    continue
+                                final_text += (
+                                    f"\n\n[SYSTEM: task '{task_name}' cut short -- "
+                                    f"sub_agent_timeout_minutes ({_sub_agent_timeout_minutes}) exceeded "
+                                    f"(stream produced no update before the deadline).]")
+                                break
+                            except StopAsyncIteration:
+                                break
+                            if subagent_callback:
+                                await subagent_callback(update, is_subagent=True, agent_name=agent_name)
+                            for c in update.contents:
+                                if c.type == "text" and c.text:
+                                    final_text += c.text
+                                elif c.type == "function_result":
+                                    any_tool_call = True
+                                    # Overwritten on every function_result seen this turn, not
+                                    # just set-once — a LATER successful call after an earlier
+                                    # error means the model already self-corrected on its own
+                                    # within the SDK's internal loop, so only the error still
+                                    # standing at the end of the stream (if any) gets nudged.
+                                    pending_tool_error_nudge = tool_result_error_nudge(
+                                        str(getattr(c, "result", "") or "")
+                                    )
+
+                            if getattr(update, "user_input_requests", None):
+                                user_input_requests.extend(update.user_input_requests)
+                            stream_chars += stream_content_chars(update)
+                            if context_budget and stream_chars > context_budget:
+                                break
+                    except QuotaAbortException as e:
+                        return f"## Error for {task_name}\nTask forcefully aborted: {str(e)}\n---"
+                    except Exception as e:
+                        nudge = malformed_tool_call_nudge(e)
+                        if nudge and malformed_retries < 2:
+                            malformed_retries += 1
+                            new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
+                            new_inputs.append(Message("user", [{"type": "text", "text": nudge}]))
+                            current_input = new_inputs
+                            has_requests = True
+                            continue
+                        raise
+
+                    if pending_tool_error_nudge and tool_error_retries < 2:
+                        tool_error_retries += 1
+                        nudge, pending_tool_error_nudge = pending_tool_error_nudge, None
+                        new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
+                        new_inputs.append(Message("user", [{"type": "text", "text": nudge}]))
+                        current_input = new_inputs
+                        has_requests = True
+                        continue
+                    pending_tool_error_nudge = None
+
+                    if context_budget and stream_chars > context_budget and not budget_nudged:
+                        # One wrap-up turn: cut the stream, tell the sub-agent to return its
+                        # findings NOW. A second overshoot falls through and returns whatever
+                        # final_text accumulated — never loop on the nudge itself.
+                        budget_nudged = True
+                        stream_chars = 0
+                        new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
+                        new_inputs.append(Message("user", [{"type": "text", "text": _select_budget_nudge(agent_id)}]))
+                        current_input = new_inputs
+                        has_requests = True
+                        final_text += _cutoff_marker_text(
+                            task_name, len(task_fetched_urls_ctx.get() or []))
+                        continue
+
+                    if user_input_requests:
+                        has_requests = True
+                        responses = []
+                        if subagent_callback:
+                            responses = await subagent_callback(None, is_subagent=True, agent_name=agent_name, approval_requests=user_input_requests)
+
+                        new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
+                        if responses:
+                            new_inputs.extend(responses)
+                        current_input = new_inputs
+
+                    # Zero-synthesis retry (2026-08-19) -- Searcher/Analyzer instance of the
+                    # "zero trailing text" mechanism ARCHITECTURE.md already tracks (the writer-
+                    # role instance got its own bounded retry loop 2026-08-18,
+                    # _WRITER_EMPTY_RETRY_ATTEMPTS; this is the source-level fix for the sibling
+                    # case that was previously only ever DETECTED downstream via RunState.
+                    # coverage()'s empty-summary exclusion, never actually recovered). Confirmed
+                    # live via the 2026-08-18 ablation study: a task's own real, freshly fetched
+                    # sources (5/5 in one run) ALL landed with a completely empty finding
+                    # summary -- see _should_nudge_zero_synthesis's own docstring for the full
+                    # trigger logic (extracted there for testability).
+                    if _should_nudge_zero_synthesis(agent_id, any_tool_call, final_text,
+                                                     synthesis_nudged, has_requests):
+                        synthesis_nudged = True
+                        has_requests = True
+                        new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
+                        new_inputs.append(Message("user", [{"type": "text", "text": SEARCHER_ANALYZER_SYNTHESIS_NUDGE}]))
+                        current_input = new_inputs
+
+            if subagent_callback:
+                await subagent_callback(None, is_subagent=True, agent_name=agent_name, is_done=True)
+
+            new_urls = task_fetched_urls_ctx.get() or []
+
+            # Computed unconditionally (NOT gated behind grounding_check.enabled below) --
+            # the add_finding fallback further down needs this as the real source when an
+            # Analyzer fetched nothing itself, regardless of whether the reconstructed-URL
+            # warning check that also reads it is turned on.
+            from utils.grounding import extract_cited_urls
+            reference_urls = {u.rstrip("/") for u in extract_cited_urls(instructions)}
+
+            # Upstream verification (Tier-2 Searcher output only, detected generically via
+            # target_children rather than hardcoded agent names — Analyzers are leaf nodes with
+            # no children). Catches a hallucinated citation in a specialist's summary before it
+            # ever reaches the Planner's context, instead of only at final-report time — error
+            # propagation into findings.md was previously undetectable until the very end of
+            # the run, by which point the retry budget was already partly spent.
+            # Collected separately from final_text (rather than appended in place) so the
+            # add_finding call below can guarantee these warnings survive its 1500-char
+            # truncation. Confirmed live (2026-07-18 fine-tune benchmark): a Searcher's own
+            # final_text hallucinated citations to URLs never fetched, this exact
+            # verification warning correctly fired, but it was appended to the END of a
+            # final_text already >1500 chars — `final_text[:1500]` then silently sliced the
+            # warning off before it ever reached FindingsWriter, and the fabricated citations
+            # went in ungrounded. A warning that gets silently truncated away is worse than no
+            # check at all — it looks like defense-in-depth while doing nothing.
+            verification_warnings = ""
+
+            gc_cfg = config.get_setting("grounding_check", {})
+            # enabled is the grounding_check section's master switch (2026-07-12 audit, G2)
+            if target_children and gc_cfg.get("enabled", True) and gc_cfg.get("verify_specialist_output", True):
+                from utils.grounding import real_grounding_problem
+                problem = await real_grounding_problem(_strip_follow_up_directions(final_text))
+                if problem and problem != "no_urls":
+                    verification_warnings += (
+                        f"\n\n[SYSTEM VERIFICATION WARNING: this summary attributes a claim to "
+                        f"a source that does not match anything actually fetched this run, or to "
+                        f"something that isn't a real URL at all ({problem}). Do not treat the "
+                        f"associated claim as sourced when writing findings.md.]"
+                    )
+
+                # Topical-relevance check: an instruction requiring "Colombia" is not the same
+                # as a fetched source actually BEING about Colombia — confirmed live, forcing
+                # the scope entity into every sub-task's instructions still let a US article, a
+                # Mexico-specific paper, and a generic global page through, because search
+                # result ranking and blind top-1 auto-fetch don't check relevance either. This
+                # is a cheap, deterministic substitute: does anything actually fetched for THIS
+                # task even mention the entity the instructions said it must be about?
+                if gc_cfg.get("verify_scope_relevance", True):
+                    scope_entities = _extract_scope_entities(instructions)
+                    if scope_entities and new_urls:
+                        from tools.fs import get_workspace_file_content
+                        # Case-insensitive on both sides (C8 companion fix): "Colombia"
+                        # must match a page's lowercase "colombia" — the entity comes from
+                        # instruction casing, the page from editorial casing.
+                        lowered = [t.lower() for t in scope_entities]
+                        matched = any(
+                            any(term in (get_workspace_file_content(u["filename"]) or "").lower() for term in lowered)
+                            for u in new_urls
+                        )
+                        if not matched:
+                            entities_str = "/".join(sorted(scope_entities))
+                            verification_warnings += (
+                                f"\n\n[SYSTEM RELEVANCE WARNING: none of the sources fetched for "
+                                f"this task actually mention {entities_str}, despite the task "
+                                f"instructions requiring it. This may be an off-topic or "
+                                f"wrong-country source — verify before presenting these findings "
+                                f"as being about {entities_str}.]"
+                            )
+
+            # Downstream half of the SAME real bug class as the delegate_tasks filename/URL
+            # checks above (2026-07-19 audit) — that fix stops a Searcher handing an Analyzer a
+            # GUESSED reference; this catches the mirror direction, an Analyzer reporting a
+            # GUESSED/reconstructed URL back UP in its own summary instead of the real one it
+            # was told to analyze. Both WEB_SEARCHER_INSTRUCTIONS and DATA_ANALYZER_INSTRUCTIONS
+            # already warn against this in prompt text ("NEVER guess or reconstruct a URL from a
+            # filename") but had no structural backstop — unlike the Searcher-tier check above
+            # (gated on target_children, since Analyzers are leaf nodes with none), which is why
+            # this needs its own branch with a different reference set: an Analyzer never fetches
+            # anything itself (no fetch_url_to_workspace tool), so `get_fetched_urls()` is the
+            # wrong ground truth here — the correct one is the URL(s) actually present in THIS
+            # task's own `instructions`, which the delegate_tasks fix above now guarantees are
+            # real. No live-observed occurrence of this direction yet (unlike the other, which
+            # was caught live) — added proactively since it's the same mechanism, same fix shape.
+            elif (not target_children and target_config and target_config.name in ("DocumentAnalyzer", "DataAnalyzer")
+                  and gc_cfg.get("enabled", True) and gc_cfg.get("verify_specialist_output", True)):
+                from utils.grounding import _urls_prefix_match
+                if reference_urls:
+                    reconstructed = [
+                        u for u in extract_cited_urls(_strip_follow_up_directions(final_text))
+                        if u.rstrip("/") not in reference_urls
+                        and not any(_urls_prefix_match(u.rstrip("/"), r) for r in reference_urls)
+                    ]
+                    if reconstructed:
+                        verification_warnings += (
+                            f"\n\n[SYSTEM VERIFICATION WARNING: this summary cites "
+                            f"{reconstructed[0]!r}, which does not match the source URL you were "
+                            f"actually given to analyze ({', '.join(sorted(reference_urls))}) — "
+                            f"this looks like a reconstructed or guessed URL, not the real one. "
+                            f"Do not treat the associated claim as sourced when writing "
+                            f"findings.md.]"
+                        )
+
+                # A correct citation URL doesn't mean the CLAIM is right -- an Analyzer reads
+                # one document and can still misreport a figure, misattribute a stat, or
+                # otherwise contradict what its own source actually says. Check A above already
+                # runs the full real_grounding_problem pipeline (stub detection, quote-fidelity,
+                # content-level term-overlap, and NLI contradiction detection) for the Searcher
+                # tier -- this branch had none of that, only the reconstructed-URL check above,
+                # since it was added later (2026-07-19) narrowly scoped to the one bug that
+                # motivated it. 2026-07-26 ROADMAP/RESEARCH.md review (VeriCite comparison)
+                # surfaced this as a real, unprincipled coverage gap between the two tiers, not
+                # a missing feature needing new claim-extraction machinery -- real_grounding_problem
+                # already exists, is already proven via Check A, and works unchanged against an
+                # Analyzer's own final_text the same way it does a Searcher's.
+                from utils.grounding import real_grounding_problem
+                problem = await real_grounding_problem(_strip_follow_up_directions(final_text))
+                if problem and problem != "no_urls":
+                    verification_warnings += (
+                        f"\n\n[SYSTEM VERIFICATION WARNING: this summary attributes a claim to "
+                        f"a source that does not match anything actually fetched this run, or to "
+                        f"something that isn't a real URL at all ({problem}). Do not treat the "
+                        f"associated claim as sourced when writing findings.md.]"
+                    )
+
+            final_text += verification_warnings
+
+            # Populate the structured findings store (previously dead code — RunState.add_finding
+            # was defined but never called) so a completion-check retry or later debugging has real
+            # {source_url, summary} records instead of only the model's own narration. Preferring
+            # URLs actually fetched during THIS task over the task name keeps findings traceable to
+            # a real source when one exists (Searcher-tier calls); Analyzer-tier calls fetch nothing
+            # themselves, so they fall back to the task name as the record's identifier.
+            # task_name/depth (ROADMAP Phase 5, "Coverage accounting") let RunState.coverage()
+            # group findings by which top-level (depth==1) task produced them, and tell a real
+            # fetched-URL finding apart from a task-name fallback one -- see that method's own
+            # docstring for why depth==1 only (a nested Analyzer's lack of a new URL is
+            # expected, not a coverage gap).
+            #
+            # `_FINDING_SUMMARY_BUDGET` chars total, but the verification warnings (if any) are
+            # NEVER part of the truncated slice — they're guaranteed room by reserving their
+            # length off the body's share first, then concatenated back in full. See the
+            # comment on `verification_warnings` above for why this ordering matters.
+            #
+            # 2026-07-19 (engine-driven iterative deepening, ROADMAP item 10): FOLLOW-UP
+            # DIRECTIONS is specified to be the LAST section of a Searcher's summary, which
+            # means it was the FIRST thing this same truncation silently dropped for any real
+            # summary over ~1500 chars — the identical failure shape as the verification-warning
+            # bug this budget already carves an exception for. Extracted and stored separately
+            # (RunState.add_finding's own field, never subject to this budget), same treatment.
+            follow_up_directions = _extract_follow_up_directions(final_text)
+            body_budget = _FINDING_SUMMARY_BUDGET - len(verification_warnings)
+            body_text = final_text[:len(final_text) - len(verification_warnings)] if verification_warnings else final_text
+            finding_summary = body_text[:body_budget] + verification_warnings
+
+            this_depth = delegation_depth_ctx.get()
+            top_level_task_name = top_level_task_name_ctx.get()
+            run_state = run_state_ctx.get()
+            if run_state is not None and agent_id not in _NON_RESEARCH_DISPATCH_ROLES:
+                if new_urls:
+                    for u in new_urls:
+                        run_state.add_finding(u["url"], finding_summary, task_name=task_name, depth=this_depth,
+                                               follow_up_directions=follow_up_directions, agent_id=agent_id,
+                                               top_level_task_name=top_level_task_name)
+                elif reference_urls:
+                    # An Analyzer fetches nothing itself, but the Searcher that delegated to it
+                    # is instructed to pass the real source URL IN its instructions (see
+                    # prompts.py: "The Analyzer NEEDS the URL to include it in its summary") --
+                    # reference_urls (above) already extracts exactly that. Recovering the real
+                    # URL here instead of falling to task_name is the difference between a
+                    # traceable finding and the 2026-07-21 fabrication bug: task_name silently
+                    # standing in for source_url reached FindingsWriter with no marker that it
+                    # wasn't a real URL, and got cited as one (5/19 findings in a live qwen3:8b
+                    # run). See _build_findings_source_material's own non-http handling for the
+                    # remaining defense-in-depth case (no reference URL either).
+                    for u in reference_urls:
+                        run_state.add_finding(u, finding_summary, task_name=task_name, depth=this_depth,
+                                               follow_up_directions=follow_up_directions, agent_id=agent_id,
+                                               top_level_task_name=top_level_task_name)
+                else:
+                    run_state.add_finding(task_name, finding_summary, task_name=task_name, depth=this_depth,
+                                           follow_up_directions=follow_up_directions, agent_id=agent_id,
+                                           top_level_task_name=top_level_task_name)
+
+            # RAG findings cache (ROADMAP.md "Strategic options" item 5, 2026-07-20): only cache
+            # a finding that passed the EXACT SAME grounding+relevance gate above with zero
+            # warnings — a cache entry is exactly as verified as a same-run finding, never less.
+            # Deliberately caches the atomic (source_url, summary) pair, not a whole answer, so a
+            # future cache hit still requires the Searcher to incorporate/cite it itself, the
+            # same as a fresh web_search result — this is what makes it safe across different
+            # models, unlike the deleted knowledge_cache (929b987) it replaces.
+            rag_cfg = config.get_setting("rag_cache", {})
+            if _should_cache_finding(
+                verification_warnings, new_urls, rag_cfg.get("enabled", False), finding_summary
+            ):
+                from utils import rag_cache
+
+                model = config.cfg.get("api", {}).get("openai_model", "")
+                for u in new_urls:
+                    rag_cache.save(task_name, u["url"], finding_summary, model)
+
+            return f"## Result for {task_name}\n{final_text}\n---"
+        finally:
+            if children_token is not None:
+                available_sub_agents_ctx.reset(children_token)
+            holds_token.reset(token_setter)
+            delegation_depth_ctx.reset(depth_token)
+            if top_level_token is not None:
+                top_level_task_name_ctx.reset(top_level_token)
+            task_fetched_urls_ctx.reset(task_urls_token)
+            task_dedup_fetch_repeat_ctx.reset(dedup_fetch_repeat_token)
+            task_id_ctx.reset(task_id_token)
+            specialist_delegate_task_count_ctx.reset(specialist_delegate_count_token)
+            task_read_grep_count_ctx.reset(read_grep_count_token)
+            scope_entities_ctx.reset(scope_token)
+
+
+async def _dispatch_tasks_batch(
+    tasks: list[dict], *, run_single_task, sem: asyncio.Semaphore,
+    holds_token: contextvars.ContextVar,
+) -> str:
+    # Per-task specialist-delegation cap (depth > 0 == a Tier-2 specialist delegating to its
+    # own Analyzer children, never the Planner's own top-level call — see
+    # specialist_delegate_task_count_ctx's header comment). Checked BEFORE the schema
+    # validation below, same reject-not-truncate shape as that validation: the goal is to make
+    # the specialist actually stop and synthesize its findings, not dispatch a partial batch
+    # and think it can keep going.
+    specialist_delegation_counter = None
+    _rs_for_cap = None
+    if delegation_depth_ctx.get() > 0:
+        cap = config.get_setting("specialist_delegation_cap", 3)
+        specialist_delegation_counter = specialist_delegate_task_count_ctx.get()
+        current = specialist_delegation_counter[0] if specialist_delegation_counter is not None else 0
+        if _specialist_delegation_over_cap(current, len(tasks), cap):
+            return (
+                f"Error: delegate_tasks call rejected — this task has already delegated "
+                f"{current} source(s) for analysis (cap: {cap} per task, no quota was consumed "
+                f"on this rejected call). Stop searching for more sources: synthesize and return "
+                f"your consolidated findings now instead of dispatching more Analyzers. Per your "
+                f"own instructions, one authoritative source is usually sufficient."
+            )
+    elif delegation_depth_ctx.get() == 0:
+        # Hard cap on the PLANNER's own replan rounds (RESEARCH.md Sec.15, 2026-08-01) --
+        # sibling fix to the specialist cap above, checked BEFORE schema validation for the
+        # same reason (reject early, no wasted validation work on a call that's rejected
+        # anyway). Live-confirmed necessary: the fetch cap + softened cutoff wording alone
+        # fixed the ORIGINAL traced incident but both smoke-test reruns still timed out because
+        # the Planner kept redispatching with no cutoff signal involved at all -- see
+        # _planner_delegate_over_cap's own docstring.
+        planner_cap = config.get_setting("max_planner_delegate_rounds", 4)
+        _rs_for_cap = run_state_ctx.get()
+        _planner_rounds = _rs_for_cap.data.get("planner_delegate_rounds", 0) if _rs_for_cap else 0
+        if _planner_delegate_over_cap(_planner_rounds, planner_cap):
+            # Resume-with-existing-report case (utils/run_state.py's merge_resumed_state,
+            # RESEARCH.md Sec.17e) pre-sets planner_delegate_rounds to the cap, so the generic
+            # "you have already run N rounds" wording below would be misleading here -- this
+            # IS round 0, nothing was actually run. A distinct, accurate message instead.
+            if _rs_for_cap and _rs_for_cap.data.get("resumed_with_existing_report"):
+                return (
+                    "Error: delegate_tasks call rejected — this is a resumed run and a report "
+                    "already exists. Further research delegation is disabled for resumed runs "
+                    "with an existing report: if the report is missing something findings.md "
+                    "already covers, that is a writer-role fix the automatic pipeline will "
+                    "apply on its own, not a research gap. Stop delegating and let the system "
+                    "finalize the report from what has already been researched."
+                )
+            return (
+                f"Error: delegate_tasks call rejected — you have already run {_planner_rounds} "
+                f"planning round(s) this run (cap: {planner_cap}, no quota was consumed on this "
+                f"rejected call). Stop planning further and let the system finalize a report "
+                f"from what has already been researched."
+            )
+    # -------------------------------------------------------------
+    # Validate BEFORE dispatching anything. Found via a real end-to-end test: a model emitted
+    # tasks shaped like {"due": 1, "task": "..."} instead of {"task_name", "instructions",
+    # "agent_id"} — completely wrong field names. The old code silently defaulted to
+    # task_name="Unknown_Task", instructions="" and dispatched it anyway, so the sub-agent
+    # searched for the literal string "Unknown_Task" and got garbage, unrelated results, which
+    # then poisoned everything downstream (the Planner had nothing real to report). A malformed
+    # call must fail loudly and immediately, not silently degrade into wasted quota on garbage
+    # work — this lets the model see exactly what was wrong and retry with the correct shape.
+    # -------------------------------------------------------------
+    # Numbered-placeholder detector: found live, a model planning "12 candidate sectors"
+    # dispatched tasks literally named/instructed around "sector 1", "sector 2", etc. instead
+    # of naming the real sectors first — every resulting web_search query was the literal,
+    # meaningless phrase "market size of sector 1 in colombia", returning garbage (a currency
+    # site, an energy-agency report, unrelated Wikipedia pages) across all 12. Same principle
+    # as the malformed-schema check below: reject loudly before wasting quota on it, rather
+    # than relying on the prompt rule alone (see prompts.py's DISPATCH step for the prompt-side
+    # half of this fix).
+    # Matches "sector 1" / "sector_1" (post-normalization) / "sector #4" AND "sector X" /
+    # "item Y" — a bare capital letter is as common a placeholder as a number (confirmed
+    # live). The keyword itself stays case-insensitive; the single-letter placeholder stays
+    # case-SENSITIVE (only a bare capital, e.g. "sector X") so this doesn't false-positive on
+    # a keyword incidentally followed by a lowercase word-initial letter in real prose.
+    # Checked against `instructions` ONLY, not `task_name` — found live, a real 12-task batch
+    # ("Analyze market 1: Logistics and supply chain management in Colombia", ...) was rejected
+    # wholesale because task_name used "market 1"/"market 2" as an ordinary numbered list label
+    # while instructions fully named the real, specific topic ("Assess the needs of logistics
+    # and supply chain management in Colombia..."). task_name is never what actually drives a
+    # Searcher's search query (only instructions is — see WEB_SEARCHER_INSTRUCTIONS' Workflow),
+    # so a numbered task_name label is harmless; the original documented failure case (the
+    # literal garbage query "market size of sector 1 in colombia") had the placeholder in
+    # instructions itself, which this narrower check still catches.
+    _placeholder_re = re.compile(
+        r'\b(?:[Ss]ector|[Ii]tem|[Mm]arket|[Tt]opic|[Oo]ption|[Cc]andidate|[Cc]ategory|'
+        r'[Pp]roduct|[Ss]ervice|[Aa]rea)\s*(?:#?\d+\b|[A-Z]\b)'
+    )
+    # Catches the OTHER half of the same real failure: a task instructed to act "for each
+    # identified sector" (or similar) inside a batch dispatched via asyncio.gather — but
+    # delegate_tasks runs every task in a batch CONCURRENTLY, so a sibling "identify the
+    # sectors" task's results don't exist yet when this one runs. This is exactly the
+    # sequential-vs-concurrent rule already in SUBAGENT_DELEGATION_INSTRUCTIONS, just not
+    # being followed — confirmed live, a real run's web_search literally queried "Evaluate
+    # competition level for sector X" because of this.
+    _cross_task_dependency_re = re.compile(r'\bfor each\b.{0,40}\bidentif', re.IGNORECASE)
+
+    errors = []
+    for i, t in enumerate(tasks):
+        if not isinstance(t, dict):
+            errors.append(f"Task {i}: not an object — got {type(t).__name__}.")
+            continue
+        missing = [k for k in ("task_name", "instructions") if not t.get(k)]
+        if missing:
+            errors.append(
+                f"Task {i} {t!r}: missing or empty required field(s) {missing}. "
+                f"Each task MUST be shaped exactly as "
+                f"{{\"task_name\": \"...\", \"instructions\": \"...\", \"agent_id\": \"...\"}}."
+            )
+            continue
+        # Normalize underscores/hyphens to spaces first — "sector_1" (a real observed
+        # instructions string) otherwise never matches \bsector\b, since '_' counts as a word
+        # character and leaves no boundary between "analyze_" and "sector".
+        placeholder_text = str(t.get("instructions", "")).replace("_", " ").replace("-", " ")
+        m = _placeholder_re.search(placeholder_text)
+        if m:
+            errors.append(
+                f"Task {i} ({t.get('task_name')!r}): looks like an unresolved placeholder "
+                f"({m.group(0)!r}), not a real research topic — a Searcher given this will "
+                f"search for that literal meaningless phrase. If you're enumerating multiple "
+                f"items, you must know and use each item's REAL name (e.g. 'fintech for gig "
+                f"workers', not 'sector 3' or 'sector X') before dispatching. If you don't "
+                f"know the real names yet, delegate a background task to identify them first."
+            )
+            continue
+        if _lacks_concrete_subject(str(t.get("instructions", ""))):
+            errors.append(
+                f"Task {i} ({t.get('task_name')!r}): instructions rely on a pronoun ('it'/'its'/"
+                f"'them') with no concrete subject anywhere — the sub-agent executing this has "
+                f"NO memory of your conversation or of sibling tasks, so it cannot know what "
+                f"the pronoun refers to and will search for the literal phrase. Restate the "
+                f"full subject explicitly in EVERY task's instructions (e.g. 'Summarize Python "
+                f"3.14\\'s headline feature', not 'Summarize its headline feature')."
+            )
+            continue
+        dep_m = _cross_task_dependency_re.search(" ".join(str(t.get(k, "")) for k in ("task_name", "instructions")))
+        if dep_m:
+            errors.append(
+                f"Task {i} ({t.get('task_name')!r}): says \"{dep_m.group(0)}\" — this task "
+                f"depends on another task's output, but ALL tasks in one delegate_tasks call "
+                f"run CONCURRENTLY, so a sibling 'identify X' task's results do not exist yet "
+                f"when this one runs. Split this into two SEQUENTIAL delegate_tasks calls: "
+                f"first the identification task alone, wait for its real result, THEN a second "
+                f"call with one task per REAL item it found."
+            )
+            continue
+        # Real, confirmed live failure (2026-07-19 corpus audit: 83/563 Analyzer-delegating
+        # instructions across 19/76 runs referenced a URL never actually fetched this task) —
+        # a Searcher sees a URL in a search-result SNIPPET and delegates an Analyzer task to
+        # "read" it as if it had already been fetched, when fetch_url_to_workspace was never
+        # called on it. The Analyzer then burns its whole quota guessing filename variants for
+        # a file that structurally cannot exist (confirmed live: 9+ grep_workspace_file calls,
+        # no Finished). Checked only for Analyzer-tier targets (DocumentAnalyzer/DataAnalyzer)
+        # — those are the roles whose entire job is reading an already-fetched file, so this is
+        # the one delegation shape where "the referenced URL must already be fetched" is a real
+        # invariant, not a false constraint (WebSearcher/AcademicSearcher tasks legitimately
+        # instruct new research on URLs nothing has fetched yet). Scoped to the CALLING task's
+        # own real fetches (task_fetched_urls_ctx, not the whole run's) — a Searcher can only
+        # honestly hand its Analyzer children what it itself actually fetched.
+        if t.get("agent_id") in ("DocumentAnalyzer", "DataAnalyzer"):
+            from utils.grounding import extract_cited_urls, _urls_prefix_match
+            own_fetched_entries = task_fetched_urls_ctx.get() or []
+            own_fetched = {e["url"].rstrip("/") for e in own_fetched_entries}
+            cited = extract_cited_urls(str(t.get("instructions", "")))
+            if cited:
+                unfetched = [
+                    u for u in cited
+                    if u.rstrip("/") not in own_fetched
+                    and not any(_urls_prefix_match(u.rstrip("/"), f) for f in own_fetched)
+                ]
+                if unfetched:
+                    # See _find_sibling_fetch's own docstring for why this distinction exists
+                    # (RESEARCH.md Sec.17g) -- the generic advice below is WRONG, not just
+                    # unhelpful, when a sibling task already fetched this exact URL.
+                    from utils.run_state import get_fetched_urls
+                    u0 = unfetched[0]
+                    already = _find_sibling_fetch(u0, get_fetched_urls())
+                    if already:
+                        errors.append(
+                            f"Task {i} ({t.get('task_name')!r}): instructs {t.get('agent_id')} "
+                            f"to read {u0!r} — that URL was already fetched by a DIFFERENT task "
+                            f"this run (not this one), saved as {already.get('filename')!r}. Do "
+                            f"NOT call fetch_url_to_workspace on it again — it will just tell "
+                            f"you it's already fetched, which wastes a call and gets you no "
+                            f"further. Delegate {t.get('agent_id')} with the real saved "
+                            f"filename directly ({already.get('filename')!r}), not the URL."
+                        )
+                    else:
+                        errors.append(
+                            f"Task {i} ({t.get('task_name')!r}): instructs {t.get('agent_id')} to "
+                            f"read {u0!r}, but that URL was never actually fetched this "
+                            f"task — it looks like it came from a search-result snippet, not a real "
+                            f"fetch_url_to_workspace call. {t.get('agent_id')} can only read files "
+                            f"you actually fetched; if this source matters, call "
+                            f"fetch_url_to_workspace on it yourself first, THEN delegate the "
+                            f"analysis with the real saved filename."
+                        )
+                    continue
+            # Sibling bug to the unfetched-URL check above, confirmed live in the SAME
+            # benchmark run (2026-07-19): the URL WAS genuinely fetched, but the Searcher
+            # constructed a GUESSED filename for the Analyzer task (a plausible-looking
+            # pattern built from the URL's own path segments, e.g.
+            # 'sources/bcpublication_org_BM_3487.md') instead of the REAL saved filename
+            # fetch_url_to_workspace actually returned (e.g. 'sources/bcpublication_org_
+            # 58286b27.md', hash-suffixed). Same root family as WEB_SEARCHER_INSTRUCTIONS'
+            # existing "NEVER guess or reconstruct a URL from a filename" rule, just the
+            # inverse direction, previously unguarded. Confirmed live: the Searcher dispatched
+            # BOTH the guessed-filename task AND a correct-filename task for the identical URL
+            # back to back — real wasted duplicate delegation, not just a wrong-filename typo.
+            # Matched against the prompt's own fixed instruction template
+            # ("Read the file '<path>'. Source URL: ...", see prompts.py's real Analyzer
+            # dispatch examples) so this doesn't misfire on legitimately-phrased instructions.
+            filename_m = re.search(r"[Rr]ead the file '([^']+)'", str(t.get("instructions", "")))
+            if filename_m and cited:
+                claimed_filename = filename_m.group(1)
+                real_filename = next(
+                    (e["filename"] for e in own_fetched_entries
+                     if e["url"].rstrip("/") == cited[0].rstrip("/")
+                     or _urls_prefix_match(cited[0].rstrip("/"), e["url"].rstrip("/"))),
+                    None,
+                )
+                if real_filename and claimed_filename not in (real_filename, real_filename.split("/")[-1]):
+                    errors.append(
+                        f"Task {i} ({t.get('task_name')!r}): instructs {t.get('agent_id')} to "
+                        f"read {claimed_filename!r}, but that filename was GUESSED, not the "
+                        f"real one — the actual saved filename for that URL is "
+                        f"{real_filename!r} (from your own fetch_url_to_workspace result). "
+                        f"Never construct a filename from a URL's path; always use the exact "
+                        f"filename the fetch tool returned."
+                    )
+                    continue
+        # Non-generative routing classifier (RESEARCH.md §6, ROADMAP.md "Pending", 2026-07-20)
+        # — catches a hallucinated agent_id ("searcher", "PeerReviewer", invented role names,
+        # ~4.9% of real historical delegate_tasks calls) BEFORE dispatch, rather than only after
+        # _run_single_task's own exact-string lookup fails per-task post-dispatch. Decision
+        # logic lives in _agent_routing_rejection_reason (pure function, directly testable) —
+        # this closure only gathers the caller's real roster and the classifier's prediction.
+        agent_routing_cfg = config.get_setting("agent_routing_classifier", {})
+        if agent_routing_cfg.get("enabled", False):
+            from utils.agent_routing import predict_agent_id, KNOWN_AGENT_IDS
+            caller_role_names = frozenset(c.name for c in available_sub_agents_ctx.get())
+            candidate_classes = caller_role_names & KNOWN_AGENT_IDS
+            prediction = (
+                predict_agent_id(str(t.get("instructions", "")), candidate_classes)
+                if candidate_classes else None
+            )
+            reason = _agent_routing_rejection_reason(
+                t.get("agent_id"), caller_role_names, prediction,
+                agent_routing_cfg.get("min_confidence", 0.6),
+            )
+            if reason:
+                errors.append(f"Task {i} ({t.get('task_name')!r}): {reason}")
+                continue
+    if errors:
+        return (
+            "Error: delegate_tasks call rejected — none of these tasks were dispatched (no quota "
+            "was consumed on wasted work). Fix the shape and call delegate_tasks again with valid "
+            "tasks:\n" + "\n".join(errors)
+        )
+    if specialist_delegation_counter is not None:
+        specialist_delegation_counter[0] += len(tasks)
+    elif delegation_depth_ctx.get() == 0 and _rs_for_cap is not None:
+        # Symmetric with the specialist counter above -- only a call that actually passed
+        # validation burns a round, matching that sibling's own "a rejected/malformed call
+        # must not count" reasoning.
+        _rs_for_cap.data["planner_delegate_rounds"] = _rs_for_cap.data.get("planner_delegate_rounds", 0) + 1
+
+    # Structural enforcement of the user's own exclusion rules — confirmed live three times
+    # that the prompt-level rule alone doesn't hold (4 explicitly-excluded sectors researched
+    # and included anyway). Excluded tasks are SKIPPED individually, not batch-rejected: the
+    # sibling tasks are legitimate, and the placeholder-detector incident (see above) showed a
+    # wholesale rejection makes the model abandon delegation and fabricate instead.
+    run_state = run_state_ctx.get()
+    excluded_topics = _extract_excluded_topics(run_state.data.get("query", "")) if run_state else set()
+    prior_dispatched = run_state.data.setdefault("dispatched_tasks", []) if run_state else []
+    skipped = []
+    coroutines = []
+    dispatched_names = []
+    rename_note_by_name = {}
+    for t in tasks:
+        name = t.get("task_name")
+        instr = t.get("instructions")
+        aid = t.get("agent_id", None)
+        task_text = f"{name} {instr}".lower()
+        # A task may legitimately restate the query's own exclusions ("... exclude fintech,
+        # last-mile delivery ..."), which would substring-match every excluded topic and skip
+        # a perfectly in-scope task — confirmed live 2026-07-11: a Planner's discovery task was
+        # rejected twice for quoting the exclusion list, burning delegate_tasks quota and turns.
+        # Strip exclusion clauses from the task's text before matching, so the gate only fires
+        # when an excluded topic is the task's actual subject.
+        task_text = _EXCLUSION_CUE_RE.sub(" ", task_text)
+        hit = next((topic for topic in excluded_topics if topic in task_text), None)
+        if hit:
+            skipped.append(
+                f"## Skipped {name}\nNot dispatched: this topic matches an explicit exclusion "
+                f"in the original query ({hit!r}). Do not research it, do not include it in "
+                f"findings.md or the final report, and do not re-delegate it.\n---"
+            )
+            continue
+        renamed_from = _looks_like_renamed_task(name, instr, prior_dispatched)
+        if renamed_from:
+            # Escalate advisory -> hard reject on a SECOND match against the SAME prior task
+            # (2026-08-17, MAST FM-1.3/FM-2.5, RESEARCH.md §18f / session_status 2026-08-17):
+            # confirmed live, the Planner saw this exact advisory 3 times in a row and ignored
+            # it every time, burning delegate_tasks quota on near-duplicates until exhaustion
+            # forced an early, unverified salvage. A hard reject on the FIRST match would risk
+            # dropping a genuinely different facet that happens to cross-match once (see
+            # _looks_like_renamed_task's own entity-mismatch override docstring) -- but two
+            # DIFFERENT facets both independently cross-matching the identical prior task twice
+            # running is the unlikely case, not the common one, so escalating only on a repeat
+            # against the same target keeps the false-positive cost to a single wasted advisory.
+            rename_reject_escalation_disabled = bool(
+                config.get_setting("ablation", {}).get(
+                    "disable_rename_reject_escalation", False
+                )
+            )
+            rename_counts = run_state.data.setdefault("rename_advisory_counts", {}) if run_state else {}
+            count = rename_counts.get(renamed_from, 0) + 1
+            if run_state is not None:
+                rename_counts[renamed_from] = count
+            if _rename_match_escalates(count) and not rename_reject_escalation_disabled:
+                skipped.append(
+                    f"## Skipped {name}\nNot dispatched: this is the {count}th task this run "
+                    f"whose instructions look like a rename of already-dispatched task "
+                    f"{renamed_from!r} — the first one only got a warning, this one is blocked "
+                    f"to stop wasting delegate_tasks quota on the same duplicated angle. Reuse "
+                    f"task_name={renamed_from!r} to continue that angle, or make this task's "
+                    f"subject clearly distinct if it's genuinely a new one.\n---"
+                )
+                continue
+            rename_note_by_name[name] = (
+                f"Note: this task's instructions look very similar to already-dispatched task "
+                f"{renamed_from!r} — if this is a retry of that same angle, reuse "
+                f"task_name={renamed_from!r} instead of a new name, so it's tracked as a "
+                f"continuation, not a new untracked angle."
+            )
+        if run_state is not None:
+            prior_dispatched.append({"task_name": name, "instructions": instr})
+        dispatched_names.append(name)
+        coroutines.append(run_single_task(name, instr, aid))
+
+    if skipped and not coroutines:
+        return (
+            "Error: every task in this call matches a topic the original query explicitly "
+            "excluded — none were dispatched. Re-read the query's exclusion list and delegate "
+            "only topics that are actually in scope.\n" + "\n".join(skipped)
+        )
+
+    # Pre-reserve enough shared-pool headroom for the WHOLE batch before any task in it starts
+    # (ROADMAP's tracked open angle (c), 2026-07-21): with max_concurrent_tasks small (often
+    # 1), tasks in one delegate_tasks batch run in roughly the order listed, sequentially
+    # draining the SAME shared quota pool -- confirmed live, a heavily-redispatched sibling
+    # (comparison_GA, 14 finding entries across the run) consistently ran before its siblings
+    # (comparison_PSO/SA/ACO/BO) each retry round and left them nothing, even though
+    # run_completion_check tops the pool up between rounds. tools/core.py::check_quota's
+    # per-task rescue (angle (a), same date) only helps AFTER a task already hit the wall;
+    # this closes the gap one level earlier by guaranteeing the pool has enough TOTAL headroom
+    # for every task in this batch to get at least a fair minimum before any of them spend it
+    # -- not true round-robin scheduling (that would need cooperative mid-turn interleaving, a
+    # much bigger change), but it removes the structural incentive for dispatch order alone to
+    # fully starve later siblings. See _reserve_batch_quota_headroom's own docstring for the
+    # arithmetic (pulled out for direct testability).
+    pool = tool_quotas_ctx.get()
+    if pool is not None:
+        _reserve_batch_quota_headroom(pool, len(coroutines))
+
+    was_holding = holds_token.get()
+    if was_holding:
+        sem.release()
+
+    try:
+        results = await asyncio.gather(*coroutines, return_exceptions=True)
+    finally:
+        if was_holding:
+            await sem.acquire()
+
+    final_output = list(skipped)
+    for name, res in zip(dispatched_names, results):
+        if isinstance(res, Exception):
+            final_output.append(f"## Error\nTask failed with exception: {res}\n---")
+        else:
+            text = str(res)
+            note = rename_note_by_name.get(name)
+            if note:
+                text = f"{note}\n{text}"
+            final_output.append(text)
+
+    return "\n\n".join(final_output)
+
+
 def create_local_agent(builder, subagent_callback=None, session_data=None):
     """
     Returns (agent, session, dispatch_task). Session is None when conversational memory is
@@ -1059,543 +2010,16 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
     holds_token = contextvars.ContextVar('holds_token', default=False)
 
     async def _run_single_task(task_name: str, instructions: str, agent_id: str = None) -> str:
-        async with sem:
-            parent_depth = delegation_depth_ctx.get()
-            depth_token = delegation_depth_ctx.set(parent_depth + 1)
-            # Only set (and later reset) at the depth 0 -> 1 transition -- a deeper nested call
-            # leaves this unset so it inherits the already-set value from its depth==1 ancestor's
-            # context, per top_level_task_name_ctx's own header comment.
-            top_level_token = top_level_task_name_ctx.set(task_name) if parent_depth == 0 else None
-            token_setter = holds_token.set(True)
-            # Pre-declared so the `finally` block's reset is always safe even on an early return
-            # below (bad agent_id) — found via a real end-to-end test: a model invented a fictional
-            # agent_id ("AI-3") not matching any real specialist, hit the early-return error path,
-            # and finally's `available_sub_agents_ctx.reset(children_token)` crashed with
-            # UnboundLocalError since children_token was never assigned on that path. This bug was
-            # latent in the reference project this was forked from too — never previously observed
-            # because bad agent_id values apparently never came up in its own testing.
-            children_token = None
-            # Per-task-scoped fetch tracking (see utils/run_state.py's task_fetched_urls_ctx
-            # header comment) — NOT a before/after length delta on the shared run-wide list, which
-            # races under concurrent delegate_tasks dispatch.
-            task_urls_token = task_fetched_urls_ctx.set([])
-            # In-turn fetch-repetition guard (see utils/run_state.py's task_dedup_fetch_repeat_ctx
-            # header comment) — fresh empty dict per task, same per-dispatch-scoping need as
-            # task_urls_token just above.
-            dedup_fetch_repeat_token = task_dedup_fetch_repeat_ctx.set({})
-            # Stable per-dispatch identity for the quota ring-fence's per-task rescue tracking
-            # (tools/core.py::check_quota) — see utils/run_state.py's task_id_ctx header comment.
-            task_id_token = task_id_ctx.set(_next_task_id())
-            # Fresh per-task-instance Analyzer-delegation counter (see this contextvar's own header
-            # comment — a mutable single-element list, mutated in place, never reassigned) — this
-            # dispatch may itself be a Tier-2 specialist about to call delegate_tasks.
-            specialist_delegate_count_token = specialist_delegate_task_count_ctx.set([0])
-            # Per-dispatch read_workspace_file/grep_workspace_file counter (see task_read_grep_
-            # count_ctx's own header comment). Deliberately left None (contextvar default, cap
-            # DISABLED) for Builder/FindingsWriter/PeerReviewer (_NON_RESEARCH_DISPATCH_ROLES) —
-            # their read/grep usage is reviewing findings.md/final_report.md, a different,
-            # legitimate pattern from an Analyzer chasing one hard external document, and this cap
-            # exists specifically for the latter. Set to [0] (cap ACTIVE) for every other role —
-            # in practice this only ever matters for DocumentAnalyzer/DataAnalyzer, since Searcher
-            # roles (WebSearcher/AcademicSearcher) don't have read_workspace_file/
-            # grep_workspace_file in their own tool list (app.py) at all.
-            read_grep_count_token = task_read_grep_count_ctx.set(
-                None if agent_id in _NON_RESEARCH_DISPATCH_ROLES else [0]
-            )
-            # Expose this task's scope entities to web_search for the query-level scope warning
-            # (see utils/run_state.py's scope_entities_ctx header comment).
-            scope_token = scope_entities_ctx.set(_extract_scope_entities(instructions))
-            try:
-                current_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-                # Look up the target agent from the CALLER's available sub-agents (scoped, not global)
-                caller_sub_agents = available_sub_agents_ctx.get()
-                target_config = None
-                if agent_id and caller_sub_agents:
-                    for conf in caller_sub_agents:
-                        if conf.name == agent_id:
-                            target_config = conf
-                            break
-                    if target_config is None:
-                        return f"## Error for {task_name}\nFailed to delegate: Sub-agent named '{agent_id}' does not exist. Available sub-agents for this caller: {[c.name for c in caller_sub_agents]}.\n---"
-                else:
-                    target_config = caller_sub_agents[0] if caller_sub_agents else None
-
-                sub_tools = apply_tool_permissions(target_config.tools.copy() if target_config else [])
-                # Only inject delegate_tasks if the TARGET agent has its own children
-                target_children = target_config.sub_agents if target_config else []
-                if target_children and delegate_tasks not in sub_tools:
-                    sub_tools.append(delegate_tasks)
-                if think_tool not in sub_tools:
-                    sub_tools.append(think_tool)
-
-                # Scope the available sub-agents for the target agent's own delegate_tasks calls
-                children_token = available_sub_agents_ctx.set(target_children)
-
-                # Disambiguate a task_name reused across multiple real dispatches (the original
-                # delegate_tasks batch, then again in a later re-delegation after a
-                # completion-check nudge) — e.g. 'SubAgent_background' -> 'SubAgent_background#2'.
-                # Without this the session log/UI shows two separate short invocations as one
-                # source label, making elapsed-time analysis meaningless (confirmed live: looked
-                # exactly like one continuous 19-minute sub-agent, was actually two ~2-3 minute
-                # ones with an 11-minute gap where the Planner was busy elsewhere).
-                raw_agent_name = f"SubAgent_{task_name}"
-                _rs = run_state_ctx.get()
-                agent_name = _rs.next_subagent_label(raw_agent_name) if _rs is not None else raw_agent_name
-
-                sub_instr = ""
-                if target_config:
-                    sub_instr = _safe_format(
-                        target_config.instructions,
-                        date=current_date,
-                        task_name=task_name,
-                        workspace_dir=config.get_workspace_dir(),
-                        delegation_instructions=SUBAGENT_DELEGATION_INSTRUCTIONS.format(
-                            max_concurrency=config.get_setting("concurrency", {}).get("max_concurrent_tasks", 1)
-                        ),
-                        report_style_instructions=report_style_instructions,
-                        citation_format_instructions=citation_format_instructions,
-                        **_get_quota_format_vars()
-                    )
-                else:
-                    sub_instr = _safe_format(
-                        SUBAGENT_INSTRUCTIONS,
-                        date=current_date,
-                        task_name=task_name,
-                        workspace_dir=config.get_workspace_dir(),
-                        delegation_instructions=SUBAGENT_DELEGATION_INSTRUCTIONS.format(
-                            max_concurrency=config.get_setting("concurrency", {}).get("max_concurrent_tasks", 1)
-                        ),
-                        report_style_instructions=report_style_instructions,
-                        citation_format_instructions=citation_format_instructions,
-                        **_get_quota_format_vars()
-                    )
-
-                # MCP tools (settings.mcp_servers, scoped per sub-agent name — see
-                # tools/mcp_loader.py) are connected only for the lifetime of this one delegated
-                # task and closed automatically on exit, success or failure. No-op when
-                # mcp_servers is unconfigured (the default) — AsyncExitStack does nothing.
-                from contextlib import AsyncExitStack
-                from tools.mcp_loader import build_mcp_tools_for_agent
-                mcp_tools = build_mcp_tools_for_agent(target_config.name if target_config else "SubAgent")
-
-                async with AsyncExitStack() as mcp_stack:
-                    for mt in mcp_tools:
-                        await mcp_stack.enter_async_context(mt)
-
-                    # settings.specialist_model tiering: leaf specialist roles (see
-                    # _SPECIALIST_MODEL_ROLES) get the lighter/faster client when configured;
-                    # every other role (Builder/FindingsWriter/PeerReviewer, or an unrecognized
-                    # agent_id) stays on the main client — same object as `client` when tiering
-                    # isn't configured, so this is a no-op in the common case.
-                    dispatch_client = specialist_client if agent_id in _SPECIALIST_MODEL_ROLES else client
-                    sub_agent = dispatch_client.as_agent(
-                        name=_sanitize_name(agent_name),
-                        instructions=sub_instr,
-                        tools=sub_tools + mcp_tools,
-                        default_options=_get_default_options(),
-                        compaction_strategy=_compaction_strategy_for_role(agent_id),
-                    )
-                    final_text = ""
-                    current_input = instructions
-                    has_requests = True
-                    malformed_retries = 0
-                    # Sibling of malformed_retries, for the in-band tool-error class
-                    # tool_result_error_nudge covers (hallucinated tool name, rejected arguments,
-                    # missing file) — see its docstring for why this needed its own counter/path
-                    # rather than reusing the exception-only malformed_tool_call_nudge.
-                    tool_error_retries = 0
-                    pending_tool_error_nudge = None
-                    # Context-budget guard (see get_context_budget): Analyzer-tier tasks are the
-                    # likeliest overflow point — 30 capped reads of a 25KB source still exceed a
-                    # 16K-token num_ctx inside ONE task stream. TUI main loop deliberately not
-                    # guarded (a user at the keyboard can /stop), same policy as max_run_minutes.
-                    context_budget = get_context_budget()
-                    stream_chars = 0
-                    budget_nudged = False
-                    # Zero-synthesis retry state (2026-08-19) -- see the check itself, right after
-                    # the per-iteration nudges below, for the full incident this exists for.
-                    any_tool_call = False
-                    synthesis_nudged = False
-                    # Fresh per-DISPATCH deadline (not per internal retry-turn below, and not
-                    # shared with any other concurrent/sequential dispatch) -- covers this whole
-                    # sub-agent call's total wall-clock budget, same "one deadline for the whole
-                    # thing" semantics max_run_minutes already applies to the Planner's own run.
-                    task_start = time.monotonic()
-                    task_deadline = (
-                        task_start + _sub_agent_timeout_minutes * 60
-                    ) if _sub_agent_timeout_minutes else None
-                    # Ring-fence, mirroring tools/core.py::check_quota's existing one-time-per-task
-                    # rescue (2026-07-21, "4th synthesis-vanishing mechanism"): a dispatch that has
-                    # already fetched something real (task_fetched_urls_ctx non-empty) but hasn't
-                    # finished synthesizing it gets ONE deadline extension instead of being cut off
-                    # mid-turn -- otherwise the real fetch and its summary permanently split across
-                    # two un-mergeable findings entries (see ROADMAP.md's writeup). Bounded twice
-                    # over: only fires once per dispatch (deadline_extended), and never past
-                    # _sdk_timeout_ceiling_seconds minus a safety margin (see that variable's own
-                    # comment for why).
-                    deadline_extended = False
-
-                    def _try_extend_deadline_once() -> bool:
-                        nonlocal task_deadline, deadline_extended
-                        if deadline_extended or not task_deadline:
-                            return False
-                        if not (task_fetched_urls_ctx.get() or None):
-                            return False
-                        extended = _ring_fenced_deadline(
-                            task_start, task_deadline, _sub_agent_timeout_minutes,
-                            _sdk_timeout_ceiling_seconds,
-                        )
-                        if extended is None:
-                            return False
-                        task_deadline = extended
-                        deadline_extended = True
-                        return True
-
-                    while has_requests:
-                        has_requests = False
-                        user_input_requests = []
-
-                        try:
-                            stream = sub_agent.run(current_input, stream=True)
-                            # Manually driven __anext__ + asyncio.wait_for, NOT `async for update
-                            # in stream` -- same fix as engine/tui.py's run_cli (2026-07-12), now
-                            # ported here (2026-07-14) after the identical failure mode was
-                            # confirmed live at this exact call site: a plain async-for only
-                            # checks a deadline once it actually RECEIVES an update, so a stream
-                            # that goes a very long time between updates (or one single very long
-                            # generation) is invisible to any deadline until it finally yields
-                            # something. Racing each __anext__() against the remaining run budget
-                            # via asyncio.wait_for fires the cutoff on a real wall-clock timer
-                            # regardless of how long the stream goes quiet.
-                            stream_iter = stream.__aiter__()
-                            while True:
-                                if task_deadline:
-                                    remaining = task_deadline - time.monotonic()
-                                    if remaining <= 0:
-                                        if _try_extend_deadline_once():
-                                            continue
-                                        final_text += (
-                                            f"\n\n[SYSTEM: task '{task_name}' cut short -- "
-                                            f"sub_agent_timeout_minutes ({_sub_agent_timeout_minutes}) exceeded.]")
-                                        break
-                                else:
-                                    remaining = None
-                                try:
-                                    update = await asyncio.wait_for(stream_iter.__anext__(), timeout=remaining)
-                                except asyncio.TimeoutError:
-                                    if _try_extend_deadline_once():
-                                        continue
-                                    final_text += (
-                                        f"\n\n[SYSTEM: task '{task_name}' cut short -- "
-                                        f"sub_agent_timeout_minutes ({_sub_agent_timeout_minutes}) exceeded "
-                                        f"(stream produced no update before the deadline).]")
-                                    break
-                                except StopAsyncIteration:
-                                    break
-                                if subagent_callback:
-                                    await subagent_callback(update, is_subagent=True, agent_name=agent_name)
-                                for c in update.contents:
-                                    if c.type == "text" and c.text:
-                                        final_text += c.text
-                                    elif c.type == "function_result":
-                                        any_tool_call = True
-                                        # Overwritten on every function_result seen this turn, not
-                                        # just set-once — a LATER successful call after an earlier
-                                        # error means the model already self-corrected on its own
-                                        # within the SDK's internal loop, so only the error still
-                                        # standing at the end of the stream (if any) gets nudged.
-                                        pending_tool_error_nudge = tool_result_error_nudge(
-                                            str(getattr(c, "result", "") or "")
-                                        )
-
-                                if getattr(update, "user_input_requests", None):
-                                    user_input_requests.extend(update.user_input_requests)
-                                stream_chars += stream_content_chars(update)
-                                if context_budget and stream_chars > context_budget:
-                                    break
-                        except QuotaAbortException as e:
-                            return f"## Error for {task_name}\nTask forcefully aborted: {str(e)}\n---"
-                        except Exception as e:
-                            nudge = malformed_tool_call_nudge(e)
-                            if nudge and malformed_retries < 2:
-                                malformed_retries += 1
-                                new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
-                                new_inputs.append(Message("user", [{"type": "text", "text": nudge}]))
-                                current_input = new_inputs
-                                has_requests = True
-                                continue
-                            raise
-
-                        if pending_tool_error_nudge and tool_error_retries < 2:
-                            tool_error_retries += 1
-                            nudge, pending_tool_error_nudge = pending_tool_error_nudge, None
-                            new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
-                            new_inputs.append(Message("user", [{"type": "text", "text": nudge}]))
-                            current_input = new_inputs
-                            has_requests = True
-                            continue
-                        pending_tool_error_nudge = None
-
-                        if context_budget and stream_chars > context_budget and not budget_nudged:
-                            # One wrap-up turn: cut the stream, tell the sub-agent to return its
-                            # findings NOW. A second overshoot falls through and returns whatever
-                            # final_text accumulated — never loop on the nudge itself.
-                            budget_nudged = True
-                            stream_chars = 0
-                            new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
-                            new_inputs.append(Message("user", [{"type": "text", "text": _select_budget_nudge(agent_id)}]))
-                            current_input = new_inputs
-                            has_requests = True
-                            final_text += _cutoff_marker_text(
-                                task_name, len(task_fetched_urls_ctx.get() or []))
-                            continue
-
-                        if user_input_requests:
-                            has_requests = True
-                            responses = []
-                            if subagent_callback:
-                                responses = await subagent_callback(None, is_subagent=True, agent_name=agent_name, approval_requests=user_input_requests)
-
-                            new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
-                            if responses:
-                                new_inputs.extend(responses)
-                            current_input = new_inputs
-
-                        # Zero-synthesis retry (2026-08-19) -- Searcher/Analyzer instance of the
-                        # "zero trailing text" mechanism ARCHITECTURE.md already tracks (the writer-
-                        # role instance got its own bounded retry loop 2026-08-18,
-                        # _WRITER_EMPTY_RETRY_ATTEMPTS; this is the source-level fix for the sibling
-                        # case that was previously only ever DETECTED downstream via RunState.
-                        # coverage()'s empty-summary exclusion, never actually recovered). Confirmed
-                        # live via the 2026-08-18 ablation study: a task's own real, freshly fetched
-                        # sources (5/5 in one run) ALL landed with a completely empty finding
-                        # summary -- see _should_nudge_zero_synthesis's own docstring for the full
-                        # trigger logic (extracted there for testability).
-                        if _should_nudge_zero_synthesis(agent_id, any_tool_call, final_text,
-                                                         synthesis_nudged, has_requests):
-                            synthesis_nudged = True
-                            has_requests = True
-                            new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
-                            new_inputs.append(Message("user", [{"type": "text", "text": SEARCHER_ANALYZER_SYNTHESIS_NUDGE}]))
-                            current_input = new_inputs
-
-                if subagent_callback:
-                    await subagent_callback(None, is_subagent=True, agent_name=agent_name, is_done=True)
-
-                new_urls = task_fetched_urls_ctx.get() or []
-
-                # Computed unconditionally (NOT gated behind grounding_check.enabled below) --
-                # the add_finding fallback further down needs this as the real source when an
-                # Analyzer fetched nothing itself, regardless of whether the reconstructed-URL
-                # warning check that also reads it is turned on.
-                from utils.grounding import extract_cited_urls
-                reference_urls = {u.rstrip("/") for u in extract_cited_urls(instructions)}
-
-                # Upstream verification (Tier-2 Searcher output only, detected generically via
-                # target_children rather than hardcoded agent names — Analyzers are leaf nodes with
-                # no children). Catches a hallucinated citation in a specialist's summary before it
-                # ever reaches the Planner's context, instead of only at final-report time — error
-                # propagation into findings.md was previously undetectable until the very end of
-                # the run, by which point the retry budget was already partly spent.
-                # Collected separately from final_text (rather than appended in place) so the
-                # add_finding call below can guarantee these warnings survive its 1500-char
-                # truncation. Confirmed live (2026-07-18 fine-tune benchmark): a Searcher's own
-                # final_text hallucinated citations to URLs never fetched, this exact
-                # verification warning correctly fired, but it was appended to the END of a
-                # final_text already >1500 chars — `final_text[:1500]` then silently sliced the
-                # warning off before it ever reached FindingsWriter, and the fabricated citations
-                # went in ungrounded. A warning that gets silently truncated away is worse than no
-                # check at all — it looks like defense-in-depth while doing nothing.
-                verification_warnings = ""
-
-                gc_cfg = config.get_setting("grounding_check", {})
-                # enabled is the grounding_check section's master switch (2026-07-12 audit, G2)
-                if target_children and gc_cfg.get("enabled", True) and gc_cfg.get("verify_specialist_output", True):
-                    from utils.grounding import real_grounding_problem
-                    problem = await real_grounding_problem(_strip_follow_up_directions(final_text))
-                    if problem and problem != "no_urls":
-                        verification_warnings += (
-                            f"\n\n[SYSTEM VERIFICATION WARNING: this summary attributes a claim to "
-                            f"a source that does not match anything actually fetched this run, or to "
-                            f"something that isn't a real URL at all ({problem}). Do not treat the "
-                            f"associated claim as sourced when writing findings.md.]"
-                        )
-
-                    # Topical-relevance check: an instruction requiring "Colombia" is not the same
-                    # as a fetched source actually BEING about Colombia — confirmed live, forcing
-                    # the scope entity into every sub-task's instructions still let a US article, a
-                    # Mexico-specific paper, and a generic global page through, because search
-                    # result ranking and blind top-1 auto-fetch don't check relevance either. This
-                    # is a cheap, deterministic substitute: does anything actually fetched for THIS
-                    # task even mention the entity the instructions said it must be about?
-                    if gc_cfg.get("verify_scope_relevance", True):
-                        scope_entities = _extract_scope_entities(instructions)
-                        if scope_entities and new_urls:
-                            from tools.fs import get_workspace_file_content
-                            # Case-insensitive on both sides (C8 companion fix): "Colombia"
-                            # must match a page's lowercase "colombia" — the entity comes from
-                            # instruction casing, the page from editorial casing.
-                            lowered = [t.lower() for t in scope_entities]
-                            matched = any(
-                                any(term in (get_workspace_file_content(u["filename"]) or "").lower() for term in lowered)
-                                for u in new_urls
-                            )
-                            if not matched:
-                                entities_str = "/".join(sorted(scope_entities))
-                                verification_warnings += (
-                                    f"\n\n[SYSTEM RELEVANCE WARNING: none of the sources fetched for "
-                                    f"this task actually mention {entities_str}, despite the task "
-                                    f"instructions requiring it. This may be an off-topic or "
-                                    f"wrong-country source — verify before presenting these findings "
-                                    f"as being about {entities_str}.]"
-                                )
-
-                # Downstream half of the SAME real bug class as the delegate_tasks filename/URL
-                # checks above (2026-07-19 audit) — that fix stops a Searcher handing an Analyzer a
-                # GUESSED reference; this catches the mirror direction, an Analyzer reporting a
-                # GUESSED/reconstructed URL back UP in its own summary instead of the real one it
-                # was told to analyze. Both WEB_SEARCHER_INSTRUCTIONS and DATA_ANALYZER_INSTRUCTIONS
-                # already warn against this in prompt text ("NEVER guess or reconstruct a URL from a
-                # filename") but had no structural backstop — unlike the Searcher-tier check above
-                # (gated on target_children, since Analyzers are leaf nodes with none), which is why
-                # this needs its own branch with a different reference set: an Analyzer never fetches
-                # anything itself (no fetch_url_to_workspace tool), so `get_fetched_urls()` is the
-                # wrong ground truth here — the correct one is the URL(s) actually present in THIS
-                # task's own `instructions`, which the delegate_tasks fix above now guarantees are
-                # real. No live-observed occurrence of this direction yet (unlike the other, which
-                # was caught live) — added proactively since it's the same mechanism, same fix shape.
-                elif (not target_children and target_config and target_config.name in ("DocumentAnalyzer", "DataAnalyzer")
-                      and gc_cfg.get("enabled", True) and gc_cfg.get("verify_specialist_output", True)):
-                    from utils.grounding import _urls_prefix_match
-                    if reference_urls:
-                        reconstructed = [
-                            u for u in extract_cited_urls(_strip_follow_up_directions(final_text))
-                            if u.rstrip("/") not in reference_urls
-                            and not any(_urls_prefix_match(u.rstrip("/"), r) for r in reference_urls)
-                        ]
-                        if reconstructed:
-                            verification_warnings += (
-                                f"\n\n[SYSTEM VERIFICATION WARNING: this summary cites "
-                                f"{reconstructed[0]!r}, which does not match the source URL you were "
-                                f"actually given to analyze ({', '.join(sorted(reference_urls))}) — "
-                                f"this looks like a reconstructed or guessed URL, not the real one. "
-                                f"Do not treat the associated claim as sourced when writing "
-                                f"findings.md.]"
-                            )
-
-                    # A correct citation URL doesn't mean the CLAIM is right -- an Analyzer reads
-                    # one document and can still misreport a figure, misattribute a stat, or
-                    # otherwise contradict what its own source actually says. Check A above already
-                    # runs the full real_grounding_problem pipeline (stub detection, quote-fidelity,
-                    # content-level term-overlap, and NLI contradiction detection) for the Searcher
-                    # tier -- this branch had none of that, only the reconstructed-URL check above,
-                    # since it was added later (2026-07-19) narrowly scoped to the one bug that
-                    # motivated it. 2026-07-26 ROADMAP/RESEARCH.md review (VeriCite comparison)
-                    # surfaced this as a real, unprincipled coverage gap between the two tiers, not
-                    # a missing feature needing new claim-extraction machinery -- real_grounding_problem
-                    # already exists, is already proven via Check A, and works unchanged against an
-                    # Analyzer's own final_text the same way it does a Searcher's.
-                    from utils.grounding import real_grounding_problem
-                    problem = await real_grounding_problem(_strip_follow_up_directions(final_text))
-                    if problem and problem != "no_urls":
-                        verification_warnings += (
-                            f"\n\n[SYSTEM VERIFICATION WARNING: this summary attributes a claim to "
-                            f"a source that does not match anything actually fetched this run, or to "
-                            f"something that isn't a real URL at all ({problem}). Do not treat the "
-                            f"associated claim as sourced when writing findings.md.]"
-                        )
-
-                final_text += verification_warnings
-
-                # Populate the structured findings store (previously dead code — RunState.add_finding
-                # was defined but never called) so a completion-check retry or later debugging has real
-                # {source_url, summary} records instead of only the model's own narration. Preferring
-                # URLs actually fetched during THIS task over the task name keeps findings traceable to
-                # a real source when one exists (Searcher-tier calls); Analyzer-tier calls fetch nothing
-                # themselves, so they fall back to the task name as the record's identifier.
-                # task_name/depth (ROADMAP Phase 5, "Coverage accounting") let RunState.coverage()
-                # group findings by which top-level (depth==1) task produced them, and tell a real
-                # fetched-URL finding apart from a task-name fallback one -- see that method's own
-                # docstring for why depth==1 only (a nested Analyzer's lack of a new URL is
-                # expected, not a coverage gap).
-                #
-                # `_FINDING_SUMMARY_BUDGET` chars total, but the verification warnings (if any) are
-                # NEVER part of the truncated slice — they're guaranteed room by reserving their
-                # length off the body's share first, then concatenated back in full. See the
-                # comment on `verification_warnings` above for why this ordering matters.
-                #
-                # 2026-07-19 (engine-driven iterative deepening, ROADMAP item 10): FOLLOW-UP
-                # DIRECTIONS is specified to be the LAST section of a Searcher's summary, which
-                # means it was the FIRST thing this same truncation silently dropped for any real
-                # summary over ~1500 chars — the identical failure shape as the verification-warning
-                # bug this budget already carves an exception for. Extracted and stored separately
-                # (RunState.add_finding's own field, never subject to this budget), same treatment.
-                follow_up_directions = _extract_follow_up_directions(final_text)
-                body_budget = _FINDING_SUMMARY_BUDGET - len(verification_warnings)
-                body_text = final_text[:len(final_text) - len(verification_warnings)] if verification_warnings else final_text
-                finding_summary = body_text[:body_budget] + verification_warnings
-
-                this_depth = delegation_depth_ctx.get()
-                top_level_task_name = top_level_task_name_ctx.get()
-                run_state = run_state_ctx.get()
-                if run_state is not None and agent_id not in _NON_RESEARCH_DISPATCH_ROLES:
-                    if new_urls:
-                        for u in new_urls:
-                            run_state.add_finding(u["url"], finding_summary, task_name=task_name, depth=this_depth,
-                                                   follow_up_directions=follow_up_directions, agent_id=agent_id,
-                                                   top_level_task_name=top_level_task_name)
-                    elif reference_urls:
-                        # An Analyzer fetches nothing itself, but the Searcher that delegated to it
-                        # is instructed to pass the real source URL IN its instructions (see
-                        # prompts.py: "The Analyzer NEEDS the URL to include it in its summary") --
-                        # reference_urls (above) already extracts exactly that. Recovering the real
-                        # URL here instead of falling to task_name is the difference between a
-                        # traceable finding and the 2026-07-21 fabrication bug: task_name silently
-                        # standing in for source_url reached FindingsWriter with no marker that it
-                        # wasn't a real URL, and got cited as one (5/19 findings in a live qwen3:8b
-                        # run). See _build_findings_source_material's own non-http handling for the
-                        # remaining defense-in-depth case (no reference URL either).
-                        for u in reference_urls:
-                            run_state.add_finding(u, finding_summary, task_name=task_name, depth=this_depth,
-                                                   follow_up_directions=follow_up_directions, agent_id=agent_id,
-                                                   top_level_task_name=top_level_task_name)
-                    else:
-                        run_state.add_finding(task_name, finding_summary, task_name=task_name, depth=this_depth,
-                                               follow_up_directions=follow_up_directions, agent_id=agent_id,
-                                               top_level_task_name=top_level_task_name)
-
-                # RAG findings cache (ROADMAP.md "Strategic options" item 5, 2026-07-20): only cache
-                # a finding that passed the EXACT SAME grounding+relevance gate above with zero
-                # warnings — a cache entry is exactly as verified as a same-run finding, never less.
-                # Deliberately caches the atomic (source_url, summary) pair, not a whole answer, so a
-                # future cache hit still requires the Searcher to incorporate/cite it itself, the
-                # same as a fresh web_search result — this is what makes it safe across different
-                # models, unlike the deleted knowledge_cache (929b987) it replaces.
-                rag_cfg = config.get_setting("rag_cache", {})
-                if _should_cache_finding(
-                    verification_warnings, new_urls, rag_cfg.get("enabled", False), finding_summary
-                ):
-                    from utils import rag_cache
-
-                    model = config.cfg.get("api", {}).get("openai_model", "")
-                    for u in new_urls:
-                        rag_cache.save(task_name, u["url"], finding_summary, model)
-
-                return f"## Result for {task_name}\n{final_text}\n---"
-            finally:
-                if children_token is not None:
-                    available_sub_agents_ctx.reset(children_token)
-                holds_token.reset(token_setter)
-                delegation_depth_ctx.reset(depth_token)
-                if top_level_token is not None:
-                    top_level_task_name_ctx.reset(top_level_token)
-                task_fetched_urls_ctx.reset(task_urls_token)
-                task_dedup_fetch_repeat_ctx.reset(dedup_fetch_repeat_token)
-                task_id_ctx.reset(task_id_token)
-                specialist_delegate_task_count_ctx.reset(specialist_delegate_count_token)
-                task_read_grep_count_ctx.reset(read_grep_count_token)
-                scope_entities_ctx.reset(scope_token)
+        return await _dispatch_single_task(
+            task_name, instructions, agent_id,
+            client=client, specialist_client=specialist_client, sem=sem, holds_token=holds_token,
+            _sub_agent_timeout_minutes=_sub_agent_timeout_minutes,
+            _sdk_timeout_ceiling_seconds=_sdk_timeout_ceiling_seconds,
+            report_style_instructions=report_style_instructions,
+            citation_format_instructions=citation_format_instructions,
+            subagent_callback=subagent_callback,
+            delegate_tasks_tool=delegate_tasks,
+        )
 
     # -------------------------------------------------------------
     # [!CAUTION] CONCURRENCY ARCHITECTURE FOR LLM CODING ASSISTANTS:
@@ -1607,393 +2031,9 @@ def create_local_agent(builder, subagent_callback=None, session_data=None):
     @tool(name="delegate_tasks", description="Delegate multiple independent tasks to specialized sub-agents to be executed concurrently. Pass a list of dictionaries, each with 'task_name', 'instructions', and 'agent_id' (see your Delegation Routing block for valid agent_id values).")
     @with_quota
     async def delegate_tasks(tasks: list[dict]) -> str:
-        # Per-task specialist-delegation cap (depth > 0 == a Tier-2 specialist delegating to its
-        # own Analyzer children, never the Planner's own top-level call — see
-        # specialist_delegate_task_count_ctx's header comment). Checked BEFORE the schema
-        # validation below, same reject-not-truncate shape as that validation: the goal is to make
-        # the specialist actually stop and synthesize its findings, not dispatch a partial batch
-        # and think it can keep going.
-        specialist_delegation_counter = None
-        _rs_for_cap = None
-        if delegation_depth_ctx.get() > 0:
-            cap = config.get_setting("specialist_delegation_cap", 3)
-            specialist_delegation_counter = specialist_delegate_task_count_ctx.get()
-            current = specialist_delegation_counter[0] if specialist_delegation_counter is not None else 0
-            if _specialist_delegation_over_cap(current, len(tasks), cap):
-                return (
-                    f"Error: delegate_tasks call rejected — this task has already delegated "
-                    f"{current} source(s) for analysis (cap: {cap} per task, no quota was consumed "
-                    f"on this rejected call). Stop searching for more sources: synthesize and return "
-                    f"your consolidated findings now instead of dispatching more Analyzers. Per your "
-                    f"own instructions, one authoritative source is usually sufficient."
-                )
-        elif delegation_depth_ctx.get() == 0:
-            # Hard cap on the PLANNER's own replan rounds (RESEARCH.md Sec.15, 2026-08-01) --
-            # sibling fix to the specialist cap above, checked BEFORE schema validation for the
-            # same reason (reject early, no wasted validation work on a call that's rejected
-            # anyway). Live-confirmed necessary: the fetch cap + softened cutoff wording alone
-            # fixed the ORIGINAL traced incident but both smoke-test reruns still timed out because
-            # the Planner kept redispatching with no cutoff signal involved at all -- see
-            # _planner_delegate_over_cap's own docstring.
-            planner_cap = config.get_setting("max_planner_delegate_rounds", 4)
-            _rs_for_cap = run_state_ctx.get()
-            _planner_rounds = _rs_for_cap.data.get("planner_delegate_rounds", 0) if _rs_for_cap else 0
-            if _planner_delegate_over_cap(_planner_rounds, planner_cap):
-                # Resume-with-existing-report case (utils/run_state.py's merge_resumed_state,
-                # RESEARCH.md Sec.17e) pre-sets planner_delegate_rounds to the cap, so the generic
-                # "you have already run N rounds" wording below would be misleading here -- this
-                # IS round 0, nothing was actually run. A distinct, accurate message instead.
-                if _rs_for_cap and _rs_for_cap.data.get("resumed_with_existing_report"):
-                    return (
-                        "Error: delegate_tasks call rejected — this is a resumed run and a report "
-                        "already exists. Further research delegation is disabled for resumed runs "
-                        "with an existing report: if the report is missing something findings.md "
-                        "already covers, that is a writer-role fix the automatic pipeline will "
-                        "apply on its own, not a research gap. Stop delegating and let the system "
-                        "finalize the report from what has already been researched."
-                    )
-                return (
-                    f"Error: delegate_tasks call rejected — you have already run {_planner_rounds} "
-                    f"planning round(s) this run (cap: {planner_cap}, no quota was consumed on this "
-                    f"rejected call). Stop planning further and let the system finalize a report "
-                    f"from what has already been researched."
-                )
-        # -------------------------------------------------------------
-        # Validate BEFORE dispatching anything. Found via a real end-to-end test: a model emitted
-        # tasks shaped like {"due": 1, "task": "..."} instead of {"task_name", "instructions",
-        # "agent_id"} — completely wrong field names. The old code silently defaulted to
-        # task_name="Unknown_Task", instructions="" and dispatched it anyway, so the sub-agent
-        # searched for the literal string "Unknown_Task" and got garbage, unrelated results, which
-        # then poisoned everything downstream (the Planner had nothing real to report). A malformed
-        # call must fail loudly and immediately, not silently degrade into wasted quota on garbage
-        # work — this lets the model see exactly what was wrong and retry with the correct shape.
-        # -------------------------------------------------------------
-        # Numbered-placeholder detector: found live, a model planning "12 candidate sectors"
-        # dispatched tasks literally named/instructed around "sector 1", "sector 2", etc. instead
-        # of naming the real sectors first — every resulting web_search query was the literal,
-        # meaningless phrase "market size of sector 1 in colombia", returning garbage (a currency
-        # site, an energy-agency report, unrelated Wikipedia pages) across all 12. Same principle
-        # as the malformed-schema check below: reject loudly before wasting quota on it, rather
-        # than relying on the prompt rule alone (see prompts.py's DISPATCH step for the prompt-side
-        # half of this fix).
-        # Matches "sector 1" / "sector_1" (post-normalization) / "sector #4" AND "sector X" /
-        # "item Y" — a bare capital letter is as common a placeholder as a number (confirmed
-        # live). The keyword itself stays case-insensitive; the single-letter placeholder stays
-        # case-SENSITIVE (only a bare capital, e.g. "sector X") so this doesn't false-positive on
-        # a keyword incidentally followed by a lowercase word-initial letter in real prose.
-        # Checked against `instructions` ONLY, not `task_name` — found live, a real 12-task batch
-        # ("Analyze market 1: Logistics and supply chain management in Colombia", ...) was rejected
-        # wholesale because task_name used "market 1"/"market 2" as an ordinary numbered list label
-        # while instructions fully named the real, specific topic ("Assess the needs of logistics
-        # and supply chain management in Colombia..."). task_name is never what actually drives a
-        # Searcher's search query (only instructions is — see WEB_SEARCHER_INSTRUCTIONS' Workflow),
-        # so a numbered task_name label is harmless; the original documented failure case (the
-        # literal garbage query "market size of sector 1 in colombia") had the placeholder in
-        # instructions itself, which this narrower check still catches.
-        _placeholder_re = re.compile(
-            r'\b(?:[Ss]ector|[Ii]tem|[Mm]arket|[Tt]opic|[Oo]ption|[Cc]andidate|[Cc]ategory|'
-            r'[Pp]roduct|[Ss]ervice|[Aa]rea)\s*(?:#?\d+\b|[A-Z]\b)'
+        return await _dispatch_tasks_batch(
+            tasks, run_single_task=_run_single_task, sem=sem, holds_token=holds_token,
         )
-        # Catches the OTHER half of the same real failure: a task instructed to act "for each
-        # identified sector" (or similar) inside a batch dispatched via asyncio.gather — but
-        # delegate_tasks runs every task in a batch CONCURRENTLY, so a sibling "identify the
-        # sectors" task's results don't exist yet when this one runs. This is exactly the
-        # sequential-vs-concurrent rule already in SUBAGENT_DELEGATION_INSTRUCTIONS, just not
-        # being followed — confirmed live, a real run's web_search literally queried "Evaluate
-        # competition level for sector X" because of this.
-        _cross_task_dependency_re = re.compile(r'\bfor each\b.{0,40}\bidentif', re.IGNORECASE)
-
-        errors = []
-        for i, t in enumerate(tasks):
-            if not isinstance(t, dict):
-                errors.append(f"Task {i}: not an object — got {type(t).__name__}.")
-                continue
-            missing = [k for k in ("task_name", "instructions") if not t.get(k)]
-            if missing:
-                errors.append(
-                    f"Task {i} {t!r}: missing or empty required field(s) {missing}. "
-                    f"Each task MUST be shaped exactly as "
-                    f"{{\"task_name\": \"...\", \"instructions\": \"...\", \"agent_id\": \"...\"}}."
-                )
-                continue
-            # Normalize underscores/hyphens to spaces first — "sector_1" (a real observed
-            # instructions string) otherwise never matches \bsector\b, since '_' counts as a word
-            # character and leaves no boundary between "analyze_" and "sector".
-            placeholder_text = str(t.get("instructions", "")).replace("_", " ").replace("-", " ")
-            m = _placeholder_re.search(placeholder_text)
-            if m:
-                errors.append(
-                    f"Task {i} ({t.get('task_name')!r}): looks like an unresolved placeholder "
-                    f"({m.group(0)!r}), not a real research topic — a Searcher given this will "
-                    f"search for that literal meaningless phrase. If you're enumerating multiple "
-                    f"items, you must know and use each item's REAL name (e.g. 'fintech for gig "
-                    f"workers', not 'sector 3' or 'sector X') before dispatching. If you don't "
-                    f"know the real names yet, delegate a background task to identify them first."
-                )
-                continue
-            if _lacks_concrete_subject(str(t.get("instructions", ""))):
-                errors.append(
-                    f"Task {i} ({t.get('task_name')!r}): instructions rely on a pronoun ('it'/'its'/"
-                    f"'them') with no concrete subject anywhere — the sub-agent executing this has "
-                    f"NO memory of your conversation or of sibling tasks, so it cannot know what "
-                    f"the pronoun refers to and will search for the literal phrase. Restate the "
-                    f"full subject explicitly in EVERY task's instructions (e.g. 'Summarize Python "
-                    f"3.14\\'s headline feature', not 'Summarize its headline feature')."
-                )
-                continue
-            dep_m = _cross_task_dependency_re.search(" ".join(str(t.get(k, "")) for k in ("task_name", "instructions")))
-            if dep_m:
-                errors.append(
-                    f"Task {i} ({t.get('task_name')!r}): says \"{dep_m.group(0)}\" — this task "
-                    f"depends on another task's output, but ALL tasks in one delegate_tasks call "
-                    f"run CONCURRENTLY, so a sibling 'identify X' task's results do not exist yet "
-                    f"when this one runs. Split this into two SEQUENTIAL delegate_tasks calls: "
-                    f"first the identification task alone, wait for its real result, THEN a second "
-                    f"call with one task per REAL item it found."
-                )
-                continue
-            # Real, confirmed live failure (2026-07-19 corpus audit: 83/563 Analyzer-delegating
-            # instructions across 19/76 runs referenced a URL never actually fetched this task) —
-            # a Searcher sees a URL in a search-result SNIPPET and delegates an Analyzer task to
-            # "read" it as if it had already been fetched, when fetch_url_to_workspace was never
-            # called on it. The Analyzer then burns its whole quota guessing filename variants for
-            # a file that structurally cannot exist (confirmed live: 9+ grep_workspace_file calls,
-            # no Finished). Checked only for Analyzer-tier targets (DocumentAnalyzer/DataAnalyzer)
-            # — those are the roles whose entire job is reading an already-fetched file, so this is
-            # the one delegation shape where "the referenced URL must already be fetched" is a real
-            # invariant, not a false constraint (WebSearcher/AcademicSearcher tasks legitimately
-            # instruct new research on URLs nothing has fetched yet). Scoped to the CALLING task's
-            # own real fetches (task_fetched_urls_ctx, not the whole run's) — a Searcher can only
-            # honestly hand its Analyzer children what it itself actually fetched.
-            if t.get("agent_id") in ("DocumentAnalyzer", "DataAnalyzer"):
-                from utils.grounding import extract_cited_urls, _urls_prefix_match
-                own_fetched_entries = task_fetched_urls_ctx.get() or []
-                own_fetched = {e["url"].rstrip("/") for e in own_fetched_entries}
-                cited = extract_cited_urls(str(t.get("instructions", "")))
-                if cited:
-                    unfetched = [
-                        u for u in cited
-                        if u.rstrip("/") not in own_fetched
-                        and not any(_urls_prefix_match(u.rstrip("/"), f) for f in own_fetched)
-                    ]
-                    if unfetched:
-                        # See _find_sibling_fetch's own docstring for why this distinction exists
-                        # (RESEARCH.md Sec.17g) -- the generic advice below is WRONG, not just
-                        # unhelpful, when a sibling task already fetched this exact URL.
-                        from utils.run_state import get_fetched_urls
-                        u0 = unfetched[0]
-                        already = _find_sibling_fetch(u0, get_fetched_urls())
-                        if already:
-                            errors.append(
-                                f"Task {i} ({t.get('task_name')!r}): instructs {t.get('agent_id')} "
-                                f"to read {u0!r} — that URL was already fetched by a DIFFERENT task "
-                                f"this run (not this one), saved as {already.get('filename')!r}. Do "
-                                f"NOT call fetch_url_to_workspace on it again — it will just tell "
-                                f"you it's already fetched, which wastes a call and gets you no "
-                                f"further. Delegate {t.get('agent_id')} with the real saved "
-                                f"filename directly ({already.get('filename')!r}), not the URL."
-                            )
-                        else:
-                            errors.append(
-                                f"Task {i} ({t.get('task_name')!r}): instructs {t.get('agent_id')} to "
-                                f"read {u0!r}, but that URL was never actually fetched this "
-                                f"task — it looks like it came from a search-result snippet, not a real "
-                                f"fetch_url_to_workspace call. {t.get('agent_id')} can only read files "
-                                f"you actually fetched; if this source matters, call "
-                                f"fetch_url_to_workspace on it yourself first, THEN delegate the "
-                                f"analysis with the real saved filename."
-                            )
-                        continue
-                # Sibling bug to the unfetched-URL check above, confirmed live in the SAME
-                # benchmark run (2026-07-19): the URL WAS genuinely fetched, but the Searcher
-                # constructed a GUESSED filename for the Analyzer task (a plausible-looking
-                # pattern built from the URL's own path segments, e.g.
-                # 'sources/bcpublication_org_BM_3487.md') instead of the REAL saved filename
-                # fetch_url_to_workspace actually returned (e.g. 'sources/bcpublication_org_
-                # 58286b27.md', hash-suffixed). Same root family as WEB_SEARCHER_INSTRUCTIONS'
-                # existing "NEVER guess or reconstruct a URL from a filename" rule, just the
-                # inverse direction, previously unguarded. Confirmed live: the Searcher dispatched
-                # BOTH the guessed-filename task AND a correct-filename task for the identical URL
-                # back to back — real wasted duplicate delegation, not just a wrong-filename typo.
-                # Matched against the prompt's own fixed instruction template
-                # ("Read the file '<path>'. Source URL: ...", see prompts.py's real Analyzer
-                # dispatch examples) so this doesn't misfire on legitimately-phrased instructions.
-                filename_m = re.search(r"[Rr]ead the file '([^']+)'", str(t.get("instructions", "")))
-                if filename_m and cited:
-                    claimed_filename = filename_m.group(1)
-                    real_filename = next(
-                        (e["filename"] for e in own_fetched_entries
-                         if e["url"].rstrip("/") == cited[0].rstrip("/")
-                         or _urls_prefix_match(cited[0].rstrip("/"), e["url"].rstrip("/"))),
-                        None,
-                    )
-                    if real_filename and claimed_filename not in (real_filename, real_filename.split("/")[-1]):
-                        errors.append(
-                            f"Task {i} ({t.get('task_name')!r}): instructs {t.get('agent_id')} to "
-                            f"read {claimed_filename!r}, but that filename was GUESSED, not the "
-                            f"real one — the actual saved filename for that URL is "
-                            f"{real_filename!r} (from your own fetch_url_to_workspace result). "
-                            f"Never construct a filename from a URL's path; always use the exact "
-                            f"filename the fetch tool returned."
-                        )
-                        continue
-            # Non-generative routing classifier (RESEARCH.md §6, ROADMAP.md "Pending", 2026-07-20)
-            # — catches a hallucinated agent_id ("searcher", "PeerReviewer", invented role names,
-            # ~4.9% of real historical delegate_tasks calls) BEFORE dispatch, rather than only after
-            # _run_single_task's own exact-string lookup fails per-task post-dispatch. Decision
-            # logic lives in _agent_routing_rejection_reason (pure function, directly testable) —
-            # this closure only gathers the caller's real roster and the classifier's prediction.
-            agent_routing_cfg = config.get_setting("agent_routing_classifier", {})
-            if agent_routing_cfg.get("enabled", False):
-                from utils.agent_routing import predict_agent_id, KNOWN_AGENT_IDS
-                caller_role_names = frozenset(c.name for c in available_sub_agents_ctx.get())
-                candidate_classes = caller_role_names & KNOWN_AGENT_IDS
-                prediction = (
-                    predict_agent_id(str(t.get("instructions", "")), candidate_classes)
-                    if candidate_classes else None
-                )
-                reason = _agent_routing_rejection_reason(
-                    t.get("agent_id"), caller_role_names, prediction,
-                    agent_routing_cfg.get("min_confidence", 0.6),
-                )
-                if reason:
-                    errors.append(f"Task {i} ({t.get('task_name')!r}): {reason}")
-                    continue
-        if errors:
-            return (
-                "Error: delegate_tasks call rejected — none of these tasks were dispatched (no quota "
-                "was consumed on wasted work). Fix the shape and call delegate_tasks again with valid "
-                "tasks:\n" + "\n".join(errors)
-            )
-        if specialist_delegation_counter is not None:
-            specialist_delegation_counter[0] += len(tasks)
-        elif delegation_depth_ctx.get() == 0 and _rs_for_cap is not None:
-            # Symmetric with the specialist counter above -- only a call that actually passed
-            # validation burns a round, matching that sibling's own "a rejected/malformed call
-            # must not count" reasoning.
-            _rs_for_cap.data["planner_delegate_rounds"] = _rs_for_cap.data.get("planner_delegate_rounds", 0) + 1
-
-        # Structural enforcement of the user's own exclusion rules — confirmed live three times
-        # that the prompt-level rule alone doesn't hold (4 explicitly-excluded sectors researched
-        # and included anyway). Excluded tasks are SKIPPED individually, not batch-rejected: the
-        # sibling tasks are legitimate, and the placeholder-detector incident (see above) showed a
-        # wholesale rejection makes the model abandon delegation and fabricate instead.
-        run_state = run_state_ctx.get()
-        excluded_topics = _extract_excluded_topics(run_state.data.get("query", "")) if run_state else set()
-        prior_dispatched = run_state.data.setdefault("dispatched_tasks", []) if run_state else []
-        skipped = []
-        coroutines = []
-        dispatched_names = []
-        rename_note_by_name = {}
-        for t in tasks:
-            name = t.get("task_name")
-            instr = t.get("instructions")
-            aid = t.get("agent_id", None)
-            task_text = f"{name} {instr}".lower()
-            # A task may legitimately restate the query's own exclusions ("... exclude fintech,
-            # last-mile delivery ..."), which would substring-match every excluded topic and skip
-            # a perfectly in-scope task — confirmed live 2026-07-11: a Planner's discovery task was
-            # rejected twice for quoting the exclusion list, burning delegate_tasks quota and turns.
-            # Strip exclusion clauses from the task's text before matching, so the gate only fires
-            # when an excluded topic is the task's actual subject.
-            task_text = _EXCLUSION_CUE_RE.sub(" ", task_text)
-            hit = next((topic for topic in excluded_topics if topic in task_text), None)
-            if hit:
-                skipped.append(
-                    f"## Skipped {name}\nNot dispatched: this topic matches an explicit exclusion "
-                    f"in the original query ({hit!r}). Do not research it, do not include it in "
-                    f"findings.md or the final report, and do not re-delegate it.\n---"
-                )
-                continue
-            renamed_from = _looks_like_renamed_task(name, instr, prior_dispatched)
-            if renamed_from:
-                # Escalate advisory -> hard reject on a SECOND match against the SAME prior task
-                # (2026-08-17, MAST FM-1.3/FM-2.5, RESEARCH.md §18f / session_status 2026-08-17):
-                # confirmed live, the Planner saw this exact advisory 3 times in a row and ignored
-                # it every time, burning delegate_tasks quota on near-duplicates until exhaustion
-                # forced an early, unverified salvage. A hard reject on the FIRST match would risk
-                # dropping a genuinely different facet that happens to cross-match once (see
-                # _looks_like_renamed_task's own entity-mismatch override docstring) -- but two
-                # DIFFERENT facets both independently cross-matching the identical prior task twice
-                # running is the unlikely case, not the common one, so escalating only on a repeat
-                # against the same target keeps the false-positive cost to a single wasted advisory.
-                rename_reject_escalation_disabled = bool(
-                    config.get_setting("ablation", {}).get(
-                        "disable_rename_reject_escalation", False
-                    )
-                )
-                rename_counts = run_state.data.setdefault("rename_advisory_counts", {}) if run_state else {}
-                count = rename_counts.get(renamed_from, 0) + 1
-                if run_state is not None:
-                    rename_counts[renamed_from] = count
-                if _rename_match_escalates(count) and not rename_reject_escalation_disabled:
-                    skipped.append(
-                        f"## Skipped {name}\nNot dispatched: this is the {count}th task this run "
-                        f"whose instructions look like a rename of already-dispatched task "
-                        f"{renamed_from!r} — the first one only got a warning, this one is blocked "
-                        f"to stop wasting delegate_tasks quota on the same duplicated angle. Reuse "
-                        f"task_name={renamed_from!r} to continue that angle, or make this task's "
-                        f"subject clearly distinct if it's genuinely a new one.\n---"
-                    )
-                    continue
-                rename_note_by_name[name] = (
-                    f"Note: this task's instructions look very similar to already-dispatched task "
-                    f"{renamed_from!r} — if this is a retry of that same angle, reuse "
-                    f"task_name={renamed_from!r} instead of a new name, so it's tracked as a "
-                    f"continuation, not a new untracked angle."
-                )
-            if run_state is not None:
-                prior_dispatched.append({"task_name": name, "instructions": instr})
-            dispatched_names.append(name)
-            coroutines.append(_run_single_task(name, instr, aid))
-
-        if skipped and not coroutines:
-            return (
-                "Error: every task in this call matches a topic the original query explicitly "
-                "excluded — none were dispatched. Re-read the query's exclusion list and delegate "
-                "only topics that are actually in scope.\n" + "\n".join(skipped)
-            )
-
-        # Pre-reserve enough shared-pool headroom for the WHOLE batch before any task in it starts
-        # (ROADMAP's tracked open angle (c), 2026-07-21): with max_concurrent_tasks small (often
-        # 1), tasks in one delegate_tasks batch run in roughly the order listed, sequentially
-        # draining the SAME shared quota pool -- confirmed live, a heavily-redispatched sibling
-        # (comparison_GA, 14 finding entries across the run) consistently ran before its siblings
-        # (comparison_PSO/SA/ACO/BO) each retry round and left them nothing, even though
-        # run_completion_check tops the pool up between rounds. tools/core.py::check_quota's
-        # per-task rescue (angle (a), same date) only helps AFTER a task already hit the wall;
-        # this closes the gap one level earlier by guaranteeing the pool has enough TOTAL headroom
-        # for every task in this batch to get at least a fair minimum before any of them spend it
-        # -- not true round-robin scheduling (that would need cooperative mid-turn interleaving, a
-        # much bigger change), but it removes the structural incentive for dispatch order alone to
-        # fully starve later siblings. See _reserve_batch_quota_headroom's own docstring for the
-        # arithmetic (pulled out for direct testability).
-        pool = tool_quotas_ctx.get()
-        if pool is not None:
-            _reserve_batch_quota_headroom(pool, len(coroutines))
-
-        was_holding = holds_token.get()
-        if was_holding:
-            sem.release()
-
-        try:
-            results = await asyncio.gather(*coroutines, return_exceptions=True)
-        finally:
-            if was_holding:
-                await sem.acquire()
-
-        final_output = list(skipped)
-        for name, res in zip(dispatched_names, results):
-            if isinstance(res, Exception):
-                final_output.append(f"## Error\nTask failed with exception: {res}\n---")
-            else:
-                text = str(res)
-                note = rename_note_by_name.get(name)
-                if note:
-                    text = f"{note}\n{text}"
-                final_output.append(text)
-
-        return "\n\n".join(final_output)
 
     # -------------------------------------------------------------
     # [!CAUTION] RULES FOR LLM CODING ASSISTANTS EDITING THIS:
