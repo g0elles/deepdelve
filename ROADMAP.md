@@ -125,36 +125,56 @@ tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
   against the decomposed code, plus `test_tools.py` and `ruff check .`. Full narrative belongs in the
   wiki's Completed page on the next migration pass, not repeated here.
 
-- **`completion.py`'s mixed responsibilities, scoped 2026-07-29 — first slice extracted 2026-08-24,
-  the rest deliberately still not attempted.** The file's own header describes it as a clean list of
-  pure `Ctx -> Optional[Verdict]` check functions, but it also contains findings-authoring/evidence-
-  assembly logic, disk-touching quarantine/restore/salvage helpers, async sub-agent dispatch
-  orchestration, the task-verification ledger mutator, and the completion-check state machine tying
-  all of it together — none individually bug-prone, but "add a new completion check" requires
-  understanding all of the above living in one namespace, and `ARCHITECTURE.md` §1 documents real,
-  delicate cross-cutting invariants here (four routing tuples that must all agree, the starvation/
-  capping machinery) that a 2026-07-24 session hit five real bugs in, in one sitting.
-  **Extracted the quarantine/restore/salvage group** (`_quarantine_artifact`,
+- **`completion.py`'s mixed responsibilities, scoped 2026-07-29 — two slices extracted (2026-08-24),
+  the hazardous core deliberately still not attempted.** The file's own header describes it as a
+  clean list of pure `Ctx -> Optional[Verdict]` check functions, but it also contains findings-
+  authoring/evidence-assembly logic, disk-touching quarantine/restore/salvage helpers, async
+  sub-agent dispatch orchestration, the task-verification ledger mutator, and the completion-check
+  state machine tying all of it together — none individually bug-prone, but "add a new completion
+  check" requires understanding all of the above living in one namespace, and `ARCHITECTURE.md` §1
+  documents real, delicate cross-cutting invariants here (four routing tuples that must all agree,
+  the starvation/capping machinery) that a 2026-07-24 session hit five real bugs in, in one sitting.
+  **Slice 1 (quarantine/restore/salvage)**: `_quarantine_artifact`,
   `_content_unchanged_since_last_quarantine`, `_restore_quarantined_draft`, `_salvage_narrated_report`
   + its two banner constants, `_ensure_writer_quota_headroom`, `_ensure_reader_quota_headroom`,
-  `_is_transient_ollama_json_error`, `_dispatch_task_retrying_transient_json_error`) to a new module,
-  `src/engine/artifact_salvage.py` — chosen as the first, lowest-risk slice specifically because it
-  has ZERO dependency on `Ctx`/`Verdict` or the check-list/starvation machinery (pure disk I/O +
-  quota-dict arithmetic + one retry wrapper, taking plain args), unlike everything else in the file.
-  `completion.py` imports the group back at module level, so every existing bare-name call site
-  inside `completion.py` and every existing EXTERNAL import path (`test_structural_checks.py`'s
-  direct `from engine.completion import _ensure_writer_quota_headroom` etc., and its
-  `from engine.tui import _restore_quarantined_draft`, which itself re-exports from
-  `engine.completion`) kept working unchanged — verified by running the existing suite unmodified
-  (no test edits needed) plus a before/after sorted-line-set diff confirming no body line was
-  dropped or duplicated. `completion.py`: 3854 → 3650 lines. `test_structural_checks.py`,
-  `test_tools.py`, and `ruff check .` all pass. **The higher-risk remainder — the check-function
-  list, the four routing tuples, and the starvation/capping state machine — is deliberately NOT
-  attempted.** Any future slice of that core needs its own characterization-test pass first (the
-  `create_local_agent` precedent above), not just a mechanical move, since `ARCHITECTURE.md` §1's
-  invariants are the actual hazard here, not the file's line count. Blast radius reminder for
-  whenever more of this is picked up: `test_structural_checks.py` still imports 30+ other private
-  names directly across five modules; any further split must update that file's imports in lockstep.
+  `_is_transient_ollama_json_error`, `_dispatch_task_retrying_transient_json_error` moved to
+  `src/engine/artifact_salvage.py` — zero dependency on `Ctx`/`Verdict` or the check-list/starvation
+  machinery, pure disk I/O + quota-dict arithmetic + one retry wrapper.
+  **Slice 2 (group A — the 27 `check_*` functions + `Ctx`/`Verdict`)**: moved to a new module,
+  `src/engine/completion_checks.py`, per the planning pass's recommended sequencing (least
+  interconnected, best first candidate). `Ctx`/`Verdict` moved alongside the checks (every check
+  takes/returns one) so `completion.py` imports them FROM `completion_checks.py`, never the reverse
+  — avoids a circular import, since `completion.py` still owns `COMPLETION_CHECKS`/`GROUNDING_CHECKS`
+  (left in place per the plan) and references every check by name. 4 of the 30 helpers moved too
+  (`_findings_facet_coverage`, `_facet_coverage`, `find_duplicate_report_sections`,
+  `_redelegate_directive`); `_ablation_disabled` stayed (used outside the check functions too).
+  One real circularity found doing this: `_capped`/`_consecutive_occurrences`/`_dedupe_findings`/
+  `_is_citable_finding` are called by both group-A checks AND the findings-evidence-assembly/
+  starvation machinery that stayed in `completion.py` — a module-level import back from
+  `completion_checks.py` would fail (those names don't exist yet when `completion.py`'s own
+  top-of-file import of `completion_checks` runs). Resolved with a **local (function-body)
+  `from engine.completion import ...` inside the 8 specific check functions/helpers that need
+  them** (`check_thin_coverage`, `check_task_verification_flagged`, `check_findings_underuses_
+  evidence`, `check_report_underuses_evidence`, `check_propagated_ungrounded_content`,
+  `check_stale_findings`, `_findings_facet_coverage`, `_facet_coverage`) — deferred to call time,
+  after both modules are fully loaded, so it's safe; every other check function needed no changes.
+  `completion.py` re-exports `Ctx`/`Verdict`/all 27 check functions/`find_duplicate_report_sections`/
+  `_findings_facet_coverage`/`_facet_coverage` at module level (the same re-export pattern as slice
+  1's `_restore_quarantined_draft` via `engine.tui`), so every existing external import path
+  (`test_structural_checks.py`'s direct `from engine.completion import check_thin_coverage, Ctx`
+  etc., `finetune/*.py`'s similar imports) kept working with ZERO test/finetune-script edits needed.
+  Both slices verified by running the existing suite unmodified plus a before/after sorted-line-set
+  diff confirming no body line was dropped or duplicated. `completion.py`: 3854 → 3650 (slice 1) →
+  2235 lines (slice 2). New `completion_checks.py`: 1468 lines. `test_structural_checks.py`,
+  `test_tools.py`, and `ruff check .` all pass after each slice. **The higher-risk remainder — the
+  four routing tuples themselves, findings-evidence-assembly (group B), dispatch orchestration
+  (group C), the starvation/capping state machine (group D), and `run_completion_check` (group E) —
+  is deliberately NOT attempted.** Any future slice of that core needs its own characterization-test
+  pass first (the `create_local_agent` precedent), not just a mechanical move, since
+  `ARCHITECTURE.md` §1's invariants are the actual hazard here, not the file's line count. Blast
+  radius reminder for whenever more of this is picked up: `test_structural_checks.py` still imports
+  30+ other private names directly across these modules; any further split must update that file's
+  imports in lockstep (or add a re-export, matching the pattern both slices above already used).
 
 - **`run_cli`/`BasicTuiAgent` full run-lifecycle unification, re-scoped 2026-07-29, still open.** A
   dedicated audit found the two entry points aren't just stylistic duplicates in places that matter:
