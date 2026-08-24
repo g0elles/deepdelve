@@ -125,7 +125,7 @@ tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
   against the decomposed code, plus `test_tools.py` and `ruff check .`. Full narrative belongs in the
   wiki's Completed page on the next migration pass, not repeated here.
 
-- **`completion.py`'s mixed responsibilities, scoped 2026-07-29 — two slices extracted (2026-08-24),
+- **`completion.py`'s mixed responsibilities, scoped 2026-07-29 — three slices extracted (2026-08-24),
   the hazardous core deliberately still not attempted.** The file's own header describes it as a
   clean list of pure `Ctx -> Optional[Verdict]` check functions, but it also contains findings-
   authoring/evidence-assembly logic, disk-touching quarantine/restore/salvage helpers, async
@@ -163,18 +163,38 @@ tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
   1's `_restore_quarantined_draft` via `engine.tui`), so every existing external import path
   (`test_structural_checks.py`'s direct `from engine.completion import check_thin_coverage, Ctx`
   etc., `finetune/*.py`'s similar imports) kept working with ZERO test/finetune-script edits needed.
-  Both slices verified by running the existing suite unmodified plus a before/after sorted-line-set
+  **Slice 3 (group B — findings evidence-assembly)**: `_is_citable_finding`,
+  `_verification_warning_targets_url`, `_update_task_verification`, `_dedupe_findings`,
+  `_collapse_multi_url_task_findings`, `_uncited_task_names`, `_reorder_findings_for_position_bias`,
+  `_find_propagated_bad_content`, `_build_findings_source_material` + their 5 dedicated constants
+  (`_CUTOFF_ONLY_SUMMARY_RE`, `_WARNING_MARKER_RE`, `_VERIFICATION_WARNING_BLOCK_RE`,
+  `_VERIFICATION_FLAGGED_URLS_RE`, `_NEAR_DUP_FINDING_OVERLAP_THRESHOLD`) moved to a new module,
+  `src/engine/findings_evidence.py`. No circular import this time — none of these 9 functions take
+  `Ctx`/return `Verdict` or call `_capped`/`_consecutive_occurrences`, so the new module imports
+  `_is_null_finding_summary` (utils.grounding) and `_looks_like_renamed_task`/
+  `_content_word_overlap`/`get_context_budget` (engine.orchestrator) directly at module level, no
+  local-import trick needed. `completion.py` re-exports all 9 + `_CUTOFF_ONLY_SUMMARY_RE` — this
+  re-export is now load-bearing for TWO consumers, not one: `test_structural_checks.py`'s/
+  `finetune/*.py`'s direct imports (as before), AND `completion_checks.py`'s own group-A local
+  imports (`_dedupe_findings`/`_is_citable_finding`/etc., added during slice 2) that still say
+  `from engine.completion import ...` — confirmed these still resolve since `completion.py` re-
+  exports every name they need. Also removed 4 now-dead imports from `completion.py`'s own top
+  (`_is_null_finding_summary`, `get_context_budget`, `_looks_like_renamed_task`,
+  `_content_word_overlap` — only the moved functions used them), caught by `ruff check .` F401
+  immediately after the move.
+  All three slices verified by running the existing suite unmodified plus a before/after sorted-line-set
   diff confirming no body line was dropped or duplicated. `completion.py`: 3854 → 3650 (slice 1) →
-  2235 lines (slice 2). New `completion_checks.py`: 1468 lines. `test_structural_checks.py`,
-  `test_tools.py`, and `ruff check .` all pass after each slice. **The higher-risk remainder — the
-  four routing tuples themselves, findings-evidence-assembly (group B), dispatch orchestration
-  (group C), the starvation/capping state machine (group D), and `run_completion_check` (group E) —
-  is deliberately NOT attempted.** Any future slice of that core needs its own characterization-test
-  pass first (the `create_local_agent` precedent), not just a mechanical move, since
-  `ARCHITECTURE.md` §1's invariants are the actual hazard here, not the file's line count. Blast
-  radius reminder for whenever more of this is picked up: `test_structural_checks.py` still imports
-  30+ other private names directly across these modules; any further split must update that file's
-  imports in lockstep (or add a re-export, matching the pattern both slices above already used).
+  2235 (slice 2) → 1618 lines (slice 3). New `completion_checks.py`: 1468 lines. New
+  `findings_evidence.py`: 637 lines. `test_structural_checks.py`, `test_tools.py`, and
+  `ruff check .` all pass after each slice. **The higher-risk remainder — the four routing tuples
+  themselves, dispatch orchestration (group C), the starvation/capping state machine (group D), and
+  `run_completion_check` (group E) — is deliberately NOT attempted.** Any future slice of that core
+  needs its own characterization-test pass first (the `create_local_agent` precedent), not just a
+  mechanical move, since `ARCHITECTURE.md` §1's invariants are the actual hazard here, not the
+  file's line count. Blast radius reminder for whenever more of this is picked up:
+  `test_structural_checks.py` still imports 30+ other private names directly across these modules;
+  any further split must update that file's imports in lockstep (or add a re-export, matching the
+  pattern all three slices above already used).
 
 - **`run_cli`/`BasicTuiAgent` full run-lifecycle unification, re-scoped 2026-07-29, still open.** A
   dedicated audit found the two entry points aren't just stylistic duplicates in places that matter:
