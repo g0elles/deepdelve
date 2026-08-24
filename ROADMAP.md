@@ -271,15 +271,37 @@ tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
   context-budget/wall-clock-deadline concept by design, since a human can just stop it. The
   genuinely safe subset (the resume-merge allowlist, the `required_artifact` lookup, a missing
   `QuotaAbortException` handler, a missing crash-time `run_state.save()`) is already fixed and
-  merged. **2026-08-24 finding: `src/api.py`'s `_run_research` is a THIRD independent copy of this
-  exact run-lifecycle loop, not a unifying layer.** It correctly reuses the shared engine pieces
+  merged. **`src/api.py`'s `_run_research` is a THIRD independent copy of this exact run-lifecycle
+  loop, not a unifying layer** — correction to a 2026-08-24 note that first framed this as a new
+  finding: `src/api.py`'s own module docstring, and `~/.claude/plans/cosmic-growing-canyon.md`'s
+  Phase 4 section (the plan that built `api.py`), already document this as a **deliberate,
+  reasoned tradeoff**, not an oversight — that plan explicitly says extracting a shared
+  abstraction at API-build time "would mean touching the two already-shipped, already-tested
+  entry points as a side effect of an unrelated change" and defers real unification to this exact
+  ROADMAP item's "own dedicated session." `api.py` correctly reuses the shared engine pieces
   (`create_local_agent`, `run_completion_check`), but hand-duplicates the surrounding
   stream-consumption loop, the context-budget nudge-then-cutoff mechanism, the wall-clock deadline
-  check, and its own `_find_substantial_text`/`_api_notify` pair — the same pattern this entry
-  already flagged between `run_cli`/`BasicTuiAgent`, now tripled rather than reduced by building a
-  web API on top. This makes the unification more valuable, not less, and widens its scope: any
-  future strategy-object design must account for THREE call sites, not two. Still open: unifying
-  the stream-consumption loop and the approval-handling block behind explicit strategy objects, a
+  check, and its own `_find_substantial_text`/`_api_notify` pair. Still accurate that any future
+  strategy-object design must account for THREE call sites, not two — just not a new discovery.
+  **2026-08-24: one real parity bug found and fixed while reading all three loops in full to plan
+  the eventual unification** — `api.py`'s stream-consumption loop had NO malformed-tool-call
+  retry or `QuotaAbortException` handling at all (confirmed via direct source read: no
+  `classify_malformed_retry` call, no `except BaseException` around the stream, anywhere in
+  `_run_research`), while `run_cli`/`run_agent` both wrap theirs in exactly this pattern. Any such
+  exception previously propagated straight out of `_run_research` uncaught, hit only `_worker`'s
+  generic `except Exception` (job marked "failed", no retry, no salvage/quarantine final-verdict
+  attempt) — the same "check every surface" gap CLAUDE.md's rule exists for, just found in the
+  direction of a robustness fix that landed in two surfaces and never propagated to the third.
+  Fixed by mirroring `run_cli`'s exact try/except shape (same shared `classify_malformed_retry`
+  helper, same `QuotaAbortException` catch). New `test_api.py` (api.py had ZERO test coverage
+  before this — confirmed via codegraph) pins the new behavior with 3 scenarios: malformed-call
+  retry, clean `QuotaAbortException` abort, and a genuinely unrecognized exception still
+  propagating rather than being silently swallowed. `ruff check .` and the existing suites
+  (`test_structural_checks.py`, `test_tools.py`) also still pass.
+  Still open, and deliberately NOT attempted in this pass per the plan's own explicit
+  "dedicated session" framing (a multi-hour, high-risk undertaking given how deeply stateful and
+  subtly different all three loops are — confirmed by reading each in full): unifying the
+  stream-consumption loop and the approval-handling block behind explicit strategy objects, a
   real design decision (what varies between CLI/TUI/API), not a mechanical extraction. Recommended
   approach: design the strategy interface first, then extract the loop body to take it as a
   parameter, not "extract the whole function and see what breaks."

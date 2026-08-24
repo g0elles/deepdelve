@@ -245,21 +245,63 @@ async def _run_research(run_id: str, query: str, opts: dict, events: asyncio.Que
         # zero files written at all, because the actual final turn was short and there was nothing
         # else to fall back to.
         planner_text_history = []
+        # Malformed-tool-call retry + QuotaAbortException handling (2026-08-24 parity fix):
+        # run_cli/run_agent both wrap their stream consumption in a try/except that classifies a
+        # malformed tool call via the shared classify_malformed_retry (retry twice, then degrade
+        # to the final-verdict path instead of crashing) and catches QuotaAbortException (a model
+        # stuck looping past its quota's rescue allowance) explicitly -- this loop had neither.
+        # Confirmed via direct source read: any such exception here previously propagated
+        # uncaught straight out of _run_research to _worker()'s generic `except Exception`, which
+        # marks the whole job "failed" with no retry and no salvage/quarantine attempt -- the same
+        # class of gap CLAUDE.md's "check every surface" rule exists for, just found the other
+        # direction (a robustness fix that landed in run_cli/run_agent but never propagated here).
+        malformed_retries = 0
 
         while has_requests:
             has_requests = False
             user_input_requests = []
             turn_text = ""
 
-            stream = agent.run(current_input, session=session, stream=True)
-            async for update in iter_agent_stream(stream, budget_deadline):
-                run_stream_chars += stream_content_chars(update)
-                for c in getattr(update, "contents", None) or []:
-                    if getattr(c, "type", None) == "text" and getattr(c, "text", None):
-                        turn_text += c.text
-                        await events.put({"type": "text", "agent": "Planner", "text": c.text})
-                    elif hasattr(c, "function_call") and c.function_call is not None:
-                        user_input_requests.append(c)
+            try:
+                stream = agent.run(current_input, session=session, stream=True)
+                async for update in iter_agent_stream(stream, budget_deadline):
+                    run_stream_chars += stream_content_chars(update)
+                    for c in getattr(update, "contents", None) or []:
+                        if getattr(c, "type", None) == "text" and getattr(c, "text", None):
+                            turn_text += c.text
+                            await events.put({"type": "text", "agent": "Planner", "text": c.text})
+                        elif hasattr(c, "function_call") and c.function_call is not None:
+                            user_input_requests.append(c)
+            except BaseException as e:
+                if isinstance(e, asyncio.CancelledError):
+                    # /cancel relies on this propagating -- must not be swallowed.
+                    raise
+                from tools import QuotaAbortException
+                if isinstance(e, QuotaAbortException):
+                    await events.put({"type": "system", "text": f"Task forcefully aborted: {e}"})
+                    break
+                from engine.orchestrator import classify_malformed_retry
+                result = classify_malformed_retry(e, malformed_retries, current_input)
+                malformed_retries = result.new_malformed_retries
+                if result.should_retry:
+                    await events.put({
+                        "type": "system",
+                        "text": f"Model emitted a malformed tool call — retrying the turn ({malformed_retries}/2).",
+                    })
+                    current_input = result.new_current_input
+                    has_requests = True
+                    continue
+                if result.reraise:
+                    raise
+                # Retry budget exhausted for this specific, already-recognized failure class --
+                # degrade to the final-verdict path instead of crashing the whole run, same as
+                # run_cli/run_agent's own copies of this exact branch.
+                await events.put({
+                    "type": "system",
+                    "text": f"Model kept emitting malformed tool calls after {malformed_retries} "
+                            f"retries — giving up on this turn and finishing with whatever exists.",
+                })
+                run_state.attempt = 10**6
 
             if turn_text:
                 planner_text_history.append(turn_text)
