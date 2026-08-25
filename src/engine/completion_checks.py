@@ -44,10 +44,48 @@ class Ctx:
     quotas: Optional[dict]
     run_state: "RunState"  # noqa: F821 — utils.run_state.RunState, annotation only
     grounding_problem: Optional[str] = None  # set between the two check stages
+    # settings.report_style at the time this Ctx was built (2026-08-24 fix — see
+    # _citation_format_reminder's own docstring for the live bug this closes). Default "standard"
+    # matches config_template.yaml's own default, so any caller that doesn't pass this explicitly
+    # (e.g. an older test) gets the same behavior as before this field existed.
+    report_style: str = "standard"
 
     @property
     def last_chance_prefix(self) -> str:
         return "THIS IS YOUR FINAL ATTEMPT. " if (self.attempt + 1) >= self.max_attempts else ""
+
+
+def _citation_format_reminder(report_style: str) -> str:
+    """The one-line citation-format reminder check_no_urls/check_non_url_citation/
+    check_uncited_claims each append to their corrective directive, style-aware since 2026-08-24.
+
+    Before this fix, all three hardcoded the STANDARD style's `- **[Title](URL)**` / inline
+    `[Title](URL)` markdown-link format regardless of which settings.report_style was actually
+    active — Ctx had no report_style field at all, so these checks structurally could not know.
+    Confirmed live (2026-08-24, a real --style academic run): ACADEMIC_CITATION_FORMAT_
+    INSTRUCTIONS (prompts.py) tells the model to cite as `(Author, Year)` plus a numbered
+    References section, but every retry of these three checks told it to switch to inline
+    `[Title](URL)` links instead -- directly contradictory system instructions mid-run for any
+    non-standard style. The run oscillated between non_url_citation and claim_unsupported for
+    ~18 completion-check attempts across two live runs (~93 minutes combined) and never
+    converged; the model's own final draft showed a hybrid `(Title, Year)` citation style,
+    plausibly from trying to reconcile both conflicting directives at once. See
+    prompts.py's ACADEMIC_CITATION_FORMAT_INSTRUCTIONS/ANSWER_CITATION_FORMAT_INSTRUCTIONS for
+    the real per-style formats this mirrors -- kept as a short reminder here, not the full
+    multi-paragraph instructions block (these checks fire mid-rewrite, not at the start)."""
+    if report_style == "academic":
+        return (
+            "an in-text `(Author, Year)` citation (first author's surname) immediately after the "
+            "claim, with a matching numbered References entry at the end (`N. Author, A. (Year). "
+            "Title. <the real URL you fetched>`) — NOT an inline `[Title](URL)` markdown link, "
+            "that is the standard style's format, not this run's"
+        )
+    if report_style == "answer":
+        return (
+            "`(Source: [Title](URL))` at the end of the answer sentence, using a URL you actually "
+            "fetched this run — this style has no separate References/Sources section"
+        )
+    return "the exact format `- **[Title](URL)**`"
 
 
 def check_not_delegated(ctx: Ctx) -> Optional[Verdict]:
@@ -1178,6 +1216,7 @@ def check_no_urls(ctx: Ctx) -> Optional[Verdict]:
         return None
     no_urls_count = ctx.run_state.data.get("no_urls_count", 0) + 1
     ctx.run_state.data["no_urls_count"] = no_urls_count
+    fmt = _citation_format_reminder(ctx.report_style)
     escalation = ""
     if no_urls_count >= 2:
         # Words alone didn't work the first time ("add real citation links" was
@@ -1187,18 +1226,27 @@ def check_no_urls(ctx: Ctx) -> Optional[Verdict]:
         # own findings, never once copied one in on its own.
         real_urls = get_fetched_urls()
         url_list = "\n".join(f"- {u['url']}" for u in real_urls[:20]) or "(none fetched yet)"
+        # 2026-08-24 fix: this used to unconditionally say naming a source in prose like
+        # "(World Bank, 2020)" doesn't count -- exactly backwards for academic style, where
+        # that IS the required in-text format (just needs a matching References entry with a
+        # real URL, which is what's actually missing when this fires).
+        prose_note = (
+            "Citing a source with no matching References entry (or a References entry with no "
+            "real URL) does NOT count."
+            if ctx.report_style == "academic" else
+            "Naming a source in prose (e.g. \"(World Bank, 2020)\") does NOT count as a citation."
+        )
         escalation = (
             f" This is the {no_urls_count}th time in a row you have written this report "
-            f"with ZERO hyperlinked sources. Naming a source in prose (e.g. \"(World Bank, "
-            f"2020)\") does NOT count as a citation. Here are the EXACT URLs actually "
+            f"with ZERO real citations. {prose_note} Here are the EXACT URLs actually "
             f"fetched this run — use these, copied verbatim, do not paraphrase or "
-            f"invent your own:\n{url_list}\nEvery single claim must end with a real "
-            f"markdown link `[Title](URL)` using one of the URLs above."
+            f"invent your own:\n{url_list}\nEvery single claim must be backed by {fmt}, "
+            f"using one of the URLs above."
         )
     return Verdict(
         "not_grounded",
         f"`{ctx.req_artifact}` contains zero hyperlinked sources — no citations at all. Pushing agent to add real ones.",
-        f"SYSTEM WARNING: {ctx.last_chance_prefix}'{ctx.req_artifact}' does not contain a single `[Title](URL)` link anywhere — you named sources in prose but never actually cited them. The previous draft has been moved aside. Rewrite '{ctx.req_artifact}' using the exact format `- **[Title](URL)**` for every source, with real URLs your Searcher(s) actually returned in their findings.{escalation}{_redelegate_directive(ctx)}",
+        f"SYSTEM WARNING: {ctx.last_chance_prefix}'{ctx.req_artifact}' does not contain a single real citation anywhere — you named sources in prose but never actually cited them with a working link. The previous draft has been moved aside. Rewrite '{ctx.req_artifact}' using {fmt} for every source, with real URLs your Searcher(s) actually returned in their findings.{escalation}{_redelegate_directive(ctx)}",
     )
 
 
@@ -1263,10 +1311,27 @@ def check_non_url_citation(ctx: Ctx) -> Optional[Verdict]:
     gp = ctx.grounding_problem
     if not (gp and gp.startswith("non_url_citation")):
         return None
+    fmt = _citation_format_reminder(ctx.report_style)
+    # 2026-08-24 fix: for academic style, find_non_url_citations (utils/grounding.py) already
+    # excludes a `(Author, Year)` that resolves via parse_academic_references to a real
+    # URL-bearing References entry -- so a hit here for THIS style means the citation is
+    # unresolved (no matching entry, or an entry with no URL), not that the format itself is
+    # wrong. Telling the model to switch to `[Title](URL)` (the old, style-blind wording) directly
+    # contradicts ACADEMIC_CITATION_FORMAT_INSTRUCTIONS and was confirmed live to cause exactly
+    # the oscillation described in _citation_format_reminder's own docstring.
+    fix_note = (
+        "Add or fix the matching numbered References entry for that citation (with a real URL you "
+        "actually fetched) — do NOT switch to inline markdown links, this run's citation format is "
+        "(Author, Year) + References, not standard style."
+        if ctx.report_style == "academic" else
+        "If you don't have a real fetched URL for a specific claim, either delegate to get one or "
+        "remove the claim entirely — do not attribute it to an organization name, a year, or a "
+        "vague description instead."
+    )
     return Verdict(
         "non_url_citation",
         f"`{ctx.req_artifact}` attributes at least one claim to something that isn't a real URL ({gp}) — pushing agent to fix it.",
-        f"SYSTEM WARNING: '{ctx.req_artifact}' attributes at least one claim to a non-URL citation ({gp}) — e.g. a bare parenthetical like \"(DANE, 2020)\" or a \"Source: <description>\" line with no link. This is exactly as unverifiable as a fabricated URL — there is nothing to check it against. The previous draft has been moved aside. Every single claim must end with a real, hyperlinked `[Title](URL)` using a URL your Searcher(s) actually returned this run. If you don't have a real fetched URL for a specific claim, either delegate to get one or remove the claim entirely — do not attribute it to an organization name, a year, or a vague description instead.{_redelegate_directive(ctx)}",
+        f"SYSTEM WARNING: '{ctx.req_artifact}' attributes at least one claim to a non-URL citation ({gp}) — e.g. a bare parenthetical like \"(DANE, 2020)\" or a \"Source: <description>\" line with no link. This is exactly as unverifiable as a fabricated URL — there is nothing to check it against. The previous draft has been moved aside. Every single claim must be backed by {fmt}. {fix_note}{_redelegate_directive(ctx)}",
     )
 
 
@@ -1339,10 +1404,22 @@ def check_uncited_claims(ctx: Ctx) -> Optional[Verdict]:
     gp = ctx.grounding_problem
     if not (gp and gp.startswith("uncited_claims")):
         return None
+    # 2026-08-24 fix: find_uncited_claim_lines (utils/grounding.py) already exempts a section
+    # containing a `(Author, Year)`-shaped citation for academic style -- a hit here means the
+    # claim line/section has neither a URL nor an academic in-text citation, not that the
+    # required format itself is `[Title](URL)`. Same style-blind-wording bug as check_no_urls/
+    # check_non_url_citation, see _citation_format_reminder's own docstring for the live incident.
+    fmt = _citation_format_reminder(ctx.report_style)
+    per_line_note = (
+        "every claim (including every table row) must be in a section carrying its own "
+        f"{fmt}"
+        if ctx.report_style == "academic" else
+        f"every claim line (including every table row) must carry its own {fmt} on the SAME line"
+    )
     return Verdict(
         "uncited_claims",
         f"`{ctx.req_artifact}`'s figures aren't tied to sources — claim lines carry no citation of their own ({gp}), so none of them can be verified against anything.",
-        f"SYSTEM WARNING: {ctx.last_chance_prefix}'{ctx.req_artifact}' states specific figures on lines that carry no citation ({gp}). A separate list of source URLs does NOT tie any claim to any source — every claim line (including every table row) must carry its own `[Title](URL)` on the SAME line, using a URL your Searcher(s) actually fetched this run. Rewrite '{ctx.req_artifact}' keeping the content but attaching to each claim line the exact fetched URL that supports it; if no fetched source supports a figure, remove the figure rather than leaving it uncited.",
+        f"SYSTEM WARNING: {ctx.last_chance_prefix}'{ctx.req_artifact}' states specific figures on lines that carry no citation ({gp}). A separate list of source URLs does NOT tie any claim to any source — {per_line_note}, using a URL your Searcher(s) actually fetched this run. Rewrite '{ctx.req_artifact}' keeping the content but attaching to each claim the exact fetched URL that supports it; if no fetched source supports a figure, remove the figure rather than leaving it uncited.",
     )
 
 

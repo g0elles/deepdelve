@@ -2128,6 +2128,68 @@ def main():
 
             contextvars.copy_context().run(_matrix_row)
 
+    # --- check_no_urls/check_non_url_citation/check_uncited_claims: style-aware citation-format
+    # guidance (2026-08-24 live incident). Before this fix, all three hardcoded standard style's
+    # `[Title](URL)` markdown-link format into their corrective directive regardless of
+    # ctx.report_style (Ctx had no such field at all) -- confirmed live: a real --style academic
+    # run oscillated between non_url_citation and claim_unsupported for ~18 completion-check
+    # attempts across two live runs (~93 minutes combined) because every retry told the model to
+    # switch to inline markdown links, directly contradicting ACADEMIC_CITATION_FORMAT_
+    # INSTRUCTIONS' own (Author, Year) + References requirement. Pins that each check's `.inject`
+    # text now names the CORRECT format per style, and that the pre-existing `.warning` phrases
+    # the verdict-matrix rows above already pin are untouched (style-blind, as they should stay).
+    def _style_aware_citation_guidance_scenario():
+        from engine.completion import check_no_urls, check_non_url_citation, check_uncited_claims
+
+        with tempfile.TemporaryDirectory() as tmpdir_saf:
+            rs = RunState(tmpdir_saf)
+            rs.set_query("q")
+            base_kwargs = dict(req_artifact="final_report.md", attempt=0, max_attempts=8,
+                                delegated=True, files=[], content=None, quotas={}, run_state=rs)
+
+            # check_no_urls
+            academic_ctx = Ctx(grounding_problem="no_urls", report_style="academic", **base_kwargs)
+            v = check_no_urls(academic_ctx)
+            assert "(Author, Year)" in v.inject and "References" in v.inject, v.inject
+            assert "[Title](URL)" not in v.inject or "NOT an inline" in v.inject, v.inject
+            assert v.warning == "`final_report.md` contains zero hyperlinked sources — no citations at all. Pushing agent to add real ones.", v.warning
+
+            standard_ctx = Ctx(grounding_problem="no_urls", report_style="standard", **base_kwargs)
+            v = check_no_urls(standard_ctx)
+            assert "`- **[Title](URL)**`" in v.inject, v.inject
+            assert "(Author, Year)" not in v.inject, v.inject
+
+            # check_non_url_citation
+            academic_ctx2 = Ctx(grounding_problem="non_url_citation:(DANE, 2020)",
+                                 report_style="academic", **base_kwargs)
+            v = check_non_url_citation(academic_ctx2)
+            assert "(Author, Year)" in v.inject and "References" in v.inject, v.inject
+            assert "do NOT switch to inline markdown links" in v.inject, v.inject
+
+            standard_ctx2 = Ctx(grounding_problem="non_url_citation:(DANE, 2020)",
+                                 report_style="standard", **base_kwargs)
+            v = check_non_url_citation(standard_ctx2)
+            assert "`- **[Title](URL)**`" in v.inject, v.inject
+
+            # check_uncited_claims
+            academic_ctx3 = Ctx(grounding_problem="uncited_claims:3 lines", report_style="academic",
+                                 **base_kwargs)
+            v = check_uncited_claims(academic_ctx3)
+            assert "(Author, Year)" in v.inject, v.inject
+
+            standard_ctx3 = Ctx(grounding_problem="uncited_claims:3 lines", report_style="standard",
+                                 **base_kwargs)
+            v = check_uncited_claims(standard_ctx3)
+            assert "`- **[Title](URL)**`" in v.inject, v.inject
+
+            # Default report_style (no caller passes it, e.g. an older test/caller) must still
+            # behave exactly like "standard" -- Ctx's own field default, matching
+            # config_template.yaml's default.
+            default_ctx = Ctx(grounding_problem="no_urls", **base_kwargs)
+            assert default_ctx.report_style == "standard"
+
+    _style_aware_citation_guidance_scenario()
+
     # --- check_untracked_delegation (2026-07-22): the Planner dispatching delegate_tasks BEFORE
     # write_todos for that slot -- confirmed live, a 'background' task burned 14 web_search calls
     # with no matching _todos.md entry, then got redispatched properly as 'background_heuristics'.

@@ -271,6 +271,14 @@ async def _detect_verdict(req_artifact: str, attempt: int, max_attempts: int,
         content=get_workspace_file_content(req_artifact) if req_artifact in files else None,
         quotas=quotas,
         run_state=run_state,
+        # 2026-08-24 fix: check_no_urls/check_non_url_citation/check_uncited_claims each need to
+        # know the active citation format to give correct corrective guidance -- see
+        # _citation_format_reminder's own docstring (completion_checks.py) for the live incident
+        # this closes (a real --style academic run oscillated for ~18 completion-check attempts
+        # across two live runs because these checks always told the model to switch to standard
+        # style's `[Title](URL)` format, directly contradicting ACADEMIC_CITATION_FORMAT_
+        # INSTRUCTIONS). Default "standard" (Ctx's own field default) matches config_template.yaml.
+        report_style=config.get_setting("report_style", "standard"),
     )
 
     # Detecting the problem (or lack of one) never consumes the retry budget —
