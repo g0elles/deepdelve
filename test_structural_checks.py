@@ -7141,6 +7141,29 @@ def main():
             assert parse_academic_references(title_collision) == {
                 "urgenc,2025": "https://example.com/drl"
             }, parse_academic_references(title_collision)
+
+            # 2026-08-24 live incident: a real reference entry listing every co-author IN FULL
+            # (not "et al.") can need well over 80 characters between the surname and "(Year)" --
+            # _REFERENCE_ENTRY_RE's gap was widened 80 -> 300 after this exact paper (Attention Is
+            # All You Need, 8 authors, 106 chars) silently failed to resolve on a real live
+            # --style academic run, flagging every genuinely correct in-text (Vaswani et al.,
+            # 2017) citation as an unresolved non_url_citation even though the model did
+            # everything right. A 6-author entry (74 chars) already passed under the old cap --
+            # this pins the specific 8-author case that didn't.
+            many_authors = (
+                "The Transformer architecture (Vaswani et al., 2017) replaces recurrent layers "
+                "with self-attention.\n\n"
+                "## References\n\n"
+                "1. Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez, A.N., "
+                "Kaiser, Ł., & Polosukhin, I. (2017). Attention Is All You Need. "
+                "https://arxiv.org/pdf/1706.03762.pdf\n"
+            )
+            assert parse_academic_references(many_authors) == {
+                "vaswani,2017": "https://arxiv.org/pdf/1706.03762.pdf"
+            }, parse_academic_references(many_authors)
+            assert find_non_url_citations(many_authors) == [], (
+                "a real, resolvable (Author, Year) citation for a many-author reference must "
+                "not be flagged as unresolved")
         finally:
             _IN_MEMORY_FS.clear()
             _IN_MEMORY_FS.update(saved_fs)

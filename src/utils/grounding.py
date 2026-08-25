@@ -271,9 +271,23 @@ _CAP_CHAR = "A-ZÀ-ÖØ-Þ"
 # enforces it structurally — and a model defaulting to an unordered bullet list (a common LLM
 # habit) produced a genuinely grounded report that this check falsely flagged as carrying
 # unresolvable citations, same failure class as the findings.md format-ambiguity bug.
+#
+# Author-list gap widened 80 -> 300 (2026-08-24 live incident): the surname-to-year gap was too
+# narrow for a real reference listing every co-author in full rather than "et al." — confirmed
+# live against this exact paper: "Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L.,
+# Gomez, A.N., Kaiser, Ł., & Polosukhin, I. (2017)" (Attention Is All You Need, 8 authors) needs
+# 106 characters between "Vaswani" and "(2017)", silently failing to match at all with the old
+# 80-char cap while a 6-author entry a few lines below it (Dai et al., 74 chars) matched fine —
+# parse_academic_references then had NO entry for Vaswani, so every genuinely correct in-text
+# `(Vaswani et al., 2017)` citation on an otherwise well-formed academic report was flagged as an
+# unresolved non_url_citation, even though the model did everything right. Confirmed safe to widen
+# freely: the `[^\n(]` character class already excludes literal `(`, so this always matches the
+# FIRST parenthetical it reaches regardless of cap size — a wider cap only lets it reach further
+# down a long author list, it can never skip past a nearer, unrelated parenthetical (see the
+# title_collision test below, which depends on exactly that property, not on the cap's size).
 _REFERENCE_ENTRY_RE = re.compile(
     rf'^[\s>]*(?:[*_]*(?:\d+\.|\[\d+\])[*_]*|[-*•])\s*[*_]*'
-    rf'([{_CAP_CHAR}][\w\-\']+)[^\n(]{{0,80}}\(((?:19|20)\d{{2}})\)'
+    rf'([{_CAP_CHAR}][\w\-\']+)[^\n(]{{0,300}}\(((?:19|20)\d{{2}})\)'
 )
 
 # A bare `(Author, Year)` / `(Author et al., Year)` / `(Author & Other, Year)` in-text citation.
