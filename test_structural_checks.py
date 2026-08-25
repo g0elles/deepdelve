@@ -7518,6 +7518,36 @@ def main():
     _hits = find_uncited_claim_lines(_sectioned_report)
     assert len(_hits) < 3 and not any("2585" in h for h in _hits), _hits
 
+    # 2026-08-24 live incident: find_uncited_claim_lines' academic exemption used the strict
+    # fully-parenthesized _PARENTHETICAL_CITATION_RE, which doesn't recognize two equally
+    # legitimate academic citation shapes -- confirmed live, a real --style academic report's
+    # Introduction (narrative style) and its own benchmarking table (bare table-cell style) both
+    # got flagged as uncited despite clearly citing a real, resolvable reference, unchanged across
+    # 3 consecutive completion-check attempts. Widened to _ACADEMIC_CITATION_ANYWHERE_RE (parens
+    # now optional) -- these two cases must now be exempt.
+    _narrative_citation_report = (
+        "## Introduction\n"
+        "The Transformer architecture introduced by Vaswani et al. (2017) eliminated recurrence "
+        "and convolution from sequence models entirely.\n")
+    assert find_uncited_claim_lines(_narrative_citation_report) == [], (
+        "a narrative-style citation (author outside the parens, only the year inside) must "
+        "exempt its section, same as the full (Author, Year) parenthetical form")
+
+    _table_cell_citation_report = (
+        "## Quantitative Benchmarking Summary\n"
+        "| Model | Task | Metric | Value | Source |\n"
+        "|-------|------|--------|-------|--------|\n"
+        "| Transformer (original) | WMT 2014 En->De | BLEU | 28.4 | Vaswani et al., 2017 |\n")
+    assert find_uncited_claim_lines(_table_cell_citation_report) == [], (
+        "a bare table-cell citation (no parens at all, in a Source column) must exempt its "
+        "section too")
+
+    # A genuinely uncited section must still be caught -- this exemption only widened WHICH
+    # citation shapes count, it must not make the check unable to catch a real run-14-shaped gap.
+    assert len(find_uncited_claim_lines(_table_report)) >= 3, (
+        "widening the academic-citation exemption must not stop catching a genuinely detached, "
+        "uncited table (run 14's original shape)")
+
     # --- context-budget guard: stream char accounting (settings.context_budget_chars) ---
     from engine.orchestrator import stream_content_chars, get_context_budget
 

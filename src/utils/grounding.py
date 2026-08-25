@@ -392,6 +392,31 @@ _PARENTHETICAL_CITATION_RE = re.compile(
     rf'\s*(?:19|20)\d{{2}}\)'
 )
 
+# Broader than _PARENTHETICAL_CITATION_RE above (2026-08-24 live incident): find_uncited_claim_
+# lines' section-exemption check used the strict parenthetical form, which requires the WHOLE
+# citation wrapped in "(...)" -- but two equally legitimate academic citation shapes don't look
+# like that: a NARRATIVE citation ("Vaswani et al. (2017) eliminated recurrence...", author name
+# outside the parens, only the year inside) and a bare TABLE-CELL citation ("Vaswani et al., 2017"
+# in a "Source" column, no parens at all -- the column header already establishes it's a
+# citation). Confirmed live: a real, well-formed --style academic report's Introduction section
+# (narrative style) and its own Quantitative Benchmarking table (bare table-cell style) both got
+# flagged as having NO citation at all, even though both clearly cite a real, resolvable
+# reference -- the SAME line, unchanged, kept failing across 3 consecutive completion-check
+# attempts because the check never recognized either shape. Parens made fully optional here on
+# purpose. Used ONLY for this one coarse "does this section look like it cites something" gate --
+# whether the citation actually RESOLVES to a real References entry is still
+# find_non_url_citations/parse_academic_references' job, which run before this check in
+# real_grounding_problem's ordering and would still catch a genuinely fabricated name+year; this
+# change can only make the exemption gate MORE permissive, matching this check's own existing
+# "narrative context lines or a single stray year never trip a verdict alone" conservative bias,
+# never less. _PARENTHETICAL_CITATION_RE itself is left untouched -- it's also used by
+# find_non_url_citations/_CLAIM_CITATION_TOKEN_RE, which need the stricter, fully-wrapped shape
+# for their own different jobs (resolving a SPECIFIC citation, not gating a whole section).
+_ACADEMIC_CITATION_ANYWHERE_RE = re.compile(
+    rf'{_CITATION_NAME_TOKEN}(?:\s+(?:{_CITATION_NAME_TOKEN}|{_CITATION_CONNECTOR})){{0,5}},?'
+    rf'\s*\(?(?:19|20)\d{{2}}\)?'
+)
+
 
 def find_non_url_citations(text: str) -> list[str]:
     """Find claim-supporting attributions that aren't a real URL at all — a bare parenthetical
@@ -720,15 +745,18 @@ def find_uncited_claim_lines(report: str) -> list[str]:
     run 14's shape (figure table in one section, every URL in a detached 'Source URLs'
     section) still fires.
 
-    ACADEMIC style: a section is also exempt if it contains a `(Author, Year)`-shaped citation —
+    ACADEMIC style: a section is also exempt if it contains an `Author, Year`-shaped citation —
     presence-only, same bar as the "http" exemption (whether it actually RESOLVES to a real
     fetched source is find_non_url_citations/claim_grounding_problem's job, which both run before
     this check in real_grounding_problem's ordering, so an unresolved academic citation is already
-    caught there and this exemption never masks it)."""
+    caught there and this exemption never masks it). Uses _ACADEMIC_CITATION_ANYWHERE_RE, not the
+    stricter fully-parenthesized _PARENTHETICAL_CITATION_RE — see that regex's own docstring for
+    the live incident (a real report's narrative-style and bare-table-cell citations, both
+    legitimate academic styles, don't wrap the whole citation in parens)."""
     sections = split_into_heading_sections(split_prose_from_sources(report or ""))
     hits = []
     for section in sections:
-        if any("http" in l or _PARENTHETICAL_CITATION_RE.search(l) for l in section):
+        if any("http" in l or _ACADEMIC_CITATION_ANYWHERE_RE.search(l) for l in section):
             continue
         for raw in section:
             line = raw.strip()
