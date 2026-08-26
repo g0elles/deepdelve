@@ -14,6 +14,7 @@ from engine.orchestrator import (
 from engine.completion import (
     _CUTOFF_ONLY_SUMMARY_RE, _reorder_findings_for_position_bias, _find_propagated_bad_content,
     _is_citable_finding, _build_findings_source_material, _ablation_disabled,
+    _with_wait_prefix, _strip_other_problems_addendum,
 )
 from utils.grounding import find_non_url_citations, fully_ungrounded, partially_ungrounded, find_uncited_claim_lines, extract_cited_urls
 from utils.run_state import record_fetched_url, reset_fetched_urls
@@ -9139,6 +9140,103 @@ def main():
         )
 
     _starvation_audit_scenario()
+
+    # --- _with_wait_prefix (2026-08-25, Tsui self-correction blind-spot finding, COLM 2026,
+    # arXiv:2507.02778, fully read): a short explicit self-reflection cue prepended to a retry
+    # nudge ONLY when this exact problem already fired on a preceding attempt -- adapted from a
+    # finding that models often fail to fix an error framed as their own prior turn, even when
+    # they can fix the identical error framed as external input. Pure-function test, no model
+    # dependency. ---
+    def _wait_prefix_scenario():
+        with tempfile.TemporaryDirectory() as tmpdir_wp:
+            rs = RunState(tmpdir_wp)
+            v = Verdict("thin_coverage", "w", "i")
+            # First occurrence ever (no prior attempts recorded) -> no prefix.
+            assert _with_wait_prefix(v, rs).inject == "i", "must not prefix on a problem's first occurrence"
+            rs.data["completion_check_attempts"] = [{"problem": "thin_coverage"}]
+            # Same problem fired on the immediately preceding attempt -> prefixed.
+            assert _with_wait_prefix(v, rs).inject == "Wait. i", (
+                "must prefix when this exact problem already fired last attempt")
+            # A DIFFERENT problem on the preceding attempt -> no prefix (this is this problem's
+            # own first occurrence, nothing yet to have blind-spotted).
+            v2 = Verdict("missing_artifact", "w", "i")
+            assert _with_wait_prefix(v2, rs).inject == "i", (
+                "must not prefix when the PRECEDING attempt was a different problem")
+            # Ablation switch suppresses it entirely.
+            _orig_abl = _config.cfg.get("settings", {}).get("ablation")
+            _config.cfg["settings"]["ablation"] = {"disable_wait_prefix": True}
+            try:
+                assert _with_wait_prefix(v, rs).inject == "i", "ablation switch must fully disable this"
+            finally:
+                if _orig_abl is None:
+                    _config.cfg["settings"].pop("ablation", None)
+                else:
+                    _config.cfg["settings"]["ablation"] = _orig_abl
+
+    _wait_prefix_scenario()
+
+    # --- _strip_other_problems_addendum + disable_other_problems_addendum ablation (2026-08-25,
+    # ReflexGrad arXiv:2511.14584 finding, fully read): their own ablation found merging multiple
+    # simultaneous corrective signals into one instruction "produced incoherent guidance" -- the
+    # same shape as DeepDelve's _with_other_problems_addendum bundling a lower-priority secondary
+    # problem onto a primary nudge. force_whole_rebuild's own ONE expensive full-rewrite attempt
+    # must not be diluted this way, so it strips the addendum back off before building its
+    # instruction; the ablation switch lets the addendum mechanism itself be A/B tested. ---
+    def _strip_addendum_scenario():
+        clean = "SYSTEM WARNING: fix the thing."
+        addendum = " ALSO currently true (lower priority than the above -- do not undo it while fixing the above): other_problem: some warning"
+        assert _strip_other_problems_addendum(clean + addendum) == clean, (
+            "must remove exactly the addendum tail, leaving the primary text untouched")
+        assert _strip_other_problems_addendum(clean) == clean, (
+            "must be a no-op when no addendum is present")
+        # The GROUNDING_CHECKS sibling's slightly different wording shares the same leading marker.
+        grounding_addendum = " ALSO currently true in the same document (lower priority than the above -- do not undo it while fixing the above): other_problem"
+        assert _strip_other_problems_addendum(clean + grounding_addendum) == clean, (
+            "must also strip the GROUNDING_CHECKS-flavored addendum wording")
+
+    _strip_addendum_scenario()
+
+    # --- disable_other_problems_addendum ablation, exercised through the real functions (not
+    # just the string-stripping helper above) -- confirms the gate actually short-circuits
+    # _with_other_problems_addendum/_with_other_grounding_addendum before they compute anything. ---
+    def _other_problems_addendum_ablation_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        from engine.completion import Ctx, COMPLETION_CHECKS
+        from engine.completion_starvation import _with_other_problems_addendum, _with_other_grounding_addendum
+        _orig_ws15 = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
+        _orig_abl2 = _config.cfg.get("settings", {}).get("ablation")
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            _IN_MEMORY_FS.clear()
+            reset_fetched_urls()
+            record_fetched_url(_SRC, filename="sources/page.md")
+            _IN_MEMORY_FS["sources/page.md"] = _SOURCE_TEXT
+            with tempfile.TemporaryDirectory() as tmpdir_ab:
+                rs = RunState(tmpdir_ab)
+                ctx = Ctx(req_artifact="final_report.md", attempt=0, max_attempts=3, delegated=True,
+                          files=["final_report.md"], content="- x [g](" + _SRC + ")", quotas=None,
+                          run_state=rs)
+                v = Verdict("missing_artifact", "w", "i")
+                _config.cfg["settings"]["ablation"] = {"disable_other_problems_addendum": True}
+                v_gated = _with_other_problems_addendum(v, ctx, COMPLETION_CHECKS)
+                assert v_gated.inject == "i", "ablation must short-circuit before computing anything"
+                v_gated2 = _with_other_grounding_addendum(v, ctx)
+                assert v_gated2.inject == "i", "ablation must short-circuit the grounding sibling too"
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            if _orig_ws15 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws15
+            if _orig_abl2 is None:
+                _config.cfg["settings"].pop("ablation", None)
+            else:
+                _config.cfg["settings"]["ablation"] = _orig_abl2
+
+    _other_problems_addendum_ablation_scenario()
 
     # --- TUI command palette (2026-08-20, ROADMAP QoE item): Textual's built-in command palette
     # (ctrl+p, ENABLE_COMMAND_PALETTE default True, never overridden by this app) now surfaces

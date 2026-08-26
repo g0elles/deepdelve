@@ -246,6 +246,47 @@ from engine.completion_starvation import (  # noqa: F401,E402 — re-exported fo
     _with_other_grounding_addendum,
 )
 
+# Constant boundary marker both _with_other_problems_addendum/_with_other_grounding_addendum use
+# to append their "ALSO currently true" tail -- shared here so force_whole_rebuild's own
+# instruction-building (below) can strip it back off without duplicating the literal string.
+_OTHER_PROBLEMS_ADDENDUM_MARKER = " ALSO currently true"
+
+
+def _strip_other_problems_addendum(inject: str) -> str:
+    """Removes a `_with_other_problems_addendum`/`_with_other_grounding_addendum` tail from an
+    already-built `.inject` string, if present -- used only by force_whole_rebuild's own
+    instruction-building (2026-08-25, ReflexGrad arXiv:2511.14584 finding): its own ablation
+    explicitly tested merging multiple simultaneous corrective signals into one instruction and
+    found it "produced incoherent guidance" for their fast/slow dual-process router, the same
+    shape as bundling a lower-priority secondary problem onto the ONE expensive full-rewrite
+    instruction force_whole_rebuild issues. A no-op when no addendum is present."""
+    idx = inject.find(_OTHER_PROBLEMS_ADDENDUM_MARKER)
+    return inject if idx == -1 else inject[:idx]
+
+
+def _with_wait_prefix(verdict: "Verdict", run_state: "RunState") -> "Verdict":  # noqa: F821
+    """Prepends a short explicit self-reflection cue to `verdict.inject` when this exact problem
+    already fired on the immediately preceding attempt -- adapted from Tsui's self-correction
+    blind-spot finding (COLM 2026, arXiv:2507.02778, fully read, saved to papers/): 14 open-source
+    non-reasoning models tested show a 64.5% average blind spot specifically when asked to fix an
+    error framed as their OWN prior turn (vs. the identical error framed as external input), and
+    appending the single word "Wait" before the model continues cuts that blind spot by 89% in
+    their decoding-time intervention. DeepDelve has no decoding-time hook into the model's own
+    generation stream (each retry is a fresh system message to a fresh dispatch, not a token
+    inserted into an in-progress completion), so this adapts the finding's SPIRIT rather than its
+    literal mechanism: an explicit "Wait." cue at the start of the corrective system message,
+    only on a genuine repeat (not the first time a problem is raised, where there's nothing yet
+    to have blind-spotted). Uses the same `_consecutive_occurrences` definition every other
+    escalation mechanism in this file shares, so this can never disagree with force_whole_rebuild
+    or _capped about whether a problem has "already fired before." Gated by
+    `settings.ablation.disable_wait_prefix` (default unset/False) for the same controlled-ablation
+    protocol as `_ablation_disabled`'s other names."""
+    if _ablation_disabled("wait_prefix"):
+        return verdict
+    if _consecutive_occurrences(run_state, verdict.problem) < 1:
+        return verdict
+    return verdict._replace(inject="Wait. " + verdict.inject)
+
 
 async def _detect_verdict(req_artifact: str, attempt: int, max_attempts: int,
                            run_state: "RunState") -> tuple["Ctx", Optional["Verdict"]]:  # noqa: F821
@@ -354,6 +395,8 @@ async def _detect_verdict(req_artifact: str, attempt: int, max_attempts: int,
         # cheaply detectable in the same document.
         if verdict is not None:
             verdict = _with_other_grounding_addendum(verdict, ctx)
+    if verdict is not None:
+        verdict = _with_wait_prefix(verdict, run_state)
     return ctx, verdict
 
 
@@ -714,13 +757,23 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                             _ensure_reader_quota_headroom(pool, needed=3)
                         try:
                             if force_whole_rebuild:
+                                # Deliberately strips any "ALSO currently true" secondary-problem
+                                # addendum (2026-08-25, ReflexGrad finding): this is the ONE
+                                # expensive, full-rewrite attempt a provably-stuck run gets --
+                                # diluting it with a lower-priority competing problem is exactly
+                                # the "incoherent guidance from merged signals" shape their own
+                                # ablation found harmful. The Wait prefix (_with_wait_prefix) is
+                                # NOT stripped -- it's a general self-reflection cue, not a
+                                # competing correction, and is exactly this attempt's situation
+                                # (a problem that already fired before).
+                                clean_inject = _strip_other_problems_addendum(verdict.inject)
                                 builder_instructions = (
                                     f"Multiple attempts to fix '{req_artifact}' the same way have not "
                                     f"worked -- do NOT just patch the specific issue again. Rewrite "
                                     f"'{req_artifact}' completely from scratch using findings.md, as if "
                                     f"writing it for the first time, reconsidering your whole approach "
                                     f"to this task rather than repeating the same local fix. The "
-                                    f"specific problem previously flagged was:\n{verdict.inject}\n\n"
+                                    f"specific problem previously flagged was:\n{clean_inject}\n\n"
                                     f"{_BUILDER_NO_DELEGATE_CLARIFICATION}"
                                     f"Write the corrected file now via write_workspace_file."
                                 )
@@ -935,7 +988,9 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                     f"SYSTEM: The last {CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD} attempts to "
                     f"fix this the same way have not worked. Do not repeat the same fix again -- "
                     f"reconsider your whole approach to this task from scratch before retrying: "
-                    f"{verdict.inject}"
+                    # Addendum stripped here too, same reasoning as the Builder-fixable branch
+                    # above (2026-08-25, ReflexGrad finding) -- see _strip_other_problems_addendum.
+                    f"{_strip_other_problems_addendum(verdict.inject)}"
                 ) if force_whole_rebuild else verdict.inject
                 new_inputs.append(Message("user", [{"type": "text", "text": inject_text}]))
                 run_state.save()

@@ -262,7 +262,18 @@ def _with_other_problems_addendum(verdict: Verdict, ctx: Ctx, checks: list) -> V
     of those checks key off the SINGLE shared ctx.grounding_problem string, which real_grounding_
     problem computes as only its own first hit; re-running a sibling grounding check against that
     same ctx can never reveal a second, different grounding problem (confirmed live 2026-07-29 --
-    see _other_grounding_problems_addendum below, the correct-layer version for that list)."""
+    see _other_grounding_problems_addendum below, the correct-layer version for that list).
+
+    Gated by `settings.ablation.disable_other_problems_addendum` (2026-08-25, ReflexGrad
+    arXiv:2511.14584 finding, fully read): their own ablation found merging multiple simultaneous
+    corrective signals into one instruction "produced incoherent guidance" for a dual-process
+    router -- the same shape as this addendum. Local import (not module-level): `_ablation_
+    disabled` lives in engine.completion, which imports this module at load time, so a module-
+    level import back would be circular -- deferred to call time is safe, same trick already used
+    elsewhere in this decomposition (see completion_checks.py's own local imports)."""
+    from engine.completion import _ablation_disabled
+    if _ablation_disabled("other_problems_addendum"):
+        return verdict
     others = _collect_other_active_problems(ctx, checks, verdict.problem)
     if not others:
         return verdict
@@ -293,7 +304,11 @@ def _other_grounding_problems(ctx: Ctx, exclude_problem: str) -> list[str]:
 
 def _with_other_grounding_addendum(verdict: Verdict, ctx: Ctx) -> Verdict:
     """_with_other_problems_addendum's GROUNDING_CHECKS counterpart, built on the correct-layer
-    _other_grounding_problems above instead of re-walking GROUNDING_CHECKS itself."""
+    _other_grounding_problems above instead of re-walking GROUNDING_CHECKS itself. Shares the same
+    `disable_other_problems_addendum` ablation gate -- see that function's own docstring."""
+    from engine.completion import _ablation_disabled
+    if _ablation_disabled("other_problems_addendum"):
+        return verdict
     others = _other_grounding_problems(ctx, verdict.problem)
     if not others:
         return verdict
