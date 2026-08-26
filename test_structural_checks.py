@@ -6943,6 +6943,90 @@ def main():
 
     contextvars.copy_context().run(_specific_figure_scenario)
 
+    # --- find_unsupported_specific_figures' named-token check: two real false positives found
+    # live 2026-08-25 (a real --style academic BERT/RoBERTa/ALBERT report against OpenRouter's
+    # stealth/ox-alpha), both fixed the same day. ---
+    def _named_token_false_positive_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        _orig_ws14 = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory"}
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            _IN_MEMORY_FS.clear()
+            reset_fetched_urls()
+            _albert_src = "https://arxiv.example.co/albert"
+            record_fetched_url(_albert_src, filename="sources/albert.md")
+            # Mirrors the real ALBERT abstract's own LaTeX-macro-leak artifact verbatim: the
+            # source's raw scraped text says "\squad" (a \newcommand{\squad}{SQuAD}-style macro
+            # left unexpanded by arXiv's plain-text extraction), not the correctly-capitalized
+            # word the model naturally writes.
+            _IN_MEMORY_FS["sources/albert.md"] = (
+                "Source-URL: " + _albert_src + "\n\n"
+                "Our best model establishes new state-of-the-art results on the GLUE, RACE, "
+                "and \\squad benchmarks while having fewer parameters compared to BERT-large."
+            )
+            # Case 1 (fixed via re.IGNORECASE): a correctly-capitalized "SQuAD" citation to a
+            # source whose own raw text renders it as "\squad" must NOT be flagged -- the claim
+            # is completely accurate, only the source's scrape is corrupted.
+            bad = find_unsupported_specific_figures(
+                f"- ALBERT achieves SOTA on GLUE, RACE, and SQuAD. [albert]({_albert_src})")
+            assert bad == [], (
+                "a case-differing match against a source's own LaTeX-macro-leak artifact "
+                "(\\squad vs SQuAD) must not be flagged as unsupported", bad)
+            # Guard: a token genuinely absent from the source (in ANY case) must still be flagged
+            # -- the case-insensitivity fix must only rescue a real case mismatch, never a
+            # wholesale fabrication.
+            bad = find_unsupported_specific_figures(
+                f"- ALBERT achieves SOTA on GLUE, RACE, and FakeBenchmark. [albert]({_albert_src})")
+            assert any("FakeBenchmark" in b for b in bad), (
+                "a token genuinely absent from the source, in any case, must still be flagged", bad)
+
+            # Case 2 (fixed via the any-fetched-source fallback for named tokens): a line NAMING
+            # multiple papers while citing only ONE of them for the specific claim being made --
+            # e.g. real report text "...the arXiv abstract pages for BERT (arXiv:1810.04805),
+            # RoBERTa (arXiv:1907.11692), and ALBERT..." cites only the BERT source on that line
+            # (a bare "arXiv:1907.11692" mention is not a resolvable citation), so "RoBERTa"
+            # naturally never appears in BERT's own abstract even though no fact is being
+            # asserted about RoBERTa there -- it's just named as one of the run's other subjects.
+            _bert_src = "https://arxiv.example.co/bert"
+            record_fetched_url(_bert_src, filename="sources/bert.md")
+            _IN_MEMORY_FS["sources/bert.md"] = (
+                "Source-URL: " + _bert_src + "\n\n"
+                "arXiv:1810.04805 -- We introduce BERT, a new bidirectional Transformer language "
+                "representation model that achieves state-of-the-art results on eleven NLP tasks."
+            )
+            _roberta_src = "https://arxiv.example.co/roberta"
+            record_fetched_url(_roberta_src, filename="sources/roberta.md")
+            _IN_MEMORY_FS["sources/roberta.md"] = (
+                "Source-URL: " + _roberta_src + "\n\n"
+                "RoBERTa is a replication study of BERT pretraining that measures the impact "
+                "of key hyperparameters and training data size."
+            )
+            bad = find_unsupported_specific_figures(
+                "This review covers the arXiv abstract pages for BERT (arXiv:1810.04805), "
+                f"RoBERTa (arXiv:1907.11692), and ALBERT. [bert]({_bert_src})")
+            assert bad == [], (
+                "naming a DIFFERENT paper this run genuinely fetched, on a line citing only ONE "
+                "other source, must not be flagged as unsupported", bad)
+            # Guard: a named paper this run never fetched at all must still be flagged, even
+            # though the fallback now checks every fetched source, not just this line's own.
+            bad = find_unsupported_specific_figures(
+                "This review covers the arXiv abstract pages for BERT (arXiv:1810.04805), "
+                f"FakePaper (arXiv:9999.99999), and ALBERT. [bert]({_bert_src})")
+            assert any("FakePaper" in b for b in bad), (
+                "a named paper genuinely absent from EVERY fetched source this run must still "
+                "be flagged -- the broadened fallback must not rescue real fabrications", bad)
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            if _orig_ws14 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws14
+
+    contextvars.copy_context().run(_named_token_false_positive_scenario)
+
     # --- regulation-identifier grounding (live case run 12: 'Ley 1906 de 2021' cited to a real
     # fetched page that never mentions 1906 — passed both the URL gate and zero-overlap check) ---
     from utils.grounding import find_unsupported_regulation_ids

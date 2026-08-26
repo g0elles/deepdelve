@@ -622,6 +622,10 @@ def find_unsupported_specific_figures(text: str) -> list[str]:
     fetched = _fetched_url_files()
     ref_map = parse_academic_references(text or "")
     hits = []
+    # Built lazily (2026-08-25 live incident, second false positive found the same day as the
+    # case-insensitivity fix above), only if a named token ever needs it -- see its use below for
+    # why this is scoped to named tokens only, never figures.
+    all_fetched_content = None
     for line in (text or "").splitlines():
         figures = list(_SPECIFIC_FIGURE_RE.finditer(line))
         tokens = [m for m in _NAMED_TOKEN_RE.finditer(line) if len(m.group(0)) >= 5]
@@ -646,7 +650,46 @@ def find_unsupported_specific_figures(text: str) -> list[str]:
                 hits.append(m.group(0).strip())
         for m in tokens:
             token = m.group(0)
-            if not re.search(rf'\b{re.escape(token)}\b', content):
+            # Case-insensitive (2026-08-25 live incident): a genuine arXiv abstract rendered a
+            # LaTeX macro literally as "\squad" instead of expanding it to "SQuAD" -- a scraping
+            # artifact, not a fabrication (the paper's real abstract text is "...GLUE, RACE, and
+            # \squad benchmarks...", where \squad is presumably \newcommand{\squad}{SQuAD} in the
+            # paper's own LaTeX source, left unexpanded by arXiv's plain-text extraction). The
+            # exact-case match flagged a completely accurate, correctly-capitalized "SQuAD"
+            # citation as unsupported for 3 consecutive completion-check attempts, exhausting the
+            # run's retry budget on a false positive the model had no way to fix by rewriting its
+            # own (already correct) claim. A case-insensitive match still catches genuine
+            # fabrication (a token truly absent from the source, in any case) while no longer
+            # penalizing this class of source-side rendering artifact -- the backslash preceding
+            # a leaked macro name doesn't block a `\b` word-boundary match either way, confirmed
+            # directly against the real failing case. Every other exact-text-match check in this
+            # module already normalizes case/typography before comparing (see
+            # find_paraphrased_quotes' _normalize_for_quote_match) -- this was the one gap.
+            if re.search(rf'\b{re.escape(token)}\b', content, re.IGNORECASE):
+                continue
+            # Second false positive, found the same day while verifying the fix above: a line
+            # legitimately NAMING multiple papers while citing only ONE of them for the specific
+            # claim being made -- e.g. "the arXiv abstract pages for BERT (arXiv:1810.04805),
+            # RoBERTa (arXiv:1907.11692), and ALBERT..." cites only (Devlin et al., 2019) on that
+            # line (a bare "arXiv:1907.11692" mention is not itself a resolvable citation), so
+            # `files` above is just the BERT source -- and "RoBERTa" naturally never appears in
+            # BERT's own abstract, even though the report isn't claiming any FACT about RoBERTa
+            # here, only naming it as one of the run's other subjects. Distinct from the numeric-
+            # figure branch above (kept strictly per-line/per-citation, unchanged): a genuinely
+            # misattributed FIGURE across two topically-similar sources is exactly what this
+            # function was originally built to catch (2026-08-17 ablation incident, this
+            # function's own docstring), so relaxing that branch would reopen that hole. A named
+            # PROPER-NOUN TOKEN is a much stronger anti-fabrication signal on its own -- an
+            # accidental cross-source coincidence is far less likely for "RoBERTa" than for a bare
+            # number -- so for tokens only, fall back to checking every source actually fetched
+            # this run (not just this line's own citation) before concluding the token is
+            # fabricated. A token absent from EVERY genuinely fetched source is still flagged.
+            if all_fetched_content is None:
+                all_fetched_content = "\n".join(
+                    _source_body(get_workspace_file_content(fn) or "")
+                    for fn in set(fetched.values())
+                )
+            if not re.search(rf'\b{re.escape(token)}\b', all_fetched_content, re.IGNORECASE):
                 hits.append(token)
     return hits
 
