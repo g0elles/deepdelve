@@ -2062,6 +2062,16 @@ def main():
               "summary": "The Temporal Fusion Transformer improved forecast accuracy by 23% over "
                          "classical baselines in a 2024 benchmark study of Time Series Models."},
          ]),
+        # check_academic_citation_style_abandoned (2026-08-25 live incident, see
+        # session_status/CURRENT.md): report_style is "academic" but the draft cites a real,
+        # fetched URL using a plain bracket-link citation and contains NO `(Author, Year)`
+        # citation anywhere -- the report silently reverted to standard style under pressure,
+        # which every URL-grounding check (including academic_citation_existence_problem itself)
+        # would otherwise pass trivially since there's nothing academic-shaped left to flag.
+        ("report_style_violation", True, {"findings.md": _FINDINGS_OK,
+          "final_report.md": f"- dato uno [gov]({_SRC})"},
+         "report_style_violation", "silently reverted to standard-style URL links",
+         "", [], [], {}, "academic"),
     ]
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -2070,6 +2080,7 @@ def main():
             _extra_fetches = _rest[1] if len(_rest) > 1 else []
             _extra_findings = _rest[2] if len(_rest) > 2 else []
             _extra_run_state_data = _rest[3] if len(_rest) > 3 else {}
+            _report_style = _rest[4] if len(_rest) > 4 else "standard"
 
             def _matrix_row():
                 from tools.fs import _IN_MEMORY_FS
@@ -2084,6 +2095,8 @@ def main():
                 # this line was added.
                 _orig_gc3 = _config.cfg.get("settings", {}).get("grounding_check")
                 _config.cfg["settings"]["grounding_check"] = {"nli_verify": False, "topical_relevance_check": False}
+                _orig_style3 = _config.cfg.get("settings", {}).get("report_style")
+                _config.cfg["settings"]["report_style"] = _report_style
                 saved_fs = dict(_IN_MEMORY_FS)
                 try:
                     _IN_MEMORY_FS.clear()
@@ -2125,6 +2138,10 @@ def main():
                         _config.cfg["settings"].pop("grounding_check", None)
                     else:
                         _config.cfg["settings"]["grounding_check"] = _orig_gc3
+                    if _orig_style3 is None:
+                        _config.cfg["settings"].pop("report_style", None)
+                    else:
+                        _config.cfg["settings"]["report_style"] = _orig_style3
 
             contextvars.copy_context().run(_matrix_row)
 

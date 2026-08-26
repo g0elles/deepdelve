@@ -39,7 +39,8 @@ from engine.completion_checks import (  # noqa: F401 — re-exported for test_st
     Ctx, Verdict,
     check_not_delegated, check_thin_coverage, check_task_verification_flagged,
     check_findings_ungrounded, check_missing_findings, check_stale_findings,
-    check_findings_underuses_evidence, check_missing_artifact, check_uneven_task_investment,
+    check_findings_underuses_evidence, check_missing_artifact,
+    check_academic_citation_style_abandoned, check_uneven_task_investment,
     check_untracked_delegation, check_report_underuses_findings, check_report_underuses_evidence,
     check_duplicate_report_sections, check_claim_unsupported, check_no_urls,
     check_regulation_unsupported, check_specific_figure_unsupported, check_quote_paraphrased,
@@ -89,6 +90,15 @@ COMPLETION_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
     check_stale_findings,
     check_findings_underuses_evidence,
     check_missing_artifact,
+    # Structural, not grounding -- needs only ctx.content/report_style, so it belongs here
+    # (COMPLETION_CHECKS) rather than GROUNDING_CHECKS despite being citation-related; placed
+    # right after check_missing_artifact (needs ctx.content to exist, same requirement as this
+    # check) and before check_uneven_task_investment/check_untracked_delegation's hygiene checks,
+    # since a report that deleted its own required citation format is closer to a correctness
+    # problem than a hygiene one. See its own docstring for the live incident (2026-08-25) this
+    # closes -- a report abandoning its instructed academic citation format entirely, which every
+    # URL-grounding check trivially passes.
+    check_academic_citation_style_abandoned,
     # Both require findings.md AND the final artifact to already exist (own docstrings explain
     # why -- two live regressions, 2026-07-23) -- placed after both existence checks above so
     # the list's own ordering documents that requirement, even though each check's internal
@@ -105,7 +115,7 @@ COMPLETION_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
 _COMPLETION_TIER_PROBLEMS = frozenset({
     "not_delegated", "thin_coverage", "task_verification_flagged", "findings_ungrounded",
     "missing_findings", "stale_findings", "findings_underuses_evidence", "missing_artifact",
-    "uneven_task_investment", "untracked_delegation",
+    "report_style_violation", "uneven_task_investment", "untracked_delegation",
 })
 
 GROUNDING_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
@@ -174,7 +184,7 @@ _BUILDER_FIXABLE_PROBLEMS = ("missing_artifact", "not_grounded", "claim_unsuppor
                              "stub_source", "duplicate_report_sections",
                              "nli_unsupported", "topical_mismatch", "uncited_claims",
                              "excluded_topic_present", "cross_source_contradiction",
-                             "report_underuses_findings")
+                             "report_underuses_findings", "report_style_violation")
 
 # Appended to every Builder-dispatch instruction (both the classic and force_whole_rebuild
 # branches) right after verdict.inject -- a single shared clarification rather than hand-rewriting

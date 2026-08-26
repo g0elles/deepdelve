@@ -21,7 +21,7 @@ from tools import get_workspace_file_content
 from utils.run_state import get_fetched_urls
 from utils.grounding import (
     fully_ungrounded, partially_ungrounded, split_into_heading_sections,
-    find_cross_source_contradictions,
+    find_cross_source_contradictions, extract_cited_urls, parse_academic_references,
 )
 from engine.orchestrator import _extract_excluded_topics, _content_word_overlap
 
@@ -787,6 +787,66 @@ def check_missing_artifact(ctx: Ctx) -> Optional[Verdict]:
         "missing_artifact",
         f"Required artifact `{ctx.req_artifact}` is missing from the workspace. Pushing agent to create it.",
         f"SYSTEM WARNING: {ctx.last_chance_prefix}{directive}{forbid_redelegate} Call write_workspace_file(filename='{ctx.req_artifact}', content=...) right now, using whatever findings you already have — an imperfect report that exists beats a perfect one that doesn't.{findings_excerpt}",
+    )
+
+
+def check_academic_citation_style_abandoned(ctx: Ctx) -> Optional[Verdict]:
+    """Structural check (COMPLETION_CHECKS tier — needs only ctx.content/report_style, not the
+    expensive real_grounding_problem scan): catches a report that was instructed to write in
+    ACADEMIC style (in-text `(Author, Year)` + a References section) but abandoned that format
+    entirely, reverting to STANDARD style's inline `[Title](URL)` links instead.
+
+    Confirmed live (2026-08-25, the 6th run of the academic_citation_existence_problem live-
+    exercise effort — see session_status/CURRENT.md): a Builder draft correctly used
+    `(Vaswani et al., 2017)` inline but had no References section, so check_non_url_citation fired
+    correctly (the citation was genuinely unresolved). The NEXT draft didn't add the missing
+    References section — it deleted every `(Author, Year)` citation from the text instead, keeping
+    only bracket-link citations, because a real URL sitting right on the line trivially satisfies
+    check_no_urls/check_non_url_citation/check_uncited_claims/academic_citation_existence_problem
+    (parse_academic_references finds nothing to flag when there's nothing academic-shaped left to
+    parse). Every one of those checks verifies "is what's here grounded", never "is what's here in
+    the INSTRUCTED format" — so abandoning the style entirely was, from the model's own
+    cost-minimizing perspective, the cheapest way to stop getting nudged, and it worked: the run
+    that surfaced this reached a clean completion-check pass on a report using zero academic
+    citations while report_style was "academic". This check closes that gap directly instead of
+    relying on prompt wording alone (the user's own call: "we cannot allow the model to do what it
+    wants").
+
+    Scoped to "academic" only: "answer" style's own required shape already embeds a bracket link
+    inside `(Source: [Title](URL))`, so there's no equivalent "abandoned the style entirely" signal
+    to detect there yet — a report has to have SOME citation activity already (extract_cited_urls
+    finds at least one real URL) for this to fire at all; a report with zero citations of any kind
+    is check_no_urls'/check_missing_findings's problem, not this one.
+
+    Uses parse_academic_references (a real, resolvable numbered References entry — the same
+    ground truth academic_citation_existence_problem itself relies on), not a loose in-text
+    `(Name, Year)`-shaped regex: a first attempt at this check used
+    utils.grounding._ACADEMIC_CITATION_ANYWHERE_RE (designed for a deliberately permissive
+    section-exemption gate elsewhere, see that regex's own docstring) and it false-matched "WMT
+    2014" — a benchmark name followed by a bare year, no citation at all — as a real citation on
+    the EXACT failing report this check exists to catch, producing a false negative on live
+    verification before this ever shipped. parse_academic_references' own structural requirement
+    (an actual References-section entry) doesn't have that false-positive surface."""
+    if ctx.report_style != "academic" or not ctx.content:
+        return None
+    if parse_academic_references(ctx.content):
+        return None  # a real, resolvable References section exists somewhere
+    if not extract_cited_urls(ctx.content):
+        return None  # no citations of ANY kind yet — check_missing_findings/check_no_urls own this
+    return Verdict(
+        "report_style_violation",
+        f"`{ctx.req_artifact}` was instructed to use academic `(Author, Year)` citations but "
+        f"contains none anywhere — it has silently reverted to standard-style URL links instead.",
+        f"SYSTEM WARNING: {ctx.last_chance_prefix}'{ctx.req_artifact}' was instructed to cite "
+        f"sources as `(Author, Year)` with a matching numbered References section (this run's "
+        f"citation format is ACADEMIC style), but the current draft contains ZERO citations in "
+        f"that format anywhere — every citation is now a plain `[Title](URL)` link instead. "
+        f"Deleting the required citation format to dodge a prior warning is NOT a valid fix. "
+        f"Rewrite '{ctx.req_artifact}' so EVERY claim carries an in-text `(Author, Year)` citation "
+        f"(first author's surname) immediately after the claim, with a matching numbered "
+        f"References entry at the end for each one (`N. Author, A. (Year). Title. <the real URL "
+        f"you fetched>`) — keep the content, restore the citation format, and do not remove these "
+        f"citations again.",
     )
 
 
