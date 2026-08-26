@@ -207,7 +207,16 @@ def extract_salient_terms(text: str) -> set:
     judge of its own output elsewhere in this project."""
     if not text:
         return set()
-    terms = set(re.findall(r'\b\d+(?:\.\d+)+\b|\b\d{4}\b|\b\d+%\b', text))
+    # Trailing \b after the bare-integer-percent branch used to make it silently never match: \b
+    # requires a word/non-word transition, but "%" is non-word, so "12% " (percent followed by
+    # whitespace/punctuation -- the overwhelmingly common case) has non-word on BOTH sides of that
+    # position and no boundary ever forms there. Confirmed live 2026-08-25 while building an
+    # unrelated test fixture: "12%" was silently invisible to this function entirely, while a
+    # decimal percentage like "12.5%" worked fine (matched by the OTHER alternative, which needs
+    # no trailing boundary after the digits it captures). No trailing \b needed here at all -- the
+    # literal "%" character is itself non-word, so `\d+%` can never accidentally swallow a
+    # following word character into the same match.
+    terms = set(re.findall(r'\b\d+(?:\.\d+)+\b|\b\d{4}\b|\b\d+%', text))
     for m in _PROPER_NOUN_PHRASE_RE.finditer(text):
         normalized = _normalize_proper_noun_phrase(m.group(0))
         if normalized:
@@ -1033,6 +1042,13 @@ def _get_nli_model():
     return _nli_model
 
 
+# A bare 19xx/20xx year, as extracted by extract_salient_terms -- too weak/ubiquitous an anchor
+# to trust alone for NLI evidence-window selection (see _grounded_claim_pairs' own comment on the
+# 2026-08-25 incident this closes: a paper's own publication year is scattered through its
+# citation-metadata boilerplate far more densely than through its actual substance).
+_BARE_YEAR_TERM_RE = re.compile(r'(?:19|20)\d{2}')
+
+
 def _select_relevant_window(claim_terms: set, source_text: str, window_size: int = 1) -> str:
     """Cheapest-adequate relevance selection before an NLI call, not whole-document NLI: this
     checkpoint class is trained on short claim/evidence pairs and degrades on long, multi-paragraph
@@ -1089,9 +1105,33 @@ def _grounded_claim_pairs(report: str) -> list[tuple[str, str, str]]:
             if not display:
                 continue
             stripped_segment = re.sub(r'https?://[^\s\)\]\}"\'>【】]+', '', segment)
+            # Strip the citation's own `(Author, Year)` attribution before term extraction: its
+            # bare year is metadata about WHEN the source was published, not a fact under test.
+            stripped_segment = _PARENTHETICAL_CITATION_RE.sub('', stripped_segment)
             segment_terms = extract_salient_terms(stripped_segment)
-            if not segment_terms:
+            # A claim anchored ONLY by a bare 19xx/20xx year -- whether that year came from the
+            # (now-stripped) citation, or from the claim's own prose ("released in 2019...") --
+            # must not drive window selection below (2026-08-25 live incident, a real --style
+            # academic BERT report). Root cause: extract_salient_terms treats any bare year as
+            # "salient," but a paper's own publication year is scattered through its citation-
+            # metadata boilerplate (Anthology ID/Volume/Month/Year/BibTeX/MODS/RIS export blocks
+            # all restate it) far more densely than through its actual substance -- a real
+            # Abstract paragraph routinely never mentions its own bare publication year at all.
+            # _select_relevant_window has no way to know a "2019" match came from a bureaucratic
+            # metadata field rather than substantive content, so a year-only anchor systematically
+            # picks the wrong (boilerplate) window, and the NLI model then judges a genuinely
+            # accurate claim against a wholly unrelated premise -- confirmed on 4 separate claims
+            # in one real run, 3 anchored only by the citation's year (fixed by the strip above)
+            # and 1 anchored by the claim's OWN "in 2019" prose (which the strip above cannot
+            # touch, since it's not part of the citation). The fix generalizes to both shapes: a
+            # bare year is intrinsically too weak/ubiquitous an anchor to trust for window
+            # selection, regardless of where in the claim it came from. A claim with ANY other
+            # genuine term (a percentage, a proper noun, a specific figure) is unaffected --
+            # `_BARE_YEAR_TERM_RE` only strips year-shaped terms, never a real distinguishing one.
+            non_year_terms = {t for t in segment_terms if not _BARE_YEAR_TERM_RE.fullmatch(t)}
+            if not non_year_terms:
                 continue
+            segment_terms = non_year_terms
             files = _line_cited_files(segment, fetched, ref_map)
             if not files:
                 continue

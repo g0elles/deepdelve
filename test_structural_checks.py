@@ -2742,7 +2742,12 @@ def main():
             # matrix rows can test "no checkable terms -> skipped" vs. "checkable terms -> zero
             # overlap -> flagged"). This scenario needs a claim that DOES share a term with its
             # source (so content_level_check passes and execution actually reaches
-            # nli_unsupported_problem) -- a shared year, "2020".
+            # nli_unsupported_problem) -- the shared multi-word proper-noun phrase "National Cyber
+            # Strategy", NOT a shared bare year: a 2026-08-25 fix made _grounded_claim_pairs skip
+            # any claim anchored ONLY by a bare year (too weak/ubiquitous an anchor -- see that
+            # fix's own comment), so this fixture was updated to use a real distinguishing term
+            # instead, preserving genuine wiring coverage rather than relying on the now-excluded
+            # year-only match.
             _nli_src = "https://gov.example.co/nli-test-page"
             _nli_source_text = ("Source-URL: " + _nli_src + "\n\n"
                                  + "The National Cyber Strategy was formally adopted in 2020 "
@@ -2750,7 +2755,7 @@ def main():
             record_fetched_url(_nli_src, filename="sources/nli_page.md")
             _IN_MEMORY_FS["sources/nli_page.md"] = _nli_source_text
             _IN_MEMORY_FS["findings.md"] = f"- hallado ({_nli_src})"
-            claim_line = f"- The strategy launched in 2020 under a different name [gov]({_nli_src})"
+            claim_line = f"- The National Cyber Strategy launched in 2020 under a different name [gov]({_nli_src})"
             _IN_MEMORY_FS["final_report.md"] = claim_line
             q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5}})
 
@@ -2794,13 +2799,34 @@ def main():
 
     contextvars.copy_context().run(_nli_verify_scenario)
 
+    # --- extract_salient_terms: bare-integer-percent branch was silently unmatchable
+    # (2026-08-25, found while building an unrelated test fixture). `\b\d+%\b` requires a
+    # word/non-word transition on BOTH sides of the match, but "%" is itself non-word, so "12% "
+    # (percent followed by whitespace/punctuation -- the overwhelmingly common case in real
+    # prose) has non-word characters on both sides of that final boundary position and it can
+    # never form. A decimal percentage like "12.5%" was unaffected (matched by the OTHER
+    # alternative, which needs no trailing boundary after its own digits). Fixed by dropping the
+    # trailing \b -- the literal "%" is itself non-word, so `\d+%` can never accidentally swallow
+    # a following word character into the same match, no boundary assertion needed. ---
+    from utils.grounding import extract_salient_terms
+    assert "12%" in extract_salient_terms("improved by 12% overall"), (
+        "a bare-integer percentage followed by whitespace must be captured as a salient term")
+    assert "8%" in extract_salient_terms("grew 8%, according to the report"), (
+        "a bare-integer percentage followed by punctuation must be captured as a salient term")
+    assert extract_salient_terms("reached 80.5 % on GLUE") == {"80.5"}, (
+        "a decimal percentage must still match via the decimal-number branch, unaffected by "
+        "this fix (no trailing % needed in the captured term for that branch)")
+
     # --- ROADMAP Phase 4: topical-relevance cross-encoder reranker (the GOA-algorithm vs.
     # Goa-the-Indian-state acronym collision from ROADMAP "Findings from live testing" — term
-    # overlap passes ('2024' shared) and NLI wouldn't contradict it (an EV-policy sentence doesn't
-    # CONTRADICT an algorithm claim, it's just unrelated), so only a topical-relevance judgment
-    # catches it. Real BAAI/bge-reranker-v2-m3 isn't loaded in this fast suite -- mocked at
-    # utils.grounding._get_topical_relevance_model to test WIRING correctness, same boundary as
-    # _nli_verify_scenario above. ---
+    # overlap passes (a shared "12.5%" figure) and NLI wouldn't contradict it (an EV-policy sentence
+    # doesn't CONTRADICT an algorithm claim, it's just unrelated), so only a topical-relevance
+    # judgment catches it. Real BAAI/bge-reranker-v2-m3 isn't loaded in this fast suite -- mocked
+    # at utils.grounding._get_topical_relevance_model to test WIRING correctness, same boundary as
+    # _nli_verify_scenario above. Fixture uses a shared FIGURE, not a shared bare year, since a
+    # 2026-08-25 fix made _grounded_claim_pairs skip any claim anchored only by a bare year (too
+    # weak/ubiquitous an anchor -- see that fix's own comment); "2024" alone no longer reaches
+    # this check at all. ---
     def _topical_relevance_scenario():
         from tools.fs import _IN_MEMORY_FS
         from tools.core import tool_quotas_ctx as q_ctx
@@ -2825,14 +2851,15 @@ def main():
             reset_fetched_urls()
             _goa_src = "https://goa.example.co/ev-policy"
             _goa_source_text = ("Source-URL: " + _goa_src + "\n\n"
-                                 "Goa announced new electric vehicle incentives for residents "
-                                 "in 2024, part of the state's broader transport policy. " * 3)
+                                 "Goa announced new electric vehicle incentives for residents, "
+                                 "cutting registration costs by 12.5% under the state's broader "
+                                 "transport policy. " * 3)
             record_fetched_url(_goa_src, filename="sources/goa_page.md")
             _IN_MEMORY_FS["sources/goa_page.md"] = _goa_source_text
             _IN_MEMORY_FS["findings.md"] = f"- hallado ({_goa_src})"
-            # Shares the checkable term '2024' with the source, so claim_grounding_problem's
+            # Shares the checkable term '12.5' with the source, so claim_grounding_problem's
             # term-overlap passes outright -- exactly the failure shape this check exists for.
-            claim_line = f"- The GOA algorithm improved convergence results in 2024 [source]({_goa_src})"
+            claim_line = f"- The GOA algorithm improved convergence results by 12.5% [source]({_goa_src})"
             _IN_MEMORY_FS["final_report.md"] = claim_line
             q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5}})
 
@@ -7848,11 +7875,15 @@ def main():
             record_fetched_url("https://gov.example.co/agro", filename="sources/agro.md")
             _IN_MEMORY_FS["sources/agro.md"] = (
                 "Source-URL: https://gov.example.co/agro\n\n"
-                "El sector agropecuario crecio 8% en el primer trimestre de 2025, impulsado "
+                "El sector agropecuario crecio 8.3% en el primer trimestre de 2025, impulsado "
                 "por la demanda internacional de cafe.")
+            # Both segments' shared checkable term is a genuine figure (265.1 / 8.3), not a bare
+            # year -- "2024"/"2025" alone would no longer anchor a pair after the 2026-08-25 fix
+            # that excludes bare-year-only matches from _grounded_claim_pairs (see that fix's own
+            # comment above _select_relevant_window).
             same_line = (
                 "- Cacao: USD 265.1 millones en 2024 [gov](https://gov.example.co/exportaciones), "
-                "mientras el agro crecio 8% en 2025 [gov](https://gov.example.co/agro)")
+                "mientras el agro crecio 8.3% en 2025 [gov](https://gov.example.co/agro)")
             pairs = _grounded_claim_pairs(same_line)
             assert len(pairs) == 2, (
                 "a same-line two-claim, two-citation report must yield two separate pairs, not one "
@@ -7881,6 +7912,96 @@ def main():
                 _config.cfg["settings"]["workspace"] = _orig_ws11
 
     contextvars.copy_context().run(_grounded_claim_pairs_scenario)
+
+    # --- _grounded_claim_pairs must not let a BARE YEAR (from anywhere -- the citation's own
+    # attribution, or the claim's own prose) anchor NLI evidence-window selection (2026-08-25 live
+    # incident, a real --style academic BERT report). extract_salient_terms treats any bare
+    # 4-digit year as salient, but a paper's own publication year is scattered through its
+    # citation-metadata boilerplate (Anthology ID/Volume/Month/Year/BibTeX/MODS/RIS export blocks)
+    # far more densely than through its actual substance -- a real Abstract paragraph routinely
+    # never restates its own bare publication year at all. A year-only anchor therefore
+    # systematically picks the wrong (boilerplate) window, and the NLI model judges a genuinely
+    # accurate claim against a wholly unrelated premise. Confirmed live on 4 separate claims in
+    # one real run: 3 anchored only by the citation's embedded year, 1 anchored by the claim's OWN
+    # "in 2019..." prose -- both shapes are covered here, plus a positive control confirming a
+    # claim with a REAL distinguishing term (not just a year) still produces a checkable pair. ---
+    def _grounded_claim_pairs_bare_year_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        from utils.grounding import _grounded_claim_pairs, parse_academic_references
+        _orig_ws13 = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory"}
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            _IN_MEMORY_FS.clear()
+            reset_fetched_urls()
+            _src = "https://aclanthology.example.co/N19-1423"
+            record_fetched_url(_src, filename="sources/bert.md")
+            # Mirrors the real ACL Anthology page's shape: several metadata paragraphs repeating
+            # "2019" many times, and a separate Abstract paragraph that never mentions the bare
+            # year at all but DOES mention a real, distinguishing figure ("80.5").
+            _IN_MEMORY_FS["sources/bert.md"] = (
+                "Source-URL: " + _src + "\n\n"
+                "Anthology ID: N19-1423\n\nVolume: Proceedings of the 2019 Conference\n\n"
+                "Year: 2019\n\nMonth: June 2019\n\nAddress: Minneapolis 2019\n\n"
+                "Abstract: We introduce a new language representation model called BERT, "
+                "pushing the GLUE score to 80.5. BERT is designed to pre-train deep "
+                "bidirectional representations from unlabeled text by jointly conditioning on "
+                "both left and right context."
+            )
+            # References section comes AFTER the claim prose -- same shape every real report
+            # uses, and required here: split_prose_from_sources strips everything FROM the first
+            # References/Sources heading ONWARD, so a References block placed first would wipe
+            # out the claim sentence entirely, and every case below would trivially pass with an
+            # empty pairs list for the wrong reason (a fixture-ordering bug caught by the positive
+            # control below failing loudly instead of silently).
+            references = f"\n\n### References\n1. Devlin, J. (2019). BERT. {_src}\n"
+
+            # Case 1: claim's only salient term comes from the CITATION's own embedded year.
+            report_citation_year = (
+                "BERT employs a stack of Transformer encoder layers that process the entire "
+                "input sequence simultaneously (Devlin, 2019)."
+            ) + references
+            assert parse_academic_references(report_citation_year), "fixture References must resolve"
+            pairs = _grounded_claim_pairs(report_citation_year)
+            assert pairs == [], (
+                "a claim whose ONLY salient term is its own citation's embedded year must yield "
+                "zero pairs (skipped from NLI checking), not a window picked from unrelated "
+                "citation-metadata boilerplate", pairs)
+
+            # Case 2: claim's only salient term comes from its OWN prose, not the citation --
+            # the citation-stripping fix alone cannot touch this shape; the general bare-year
+            # exclusion is what closes it.
+            report_prose_year = (
+                "The release of BERT in 2019 marked a significant shift toward deep "
+                "bidirectional language models (Devlin et al., 2019)."
+            ) + references
+            pairs = _grounded_claim_pairs(report_prose_year)
+            assert pairs == [], (
+                "a claim anchored only by a bare year in its OWN prose (not the citation) must "
+                "also yield zero pairs", pairs)
+
+            # Positive control: a claim with a REAL distinguishing term (the figure "80.5", which
+            # genuinely and uniquely appears in the Abstract) must still produce a checkable pair
+            # against the correct window -- the fix must not over-suppress legitimate matches.
+            report_real_term = (
+                "BERT achieved a GLUE score of 80.5 (Devlin et al., 2019)."
+            ) + references
+            pairs = _grounded_claim_pairs(report_real_term)
+            assert len(pairs) == 1, ("a claim with a real distinguishing term must still be "
+                                      "checked", pairs)
+            window, claim_text, _display = pairs[0]
+            assert "80.5" in window, ("the selected window must be the Abstract (which mentions "
+                                       "80.5), not the year-heavy metadata block", window)
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            if _orig_ws13 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws13
+
+    contextvars.copy_context().run(_grounded_claim_pairs_bare_year_scenario)
 
     # --- quarantined-draft restore beats narration salvage (runs 11/13's endgame) ---
     from engine.tui import _restore_quarantined_draft
