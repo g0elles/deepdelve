@@ -512,6 +512,15 @@ _HOSTED_PROVIDER_THINKING_EXTRA_BODY = {
     # "high"; confirmed as the root cause of a live run's excessive narration AND an unrelated
     # context_budget_chars cutoff that preempted a completion-check retry mid-fix.
     "api.deepseek.com": {"thinking": {"type": "disabled"}},
+    # OpenRouter's unified reasoning API (openrouter.ai/docs/use-cases/reasoning-tokens): applies
+    # to any model routed through it, not just one vendor. Confirmed live 2026-08-25 against
+    # stealth/ox-alpha (reasoning.mandatory=true, default_effort="max" per its own /models entry
+    # -- reasoning can't be turned off outright, only minimized/hidden): "effort": "low" plus
+    # "exclude": true together drove completion_tokens_details.reasoning_tokens to 0 in a direct
+    # API test and left message.content/tool_calls completely clean on both a tool-calling and a
+    # plain-text turn -- no leaked reasoning text the way Ollama's OpenAI-compat endpoint leaks
+    # Qwen3's (RESEARCH.md Sec.14e, the reason this whole registry exists).
+    "openrouter.ai": {"reasoning": {"effort": "low", "exclude": True}},
 }
 
 
