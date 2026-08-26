@@ -1,4 +1,5 @@
 import re
+import time
 from typing import Optional
 import config
 from utils.run_state import get_fetched_urls
@@ -187,7 +188,21 @@ def _strip_trailing_punct(url: str) -> str:
 
 # Shared by extract_salient_terms below and find_cross_source_contradictions (ROADMAP Phase 2) —
 # both need the same "what counts as a real proper-noun subject phrase" definition.
-_PROPER_NOUN_PHRASE_RE = re.compile(r'\b[A-Z][a-zA-Z0-9]*(?:\s+[A-Z][a-zA-Z0-9]*){1,4}\b')
+#
+# The trailing alternative (`\d+\.\d+(?:\.\d+)?`) was added 2026-08-26 (live topical_mismatch
+# false positive, "ERNIE 2.0"): a versioned-entity name (ERNIE 2.0, Llama 2, GPT 4.1) used to
+# match NOTHING here, because "2.0" doesn't start with `[A-Z]` -- the bare acronym "ERNIE" alone
+# is only one word (fails the {1,4}-more-words minimum) and "2.0" alone is caught only by
+# extract_salient_terms' separate bare-number regex, with no link back to "ERNIE" at all. A claim
+# about "ERNIE 2.0" therefore anchored on the single token "2.0", which coincidentally appears in
+# a fetched arXiv abstract page's title/PDF-link/BibSonomy-footer paragraphs (every one of which
+# mentions "2.0" purely as part of restating the paper's own name) but NOT in the actual abstract
+# prose -- _select_relevant_window's greedy first-match tie-break then handed the reranker the
+# TITLE paragraph instead of the abstract, and it correctly judged that thin paragraph irrelevant
+# to the claim's substance. Requiring a decimal point (not a bare integer) keeps this from also
+# matching incidental "Section 5"/"Article 12"-style references.
+_PROPER_NOUN_PHRASE_RE = re.compile(
+    r'\b[A-Z][a-zA-Z0-9]*(?:\s+(?:[A-Z][a-zA-Z0-9]*|\d+\.\d+(?:\.\d+)?)){1,4}\b')
 
 
 def _normalize_proper_noun_phrase(raw: str) -> Optional[str]:
@@ -1092,21 +1107,41 @@ def _get_nli_model():
 _BARE_YEAR_TERM_RE = re.compile(r'(?:19|20)\d{2}')
 
 
-def _select_relevant_window(claim_terms: set, source_text: str, window_size: int = 1) -> str:
+def _select_relevant_window(claim_terms: set, source_text: str, window_size: int = 1) -> str | None:
     """Cheapest-adequate relevance selection before an NLI call, not whole-document NLI: this
     checkpoint class is trained on short claim/evidence pairs and degrades on long, multi-paragraph
     RAG source text. Reuses extract_salient_terms (already computed for claim_grounding_problem)
     to find the source's best-overlapping paragraph, then returns that paragraph plus its
     immediate neighbors — cheap (pure Python, no model call) and keeps the NLI call's input in the
-    size class it was actually trained on."""
+    size class it was actually trained on.
+
+    Returns None when NO paragraph shares any term with the claim at all (2026-08-26 live
+    incident: a claim citing exact figures — "GLUE score of 90.7%" — that only appear in a
+    fetched arXiv *abstract* page, not the full paper with its results table. No paragraph
+    overlapped, so the old code fell back to `best_idx=0` — the FIRST paragraph, which on an
+    arxiv.org/abs page is the submission-date/authors metadata block, not the abstract. Handing
+    that metadata block to the reranker as "the evidence" produced a topical_mismatch false
+    positive: the paper genuinely IS about the claim's subject, the selected window just wasn't.
+    A caller with zero lexical signal about where in the source to look has no principled basis
+    to guess a paragraph — same "fails open rather than guesses" philosophy as every other check
+    in this module. See _grounded_claim_pairs's own handling of this None."""
     paragraphs = [p for p in source_text.split("\n\n") if p.strip()]
     if not paragraphs:
         return source_text[:2000]
-    best_idx, best_score = 0, -1
+    best_idx, best_score = 0, 0
     for i, p in enumerate(paragraphs):
         score = len(claim_terms & extract_salient_terms(p))
-        if score > best_score:
+        # Tie-break toward the LONGER paragraph, not just the first-seen one (2026-08-26, same
+        # ERNIE 2.0 incident as the None-return above): a page's own title/breadcrumb line and
+        # its actual abstract paragraph both legitimately repeat the paper's name (e.g. "ERNIE
+        # 2.0"), tying their score, but the one-line title fragment carries no evidence at all —
+        # the multi-sentence abstract is what a classifier actually needs. Longer prose is a
+        # cheap, generic proxy for "substantive paragraph" vs. "boilerplate label" without any
+        # site-specific pattern-matching.
+        if score > best_score or (score == best_score and score > 0 and len(p) > len(paragraphs[best_idx])):
             best_idx, best_score = i, score
+    if best_score == 0:
+        return None
     lo, hi = max(0, best_idx - window_size), min(len(paragraphs), best_idx + window_size + 1)
     window = "\n\n".join(paragraphs[lo:hi])
     return window[:2500]  # hard cap regardless — a single huge paragraph must not blow past this
@@ -1186,6 +1221,8 @@ def _grounded_claim_pairs(report: str) -> list[tuple[str, str, str]]:
                 if not (segment_terms & source_terms):
                     continue  # term-overlap didn't pass for this file -- claim_grounding_problem's job
                 window = _select_relevant_window(segment_terms, content)
+                if window is None:
+                    continue  # no paragraph overlapped at all -- no principled window to hand a classifier
                 pairs.append((window, stripped_segment.strip(), display[0]))
                 break  # one passing source is enough evidence to classify this segment against
     return pairs
@@ -1418,6 +1455,18 @@ def cheap_grounding_problems(content: str, gc_cfg: dict, fetched_entries: list) 
 
 
 _S2_LOOKUP_CACHE: dict[tuple[str, str], str | None] = {}
+_S2_LAST_CALL_MONOTONIC: float | None = None
+# Semantic Scholar's unauthenticated tier throttles far more aggressively than its docs suggest
+# in practice -- confirmed live 2026-08-26: a real 4-citation academic report got 429
+# TooManyRequestsException on 3 of 4 back-to-back lookups (~50-100ms apart), each one silently
+# swallowed by the `except Exception: result = None` fail-open below. That's correct in
+# isolation (never manufacture a flag on infra failure) but meant academic_citation_existence_
+# problem had NO real statistical power on any report with more than one citation -- it was
+# being "live-exercised" plenty, just never actually checking anything past the first call. A
+# fixed floor between calls (not a retry/backoff loop -- this check must stay best-effort and
+# fast, not add real latency variance) is the minimum fix that lets more than one citation per
+# report get a genuine answer instead of a free pass.
+_S2_MIN_CALL_INTERVAL = 1.1
 
 
 def _semantic_scholar_lookup(author: str, year: str, timeout: float = 5) -> str | None:
@@ -1432,6 +1481,13 @@ def _semantic_scholar_lookup(author: str, year: str, timeout: float = 5) -> str 
     key = (author.lower(), year)
     if key in _S2_LOOKUP_CACHE:
         return _S2_LOOKUP_CACHE[key]
+
+    global _S2_LAST_CALL_MONOTONIC
+    if _S2_LAST_CALL_MONOTONIC is not None:
+        wait = _S2_MIN_CALL_INTERVAL - (time.monotonic() - _S2_LAST_CALL_MONOTONIC)
+        if wait > 0:
+            time.sleep(wait)
+    _S2_LAST_CALL_MONOTONIC = time.monotonic()
 
     result = None
     try:
