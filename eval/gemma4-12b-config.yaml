@@ -339,7 +339,15 @@ settings:
   # the keyboard can /stop). Not a hard kill: on expiry the current turn is cut short and the
   # completion check jumps straight to its final verdict, so labeling and report salvage still
   # run and the run ends with an explicit outcome. A qwen3.6 run once ran 64 minutes unbounded.
-  max_run_minutes: 45
+  # 18, not the 45 the live production config uses (2026-08-27 fix, session_status same day):
+  # this is an EVAL config, run under eval/evaluate.py's `--timeout` (default 1200s = 20min), a
+  # hard external SIGKILL with no graceful path. At 45 the engine's own graceful wrap-up (cut the
+  # turn, force a completion check, salvage what exists) was never scheduled to even consider
+  # firing until 2700s -- the harness killed the process 25 minutes earlier every time, with zero
+  # completion_check_attempts recorded and no salvage attempt. Confirmed corpus-wide: 17/68 eval
+  # runs (25%) hit exactly this, clean stderr, wall-clock landing at ~1199-1200s. 18min/1080s
+  # leaves ~2min margin for the graceful path to actually complete before the harness's kill.
+  max_run_minutes: 18
   # Wall-clock budget in minutes for EACH sub-agent dispatch (Searcher/Analyzer/Builder/
   # FindingsWriter/PeerReviewer) — independent of max_run_minutes above, deliberately: that's a
   # whole-RUN ceiling shared by every turn, so a single runaway sub-agent call racing against it

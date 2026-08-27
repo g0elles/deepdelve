@@ -6281,17 +6281,14 @@ def main():
 
     contextvars.copy_context().run(_tool_failure_streak_ablation_scenario)
 
-    # --- rename-match escalation predicate (2026-08-17, MAST FM-1.3/FM-2.5): the SECOND match
-    # against the SAME prior task escalates delegate_tasks' advisory note into a hard reject; the
-    # first match alone must not (see _rename_match_escalates' own docstring for why). ---
-    from engine.orchestrator import _rename_match_escalates
-
-    def _rename_escalation_scenario():
-        assert _rename_match_escalates(1) is False, "a single match is only ever an advisory"
-        assert _rename_match_escalates(2) is True, "a second match against the same target rejects"
-        assert _rename_match_escalates(3) is True
-
-    _rename_escalation_scenario()
+    # `_rename_match_escalates` (2026-08-17's second-match-only escalation predicate) was removed
+    # 2026-08-27: `_dispatch_tasks_batch` now skips dispatch on EVERY `_looks_like_renamed_task`
+    # match, not just the second+ against the same target (session_status 2026-08-27 -- corpus
+    # data showed most of the wasted-dispatch-slot cost was first-time matches, which the old
+    # escalate-only-on-repeat design let straight through). The remaining skip-vs-dispatch
+    # decision is a trivial `if renamed_from and not rename_reject_escalation_disabled` at the
+    # call site -- `_looks_like_renamed_task`'s own tests above already cover the matching logic
+    # that actually has real branching to verify.
 
     # --- force_whole_rebuild's OWN consecutive-counter must also survive an untracked_delegation
     # interruption for task_verification_flagged (2026-07-31 live incident, Ornith-1.0-9B re-test):

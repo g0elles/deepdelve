@@ -236,13 +236,17 @@ def _dedupe_findings(findings: list) -> list:
     definition of "duplicate" instead of drifting.
 
     Near-duplicate pass added 2026-08-17 (live incident, ablation smoke-test): a task-name-renamed
-    retry that gets through as the FIRST rename match (advisory-only, not yet a hard reject -- see
-    `_rename_match_escalates` in orchestrator.py, which only escalates on the SECOND match against
-    the same target) still produces a genuinely SEPARATE finding under a different task_name, whose
-    summary independently restates the same underlying research -- confirmed live: `final_report.md`
+    retry that got through as the FIRST rename match (advisory-only, not yet a hard reject at the
+    time) still produced a genuinely SEPARATE finding under a different task_name, whose summary
+    independently restates the same underlying research -- confirmed live: `final_report.md`
     carried two near-identical "Mexico City" rent sections citing the same sources with the same
-    figures, from two dispatches of what was really one facet. Exact-key dedup above can't catch
-    this (the two summaries are independently generated text, not byte-identical). Reuses
+    figures, from two dispatches of what was really one facet. `_dispatch_tasks_batch` in
+    orchestrator.py now skips dispatch on EVERY rename match, first included (2026-08-27), so this
+    specific live incident can no longer occur -- this pass remains as a backstop for whatever
+    still slips through (e.g. `disable_rename_reject_escalation` set, or a genuine
+    `_looks_like_renamed_task` false negative below its similarity threshold). Exact-key dedup
+    above can't catch a near-duplicate case like this (the two summaries are independently
+    generated text, not byte-identical). Reuses
     `_content_word_overlap` -- the SAME metric `_looks_like_renamed_task` already uses to detect
     this at dispatch time, applied here as a second, later-stage net for whichever renamed pair
     still slipped through (e.g. the first, still-advisory match). Threshold set higher than
