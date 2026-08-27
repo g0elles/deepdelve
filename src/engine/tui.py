@@ -1585,6 +1585,17 @@ class BasicTuiAgent(App):
                         raise
                     from tools import QuotaAbortException
                     if isinstance(e, QuotaAbortException):
+                        # 2026-08-27 fix: this used to `break` straight out of the
+                        # `while has_requests:` loop, which skips run_completion_check entirely --
+                        # the SAME mistake the malformed-tool-call branch below has an explicit
+                        # comment warning against. Confirmed live: a real run with 12 already-
+                        # fetched sources hit this abort and got "Report: NOT WRITTEN" with zero
+                        # salvage attempt, even though _salvage_narrated_report was structurally
+                        # available. Falling through instead (has_requests already False, no
+                        # break/continue) reaches the SAME quarantine-restore/salvage path the
+                        # malformed-tool-call give-up uses -- the loop-detection trigger itself is
+                        # unchanged (it still correctly aborts), this only stops throwing away
+                        # real research when it fires.
                         p_widget = state.get("processing_widget")
                         if p_widget:
                             p_widget.mark_error(str(e))
@@ -1593,53 +1604,58 @@ class BasicTuiAgent(App):
                             chat.mount(Static(f"[red]Task forcefully aborted: {str(e)}[/red]", classes="agent-bubble"))
                         chat.scroll_end(animate=False)
                         has_requests = False
-                        break
-                    # TUI/CLI parity fix (CLAUDE.md: any headless-only capability must be checked
-                    # against the TUI) -- run_cli already retries a malformed tool call twice with
-                    # a corrective nudge before degrading gracefully (added 2026-07-12 after an
-                    # uncaught crash there); this path previously had NO retry at all, just an
-                    # immediate error widget with no further progress on that turn.
-                    # classify_malformed_retry (engine/orchestrator.py) is the pure decision logic
-                    # shared with run_cli's identical retry pattern, extracted 2026-07-14 (ROADMAP
-                    # "B4"). NOTE: unlike run_cli, this call site deliberately does NOT act on
-                    # result.reraise -- run_agent has never re-raised on an unrecognized exception
-                    # here (it falls through to the same error-widget path as a recognized-but-
-                    # exhausted one, with no force_final_verdict either), and this refactor
-                    # preserves that exact pre-existing behavior rather than silently changing it.
-                    from engine.orchestrator import classify_malformed_retry
-                    result = classify_malformed_retry(e, malformed_retries, current_input)
-                    malformed_retries = result.new_malformed_retries
-                    if result.should_retry:
-                        p_widget = state.get("processing_widget")
-                        if p_widget:
-                            p_widget.stop()
-                            state["processing_widget"] = None
-                        chat.mount(Static(
-                            f"[yellow]Model emitted a malformed tool call — retrying the turn "
-                            f"({malformed_retries}/2).[/yellow]", classes="agent-bubble"))
-                        chat.scroll_end(animate=False)
-                        current_input = result.new_current_input
-                        has_requests = True
-                        continue
-
-                    p_widget = state.get("processing_widget")
-                    if p_widget:
-                        p_widget.mark_error(str(e))
-                        state["processing_widget"] = None
-                    else:
-                        chat.mount(Static(f"[red]Error: {str(e)}[/red]", classes="agent-bubble"))
-                    chat.scroll_end(animate=False)
-
-                    if result.force_final_verdict:
-                        # Retry budget exhausted for this SPECIFIC, already-recognized failure
-                        # class -- force the completion check straight to its final-verdict path
-                        # (quarantine-restore/salvage) instead of leaving the turn as a bare error
-                        # widget with no further progress, same degradation run_cli now applies.
-                        # No `continue`: has_requests is already False, so falling through
-                        # naturally into the rest of this iteration is what actually reaches the
-                        # completion-check branch below.
                         if run_state is not None:
                             run_state.attempt = 10**6
+                    else:
+                        # TUI/CLI parity fix (CLAUDE.md: any headless-only capability must be checked
+                        # against the TUI) -- run_cli already retries a malformed tool call twice with
+                        # a corrective nudge before degrading gracefully (added 2026-07-12 after an
+                        # uncaught crash there); this path previously had NO retry at all, just an
+                        # immediate error widget with no further progress on that turn.
+                        # classify_malformed_retry (engine/orchestrator.py) is the pure decision logic
+                        # shared with run_cli's identical retry pattern, extracted 2026-07-14 (ROADMAP
+                        # "B4"). NOTE: unlike run_cli, this call site deliberately does NOT act on
+                        # result.reraise -- run_agent has never re-raised on an unrecognized exception
+                        # here (it falls through to the same error-widget path as a recognized-but-
+                        # exhausted one, with no force_final_verdict either), and this refactor
+                        # preserves that exact pre-existing behavior rather than silently changing it.
+                        # Guarded under `else` (2026-08-27): QuotaAbortException is handled entirely
+                        # by the branch above and must not also fall into this malformed-tool-call-
+                        # specific classifier, which doesn't know how to interpret it.
+                        from engine.orchestrator import classify_malformed_retry
+                        result = classify_malformed_retry(e, malformed_retries, current_input)
+                        malformed_retries = result.new_malformed_retries
+                        if result.should_retry:
+                            p_widget = state.get("processing_widget")
+                            if p_widget:
+                                p_widget.stop()
+                                state["processing_widget"] = None
+                            chat.mount(Static(
+                                f"[yellow]Model emitted a malformed tool call — retrying the turn "
+                                f"({malformed_retries}/2).[/yellow]", classes="agent-bubble"))
+                            chat.scroll_end(animate=False)
+                            current_input = result.new_current_input
+                            has_requests = True
+                            continue
+
+                        p_widget = state.get("processing_widget")
+                        if p_widget:
+                            p_widget.mark_error(str(e))
+                            state["processing_widget"] = None
+                        else:
+                            chat.mount(Static(f"[red]Error: {str(e)}[/red]", classes="agent-bubble"))
+                        chat.scroll_end(animate=False)
+
+                        if result.force_final_verdict:
+                            # Retry budget exhausted for this SPECIFIC, already-recognized failure
+                            # class -- force the completion check straight to its final-verdict path
+                            # (quarantine-restore/salvage) instead of leaving the turn as a bare error
+                            # widget with no further progress, same degradation run_cli now applies.
+                            # No `continue`: has_requests is already False, so falling through
+                            # naturally into the rest of this iteration is what actually reaches the
+                            # completion-check branch below.
+                            if run_state is not None:
+                                run_state.attempt = 10**6
 
                 if user_input_requests:
                     has_requests = True
@@ -2675,48 +2691,64 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
             except BaseException as e:
                 from tools import QuotaAbortException
                 if isinstance(e, QuotaAbortException) or type(e).__name__ == "QuotaAbortException":
+                    # 2026-08-27 fix: this used to `break` straight out of the `while has_requests:`
+                    # loop, which skips run_completion_check entirely -- the SAME mistake the
+                    # malformed-tool-call branch below has an explicit comment warning against.
+                    # Confirmed live: a real run with 12 already-fetched sources hit this abort and
+                    # got "Report: NOT WRITTEN" with zero salvage attempt, even though
+                    # _salvage_narrated_report was structurally available. Falling through instead
+                    # (has_requests already False, no break/continue) reaches the SAME
+                    # quarantine-restore/salvage path the malformed-tool-call give-up uses -- the
+                    # loop-detection trigger itself is unchanged (it still correctly aborts), this
+                    # only stops throwing away real research when it fires.
                     sys.stdout.write(f"\n\033[91m[System] Task forcefully aborted: {str(e)}\033[0m\n")
-                    break
-                # classify_malformed_retry (engine/orchestrator.py) is the pure decision logic
-                # shared with run_agent's identical retry pattern, extracted 2026-07-14 (ROADMAP
-                # "B4") after this exact logic was once found missing from run_agent ("added later
-                # for parity"). This call site keeps its own stdout notification and run_state
-                # mutation; the helper only classifies and builds the retry current_input.
-                from engine.orchestrator import classify_malformed_retry
-                result = classify_malformed_retry(e, malformed_retries, current_input)
-                malformed_retries = result.new_malformed_retries
-                if result.should_retry:
-                    sys.stdout.write(f"\n\033[93m[System] Model emitted a malformed tool call — retrying the turn ({malformed_retries}/2).\033[0m\n")
-                    current_input = result.new_current_input
-                    has_requests = True
-                    continue
-                if result.reraise:
-                    # A genuinely unrecognized exception (not the malformed-tool-call class at
-                    # all) — still a real crash, not something this loop knows how to degrade
-                    # gracefully.
-                    raise
-                # Retry budget exhausted for this SPECIFIC, already-recognized failure class
-                # (malformed_tool_call_nudge only returns non-None for "error parsing tool
-                # call") -- degrade to the final-verdict path instead of crashing the whole run.
-                # Confirmed live 2026-07-12: 3 consecutive malformed tool calls (a huge
-                # write_workspace_file argument got truncated mid-JSON) exceeded the 2-retry
-                # budget and an uncaught 500 killed a run that had already gathered 18 real
-                # sources and 5 rejected report attempts on disk -- the SAME failure class this
-                # nudge was originally built for (see malformed_tool_call_nudge's docstring: "an
-                # otherwise-successful 16-minute run" lost to one transient slip), just recurring
-                # enough times in a row to blow past the existing safety net. Deliberately does
-                # NOT `continue` here (that would skip straight past the `while has_requests:`
-                # check with has_requests already False, exiting the loop WITHOUT ever calling
-                # run_completion_check — meaning the "finishing with whatever exists" message
-                # below would be a lie). Falling through naturally into the rest of this same
-                # iteration's body is what actually reaches the completion-check branch.
-                sys.stdout.write(
-                    f"\n\033[91m[System] Model kept emitting malformed tool calls after "
-                    f"{malformed_retries} retries — giving up on this turn and finishing with "
-                    f"whatever exists (quarantine-restore/salvage still applies).\033[0m\n"
-                )
-                if run_state is not None:
-                    run_state.attempt = 10**6
+                    has_requests = False
+                    if run_state is not None:
+                        run_state.attempt = 10**6
+                else:
+                    # classify_malformed_retry (engine/orchestrator.py) is the pure decision logic
+                    # shared with run_agent's identical retry pattern, extracted 2026-07-14 (ROADMAP
+                    # "B4") after this exact logic was once found missing from run_agent ("added later
+                    # for parity"). This call site keeps its own stdout notification and run_state
+                    # mutation; the helper only classifies and builds the retry current_input.
+                    # Guarded under `else` (2026-08-27): QuotaAbortException is handled entirely by
+                    # the branch above and must not also fall into this malformed-tool-call-specific
+                    # classifier, which doesn't know how to interpret it.
+                    from engine.orchestrator import classify_malformed_retry
+                    result = classify_malformed_retry(e, malformed_retries, current_input)
+                    malformed_retries = result.new_malformed_retries
+                    if result.should_retry:
+                        sys.stdout.write(f"\n\033[93m[System] Model emitted a malformed tool call — retrying the turn ({malformed_retries}/2).\033[0m\n")
+                        current_input = result.new_current_input
+                        has_requests = True
+                        continue
+                    if result.reraise:
+                        # A genuinely unrecognized exception (not the malformed-tool-call class at
+                        # all) — still a real crash, not something this loop knows how to degrade
+                        # gracefully.
+                        raise
+                    # Retry budget exhausted for this SPECIFIC, already-recognized failure class
+                    # (malformed_tool_call_nudge only returns non-None for "error parsing tool
+                    # call") -- degrade to the final-verdict path instead of crashing the whole run.
+                    # Confirmed live 2026-07-12: 3 consecutive malformed tool calls (a huge
+                    # write_workspace_file argument got truncated mid-JSON) exceeded the 2-retry
+                    # budget and an uncaught 500 killed a run that had already gathered 18 real
+                    # sources and 5 rejected report attempts on disk -- the SAME failure class this
+                    # nudge was originally built for (see malformed_tool_call_nudge's docstring: "an
+                    # otherwise-successful 16-minute run" lost to one transient slip), just recurring
+                    # enough times in a row to blow past the existing safety net. Deliberately does
+                    # NOT `continue` here (that would skip straight past the `while has_requests:`
+                    # check with has_requests already False, exiting the loop WITHOUT ever calling
+                    # run_completion_check — meaning the "finishing with whatever exists" message
+                    # below would be a lie). Falling through naturally into the rest of this same
+                    # iteration's body is what actually reaches the completion-check branch.
+                    sys.stdout.write(
+                        f"\n\033[91m[System] Model kept emitting malformed tool calls after "
+                        f"{malformed_retries} retries — giving up on this turn and finishing with "
+                        f"whatever exists (quarantine-restore/salvage still applies).\033[0m\n"
+                    )
+                    if run_state is not None:
+                        run_state.attempt = 10**6
 
             if context_budget and run_stream_chars > context_budget:
                 if not budget_nudged:
