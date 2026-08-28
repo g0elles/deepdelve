@@ -1307,6 +1307,21 @@ def main():
     contextvars.copy_context().run(_scope_scenario)
     assert _scope_warning("anything") == ""  # outside any task -> silent
 
+    # --- auto-fetch scope gate (2026-08-27 live incident: a Colombia-scoped "background" task's
+    # web_search auto-fetched praoto.baby ("Yandex Tante Top Trending... Arab Culture Insights")
+    # and hotplayer.ru (a Russian music search page) -- neither on-scope, ddgs's own top ranking
+    # was simply wrong. _result_matches_scope is the pre-fetch gate this incident motivated. ---
+    from tools.web import _result_matches_scope
+
+    on_scope_result = {"title": "Colombia digital health regulation", "snippet": "Resolucion 1888 de 2025 sets EMR requirements for Colombian hospitals."}
+    off_scope_result = {"title": "Yandex Tante Top Trending Global 2025", "snippet": "Gelora Sma indonesia 2025 Membara Di Meja Kerja Arab Culture Insights"}
+    assert _result_matches_scope(on_scope_result, {"Colombia"}) is True
+    assert _result_matches_scope(off_scope_result, {"Colombia"}) is False
+    assert _result_matches_scope(off_scope_result, set()) is True, (
+        "no scope entities extracted for this task -- nothing to check against, must not flag")
+    assert _result_matches_scope({}, {"Colombia"}) is False, (
+        "a result with no title/snippet at all has nothing supporting relevance either")
+
     # --- pre-run search health probe (patched ddgs, no network) ---
     import ddgs as _ddgs
     from tools.web import probe_search_health

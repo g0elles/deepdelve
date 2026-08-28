@@ -656,6 +656,30 @@ def probe_search_health(retry_delay: float = 3.0) -> str | None:
     return last
 
 
+def _result_matches_scope(result: dict, entities: set) -> bool:
+    """True if a search result's own title+snippet plausibly matches the delegated task's
+    required scope entities (see scope_entities_ctx's header comment), or if there's nothing to
+    check against (no entities extracted -- e.g. an entity-less task). Same "OR across entities"
+    check as _scope_warning, applied to the RESULT's own text instead of the query text -- used
+    ONLY to gate auto-fetch (see its call site's own comment for why a skip, not a warning, is
+    the right shape there: nobody reads a warning at auto-fetch time, so a wasted fetch on an
+    off-scope result silently proceeds unless something actually stops it).
+
+    Found live 2026-08-27 (Colombia B2B smoke test, session_status same day): a "background" task
+    scoped to Colombia auto-fetched praoto.baby ("Yandex Tante Top Trending... Arab Culture
+    Insights") and hotplayer.ru (a Russian music-search page, URL literally
+    `?s=afro+house+mix+2025`) -- neither has anything to do with Colombia or B2B regulation. The
+    query text itself may have been fine; ddgs (a free, no-API-key metasearch scraper -- see
+    web_search's own provider-selection comment) is documented in this project as already
+    imperfect (throttling, engine rotation to route around failures), and nothing previously
+    checked whether its TOP-RANKED result was even topically plausible before spending a real
+    fetch_url_to_workspace quota unit and a findings.md entry on it."""
+    if not entities:
+        return True
+    text = f"{result.get('title', '')} {result.get('snippet', '')}".lower()
+    return any(e.lower() in text for e in entities)
+
+
 def _scope_warning(query: str) -> str:
     """Soft warning when a search query drops the delegated task's own scope entity (e.g. a
     Colombia-scoped task searching "predictive maintenance offshore wind turbine" — confirmed
@@ -1098,10 +1122,29 @@ async def web_search(
     if search_mode == "heavy":
         auto_fetch_top = max(auto_fetch_top, 3)
     auto_fetch_note = ""
-    from utils.run_state import task_fetched_urls_ctx
+    from utils.run_state import task_fetched_urls_ctx, scope_entities_ctx
     _fetch_cap = app_config.get_setting("specialist_fetch_cap", 5)
-    for i, r in enumerate(results[:max(auto_fetch_top, 0)]):
+    # Scope-relevance gate on auto-fetch candidates (2026-08-27, see _result_matches_scope's own
+    # docstring for the live incident): iterate the FULL ranked list, not just a fixed positional
+    # slice, so an off-scope top result is skipped (not fetched, doesn't count toward
+    # auto_fetch_top) rather than blindly consuming an auto-fetch slot -- the next genuinely
+    # on-scope result further down the ranking gets the slot instead. Skip, not block: the
+    # skipped result still appears in the returned snippet list, so the model can still fetch it
+    # manually if it disagrees with the filter -- nothing is silently lost, only the FREE,
+    # automatic full-text fetch is withheld from an implausible pick.
+    _scope_entities = scope_entities_ctx.get()
+    _auto_fetched_count = 0
+    for r in results:
+        if _auto_fetched_count >= max(auto_fetch_top, 0):
+            break
         if not r["url"]:
+            continue
+        if not _result_matches_scope(r, _scope_entities):
+            r["auto_fetch_status"] = (
+                "Auto-fetch skipped — this result's title/snippet doesn't mention the task's "
+                "required scope entity; fetch it manually with fetch_url_to_workspace if it's "
+                "actually relevant."
+            )
             continue
         # Per-task fetch cap (see _specialist_fetch_over_cap's own docstring) -- same reject point
         # as fetch_url_to_workspace's own direct-call enforcement, applied here to web_search's
@@ -1132,6 +1175,7 @@ async def web_search(
             from tools.core import refund_quota
             refund_quota("fetch_url_to_workspace")
             r["auto_fetch_status"] = f"Auto-fetch failed ({e}) — snippet only for this result."
+        _auto_fetched_count += 1
 
     result_texts = []
     for r in results:
