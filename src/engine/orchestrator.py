@@ -334,6 +334,51 @@ def _content_word_overlap(a: str, b: str) -> float:
     return len(wa & wb) / len(wa | wb)
 
 
+# Deliberately low (2026-08-27, session_status same day -- live incident, Colombia B2B smoke
+# test): a multi-URL dispatch turn fetched 4 URLs in one go and wrote ONE synthesis about the
+# 4th (awnewscenter's hospital-habilitation article); itsitio.com's real content (software-export
+# market stats) and medesk.net's (an actual competing EMR vendor) never appeared anywhere -- both
+# got the SAME shared summary attached via add_finding, silently misattributed. A wrongful
+# discard of real citable content (false positive here) costs more than a residual
+# false-attribution risk the grounding checks already partly catch downstream (2026-08-17's
+# _verification_warning_targets_url fix) -- err toward NOT flagging.
+_SYNTHESIS_ATTRIBUTION_MIN_OVERLAP = 0.15
+
+
+def _synthesis_reflects_url_content(finding_summary: str, page_content: str) -> bool:
+    """True if `page_content` (one fetched source's own raw text) plausibly supports
+    `finding_summary` (the SAME shared synthesis text a multi-URL dispatch turn attaches to
+    EVERY URL it fetched via one add_finding call per URL -- see _dispatch_single_task's own
+    add_finding loop, and _collapse_multi_url_task_findings' docstring for the general shape).
+    Containment (what fraction of the summary's own content words appear in the page), not
+    Jaccard: page_content is typically orders of magnitude longer than a ~1500-char summary, and
+    a size-symmetric Jaccard would unfairly penalize every real match just for the length gap.
+    Only meaningful when a dispatch fetched >1 URL in one turn -- a single-URL dispatch's summary
+    is trivially "about" the one URL it came from, nothing to disambiguate."""
+    def words(t: str) -> set:
+        return {w.lower().strip(",()") for w in re.findall(r"[A-Za-z][A-Za-z\-']+", t or "")} - _TASK_SIMILARITY_STOPWORDS
+    summary_words = words(finding_summary)
+    if not summary_words:
+        return True  # nothing to check against -- don't invent a problem
+    return len(summary_words & words(page_content)) / len(summary_words) >= _SYNTHESIS_ATTRIBUTION_MIN_OVERLAP
+
+
+def _select_unreflected_urls(final_text: str, new_urls: list, page_contents: dict) -> list:
+    """Pure: given a dispatch's current synthesis (`final_text`) and the URLs it has fetched so
+    far this turn (`new_urls`, task_fetched_urls_ctx entries) with their raw content already
+    looked up (`page_contents`, keyed by filename -- I/O kept at the call site so this stays
+    testable), returns the URLs whose content the synthesis does not clearly reflect (see
+    _synthesis_reflects_url_content). Empty when len(new_urls) <= 1 -- nothing to disambiguate
+    for a single-URL dispatch. Extracted the same way _should_nudge_zero_synthesis was, so the
+    in-turn nudge decision at the call site stays unit-testable without driving a real stream."""
+    if len(new_urls) <= 1:
+        return []
+    return [
+        u["url"] for u in new_urls
+        if not _synthesis_reflects_url_content(final_text, page_contents.get(u["filename"], ""))
+    ]
+
+
 def _looks_like_renamed_task(task_name: str, instructions: str, prior_tasks: list) -> Optional[str]:
     """Heuristic-only (similarity, not a deterministic error) detector for the Planner renaming
     the same research angle across retries instead of redispatching under the same task_name
@@ -1128,6 +1173,7 @@ async def _dispatch_single_task(
                 # the per-iteration nudges below, for the full incident this exists for.
                 any_tool_call = False
                 synthesis_nudged = False
+                attribution_nudged = False
                 # Fresh per-DISPATCH deadline (not per internal retry-turn below, and not
                 # shared with any other concurrent/sequential dispatch) -- covers this whole
                 # sub-agent call's total wall-clock budget, same "one deadline for the whole
@@ -1291,6 +1337,41 @@ async def _dispatch_single_task(
                         new_inputs.append(Message("user", [{"type": "text", "text": SEARCHER_ANALYZER_SYNTHESIS_NUDGE}]))
                         current_input = new_inputs
 
+                    # Multi-URL attribution nudge (2026-08-27, session_status same day): a
+                    # dispatch that fetches several URLs in one turn but only synthesizes about a
+                    # subset leaves the rest silently misattributed downstream -- see
+                    # _synthesis_reflects_url_content's own docstring for the live incident this
+                    # was found from. One bounded extra turn asking specifically about the
+                    # unreflected URLs, same shape/precedent as the zero-synthesis nudge just
+                    # above -- reuses this project's existing in-turn nudge pattern instead of a
+                    # new dispatch, so it doesn't add to per-run dispatch-count/wall-clock
+                    # pressure (see today's separate zero-completion-check-timeout finding for why
+                    # that specifically matters right now). Gated on `not has_requests` so it never
+                    # fires the same iteration the zero-synthesis nudge (or anything else) already
+                    # claimed a turn -- at most one attribution nudge per dispatch
+                    # (attribution_nudged), same bounded-once precedent as synthesis_nudged.
+                    if (not has_requests and not attribution_nudged and final_text.strip()
+                            and agent_id not in _NON_RESEARCH_DISPATCH_ROLES):
+                        current_urls = task_fetched_urls_ctx.get() or []
+                        if len(current_urls) > 1:
+                            from tools.fs import get_workspace_file_content
+                            page_contents = {
+                                u["filename"]: get_workspace_file_content(u["filename"]) or ""
+                                for u in current_urls
+                            }
+                            unreflected = _select_unreflected_urls(final_text, current_urls, page_contents)
+                            if unreflected:
+                                attribution_nudged = True
+                                has_requests = True
+                                new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
+                                new_inputs.append(Message("user", [{"type": "text", "text": (
+                                    "SYSTEM: your synthesis above doesn't clearly cover what these "
+                                    f"specific sources say: {', '.join(unreflected)}. Add 1-2 "
+                                    "sentences per source stating what each one specifically says "
+                                    "(or note if it had nothing useful) before finishing."
+                                )}]))
+                                current_input = new_inputs
+
             if subagent_callback:
                 await subagent_callback(None, is_subagent=True, agent_name=agent_name, is_done=True)
 
@@ -1452,8 +1533,32 @@ async def _dispatch_single_task(
             run_state = run_state_ctx.get()
             if run_state is not None and agent_id not in _NON_RESEARCH_DISPATCH_ROLES:
                 if new_urls:
+                    # Attribution safety net (2026-08-27): the in-turn nudge above (attribution_
+                    # nudged) gives the model one bounded chance to cover every co-fetched URL
+                    # explicitly, but it can decline or run out of turns -- this is the backstop
+                    # for whatever's still unreflected in the FINAL finding_summary once the turn
+                    # is over. Only checked when >1 URL was fetched (a single-URL dispatch's
+                    # summary is trivially about that one URL, nothing to disambiguate).
+                    unreflected_urls = set()
+                    if len(new_urls) > 1:
+                        from tools.fs import get_workspace_file_content
+                        unreflected_urls = {
+                            u["url"] for u in new_urls
+                            if not _synthesis_reflects_url_content(
+                                finding_summary, get_workspace_file_content(u["filename"]) or "")
+                        }
                     for u in new_urls:
-                        run_state.add_finding(u["url"], finding_summary, task_name=task_name, depth=this_depth,
+                        per_url_summary = finding_summary
+                        if u["url"] in unreflected_urls:
+                            per_url_summary = (
+                                f"{finding_summary}\n\n[SYSTEM ATTRIBUTION WARNING: this source "
+                                f"was fetched alongside others in one dispatch turn, but the "
+                                f"synthesis above does not clearly reflect this specific source's "
+                                f"own content -- do not treat this URL as the source for the "
+                                f"claims above; see sources/{u['filename']} for what this source "
+                                f"actually says.]"
+                            )
+                        run_state.add_finding(u["url"], per_url_summary, task_name=task_name, depth=this_depth,
                                                follow_up_directions=follow_up_directions, agent_id=agent_id,
                                                top_level_task_name=top_level_task_name)
                 elif reference_urls:

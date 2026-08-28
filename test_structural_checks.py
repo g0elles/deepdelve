@@ -123,6 +123,50 @@ def main():
                             "Provide an average figure and cite a real source URL.")}],
     ) is None, "cross-city template overlap must not be treated as a rename even via the word-overlap trigger"
 
+    # --- multi-URL synthesis attribution (2026-08-27 live incident, Colombia B2B smoke test): a
+    # dispatch that fetches several URLs in one turn but writes ONE shared synthesis about only
+    # SOME of them must not let the others silently inherit that unrelated text. ---
+    from engine.orchestrator import _synthesis_reflects_url_content, _select_unreflected_urls
+
+    real_synthesis = (
+        "Hospitals and IPS must have an electronic medical record system in place by 31 December "
+        "2026 under Resolucion 1888 de 2025, per the AWNewsCenter habilitation article."
+    )
+    matching_page = (
+        "Habilitacion hospitalaria en Colombia: hospitals and IPS must comply with the new "
+        "electronic medical record requirement by 31 December 2026, Resolucion 1888 de 2025 sets "
+        "the technical requirements."
+    )
+    unrelated_page = (
+        "Estado actual de las exportaciones de software colombiano: the number of insurtech "
+        "startups in the region grew 5% in 2024, reaching 502 companies, with organic growth of "
+        "+15% and 70 new insurtech firms created."
+    )
+    assert _synthesis_reflects_url_content(real_synthesis, matching_page) is True, (
+        "a page whose own content substantially overlaps the shared synthesis must be treated as "
+        "reflected, not flagged")
+    assert _synthesis_reflects_url_content(real_synthesis, unrelated_page) is False, (
+        "a co-fetched page about a completely different topic (software exports vs. EMR "
+        "compliance) must be flagged as NOT reflected by the shared synthesis")
+    assert _synthesis_reflects_url_content(real_synthesis, "") is False, (
+        "empty page content cannot support the synthesis")
+    assert _synthesis_reflects_url_content("", matching_page) is True, (
+        "an empty summary has nothing to check against -- don't invent a problem"
+    )
+
+    multi_urls = [
+        {"url": "https://awnewscenter.example.co/habilitation", "filename": "aw.md"},
+        {"url": "https://itsitio.example.co/exports", "filename": "itsitio.md"},
+    ]
+    unreflected = _select_unreflected_urls(
+        real_synthesis, multi_urls,
+        {"aw.md": matching_page, "itsitio.md": unrelated_page},
+    )
+    assert unreflected == ["https://itsitio.example.co/exports"], (
+        "only the co-fetched URL whose real content the synthesis doesn't cover should be flagged")
+    assert _select_unreflected_urls(real_synthesis, multi_urls[:1], {"aw.md": matching_page}) == [], (
+        "a single-URL dispatch has nothing to disambiguate -- must never flag")
+
     # --- specialist per-task delegation cap (2026-07-26 live case: one WebSearcher task
     # delegated 6+ Analyzer sub-tasks for a trivial single-fact query, burning most of the run's
     # global delegate_tasks budget) ---
@@ -4083,6 +4127,26 @@ def main():
             "rather than risk sweeping the correct reference URL into the wrong bucket")
 
     _is_citable_finding_url_scoped_scenario()
+
+    # --- [SYSTEM ATTRIBUTION WARNING] exclusion (2026-08-27): third case of the same bracketed-
+    # marker convention -- always wholesale-excludes, since the marker is only ever attached to
+    # the one URL it's actually about (unlike VERIFICATION warnings, which can name a DIFFERENT
+    # co-cited URL and so need scoping). ---
+    def _is_citable_finding_attribution_warning_scenario():
+        from engine.completion import _is_citable_finding
+
+        flagged_summary = (
+            "Consolidated findings about hospital habilitation requirements.\n\n"
+            "[SYSTEM ATTRIBUTION WARNING: this source was fetched alongside others in one "
+            "dispatch turn, but the synthesis above does not clearly reflect this specific "
+            "source's own content -- do not treat this URL as the source for the claims above; "
+            "see sources/itsitio_com_example.md for what this source actually says.]"
+        )
+        assert _is_citable_finding({"source_url": "https://itsitio.example.co/exports", "summary": flagged_summary}) is False
+        clean_summary = "Consolidated findings about hospital habilitation requirements."
+        assert _is_citable_finding({"source_url": "https://awnewscenter.example.co/habilitation", "summary": clean_summary}) is True
+
+    _is_citable_finding_attribution_warning_scenario()
 
     # --- warning-marker stripped from a still-citable finding's rendered block (2026-08-17 live
     # incident, run6): _is_citable_finding's URL-scoping fix (same date) means a finding can now

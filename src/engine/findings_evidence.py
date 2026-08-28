@@ -100,6 +100,16 @@ def _is_citable_finding(f: dict) -> bool:
         return False
     if "[SYSTEM VERIFICATION WARNING" in summary and _verification_warning_targets_url(summary, src):
         return False
+    # Third case of the same bracketed-SYSTEM-marker convention as the two above (2026-08-27):
+    # orchestrator.py's add_finding loop attaches this marker, always URL-scoped by construction
+    # (only added to the specific URL _synthesis_reflects_url_content flagged), when a multi-URL
+    # dispatch's shared synthesis doesn't clearly cover this finding's own source -- see that
+    # function's docstring for the live incident (itsitio.com/medesk.net silently inheriting an
+    # unrelated co-fetched URL's summary). Always wholesale-excludes (no per-URL scoping needed
+    # here the way VERIFICATION warnings require) since the marker is only ever attached to the
+    # one URL it's about.
+    if "[SYSTEM ATTRIBUTION WARNING" in summary:
+        return False
     return True
 
 
