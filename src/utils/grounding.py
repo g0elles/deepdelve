@@ -1331,6 +1331,50 @@ def topical_relevance_problem(report: str) -> str | None:
     return f"topical_mismatch:{', '.join(irrelevant[:3])}"
 
 
+def excluded_topic_semantic_hit(excluded_topics: set, heading_text: str) -> str | None:
+    """Cross-lingual backstop for `check_excluded_topic` (completion_checks.py), which otherwise
+    only catches an excluded topic by literal substring match against the query's own wording.
+    Confirmed gap (2026-08-29 audit): this project's own benchmark explicitly instructs bilingual
+    search ("search in Spanish as well as English"), so a heading that covers an excluded topic
+    under its translated name (e.g. "fintech" excluded, but a section titled in Spanish) or a
+    same-language paraphrase ("digital payment solutions" for "fintech") passes the substring
+    check untouched -- both the dispatch-time filter and this report-level backstop derive from
+    the identical keyword set, so neither independently catches a paraphrase/translation. Reuses
+    BAAI/bge-reranker-v2-m3 (already loaded for topical_relevance_problem above) rather than the
+    English-only NLI model, specifically because bge-m3 is trained multilingual/cross-lingual --
+    an (English exclusion phrase, Spanish heading) pair still scores on real semantic relevance,
+    not surface token overlap. Fails open (returns None) if the model isn't available, same as
+    every other check in this module.
+
+    The bare topic word alone (e.g. just "fintech") as the query scores far too low to threshold
+    on -- live-measured 2026-08-29: even a heading containing the literal keyword scored ~0.001,
+    indistinguishable from noise, because this checkpoint (like topical_relevance_problem's own
+    usage above) is calibrated for a full claim SENTENCE against a passage, not a bare word
+    against a short heading. Wrapping the topic in a minimal natural-language frame ("This section
+    is about X.") measurably improves separation without hand-crafting per-topic synonyms (which
+    isn't possible for an arbitrary extracted phrase). Even so, absolute scores stay tiny (~1e-3
+    for a genuine paraphrase/translation match vs ~1e-5 for an unrelated heading, from a small
+    live-measured sample) -- nowhere near a 0-1 "confidence" reading, so the default threshold
+    (`settings.grounding_check.excluded_topic_semantic_threshold`, default 0.001) is set from that
+    measured separation, not picked to read as a confidence level. This is a small-sample
+    calibration, not a validated benchmark -- revisit the threshold once this check has fired on
+    real report data."""
+    if not excluded_topics or not heading_text:
+        return None
+    model = _get_topical_relevance_model()
+    if model is None:
+        return None
+    threshold = config.get_setting("grounding_check", {}).get(
+        "excluded_topic_semantic_threshold", 0.001)
+    topics = list(excluded_topics)
+    queries = [f"This section is about {topic}." for topic in topics]
+    scores = model.predict(list(zip(queries, [heading_text] * len(topics))))
+    for topic, score in zip(topics, scores):
+        if score >= threshold:
+            return topic
+    return None
+
+
 def fully_ungrounded(content: str) -> str | None:
     """Wholesale-fabrication gate for findings.md (Pass 1): 'no_urls' if it cites nothing at all,
     'all_cited_urls_unverified' if not a single cited URL matches anything actually fetched this

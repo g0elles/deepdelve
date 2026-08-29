@@ -22,6 +22,7 @@ from utils.run_state import get_fetched_urls
 from utils.grounding import (
     fully_ungrounded, partially_ungrounded, split_into_heading_sections,
     find_cross_source_contradictions, extract_cited_urls, parse_academic_references,
+    excluded_topic_semantic_hit,
 )
 from engine.orchestrator import _extract_excluded_topics, _content_word_overlap
 
@@ -1633,7 +1634,14 @@ def check_excluded_topic(ctx: Ctx) -> Optional[Verdict]:
     section-scoping principle as check_uncited_claims's h1-h3 split
     (`utils.grounding.split_into_heading_sections`). Reuses the exact same
     `_extract_excluded_topics` parser `delegate_tasks` already uses, so a phrase like "excluding
-    X" is detected identically at both dispatch time and report-write time."""
+    X" is detected identically at both dispatch time and report-write time.
+
+    Substring match alone shares one blind spot with the dispatch-time filter: a heading covering
+    the excluded topic under a translation or same-language paraphrase of the query's own wording
+    passes both untouched (2026-08-29 audit finding — this project's own benchmark instructs
+    bilingual search, so a Spanish-language heading for an English-named exclusion is a live risk,
+    not a hypothetical). `excluded_topic_semantic_hit` (utils.grounding) is a cross-lingual
+    cross-encoder backstop layered after the cheap substring check, not a replacement for it."""
     query = ctx.run_state.data.get("query", "") if ctx.run_state else ""
     excluded_topics = _extract_excluded_topics(query)
     if not excluded_topics or not ctx.content:
@@ -1644,6 +1652,8 @@ def check_excluded_topic(ctx: Ctx) -> Optional[Verdict]:
             continue
         heading_text = heading.lower()
         hit = next((topic for topic in excluded_topics if topic in heading_text), None)
+        if not hit:
+            hit = excluded_topic_semantic_hit(excluded_topics, heading_text)
         if hit:
             return Verdict(
                 "excluded_topic_present",

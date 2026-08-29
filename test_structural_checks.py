@@ -60,6 +60,17 @@ def main():
         "Research the top 5 heuristic algorithms used for retail sales forecasting, try again.",
         prior,
     ) is None
+    # But same task_name AND byte-identical instructions is NOT a legitimate continuation -- it's
+    # the same task dispatched twice verbatim (2026-08-29 live incident: Hermes-4-14B emitted two
+    # tool_calls in the SAME turn, each calling delegate_tasks with 100%-identical task_name and
+    # instructions; the old unconditional same-name carve-out let this straight through).
+    assert _looks_like_renamed_task(
+        "background_heuristic_algorithms",
+        "Research the top 5 heuristic algorithms used for retail sales forecasting.",
+        prior,
+    ) == "background_heuristic_algorithms", (
+        "a same-name dispatch with essentially identical instructions must be caught as a "
+        "duplicate, not waved through as a legitimate continuation")
 
     # Entity-mismatch override (2026-08-16 live incident): two genuinely independent facets from a
     # multi-city comparison query, dispatched under DIFFERENT task_names from the start (never a
@@ -87,6 +98,27 @@ def main():
          "that supports each claim."),
         city_prior,
     ) == "rent_lisbon_central_one_bedroom"
+
+    # Diacritic-folded entity extraction (2026-08-29 audit finding): the ASCII-only entity regex
+    # used to silently DROP an accented proper noun entirely ("México" failed the capture,
+    # "Mexico" didn't), which artificially lowered the entity Jaccard for a same-subject rename
+    # that switches between the accented and unaccented spelling -- tripping the entity-mismatch
+    # override into wrongly treating it as two different subjects.
+    mexico_accented_prior = [{"task_name": "rent_mexico_city_central_one_bedroom",
+                               "instructions": ("Find the typical monthly rent cost for a "
+                                                 "one-bedroom apartment in a central neighborhood "
+                                                 "of México City (e.g., Polanco, Condesa, Roma). "
+                                                 "Include average price range and provide a real "
+                                                 "source URL that supports each claim.")}]
+    assert _looks_like_renamed_task(
+        "rent_mexico_city_central_one_bedroom_v2",
+        ("Find the typical monthly rent cost for a one-bedroom apartment in central Mexico City "
+         "(e.g., Polanco, Condesa, Roma), trying a narrower search this time. Provide a real "
+         "source URL that supports each claim."),
+        mexico_accented_prior,
+    ) == "rent_mexico_city_central_one_bedroom", (
+        "an accented vs. unaccented spelling of the same place name must still count as the same "
+        "entity, not be treated as a mismatch that falsely clears the rename override")
 
     # --- _content_word_overlap OR-trigger (2026-08-17 live incident): a genuine full-sentence
     # paraphrase (the model's actual, common rewrite style) scores near-zero on difflib's
@@ -631,6 +663,27 @@ Some intro text.
     assert not any(t in restated for t in excluded), restated
     on_topic = _EXCLUSION_CUE_RE.sub(" ", "research fintech opportunities for gig workers in colombia")
     assert any(t in on_topic for t in excluded), on_topic
+
+    # --- excluded_topic_semantic_hit: cross-lingual/paraphrase backstop for check_excluded_topic
+    # (2026-08-29 audit finding: the substring-only exclusion check misses a heading covering an
+    # excluded topic via translation or same-language paraphrase; this project's own benchmark
+    # instructs bilingual search, so this isn't hypothetical) ---
+    from utils.grounding import excluded_topic_semantic_hit
+    fintech_excluded = {"fintech"}
+    assert excluded_topic_semantic_hit(fintech_excluded, "digital payment solutions for smes") == "fintech", (
+        "an English paraphrase of an excluded topic must still be caught")
+    assert excluded_topic_semantic_hit(fintech_excluded, "soluciones de pago digital para pymes") == "fintech", (
+        "a Spanish translation of an excluded topic must still be caught")
+    assert excluded_topic_semantic_hit(fintech_excluded, "environmental reporting requirements") is None, (
+        "a genuinely unrelated heading must not be flagged"
+    )
+    assert excluded_topic_semantic_hit(fintech_excluded, "competitor landscape") is None, (
+        "a generic, topic-agnostic heading must not be flagged"
+    )
+    assert excluded_topic_semantic_hit(set(), "digital payment solutions for smes") is None, (
+        "no excluded topics at all -- nothing to check"
+    )
+    assert excluded_topic_semantic_hit(fintech_excluded, "") is None, "empty heading -- nothing to check"
 
     # --- bare-origin fetch must not prefix-ground fabricated deep links ---
     # (live case 2026-07-11, qwen3.6: fetching mercadolibre.com's root waved a fully fabricated

@@ -3,6 +3,7 @@ import asyncio
 import difflib
 import re
 import time
+import unicodedata
 from dataclasses import dataclass
 from typing import Optional
 from agent_framework.openai import OpenAIChatCompletionClient
@@ -300,12 +301,21 @@ def _instruction_entities(text: str) -> set:
     `_is_placeholder_referent_or_similar` above already uses). Used only by
     `_looks_like_renamed_task`'s entity-mismatch override below -- a cheap way to tell "two
     genuinely different named subjects" (Lisbon vs Mexico City) apart from "the same subject,
-    reworded" without any real NLP."""
+    reworded" without any real NLP.
+
+    Diacritic-folded before matching/storing (2026-08-29 audit finding): the ASCII-only
+    `[a-zA-Z]` capture silently DROPPED an accented proper noun entirely (e.g. "México" fails the
+    regex outright, "Mexico" doesn't), which doesn't just miss that one entity -- it artificially
+    LOWERS the Jaccard overlap between two instructions describing the same place in different
+    languages, tripping the entity-mismatch override into treating a genuine same-subject rename
+    as two different subjects. Folding to ASCII first ("México" -> "Mexico") makes a
+    translated/accented rename compare correctly against its English form."""
     entities = set()
     for sentence in re.split(r"[.!?:;\n]+", text or ""):
         for w in sentence.split()[1:]:
-            if re.match(r"[A-Z][a-zA-Z]{2,}", w):
-                entities.add(w.strip(",()."))
+            folded = unicodedata.normalize("NFKD", w).encode("ascii", "ignore").decode()
+            if re.match(r"[A-Z][a-zA-Z]{2,}", folded):
+                entities.add(folded.strip(",()."))
     return entities
 
 
@@ -429,9 +439,20 @@ def _looks_like_renamed_task(task_name: str, instructions: str, prior_tasks: lis
     though the primary trigger below is now more sensitive."""
     entities = _instruction_entities(instructions)
     for prior in prior_tasks:
-        if prior.get("task_name") == task_name:
-            continue  # same-name reuse is the expected, legitimate case, not a rename
         prior_instructions = prior.get("instructions") or ""
+        if prior.get("task_name") == task_name:
+            # Same name is normally legitimate continuation (deliberately not flagged) -- but if
+            # the instructions are ALSO essentially byte-identical, this isn't a continuation,
+            # it's the same task dispatched twice verbatim. Confirmed live 2026-08-29: a single
+            # model turn (Hermes-4-14B, via a custom Modelfile template) emitted TWO tool_calls in
+            # the same turn, each calling delegate_tasks with 100%-identical task_name AND
+            # instructions -- this carve-out let it straight through, dispatching the same
+            # research twice, because "same name" alone was assumed to always mean intentional
+            # reuse. A near-1.0 ratio here means no real new instruction content was added, so
+            # there's nothing to call a continuation.
+            if difflib.SequenceMatcher(None, instructions or "", prior_instructions).ratio() > 0.95:
+                return prior.get("task_name")
+            continue  # different instructions under the same name -- legitimate continuation
         ratio = difflib.SequenceMatcher(None, instructions or "", prior_instructions).ratio()
         word_overlap = _content_word_overlap(instructions or "", prior_instructions)
         if ratio > 0.6 or word_overlap > 0.3:

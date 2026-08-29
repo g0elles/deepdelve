@@ -442,6 +442,16 @@ settings:
     # sentence-transformers isn't installed.
     topical_relevance_check: true
     topical_relevance_threshold: 0.1   # 0-1 relevance score below which a pair is flagged (lower = stricter gate, fewer false positives)
+    # check_excluded_topic's cross-lingual backstop (2026-08-29 audit finding): the substring-match
+    # exclusion check misses a heading covering an excluded topic via translation or paraphrase.
+    # Reuses the same bge-reranker-v2-m3 checkpoint above (multilingual, unlike the NLI model), no
+    # additional download. NOTE the scale here is NOT comparable to topical_relevance_threshold
+    # above -- a bare topic word/short heading pair scores 2-3 orders of magnitude lower on this
+    # checkpoint than a full claim/passage pair does (live-measured: ~1e-3 for a genuine
+    # paraphrase/translation match vs ~1e-5 for unrelated, 2026-08-29). This default is set from
+    # that small-sample measurement, not a 0-1 confidence reading -- revisit once this check has
+    # fired on real report data. Fails open if the model isn't available.
+    excluded_topic_semantic_threshold: 0.001
     # Fifth layer, specific to academic (Author, Year) citations that already have a resolved URL
     # (a bare non-URL citation is already caught by non_url_citation_check below): calls Semantic
     # Scholar's public paper-search API (no key needed for this tier) to check whether the cited
