@@ -85,6 +85,28 @@ concluded verdict, which is the actual complaint. Going forward, a candidate is 
    hardware-driven, potentially-temporary kind gets the outright-discard treatment. Test the
    candidate at its true native context in this case, don't discard on point 6 grounds.
 
+7. **A dense model above ~12B parameters is discarded on raw-throughput hardware grounds alone,
+   before any tool-calling test, unless it uses an efficient quantization scheme (MXFP4 or
+   similar) — added 2026-08-29, after two independent architectures confirmed the same ceiling.**
+   `gemma4:12b` (11.9B dense) was already disqualified at 32.2 tok/s on this RX 9060 XT. The same
+   day, `devstral:24b` (23.6B dense, Llama-based) measured 18.4-19.0 tok/s and `mistral-small3.2:24b`
+   (24.0B dense, Mistral3 arch) measured 19.3 tok/s — two unrelated architectures landing within 1
+   tok/s of each other, both well below `gemma4:12b`'s own already-disqualifying ceiling at roughly
+   double the parameter count. This is a genuine hardware compute ceiling for dense transformers at
+   this size class on this GPU tier, not a per-model quirk — `gpt-oss:20b`'s own 62.7 tok/s and
+   `nemotron-3-nano`'s 86.2 tok/s only clear it because both use an efficient scheme (MXFP4
+   quantization, a hybrid Mamba/attention architecture respectively), not because of raw parameter
+   count. **Before pulling any dense model above ~12B for this hardware, check for an efficient
+   quantization/architecture first** — a plain Q4_K_M (or similar) dense quant at this size class
+   can be discarded on a single raw throughput measurement, the same "check before benchmarking"
+   discipline point 6 already applies to context. A local MoE's ACTIVE parameter count does NOT
+   change this VRAM/throughput calculus either — every expert's weights must stay resident in
+   Ollama regardless of how many are used per token, so a "30B total / 3B active" MoE costs VRAM
+   like the full 30B, not the 3B (confirmed against `Nemotron-3-Nano-30B-A3B`, `GLM-4.5-Air`,
+   `Qwen3-30B-A3B`, all discarded on this exact basis the same day) — there is no cheap-active-param
+   shortcut to a bigger effective model on this hardware; `gpt-oss:20b`'s efficient MXFP4
+   quantization of its whole ~21B is what makes its footprint small, not its architecture shape.
+
 
 ## History
 
