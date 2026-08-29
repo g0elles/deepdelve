@@ -37,7 +37,8 @@ from engine.artifact_salvage import (
 )
 from engine.completion_checks import (  # noqa: F401 — re-exported for test_structural_checks.py/finetune/*
     Ctx, Verdict,
-    check_not_delegated, check_thin_coverage, check_task_verification_flagged,
+    check_not_delegated, check_requested_count_shortfall, _extract_requested_item_range,
+    check_thin_coverage, check_task_verification_flagged,
     check_findings_ungrounded, check_missing_findings, check_stale_findings,
     check_findings_underuses_evidence, check_missing_artifact,
     check_academic_citation_style_abandoned, check_uneven_task_investment,
@@ -47,7 +48,7 @@ from engine.completion_checks import (  # noqa: F401 — re-exported for test_st
     check_non_url_citation, check_stub_source, check_nli_unsupported, check_topical_mismatch,
     check_uncited_claims, check_excluded_topic, check_cross_source_contradiction,
     check_propagated_ungrounded_content, check_not_grounded,
-    find_duplicate_report_sections, _findings_facet_coverage, _facet_coverage,
+    find_duplicate_report_sections, find_duplicate_heading_text, _findings_facet_coverage, _facet_coverage,
 )
 # Findings evidence-assembly (group B, 2026-08-24) -- see engine/findings_evidence.py's own header.
 # Re-exported below the same way group A's completion_checks import above is: completion.py's own
@@ -83,6 +84,9 @@ def _ablation_disabled(name: str) -> bool:
 # A new check is one function above + one entry here — and one row in the verdict matrix test.
 COMPLETION_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
     check_not_delegated,
+    # Upstream of check_thin_coverage (below): "did you plan ENOUGH" before "did what you planned
+    # succeed" -- see its own docstring (2026-08-28) for the live incident this closes.
+    check_requested_count_shortfall,
     check_thin_coverage,
     check_task_verification_flagged,
     check_findings_ungrounded,
@@ -113,9 +117,9 @@ COMPLETION_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
 # question). A new COMPLETION_CHECKS entry needs its problem name added here too (see that list's
 # own "one row in the verdict matrix test" reminder -- this is the same kind of paired update).
 _COMPLETION_TIER_PROBLEMS = frozenset({
-    "not_delegated", "thin_coverage", "task_verification_flagged", "findings_ungrounded",
-    "missing_findings", "stale_findings", "findings_underuses_evidence", "missing_artifact",
-    "report_style_violation", "uneven_task_investment", "untracked_delegation",
+    "not_delegated", "requested_count_shortfall", "thin_coverage", "task_verification_flagged",
+    "findings_ungrounded", "missing_findings", "stale_findings", "findings_underuses_evidence",
+    "missing_artifact", "report_style_violation", "uneven_task_investment", "untracked_delegation",
 })
 
 GROUNDING_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [

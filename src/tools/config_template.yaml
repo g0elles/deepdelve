@@ -239,6 +239,18 @@ settings:
   # agent keep revising than stop early. Each extra attempt costs wall-clock time and the
   # retry_quota_topup allowance above, not memory — this is not a resource-limited setting.
   max_completion_check_attempts: 3
+  # check_requested_count_shortfall (2026-08-28): ONE LEVEL UPSTREAM of coverage_check below --
+  # that check verifies whether delegated tasks that WERE planned actually got a real source; this
+  # instead catches the Planner never even PLANNING enough of them, when the query itself states an
+  # explicit enumerate-N-things requirement (e.g. "identify 4 to 6 niches"). Confirmed live
+  # (gemma4:e4b bake-off): a run's first delegate_tasks call targeted only 2 candidate niches for a
+  # query asking for 4-6, and nothing in the pipeline ever caught it -- the run "succeeded" with
+  # real sources for both its 2 planned niches, converging on a report less than half the requested
+  # breadth. Conservative: only engages when the query has an explicit list-request phrasing (the
+  # large majority of queries have none and are unaffected), and only fires on a clear shortfall
+  # (floor - delegated tasks >= 2), never a near-miss.
+  requested_count_check:
+    enabled: true
   # ROADMAP Phase 5 ("Coverage accounting / ResearchMap"): distinct from every grounding_check
   # below, which all verify content that ALREADY EXISTS is properly cited -- this instead asks
   # whether the Planner's own top-level delegated research plan actually paid off. A report can be

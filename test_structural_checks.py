@@ -518,6 +518,45 @@ def main():
     # No duplicates at all -> silent.
     assert find_duplicate_report_sections("# R\n\n### Mexico City\n- a\n\n### Lisbon\n- b\n") == []
 
+    # --- duplicate HEADING text, the inverse shape (2026-08-28, live incident: gemma4:e4b
+    # bake-off produced a report with "## 2. Key Findings" appearing twice, each followed by
+    # DIFFERENT, non-overlapping subsections — find_duplicate_report_sections' content-similarity
+    # comparison never fires on this since the content genuinely differs, and it's also scoped to
+    # h3+ only while this duplicate landed at h2). ---
+    from engine.completion import find_duplicate_heading_text
+
+    _DUP_HEADING_REPORT = """# Report
+
+## 1. Introduction
+
+Some intro text.
+
+## 2. Key Findings
+
+### A. Data Privacy
+- claim one - [Source](https://a.example.com)
+
+## 2. Key Findings
+
+### B. Environmental Reporting
+- a completely unrelated claim about ESG mandates - [Source](https://b.example.com)
+
+### D. Advanced Manufacturing
+- claim two - [Source](https://d.example.com)
+"""
+    heading_dups = find_duplicate_heading_text(_DUP_HEADING_REPORT)
+    assert heading_dups and "Key Findings" in heading_dups[0], heading_dups
+    # The genuinely different h1/h2 headings ("Introduction", "Data Privacy" subsections used only
+    # once at h3) must not be swept up.
+    assert not any("Introduction" in d for d in heading_dups), heading_dups
+    # Renumbered-but-same-title still counts (leading list-prefix stripped before comparing).
+    assert find_duplicate_heading_text("# R\n\n## 2. Key Findings\nx\n\n## 3. Key Findings\ny\n") != []
+    # No duplicates at all -> silent.
+    assert find_duplicate_heading_text("# R\n\n## Findings\nx\n\n## Sources\ny\n") == []
+    # find_duplicate_report_sections alone would miss this (different content, wrong level) --
+    # confirms check_duplicate_report_sections' own fallback-to-heading-text path is load-bearing.
+    assert find_duplicate_report_sections(_DUP_HEADING_REPORT) == []
+
     # --- findings.md wholesale-fabrication gate ---
     reset_fetched_urls()
     assert fully_ungrounded("Findings: lots of prose, zero sources.") == "no_urls"
@@ -1967,6 +2006,20 @@ def main():
         # (row, delegated, workspace files, expected recorded problem, distinctive nudge phrase)
         ("not_delegated", False, {"final_report.md": f"- x [g]({_SRC})"},
          "not_delegated", "No `delegate_tasks` call was ever made"),
+        # check_requested_count_shortfall (2026-08-28, gemma4:e4b bake-off live incident): query
+        # explicitly asks for "4 to 6" distinct items, but only 2 distinct depth==1 tasks were ever
+        # delegated (both with real, non-null-summary sources, so thin_coverage's own ratio is 1.0
+        # and stays silent -- this check is what catches the plan itself being too narrow, one
+        # level upstream of "did what was planned succeed"). Fires before findings.md even needs to
+        # exist, like check_task_verification_flagged below.
+        ("requested_count_shortfall", True, {},
+         "requested_count_shortfall", "research tasks were delegated",
+         "Identify 4 to 6 real, distinct B2B niches with evidence for each.", [], [
+             {"task_name": "niche_healthcare", "source_url": "https://gov.example.co/health",
+              "summary": "real content, no warning marker.", "depth": 1},
+             {"task_name": "niche_manufacturing", "source_url": "https://gov.example.co/mfg",
+              "summary": "real content, no warning marker.", "depth": 1},
+         ]),
         # check_task_verification_flagged (2026-07-26, VERIMAP-inspired): fires before findings.md
         # even needs to exist -- reads the per-task ledger _update_task_verification maintains from
         # run_state.data["findings"] alone. 'task_kept' has a real citable finding (verified);
@@ -2204,6 +2257,52 @@ def main():
                         _config.cfg["settings"]["report_style"] = _orig_style3
 
             contextvars.copy_context().run(_matrix_row)
+
+    # --- check_requested_count_shortfall boundary conditions (2026-08-28) -- the matrix row above
+    # pins the full run_completion_check integration; this pins _extract_requested_item_range's own
+    # parsing plus the check's conservative-by-construction thresholds directly. ---
+    def _requested_count_shortfall_boundary_scenario():
+        from engine.completion import check_requested_count_shortfall, _extract_requested_item_range
+
+        # Parsing: only a small set of list-request verbs + a number/range count; everything else
+        # (including a query that happens to contain an unrelated number) must return None.
+        assert _extract_requested_item_range("Identify 4 to 6 niches.") == (4, 6)
+        assert _extract_requested_item_range("List at least 3 examples.") == (3, 3)
+        assert _extract_requested_item_range("Name 5 companies.") == (5, 5)
+        assert _extract_requested_item_range("What regulation is Ley 1906 de 2021?") is None
+        assert _extract_requested_item_range("") is None
+        assert _extract_requested_item_range(None) is None
+
+        with tempfile.TemporaryDirectory() as tmpdir_rcs:
+            def _ctx_with(query: str, task_count: int) -> "Ctx":
+                rs = RunState(tmpdir_rcs + f"/{query[:5]}{task_count}")
+                rs.set_query(query)
+                for i in range(task_count):
+                    rs.add_finding(f"https://gov.example.co/n{i}", "real content.",
+                                    task_name=f"niche_{i}", depth=1)
+                return Ctx(req_artifact="final_report.md", attempt=0, max_attempts=8,
+                           delegated=True, files=[], content=None, quotas={}, run_state=rs)
+
+            # (a) No explicit count in the query -> never engages, regardless of task count.
+            assert check_requested_count_shortfall(_ctx_with("Research Colombian B2B niches.", 1)) is None
+
+            # (b) Explicit count but below the floor>=3 minimum engagement threshold (a 1-2 item ask
+            # is well within "one task can cover it" territory) -> silent even with 0 tasks.
+            assert check_requested_count_shortfall(_ctx_with("Identify 2 niches.", 0)) is None
+
+            # (c) floor>=3, but the shortfall is a near-miss (< 2) -> silent, only clear shortfalls fire.
+            assert check_requested_count_shortfall(_ctx_with("Identify 4 to 6 niches.", 3)) is None
+
+            # (d) floor>=3, clear shortfall (>= 2) -> fires, naming the real floor and delegated count.
+            v = check_requested_count_shortfall(_ctx_with("Identify 4 to 6 niches.", 2))
+            assert v is not None and v.problem == "requested_count_shortfall", v
+            assert "4" in v.inject and "2" in v.inject, v.inject
+
+            # (e) floor met exactly -> silent (compares against the RANGE FLOOR, not the ceiling --
+            # "4 to 6" is satisfied by 4, not held to the higher end).
+            assert check_requested_count_shortfall(_ctx_with("Identify 4 to 6 niches.", 4)) is None
+
+    contextvars.copy_context().run(_requested_count_shortfall_boundary_scenario)
 
     # --- check_no_urls/check_non_url_citation/check_uncited_claims: style-aware citation-format
     # guidance (2026-08-24 live incident). Before this fix, all three hardcoded standard style's

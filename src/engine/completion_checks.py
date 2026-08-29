@@ -117,6 +117,97 @@ def check_not_delegated(ctx: Ctx) -> Optional[Verdict]:
     )
 
 
+_ITEM_COUNT_RE = re.compile(
+    r'\b(?:identify|find|list|name|provide|give|include|select|recommend)\s+'
+    r'(?:at least\s+|between\s+)?(\d+)'
+    r'(?:\s*(?:to|-|–|—|and)\s*(\d+))?\b',
+    re.IGNORECASE,
+)
+
+
+def _extract_requested_item_range(query: str) -> Optional[tuple[int, int]]:
+    """Looks for an explicit enumerate-N-things request in the query text (e.g. 'identify 4 to 6
+    niches', 'list at least 3 examples') -- conservative on purpose: only a small, well-established
+    set of list-request verbs immediately followed by a number/range counts, so the vast majority
+    of queries (no explicit count) correctly return None and never engage check_requested_count_
+    shortfall at all. Returns (floor, ceiling) -- floor == ceiling for a bare 'N' with no range."""
+    if not query:
+        return None
+    m = _ITEM_COUNT_RE.search(query)
+    if not m:
+        return None
+    lo = int(m.group(1))
+    hi = int(m.group(2)) if m.group(2) else lo
+    if lo <= 0 or lo > 50 or hi < lo:  # sanity guard against a nonsense/unrelated number match
+        return None
+    return (lo, hi)
+
+
+def check_requested_count_shortfall(ctx: Ctx) -> Optional[Verdict]:
+    """Catches a gap ONE LEVEL UPSTREAM of check_thin_coverage: that check verifies whether tasks
+    that WERE delegated actually produced a real source; this instead asks whether the Planner even
+    delegated ENOUGH of them in the first place, when the query itself states an explicit
+    enumerate-N-things requirement (e.g. "identify 4 to 6 niches"). Confirmed live (gemma4:e4b
+    bake-off, 2026-08-28): a run's very first write_todos/delegate_tasks call targeted only 2
+    candidate niches for a query explicitly asking for 4-6, and nothing in the existing pipeline
+    ever caught it -- coverage_check/thin_coverage only measure whether what WAS planned got real
+    sources, never whether enough was planned -- so the run finished "successfully," citing real
+    sources for both its 2 planned niches, converging on a report less than half the requested
+    breadth with no warning anywhere.
+
+    Conservative by construction, same philosophy as every other structural check in this project:
+    only engages when _extract_requested_item_range finds an explicit list-request verb + number/
+    range in the query (the large majority of queries have no such phrasing and are completely
+    unaffected); uses ctx.run_state.coverage()['total'] (distinct depth==1 delegated task names) as
+    a model-independent proxy for "how many distinct angles has the Planner even attempted" -- the
+    same structural signal check_thin_coverage/check_uneven_task_investment already rely on, not a
+    new Planner-authored schema. Compares against the RANGE FLOOR, not the ceiling (a query asking
+    for "4 to 6" is satisfied by 4) -- and only fires when the shortfall is clear (floor - total >=
+    2, and floor itself >= 3), never on a near-miss or a small ask, to keep false-positive risk low
+    given a single delegated task CAN legitimately surface multiple report-level niches on its own.
+
+    Not Builder/FindingsWriter-fixable -- delegating more distinct research angles is a Planner-only
+    action (delegate_tasks isn't in either writer role's toolset), same reasoning as
+    check_thin_coverage. Capped via the shared _capped helper for the same reason: a genuinely
+    hard-to-satisfy count (a niche market that really doesn't have 4-6 viable candidates) must not
+    starve every check below it forever."""
+    if not config.get_setting("requested_count_check", {}).get("enabled", True):
+        return None
+    item_range = _extract_requested_item_range(ctx.run_state.data.get("query") or "")
+    if item_range is None:
+        return None
+    floor, _ceiling = item_range
+    if floor < 3:
+        return None  # a 1-2 item ask is well within "one task can cover it" territory
+    total = ctx.run_state.coverage()["total"]
+    if (floor - total) < 2:
+        return None
+
+    from engine.completion import _capped, _consecutive_occurrences
+    prior_same = _consecutive_occurrences(ctx.run_state, "requested_count_shortfall")
+    if prior_same == 0:
+        directive = (
+            f"Your query explicitly asks for {floor} distinct items, but you have only delegated "
+            f"{total} distinct research task(s) so far. One task rarely surfaces {floor} genuinely "
+            f"distinct, well-evidenced items on its own -- delegate_tasks again for additional "
+            f"candidate angles until you have enough real research to plausibly cover the "
+            f"requested count, or explicitly narrow the report's scope and say so if you have "
+            f"already tried and genuinely cannot find that many."
+        )
+    else:
+        directive = (
+            f"Still only {total} distinct research task(s) delegated against a request for "
+            f"{floor}+ items after a prior warning. If you have genuinely tried and cannot find "
+            f"more, say so explicitly in the report as an acknowledged gap rather than silently "
+            f"delivering fewer than asked."
+        )
+    return _capped(ctx, "requested_count_shortfall", Verdict(
+        "requested_count_shortfall",
+        f"Query asks for {floor}+ distinct items but only {total} research tasks were delegated. Pushing agent to broaden the plan or acknowledge the gap.",
+        f"SYSTEM WARNING: {ctx.last_chance_prefix}{directive}",
+    ))
+
+
 def check_thin_coverage(ctx: Ctx) -> Optional[Verdict]:
     """ROADMAP Phase 5 ("Coverage accounting / ResearchMap") — distinct from every other check in
     this module: those all verify whether content that ALREADY EXISTS is grounded; this instead
@@ -1204,13 +1295,56 @@ def find_duplicate_report_sections(report: str) -> list[str]:
     return dups
 
 
+def find_duplicate_heading_text(report: str) -> list[str]:
+    """Sibling signal to find_duplicate_report_sections' content-similarity check, for the INVERSE
+    failure shape: the SAME heading text appearing twice with DIFFERENT content under each
+    occurrence, at ANY heading level (not just h3+). Confirmed live (gemma4:e4b bake-off,
+    2026-08-28): a report had '## 2. Key Findings' appear twice, each followed by a different,
+    non-overlapping set of subsections (A/B/C the first time, A/B/C/D the second) — the same
+    edit_workspace_file "retyped an existing heading, appended new content after it" mechanism
+    find_duplicate_report_sections' own docstring already documents, just landing one level higher
+    (h2, not h3) than that check's h3+-only scope, and with genuinely DIFFERENT content under each
+    copy — so the content-similarity comparison there would never have caught it even without the
+    h3+ scoping.
+
+    Safe to run at EVERY heading level, unlike the content-similarity check: an exact repeated
+    heading string is a much narrower, stronger signal than content overlap — a legitimate
+    summary-then-detail report pattern always uses two DIFFERENT heading texts (e.g. "Executive
+    Summary" vs "Detailed Findings"), never the identical string twice, so this can't false-positive
+    on that pattern the way broadening the content-similarity check's own h3+ scope could have.
+
+    Case/whitespace-normalized, and strips a leading numbered/lettered list prefix ("2. ", "A. ")
+    so "## 2. Key Findings" vs a later, renumbered "## 3. Key Findings" with the same title still
+    counts as the same duplicate heading."""
+    sections = split_into_heading_sections(report or "")
+    seen: dict[str, str] = {}
+    dups = []
+    for sec in sections:
+        if not sec:
+            continue
+        heading_line = sec[0].strip()
+        m = re.match(r'#{1,6}\s+(.*)', heading_line)
+        if not m:
+            continue
+        norm = re.sub(r'^[0-9A-Za-z][.)]\s*', '', m.group(1).strip().lower())
+        if not norm:
+            continue
+        if norm in seen:
+            dups.append(heading_line)
+        else:
+            seen[norm] = heading_line
+    return dups
+
+
 def check_duplicate_report_sections(ctx: Ctx) -> Optional[Verdict]:
-    """See find_duplicate_report_sections' own docstring for the live incident this exists for."""
+    """See find_duplicate_report_sections' own docstring for the live incident this exists for.
+    Also checks find_duplicate_heading_text (2026-08-28) for the inverse failure shape — see its
+    own docstring."""
     if not config.get_setting("duplicate_section_check", {}).get("enabled", True):
         return None
     if ctx.content is None:
         return None
-    dups = find_duplicate_report_sections(ctx.content)
+    dups = find_duplicate_report_sections(ctx.content) or find_duplicate_heading_text(ctx.content)
     if not dups:
         return None
     dup_list = ", ".join(f"'{h}'" for h in dups[:3])
