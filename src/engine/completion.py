@@ -44,7 +44,7 @@ from engine.completion_checks import (  # noqa: F401 — re-exported for test_st
     check_findings_underuses_evidence, check_missing_artifact,
     check_academic_citation_style_abandoned, check_uneven_task_investment,
     check_untracked_delegation, check_report_underuses_findings, check_report_underuses_evidence,
-    check_duplicate_report_sections, check_claim_unsupported, check_no_urls,
+    check_duplicate_report_sections, check_missing_specific_item_per_facet, check_claim_unsupported, check_no_urls,
     check_regulation_unsupported, check_specific_figure_unsupported, check_quote_paraphrased,
     check_non_url_citation, check_stub_source, check_nli_unsupported, check_topical_mismatch,
     check_editorializing_content,
@@ -158,6 +158,10 @@ GROUNDING_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
     # bad citation or a missing task should get those fixed first; still before the generic
     # catch-all so a genuinely duplicate-only report gets a specific, actionable nudge.
     check_duplicate_report_sections,
+    # Completeness of an EXPLICIT per-facet instruction, not citation accuracy or self-consistency
+    # -- placed after duplicate-section (a different completeness axis) but before the generic
+    # catch-all. See its own docstring for the live incident (2026-08-30) this closes.
+    check_missing_specific_item_per_facet,
     check_not_grounded,  # generic catch-all: fires on ANY grounding problem — keep it LAST
 ]
 
@@ -204,7 +208,12 @@ _BUILDER_FIXABLE_PROBLEMS = ("missing_artifact", "not_grounded", "claim_unsuppor
                              # exhausted a run's retry budget 5+ times before falling back to a
                              # stale, off-topic salvage. See check_propagated_ungrounded_content's
                              # own docstring for the fix reasoning.
-                             "propagated_ungrounded")
+                             "propagated_ungrounded",
+                             # Added 2026-08-30, live incident: the fix is "cite an already-fetched
+                             # source you forgot to use," which Builder can do directly from
+                             # findings.md -- see check_missing_specific_item_per_facet's own
+                             # docstring.
+                             "missing_specific_item_per_facet")
 
 # Appended to every Builder-dispatch instruction (both the classic and force_whole_rebuild
 # branches) right after verdict.inject -- a single shared clarification rather than hand-rewriting

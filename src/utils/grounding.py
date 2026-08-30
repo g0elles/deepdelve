@@ -613,6 +613,16 @@ def find_unsupported_regulation_ids(text: str) -> list[str]:
     return hits
 
 
+# NAME-style regulations ("Renewable Energy Sources Act", "Clean Air Act (CAA)") -- a real gap
+# versus _REGULATION_ID_RE above, which only matches NUMBERED identifiers ("Ley 1906 de 2021",
+# "Directive 2014/55/EU") and would not match a named act at all. Feeds
+# check_missing_specific_item_per_facet (engine/completion_checks.py, 2026-08-30 live incident).
+_NAMED_REGULATION_RE = re.compile(
+    r'\b(?:[A-Z][a-zA-Z]*\s+){1,6}(?:Act|Law|Code|Directive|Statute|Ordinance)\b'
+    r'(?:\s*\([A-Z]{2,6}\))?'
+)
+
+
 # Dollar/currency figures and day/month-count claims -- small, specific numbers that
 # extract_salient_terms' own regex is deliberately narrow enough to miss entirely (it only
 # extracts period-grouped decimals, bare 4-digit years, and percentages -- see that function's

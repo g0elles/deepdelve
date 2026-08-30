@@ -322,6 +322,20 @@ settings:
   # engine/completion.py::find_duplicate_report_sections).
   duplicate_section_check:
     enabled: true
+  # check_missing_specific_item_per_facet (2026-08-30): a different completeness axis from every
+  # citation-accuracy check below -- a report can be fully grounded and cover every required facet
+  # yet still fail an EXPLICIT per-facet instruction the query stated. Confirmed live: a Germany/
+  # Japan renewable-policy report was fully grounded and both entities were genuinely researched,
+  # but the query asked to cite "at least one specific regulation for each country" and Japan's
+  # section never named one -- even though a source describing Japan's real 2012 FIT law had
+  # already been fetched, it just never made it into findings.md. Conservative: only engages when
+  # the query states an explicit "citing (at least one|a) specific <regulation/law/act/statute/
+  # directive/policy> for each" phrasing AND unambiguously enumerates 2+ facets (reuses
+  # facet_coverage_check's own extraction) -- see engine/completion_checks.py::
+  # check_missing_specific_item_per_facet for the section-heading association this relies on and
+  # its own documented coarseness (may miss an item named only in a shared/comparative section).
+  specific_item_check:
+    enabled: true
   # Engine-driven iterative deepening (2026-07-19, ROADMAP item 10, dzhng/deep-research pattern):
   # when a thin_coverage retry fires AND a Searcher's own real "FOLLOW-UP DIRECTIONS:" section
   # named a real lead, the ENGINE dispatches those directions directly as new tasks (geometric

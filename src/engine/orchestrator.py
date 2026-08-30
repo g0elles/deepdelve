@@ -368,6 +368,27 @@ def _extract_required_facets(query: str) -> list:
             facets.append(tokens)
     return facets if len(facets) >= 2 else []
 
+# Feeds check_missing_specific_item_per_facet (completion_checks.py, 2026-08-30 live incident):
+# a report can genuinely cover every required facet (check_missing_query_facet passes) and be
+# fully grounded (every grounding check passes) while still failing an EXPLICIT per-item
+# instruction the query stated -- confirmed live, Japan section cited only renewable-share
+# targets, never a named regulation, even though the run had already fetched a source describing
+# Japan's real 2012 FIT law; it just never made it into findings.md. Deliberately narrow, same
+# cue-phrase discipline as _FACET_COMPARE_RE/_extract_excluded_topics: only engages on an EXPLICIT
+# "citing (at least one|a) specific <noun> for each" / "with a specific <noun> for each" phrasing,
+# never inferred from a bare mention of the noun elsewhere in the query.
+_REQUIRE_SPECIFIC_ITEM_RE = re.compile(
+    r"(?i:(?:citing\s+(?:at\s+least\s+one|a)|with\s+a)\s+specific\s+"
+    r"(regulation|law|act|statute|directive|policy)s?\s+for\s+each)"
+)
+
+def _extract_required_item_type(query: str) -> str | None:
+    """The noun ('regulation', 'law', ...) an explicit per-facet item requirement names, or None
+    if the query states no such requirement. See _REQUIRE_SPECIFIC_ITEM_RE above for the exact
+    (narrow) cue phrasing this engages on."""
+    m = _REQUIRE_SPECIFIC_ITEM_RE.search(query or "")
+    return m.group(1).lower() if m else None
+
 _BARE_REFERENT_RE = re.compile(
     r"\b(?:it|its|they|them|the\s+(?:above|previous|aforementioned|same))\b", re.IGNORECASE
 )

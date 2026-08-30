@@ -10,6 +10,7 @@ from engine.orchestrator import (
     _extract_excluded_topics, _lacks_concrete_subject, _extract_follow_up_directions,
     _strip_follow_up_directions,
     _ring_fenced_deadline, _looks_like_renamed_task, _extract_required_facets,
+    _extract_required_item_type,
 )
 from engine.completion import (
     _CUTOFF_ONLY_SUMMARY_RE, _reorder_findings_for_position_bias, _find_propagated_bad_content,
@@ -49,6 +50,17 @@ def main():
         "How does inflation in Colombia compare to its own historical CPI data?") == [], (
         "a single-subject 'compare ... to' phrasing must not fabricate a second facet")
     assert _extract_required_facets("Who created the Python programming language?") == []
+
+    # --- required-item-type extraction (2026-08-30, feeds check_missing_specific_item_per_facet):
+    # narrow cue-phrase discipline like the facet extraction above -- must fire on the explicit
+    # phrasing, stay silent otherwise. ---
+    assert _extract_required_item_type(
+        "Compare Germany and Japan, citing at least one specific regulation for each.") == "regulation"
+    assert _extract_required_item_type(
+        "Compare Germany and Japan, with a specific law for each.") == "law"
+    assert _extract_required_item_type("Compare Germany and Japan renewable policy.") is None
+    assert _extract_required_item_type("") is None
+    assert _extract_required_item_type(None) is None
 
     # --- unresolved-referent detection (live case: 'its' resolved to Microsoft, not Python) ---
     assert _lacks_concrete_subject("Summarize its headline feature.")
@@ -2209,6 +2221,29 @@ Some intro text.
               f"### Mexico City - Central Districts\n- Average monthly rent is 22,000-38,000 pesos "
               f"per month. [g]({_SRC})\n")},
          "duplicate_report_sections", "near-duplicate sections"),
+        # check_missing_specific_item_per_facet (2026-08-30 live incident): query enumerates two
+        # facets (Germany, Japan) AND explicitly requires "citing at least one specific regulation
+        # for each" -- the report is fully grounded and both entities have their own heading-
+        # delimited section, but only Germany's section names an actual regulation ("Renewable
+        # Energy Sources Act (EEG)"); Japan's cites only a renewable-share target, no regulation.
+        ("missing_specific_item_per_facet", True, {"findings.md": _FINDINGS_OK,
+          "final_report.md": (
+              "## Germany's Renewable Energy Policy\n"
+              "- Germany's Renewable Energy Sources Act (EEG) mandates increased funding for "
+              "renewable energy generation nationwide. [gov](https://gov.example.de/eeg-act)\n\n"
+              "## Japan's Renewable Energy Policy\n"
+              "- Japan targets a 40 to 50 percent renewable energy share by 2040. "
+              "[gov](https://gov.example.jp/2040-target)\n")},
+         "missing_specific_item_per_facet", "requires a specific regulation per entity",
+         "Compare Germany and Japan's renewable energy policy, citing at least one specific "
+         "regulation for each.", [
+             ("https://gov.example.de/eeg-act", "sources/de_eeg.md",
+              "Source-URL: https://gov.example.de/eeg-act\n\nGermany's Renewable Energy Sources "
+              "Act (EEG) mandates increased funding for renewable energy generation nationwide."),
+             ("https://gov.example.jp/2040-target", "sources/jp_target.md",
+              "Source-URL: https://gov.example.jp/2040-target\n\nJapan targets a 40 to 50 percent "
+              "renewable energy share by 2040, up from 22.9 percent in 2023."),
+         ]),
         # Live case 2026-07-24: a report quoted a plausible-sounding sentence and attributed it to
         # a real, fetched source -- the underlying claim can be true and traceable while the exact
         # wording still never appears there, which content_level_check's term-overlap check alone

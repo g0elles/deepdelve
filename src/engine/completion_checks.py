@@ -22,11 +22,11 @@ from utils.run_state import get_fetched_urls
 from utils.grounding import (
     fully_ungrounded, partially_ungrounded, split_into_heading_sections,
     find_cross_source_contradictions, extract_cited_urls, parse_academic_references,
-    excluded_topic_semantic_hit,
+    excluded_topic_semantic_hit, _NAMED_REGULATION_RE, _REGULATION_ID_RE,
 )
 from engine.orchestrator import (
     _extract_excluded_topics, _content_word_overlap, _extract_required_facets,
-    _instruction_entities, _EXCLUSION_CUE_RE,
+    _instruction_entities, _EXCLUSION_CUE_RE, _extract_required_item_type,
 )
 
 class Verdict(NamedTuple):
@@ -1452,6 +1452,93 @@ def check_duplicate_report_sections(ctx: Ctx) -> Optional[Verdict]:
         f"redundant heading(s) — do not just delete the new content, keep whatever the duplicate "
         f"section added that the first one didn't already have.{_redelegate_directive(ctx)}",
     )
+
+
+def check_missing_specific_item_per_facet(ctx: Ctx) -> Optional[Verdict]:
+    """A different axis from every other grounding check here: those all verify whether content
+    that ALREADY EXISTS in the report is accurately cited; this instead asks whether the report
+    satisfied an EXPLICIT per-facet instruction the query itself stated. Confirmed live
+    (2026-08-30): a Germany/Japan renewable-policy report was fully grounded (every claim verified
+    against its cited source by hand) and passed check_missing_query_facet (both entities genuinely
+    researched) -- but the query explicitly asked for "citing at least one specific regulation for
+    each country," and the Japan section only ever cited renewable-share TARGETS, never a named
+    regulation. Not a fabrication or a missing-research problem: the run had already fetched a
+    source describing Japan's real 2012 FIT law, it just never made it into findings.md, so no
+    citation-accuracy check had anything to flag.
+
+    Deliberately narrow, same discipline as check_missing_query_facet: only engages when the query
+    states an EXPLICIT per-item requirement (_extract_required_item_type) AND unambiguously
+    enumerates 2+ facets (_extract_required_facets, reused unchanged -- no need to re-derive the
+    entity list). For each facet, finds every h1-h3 heading-delimited section whose heading text
+    names that entity (`_instruction_entities` on the heading line, same convention
+    check_missing_query_facet already uses for task-instruction association) and checks whether
+    that section's combined body matches a named (_NAMED_REGULATION_RE) or numbered
+    (_REGULATION_ID_RE) regulation anywhere. A facet with NO heading-matched section at all is
+    skipped, not flagged -- that's check_missing_query_facet's job (total omission), and this
+    section-heading association is coarser than a per-sentence check: it would miss a regulation
+    named only in a shared/comparative section not headed by the entity's own name. Calibrate
+    against more real reports before relying on this for that shape (see
+    session_status/CURRENT.md's own note on this open design risk).
+
+    Builder-fixable, not Planner-only (unlike check_missing_query_facet): the fix here is "cite an
+    already-fetched source you forgot to use," which Builder can do directly from findings.md,
+    not "delegate new research" -- matching this project's real incident, where the source was
+    already sitting in sources/, just never cited."""
+    if not config.get_setting("specific_item_check", {}).get("enabled", True):
+        return None
+    if ctx.content is None:
+        return None
+    query = ctx.run_state.data.get("query") or ""
+    item_type = _extract_required_item_type(query)
+    if not item_type:
+        return None
+    facets = _extract_required_facets(query)
+    if len(facets) < 2:
+        return None
+
+    sections = split_into_heading_sections(ctx.content)
+    missing = []
+    for facet in facets:
+        body_parts = []
+        for sec in sections:
+            if not sec:
+                continue
+            heading_entities = _instruction_entities(sec[0])
+            if any(
+                tok == e or (len(tok) >= 4 and len(e) >= 4 and (tok.startswith(e) or e.startswith(tok)))
+                for tok in facet for e in heading_entities
+            ):
+                body_parts.append("\n".join(sec))
+        if not body_parts:
+            continue  # no dedicated section for this facet at all -- check_missing_query_facet's job
+        body = "\n".join(body_parts)
+        if not (_NAMED_REGULATION_RE.search(body) or _REGULATION_ID_RE.search(body)):
+            missing.append(" ".join(sorted(facet)))
+
+    if not missing:
+        return None
+
+    from engine.completion import _capped, _consecutive_occurrences
+    missing_str = ", ".join(missing)
+    prior_same = _consecutive_occurrences(ctx.run_state, "missing_specific_item_per_facet")
+    if prior_same == 0:
+        directive = (
+            f"Your query requires citing a specific {item_type} for each entity, but the "
+            f"section(s) covering {missing_str} name no specific {item_type}. Check findings.md "
+            f"for an already-fetched source naming one before assuming none exists, and cite it "
+            f"by name in that section."
+        )
+    else:
+        directive = (
+            f"Still no named {item_type} in the {missing_str} section(s) after a prior warning. "
+            f"If genuinely none exists in your findings, say so explicitly in the report as an "
+            f"acknowledged gap."
+        )
+    return _capped(ctx, "missing_specific_item_per_facet", Verdict(
+        "missing_specific_item_per_facet",
+        f"Query requires a specific {item_type} per entity but {missing_str} names none. Pushing agent to add it or acknowledge the gap.",
+        f"SYSTEM WARNING: {ctx.last_chance_prefix}{directive}",
+    ))
 
 
 def _redelegate_directive(ctx: Ctx) -> str:
