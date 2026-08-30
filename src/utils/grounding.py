@@ -127,12 +127,31 @@ _NULL_FINDING_RE = re.compile(
     # 21 of 24 findings.md entries that were pure failure narration. 'found' added at the same
     # time for the same reason -- broadening the FIRST alternative to cover the model's most
     # common near-synonyms for "there is nothing here" rather than chasing one exact phrase.
+    # 'retrieve' added 2026-08-29, live incident: a context-budget-cutoff sub-agent's own wrap-up
+    # narration was "I was unable to retrieve any authoritative... pages... so I cannot provide
+    # concrete source URLs" -- a real phrasing this pattern's original extract/find/locate
+    # alternation missed entirely, same incremental-broadening reasoning as 'available'/'found'
+    # above.
     r'no (?:key )?findings?\b.{0,30}\b(?:were|was|could be)?\s*(?:extracted|available|found)|'
     r'no relevant (?:information|content|findings)|'
-    r'(?:could not|couldn\'?t|unable to)\s+(?:extract|find|locate)|'
+    r'(?:could not|couldn\'?t|unable to)\s+(?:extract|find|locate|retrieve)|'
     r'nothing (?:useful|relevant)\s*(?:was|could be)?\s*found',
     re.IGNORECASE,
 )
+
+# Live-confirmed 2026-08-29: a context-budget cutoff (_cutoff_marker_text, engine/orchestrator.py)
+# wraps the sub-agent's own final narration in this exact, engine-inserted banner -- unlike
+# _NULL_FINDING_RE's two-signal length gate above (needed because a SHORT real finding could
+# otherwise be misclassified), this banner's presence is a safe, narrow signal on its own, same
+# "internal vocabulary a genuine finding would never contain" reasoning _QUOTA_BLOCKED_RE already
+# established: the bracketed system marker is never something the model's own prose could produce
+# incidentally. Confirmed live: a Japan-research sub-agent fetched 5 real, content-rich sources but
+# hit context_budget_chars before reading them, and its own wrap-up narration ("I was unable to
+# retrieve... so I cannot provide concrete source URLs") was a false negative -- the sources were
+# fine, it just never got to them -- padded past _NULL_FINDING_RE's 300-char gate by the banner
+# itself plus injected FOLLOW-UP DIRECTIONS text (1181 chars total), so it passed as a genuine,
+# citable finding through coverage()/_is_citable_finding and every downstream check.
+_CONTEXT_BUDGET_CUTOFF_RE = re.compile(r"\[SYSTEM: task '.*?' (?:reached|hit) its context budget")
 
 # Live-confirmed 2026-08-17 (session_status 2026-08-16 item 3 follow-up): a Searcher-tier
 # dispatch that hits its OWN delegate_tasks quota mid-task -- before it ever hands a fetched file
@@ -161,13 +180,17 @@ def _is_null_finding_summary(summary: Optional[str]) -> bool:
     """True if `summary` (a run_state.data['findings'] entry's own text) is an admission that
     nothing was actually extracted, not a real finding — see the module comment above this
     function for why this matters and the two-signal design. Also true for the length-independent
-    quota-blocked narration shape _QUOTA_BLOCKED_RE catches — see that regex's own comment."""
+    quota-blocked narration shape _QUOTA_BLOCKED_RE catches — see that regex's own comment, and for
+    a context-budget cutoff's own null admission (_CONTEXT_BUDGET_CUTOFF_RE, same reasoning, its
+    own comment)."""
     if not summary or not summary.strip():
         return True
     stripped = summary.strip()
     if len(stripped) < 300 and _NULL_FINDING_RE.search(stripped):
         return True
-    return bool(_QUOTA_BLOCKED_RE.search(stripped))
+    if _QUOTA_BLOCKED_RE.search(stripped):
+        return True
+    return bool(_CONTEXT_BUDGET_CUTOFF_RE.search(stripped) and _NULL_FINDING_RE.search(stripped))
 
 
 def _strip_trailing_punct(url: str) -> str:

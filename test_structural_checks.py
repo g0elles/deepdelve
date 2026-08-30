@@ -7856,6 +7856,44 @@ Some intro text.
         "blocked regex exists -- it mentions none of this project's own internal tool vocabulary"
     )
 
+    # --- context-budget cutoff null admission (2026-08-29, live incident): a sub-agent fetched 5
+    # real sources but hit context_budget_chars before reading them, then narrated a false "found
+    # nothing" -- padded past the 300-char gate by the engine-inserted banner itself plus injected
+    # FOLLOW-UP DIRECTIONS text. No length gate needed here either, same reasoning as the
+    # quota-blocked case: the bracketed banner is engine-inserted, never something the model's own
+    # prose could produce incidentally. ---
+    _context_budget_null_real_text = (
+        "\n\n[SYSTEM: task 'Japan_renewable_energy_policy_2026_regulation' reached its context "
+        "budget after gathering 5 real source(s) -- synthesis was wrapped up at that point. This "
+        "is NOT necessarily incomplete; only dispatch a follow-up if a specific, named gap is "
+        "evident, not as a default reaction to this marker.]I was unable to retrieve any "
+        "authoritative or semi-authoritative web pages on the specific renewable-energy adoption "
+        "regulation in Japan for 2026 before reaching the context budget limit, so I cannot "
+        "provide concrete source URLs or exact figures at this time.\n\n**FOLLOW-UP DIRECTIONS**\n\n"
+        "- Search the official Japanese Ministry of Economy, Trade and Industry (METI) website "
+        "for regulations that reference a 2026 update.\n"
+        "- Verify the name, date of enactment, and key provisions by locating the full text of "
+        "the law or its official summary on a government portal."
+    )
+    assert _is_null_finding_summary(_context_budget_null_real_text), (
+        "a context-budget cutoff whose own narration admits it found nothing must be excluded "
+        "despite being padded well over the 300-char length gate by the banner and follow-up "
+        "directions text"
+    )
+    _context_budget_real_content = (
+        "\n\n[SYSTEM: task 'Germany_renewable_energy_policy_2026' reached its context budget "
+        "after gathering 5 real source(s) -- synthesis was wrapped up at that point. This is NOT "
+        "necessarily incomplete; only dispatch a follow-up if a specific, named gap is evident, "
+        "not as a default reaction to this marker.]Germany's EEG funding regime expires at the "
+        "end of 2026. The market premium under Section 20 EEG applies from 1 August 2026 to 31 "
+        "January 2027, and the Mieterstromzuschlag rent-to-home subsidy under Section 21(3) EEG "
+        "runs the same period."
+    )
+    assert not _is_null_finding_summary(_context_budget_real_content), (
+        "a context-budget cutoff whose narration is genuine substantive content, not a null "
+        "admission, must not be blanket-excluded just because the cutoff banner is present"
+    )
+
     def _stub_gate_scenario():
         from tools.fs import _IN_MEMORY_FS
         _orig_ws5 = _config.cfg.get("settings", {}).get("workspace")
