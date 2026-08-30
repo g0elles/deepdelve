@@ -2244,6 +2244,38 @@ Some intro text.
               "Source-URL: https://gov.example.jp/2040-target\n\nJapan targets a 40 to 50 percent "
               "renewable energy share by 2040, up from 22.9 percent in 2023."),
          ]),
+        # check_missing_specific_item_per_facet's SHARED-section tier (2026-08-30, second
+        # live-calibration fix): mirrors the actual incident's real shape -- a "## Introduction"
+        # section mentions BOTH Germany and Japan (heading names neither, so it's NOT a dedicated
+        # section) and states Germany's regulation there, never restated under Germany's own
+        # heading. Pins two things at once: (1) a regulation living only in a shared section must
+        # still be found (Germany must NOT be wrongly flagged), and (2) it must be attributed to
+        # the entity it's actually adjacent to, not credited to Japan just because the same shared
+        # section also discusses Japan (a real false-negative this check's second fix attempt
+        # produced before nearest-preceding-entity attribution was added).
+        ("missing_specific_item_per_facet_shared_section", True, {"findings.md": _FINDINGS_OK,
+          "final_report.md": (
+              "## Introduction\n"
+              "- **Germany**: Germany's Renewable Energy Sources Act (EEG) mandates increased "
+              "funding for renewable energy generation nationwide. [gov](https://gov.example.de/eeg-act)\n"
+              "- **Japan**: Japan's FIT policy guarantees long-term purchase of renewable "
+              "electricity. [gov](https://gov.example.jp/2040-target)\n\n"
+              "## Germany's Renewable Energy Policy\n"
+              "- Germany continues to expand its renewable capacity under continued EEG support. "
+              "[gov](https://gov.example.de/eeg-act)\n\n"
+              "## Japan's Renewable Energy Policy\n"
+              "- Japan targets a 40 to 50 percent renewable energy share by 2040. "
+              "[gov](https://gov.example.jp/2040-target)\n")},
+         "missing_specific_item_per_facet", "requires a specific regulation per entity",
+         "Compare Germany and Japan's renewable energy policy, citing at least one specific "
+         "regulation for each.", [
+             ("https://gov.example.de/eeg-act", "sources/de_eeg.md",
+              "Source-URL: https://gov.example.de/eeg-act\n\nGermany's Renewable Energy Sources "
+              "Act (EEG) mandates increased funding for renewable energy generation nationwide."),
+             ("https://gov.example.jp/2040-target", "sources/jp_target.md",
+              "Source-URL: https://gov.example.jp/2040-target\n\nJapan targets a 40 to 50 percent "
+              "renewable energy share by 2040, up from 22.9 percent in 2023."),
+         ]),
         # Live case 2026-07-24: a report quoted a plausible-sounding sentence and attributed it to
         # a real, fetched source -- the underlying claim can be true and traceable while the exact
         # wording still never appears there, which content_level_check's term-overlap check alone

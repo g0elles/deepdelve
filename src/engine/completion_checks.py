@@ -13,6 +13,7 @@
 # run_completion_check), deliberately stay in engine/completion.py for this pass -- see
 # ROADMAP.md's completion.py entry for the rest of the plan.
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import NamedTuple, Optional
 
@@ -1454,6 +1455,58 @@ def check_duplicate_report_sections(ctx: Ctx) -> Optional[Verdict]:
     )
 
 
+def _facet_token_match(facet: frozenset, tokens: frozenset) -> bool:
+    """Shared token-match rule for check_missing_specific_item_per_facet's entity association --
+    exact match OR a shared >=4-char prefix in either direction, same convention
+    check_missing_query_facet's own _token_covered uses for the country/demonym relationship
+    ('German' vs 'Germany')."""
+    return any(
+        tok == e or (len(tok) >= 4 and len(e) >= 4 and (tok.startswith(e) or e.startswith(tok)))
+        for tok in facet for e in tokens
+    )
+
+
+# Bare capitalized-word extraction for check_missing_specific_item_per_facet below -- deliberately
+# NOT `_instruction_entities` (orchestrator.py), whose "skip a sentence's first word" heuristic
+# exists to avoid extracting generic nouns from freeform task instructions but is actively wrong
+# here: a regulation-naming sentence routinely starts with the entity itself ("Germany's Renewable
+# Energy Sources Act..."), and that heuristic would skip the exact mention this check needs.
+# Since the caller only ever compares against known facet tokens already pulled from the query,
+# over-collecting generic capitalized words is harmless. Applied only to markdown-emphasis-stripped
+# text (see check_missing_specific_item_per_facet's own docstring for why "**Germany**" otherwise
+# never matches at all).
+_CAPITALIZED_WORD_RE = re.compile(r'\b[A-Z][a-zA-Z]{2,}\b')
+
+
+def _facet_mentions(text: str) -> frozenset:
+    """Diacritic-folded capitalized-word tokens found ANYWHERE in text, in no particular order --
+    see _CAPITALIZED_WORD_RE above for why this doesn't reuse _instruction_entities."""
+    return frozenset(
+        unicodedata.normalize("NFKD", w).encode("ascii", "ignore").decode()
+        for w in _CAPITALIZED_WORD_RE.findall(text)
+    )
+
+
+def _nearest_preceding_facet(preceding_text: str, facets: list) -> Optional[int]:
+    """Index into `facets` of whichever required facet's entity the LAST (closest, rightmost)
+    capitalized word before a regulation match names -- used to attribute a regulation found in a
+    SHARED/comparative section (one discussing more than one facet) to the specific entity it's
+    actually about, instead of crediting every facet the section happens to mention. Confirmed
+    necessary live: a real intro sentence ("Germany's Renewable Energy Sources Act (EEG) sets
+    binding capacity targets, while Japan's FIT policy guarantees...") mentions BOTH entities, but
+    only Germany's is adjacent to the actual regulation name -- "which entities does this section
+    mention" (the naive first attempt) wrongly credited Japan too. Returns None if no capitalized
+    word precedes the match, or the nearest one names no required facet."""
+    matches = list(_CAPITALIZED_WORD_RE.finditer(preceding_text))
+    if not matches:
+        return None
+    nearest = _facet_mentions(matches[-1].group())
+    for i, f in enumerate(facets):
+        if _facet_token_match(f, nearest):
+            return i
+    return None
+
+
 def check_missing_specific_item_per_facet(ctx: Ctx) -> Optional[Verdict]:
     """A different axis from every other grounding check here: those all verify whether content
     that ALREADY EXISTS in the report is accurately cited; this instead asks whether the report
@@ -1469,15 +1522,39 @@ def check_missing_specific_item_per_facet(ctx: Ctx) -> Optional[Verdict]:
     Deliberately narrow, same discipline as check_missing_query_facet: only engages when the query
     states an EXPLICIT per-item requirement (_extract_required_item_type) AND unambiguously
     enumerates 2+ facets (_extract_required_facets, reused unchanged -- no need to re-derive the
-    entity list). For each facet, finds every h1-h3 heading-delimited section whose heading text
-    names that entity (`_instruction_entities` on the heading line, same convention
-    check_missing_query_facet already uses for task-instruction association) and checks whether
-    that section's combined body matches a named (_NAMED_REGULATION_RE) or numbered
-    (_REGULATION_ID_RE) regulation anywhere. A facet with NO heading-matched section at all is
-    skipped, not flagged -- that's check_missing_query_facet's job (total omission), and this
-    section-heading association is coarser than a per-sentence check: it would miss a regulation
-    named only in a shared/comparative section not headed by the entity's own name. Calibrate
-    against more real reports before relying on this for that shape (see
+    entity list).
+
+    TWO-TIER association per section, refined across three live-replay iterations against real
+    reports (2026-08-30), not designed up front:
+    1. A section whose HEADING names EXACTLY ONE required facet is a "dedicated" section -- trust
+       its WHOLE body for a regulation mention, no per-line entity co-occurrence required (a
+       dedicated section routinely refers to its own subject implicitly, e.g. "the Act mandates
+       ..." with no repeated country name nearby).
+    2. A section whose heading names ZERO or 2+ facets (a shared intro/comparison/conclusion
+       section) requires PROXIMITY: each regulation match found in it is attributed to whichever
+       facet's entity is the NEAREST preceding capitalized word (`_nearest_preceding_facet`), not
+       every facet the section happens to discuss.
+
+    Tier 2 exists because tier 1 alone (the first fix attempt: scan a section only if its HEADING
+    names the facet) wrongly flagged Germany as missing -- its regulation name lived only in a
+    shared "## Introduction" section's own prose, never restated under "## Germany"'s own heading.
+    Widening tier 1 to "any section MENTIONING the facet, anywhere" (the second fix attempt) then
+    overcorrected: that same Introduction section discusses both Germany and Japan, so Germany's
+    actual regulation mention got wrongly credited to Japan too, silencing the check entirely on
+    the same real report it was built to catch. Nearest-preceding-entity attribution is what
+    actually distinguishes the two entities within one shared sentence.
+
+    A facet mentioned in NO section at all (checked via `_facet_mentions` over the whole
+    document) is skipped, not flagged -- that's check_missing_query_facet's job (total omission).
+
+    Markdown emphasis (`*`/`_`) is stripped before all entity extraction: found live that a bold
+    mention ("**Germany**") is one token to a plain capitalized-word regex, and a token starting
+    with `**` never matches `[A-Z][a-zA-Z]{2,}` at all -- a heading's "## Introduction" only worked
+    by accident, since the space there keeps "##" and "Introduction" as separate tokens.
+
+    Still not exhaustive: a regulation named with no capitalized word of its entity anywhere
+    earlier in the same shared section (e.g. a table cell with no lead-in sentence) stays
+    unattributed. Calibrate against more real reports before fully trusting this (see
     session_status/CURRENT.md's own note on this open design risk).
 
     Builder-fixable, not Planner-only (unlike check_missing_query_facet): the fix here is "cite an
@@ -1496,24 +1573,32 @@ def check_missing_specific_item_per_facet(ctx: Ctx) -> Optional[Verdict]:
     if len(facets) < 2:
         return None
 
-    sections = split_into_heading_sections(ctx.content)
-    missing = []
-    for facet in facets:
-        body_parts = []
-        for sec in sections:
-            if not sec:
-                continue
-            heading_entities = _instruction_entities(sec[0])
-            if any(
-                tok == e or (len(tok) >= 4 and len(e) >= 4 and (tok.startswith(e) or e.startswith(tok)))
-                for tok in facet for e in heading_entities
-            ):
-                body_parts.append("\n".join(sec))
-        if not body_parts:
-            continue  # no dedicated section for this facet at all -- check_missing_query_facet's job
-        body = "\n".join(body_parts)
-        if not (_NAMED_REGULATION_RE.search(body) or _REGULATION_ID_RE.search(body)):
-            missing.append(" ".join(sorted(facet)))
+    clean_content = re.sub(r'[*_]', '', ctx.content)
+    mentioned = [_facet_token_match(f, _facet_mentions(clean_content)) for f in facets]
+    if not any(mentioned):
+        return None
+
+    covered = [False] * len(facets)
+    for sec in split_into_heading_sections(ctx.content):
+        if not sec:
+            continue
+        clean_sec = re.sub(r'[*_]', '', "\n".join(sec))
+        heading_facets = [
+            i for i, f in enumerate(facets)
+            if _facet_token_match(f, _facet_mentions(re.sub(r'[*_]', '', sec[0])))
+        ]
+        if len(heading_facets) == 1:
+            i = heading_facets[0]
+            if not covered[i] and (_NAMED_REGULATION_RE.search(clean_sec) or _REGULATION_ID_RE.search(clean_sec)):
+                covered[i] = True
+            continue
+        for pattern in (_NAMED_REGULATION_RE, _REGULATION_ID_RE):
+            for m in pattern.finditer(clean_sec):
+                i = _nearest_preceding_facet(clean_sec[:m.start()], facets)
+                if i is not None:
+                    covered[i] = True
+
+    missing = [" ".join(sorted(facets[i])) for i in range(len(facets)) if mentioned[i] and not covered[i]]
 
     if not missing:
         return None
