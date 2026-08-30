@@ -617,8 +617,18 @@ def find_unsupported_regulation_ids(text: str) -> list[str]:
 # versus _REGULATION_ID_RE above, which only matches NUMBERED identifiers ("Ley 1906 de 2021",
 # "Directive 2014/55/EU") and would not match a named act at all. Feeds
 # check_missing_specific_item_per_facet (engine/completion_checks.py, 2026-08-30 live incident).
+#
+# The negative lookahead after "Law" (2026-08-30, live calibration): a real report cited a source
+# titled "Borderless Business Law Office Japan 2026" as its own link text, and the bare "...Law\b"
+# alternative matched "Borderless Business Law" wholesale, treating a LAW FIRM'S NAME as if it were
+# a named regulation -- this wrongly satisfied Japan's per-facet requirement in
+# check_missing_specific_item_per_facet even though the report never actually named one. Only
+# "Law" needs the guard (a firm/office self-citing as "... Law Office/Firm/Group..." is a common
+# citation-title shape; "... Act Office" or similar isn't a realistic false-positive shape for the
+# other keywords, so they're left unguarded rather than adding untested exclusions).
 _NAMED_REGULATION_RE = re.compile(
-    r'\b(?:[A-Z][a-zA-Z]*\s+){1,6}(?:Act|Law|Code|Directive|Statute|Ordinance)\b'
+    r'\b(?:[A-Z][a-zA-Z]*\s+){1,6}(?:Act|Code|Directive|Statute|Ordinance|'
+    r'Law(?!\s+(?:Office|Firm|Group|School|LLP|LLC|Partners|Associates)\b))\b'
     r'(?:\s*\([A-Z]{2,6}\))?'
 )
 

@@ -2301,6 +2301,32 @@ Some intro text.
               "Source-URL: https://gov.example.jp/2040-target2\n\nJapan targets a 40 to 50 percent "
               "renewable energy share by 2040, up from 22.9 percent in 2023."),
          ]),
+        # check_missing_specific_item_per_facet's law-FIRM-name false positive (2026-08-30,
+        # fourth live-calibration fix, found on a FIFTH real report): _NAMED_REGULATION_RE's bare
+        # "...Law\b" alternative matched a cited source's own title, "Borderless Business Law
+        # Office Japan 2026" -> "Borderless Business Law", as if a law FIRM's name were a named
+        # regulation -- wrongly satisfying Japan's requirement even though the report never named
+        # an actual regulation for Japan. Fixed with a negative lookahead excluding "Law" followed
+        # by a firm/office suffix (Office/Firm/Group/School/LLP/LLC/Partners/Associates).
+        ("missing_specific_item_per_facet_law_firm_name", True, {"findings.md": _FINDINGS_OK,
+          "final_report.md": (
+              "## Germany's Renewable Energy Policy\n"
+              "- Germany's Renewable Energy Sources Act (EEG) mandates increased funding for "
+              "renewable energy generation nationwide. [gov](https://gov.example.de/eeg-act3)\n\n"
+              "## Japan's Renewable Energy Policy\n"
+              "- Japan will exclude large ground-mounted solar from its FIT/FIP system starting "
+              "fiscal 2027. [Borderless Business Law Office Japan 2026]"
+              "(https://gov.example.jp/2040-target3)\n")},
+         "missing_specific_item_per_facet", "requires a specific regulation per entity",
+         "Compare Germany and Japan's renewable energy policy, citing at least one specific "
+         "regulation for each.", [
+             ("https://gov.example.de/eeg-act3", "sources/de_eeg3.md",
+              "Source-URL: https://gov.example.de/eeg-act3\n\nGermany's Renewable Energy Sources "
+              "Act (EEG) mandates increased funding for renewable energy generation nationwide."),
+             ("https://gov.example.jp/2040-target3", "sources/jp_target3.md",
+              "Source-URL: https://gov.example.jp/2040-target3\n\nJapan will exclude large "
+              "ground-mounted solar from its FIT/FIP system starting fiscal 2027."),
+         ]),
         # Live case 2026-07-24: a report quoted a plausible-sounding sentence and attributed it to
         # a real, fetched source -- the underlying claim can be true and traceable while the exact
         # wording still never appears there, which content_level_check's term-overlap check alone
