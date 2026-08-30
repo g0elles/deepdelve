@@ -3126,6 +3126,121 @@ Some intro text.
 
     contextvars.copy_context().run(_nli_verify_scenario)
 
+    # --- Editorializing MiniCheck classifier check (2026-08-29/30, RAGTruth-informed whack-a-mole
+    # root-cause fix): fifth grounding layer, opt-in (editorial_detection_check default False).
+    # Real minicheck model isn't loaded in this fast suite -- mocked at
+    # utils.grounding._get_editorial_detector to test WIRING correctness (config toggle -> ordering
+    # after nli_verify/topical_relevance_check -> Verdict routing -> quarantine -> nudge phrase,
+    # AND the _HEDGE_MARKER_RE exception), same boundary this project already draws for
+    # nli_unsupported_problem/topical_relevance_problem above. ---
+    def _editorializing_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        from tools.core import tool_quotas_ctx as q_ctx
+        from unittest.mock import patch
+        import utils.grounding as _grounding_mod
+
+        class _FakeDetector:
+            def __init__(self, labels):
+                self._labels = labels
+            def score(self, docs, claims):
+                return list(self._labels), [0.0] * len(claims), None, None
+
+        _orig_ws7 = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
+        # editorial_detection_check must be explicitly on (opt-in, default False); nli_verify/
+        # topical_relevance_check must be off so execution actually reaches editorializing_problem
+        # instead of falling through to a REAL, unmocked model load first, same anti-pattern the
+        # nli_verify scenario's own topical_relevance_check:False guard exists to prevent.
+        _orig_gc7 = _config.cfg.get("settings", {}).get("grounding_check")
+        _config.cfg["settings"]["grounding_check"] = {
+            "nli_verify": False, "topical_relevance_check": False,
+            "editorial_detection_check": True,
+        }
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            _IN_MEMORY_FS.clear()
+            reset_fetched_urls()
+            _edt_src = "https://gov.example.co/editorial-test-page"
+            _edt_source_text = ("Source-URL: " + _edt_src + "\n\n"
+                                 + "The National Cyber Strategy was formally adopted in 2020 "
+                                   "following extensive review. " * 3)
+            record_fetched_url(_edt_src, filename="sources/editorial_page.md")
+            _IN_MEMORY_FS["sources/editorial_page.md"] = _edt_source_text
+            _IN_MEMORY_FS["findings.md"] = f"- hallado ({_edt_src})"
+            claim_line = f"- The National Cyber Strategy launched in 2020, signaling a decisive shift toward offensive cyber posture [gov]({_edt_src})"
+            _IN_MEMORY_FS["final_report.md"] = claim_line
+            q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5}})
+
+            # Detector labels the claim unsupported (0) -> editorializing verdict, quarantined,
+            # distinctive nudge.
+            with patch.object(_grounding_mod, "_get_editorial_detector", return_value=_FakeDetector([0])):
+                with tempfile.TemporaryDirectory() as tmpdir7:
+                    rs = RunState(tmpdir7)
+                    run_state_ctx.set(rs)
+                    msgs = []
+                    should_retry, _ = _asyncio.run(run_completion_check(
+                        query="q", current_input="q", run_state=rs, notify=msgs.append))
+                    recorded = rs.data["completion_check_attempts"][-1]["problem"]
+                    assert recorded == "editorializing", (recorded, msgs)
+                    assert should_retry
+                    assert "own added interpretation" in msgs[-1] or "does NOT actually say" in msgs[-1], msgs
+
+            # Detector labels the claim supported (1) -> clean pass, confirming the new check
+            # doesn't regress the existing clean-pass path once wired in.
+            with patch.object(_grounding_mod, "_get_editorial_detector", return_value=_FakeDetector([1])):
+                with tempfile.TemporaryDirectory() as tmpdir8:
+                    rs = RunState(tmpdir8)
+                    run_state_ctx.set(rs)
+                    msgs = []
+                    should_retry, _ = _asyncio.run(run_completion_check(
+                        query="q", current_input="q", run_state=rs, notify=msgs.append))
+                    recorded = rs.data["completion_check_attempts"][-1]["problem"]
+                    assert recorded is None, (recorded, msgs)
+                    assert not should_retry
+
+            # Detector unavailable (fails open) -> clean pass, never crashes the run.
+            with patch.object(_grounding_mod, "_get_editorial_detector", return_value=None):
+                with tempfile.TemporaryDirectory() as tmpdir9:
+                    rs = RunState(tmpdir9)
+                    run_state_ctx.set(rs)
+                    msgs = []
+                    should_retry, _ = _asyncio.run(run_completion_check(
+                        query="q", current_input="q", run_state=rs, notify=msgs.append))
+                    recorded = rs.data["completion_check_attempts"][-1]["problem"]
+                    assert recorded is None, (recorded, msgs)
+                    assert not should_retry
+
+            # Hedge exception (2026-08-30 fix): detector labels the claim unsupported (0), but the
+            # claim itself carries an HONEST hedge marker ("no subsequent source confirms") --
+            # must NOT be flagged. This is the false-positive pattern found live during real
+            # MiniCheck calibration, not a hypothetical case.
+            _hedge_claim_line = f"- The National Cyber Strategy launched in 2020; no subsequent source confirms this. [gov]({_edt_src})"
+            _IN_MEMORY_FS["final_report.md"] = _hedge_claim_line
+            with patch.object(_grounding_mod, "_get_editorial_detector", return_value=_FakeDetector([0])):
+                with tempfile.TemporaryDirectory() as tmpdir10:
+                    rs = RunState(tmpdir10)
+                    run_state_ctx.set(rs)
+                    msgs = []
+                    should_retry, _ = _asyncio.run(run_completion_check(
+                        query="q", current_input="q", run_state=rs, notify=msgs.append))
+                    recorded = rs.data["completion_check_attempts"][-1]["problem"]
+                    assert recorded is None, (recorded, msgs)
+                    assert not should_retry
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            if _orig_ws7 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws7
+            if _orig_gc7 is None:
+                _config.cfg["settings"].pop("grounding_check", None)
+            else:
+                _config.cfg["settings"]["grounding_check"] = _orig_gc7
+
+    contextvars.copy_context().run(_editorializing_scenario)
+
     # --- extract_salient_terms: bare-integer-percent branch was silently unmatchable
     # (2026-08-25, found while building an unrelated test fixture). `\b\d+%\b` requires a
     # word/non-word transition on BOTH sides of the match, but "%" is itself non-word, so "12% "
@@ -5201,6 +5316,13 @@ Some intro text.
     assert "propagated_ungrounded" in _bfp_check, (
         "2026-08-29 fix: this problem must have a real Builder-dispatch remediation path, not "
         "just a Planner nag with no fix mechanism")
+
+    from engine.completion import GROUNDING_CHECKS as _gc_check, check_editorializing_content as _cec_check
+    assert "editorializing" in _bfp_check, (
+        "2026-08-29 fix: editorializing must be Builder-fixable, same as its nli_unsupported/"
+        "topical_mismatch siblings")
+    assert _cec_check in _gc_check, (
+        "2026-08-29 fix: check_editorializing_content must be registered in GROUNDING_CHECKS")
 
     # --- Builder Build->Review->Fix dispatch loop (see engine/completion.py's
     # _dispatch_writer_review_fix / _BUILDER_FIXABLE_PROBLEMS): for artifact-authoring problems,

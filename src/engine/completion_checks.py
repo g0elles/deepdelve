@@ -1681,6 +1681,27 @@ def check_topical_mismatch(ctx: Ctx) -> Optional[Verdict]:
     )
 
 
+def check_editorializing_content(ctx: Ctx) -> Optional[Verdict]:
+    """Fifth grounding layer (2026-08-29, RAGTruth-informed): the citation is real, shares terms
+    with its source, isn't contradicted, and is topically on-subject -- but a span classifier
+    finds part of the claim the source's own passage simply never states. Distinct from
+    check_nli_unsupported (CONTRADICTION) and check_topical_mismatch (wrong subject entirely):
+    here the model has added its own inference/interpretation and attributed it to the source as
+    if it were a stated fact -- root-caused this session as the shared cause behind a whack-a-mole
+    pattern across claim_unsupported/topical_mismatch/uncited_claims/non_url_citation, each
+    catching only the specific downstream SHAPE one rewrite happened to take. UNVALIDATED against
+    live traffic (opt-in, settings.grounding_check.editorial_detection_check default False) -- see
+    session_status/CURRENT.md's calibration note."""
+    gp = ctx.grounding_problem
+    if not (gp and gp.startswith("editorializing")):
+        return None
+    return Verdict(
+        "editorializing",
+        f"`{ctx.req_artifact}` cites a real, on-topic, uncontradicted source, but part of the claim appears to be the model's own added interpretation, not something the source actually states ({gp}).",
+        f"SYSTEM WARNING: '{ctx.req_artifact}' attaches a real citation to a claim that includes content the cited source does NOT actually say ({gp}) -- this looks like your own inference or interpretation being presented as if the source stated it. The previous draft has been moved aside. Rewrite the claim to state ONLY what the cited source actually says, or if you want to include your own analysis, present it explicitly as your own reasoning rather than attributing it to the source.{_redelegate_directive(ctx)}",
+    )
+
+
 def check_uncited_claims(ctx: Ctx) -> Optional[Verdict]:
     """The report's citations are all real, but its claims are structurally decoupled from
     them — figure-bearing claim lines with no citation on the line (e.g. a table of numbers

@@ -460,6 +460,26 @@ settings:
     # that small-sample measurement, not a 0-1 confidence reading -- revisit once this check has
     # fired on real report data. Fails open if the model isn't available.
     excluded_topic_semantic_threshold: 0.001
+    # Fifth layer, root-caused 2026-08-29 from a real whack-a-mole pattern: a claim that passes
+    # term-overlap, entailment (not contradicted), AND topical relevance (right subject) can still
+    # contain the model's OWN editorial interpretation/inference attributed to the source as if it
+    # were a stated fact -- RAGTruth (arXiv:2401.00396)'s "Subtle Introduction of Baseless
+    # Information," confirmed by full read of that paper to have no cheap deterministic detector in
+    # the literature. LettuceDetect was tried first and DISCARDED (0/1 true positive, up to 5/5
+    # false positives on the one real calibration incident, on both its base and large checkpoints
+    # -- see session_status/CURRENT.md). Now uses MiniCheck (Tang et al., "Efficient Fact-Checking
+    # of LLMs on Grounding Documents"), a DeBERTa-v3-Large classifier purpose-built for exactly
+    # this claim-vs-document task (not RAG-QA span detection) -- see grounding.py::
+    # _get_editorial_detector for why the official `minicheck` pip package is used rather than a
+    # reimplementation, and _HEDGE_MARKER_RE for the fix needed after MiniCheck flagged the
+    # model's own HONEST hedge language ("unit inferred", "no subsequent source confirms") as
+    # false positives during calibration. CPU-only, same VRAM-isolation policy as every model
+    # above. Default OFF: calibrated against exactly ONE real incident as of introduction (a
+    # supplementary 11-directory search for more samples found none) -- see
+    # session_status/CURRENT.md's calibration note before flipping this to true. Fails open if the
+    # model/dependency isn't available. Real, non-trivial CPU latency per call (~10-15s per claim
+    # in calibration -- a full DeBERTa-v3-Large pass, heavier than the NLI/reranker checks above).
+    editorial_detection_check: false
     # Fifth layer, specific to academic (Author, Year) citations that already have a resolved URL
     # (a bare non-URL citation is already caught by non_url_citation_check below): calls Semantic
     # Scholar's public paper-search API (no key needed for this tier) to check whether the cited

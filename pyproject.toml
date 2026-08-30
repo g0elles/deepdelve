@@ -55,7 +55,23 @@ dependencies = [
     # baggage the way sentence-transformers' own torch dependency has. Fails open at runtime if
     # unavailable (see agent_routing.py::_load) — same philosophy as every other soft-dependency
     # check in this codebase.
-    "scikit-learn>=1.7.0,<2.0.0"
+    "scikit-learn>=1.7.0,<2.0.0",
+    # Fifth grounding layer (2026-08-29/30) — utils/grounding.py::editorializing_problem
+    # (settings.grounding_check.editorial_detection_check, default False/opt-in) — root-caused
+    # this session as the fix for a whack-a-mole pattern across several existing checks (see
+    # completion_checks.py::check_editorializing_content's docstring). LettuceDetect was tried
+    # FIRST and DISCARDED (0/1 true positive, up to 5/5 false positives on the one real
+    # calibration incident — see session_status/CURRENT.md); MiniCheck (Tang et al.) is
+    # purpose-built for exactly this claim-vs-document task and correctly caught the real
+    # incident's target (1/1), though still needs the hedge-exception fix for honest uncertainty
+    # language (grounding.py::_HEDGE_MARKER_RE). No PyPI release — installed from the authors'
+    # own GitHub via a pip VCS reference. `accelerate` is a real, separate requirement (NOT a
+    # transitive dependency of `minicheck` itself — confirmed live: omitting it throws a
+    # `device_map` ValueError at model load). Fails open at runtime if unavailable, same
+    # philosophy as sentence-transformers above. UNVALIDATED AT SCALE as of introduction —
+    # calibrated against exactly ONE real incident — see session_status/CURRENT.md.
+    "minicheck @ git+https://github.com/Liyan06/MiniCheck.git@main",
+    "accelerate>=1.0.0,<2.0.0"
 ]
 
 [project.optional-dependencies]

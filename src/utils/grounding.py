@@ -1,3 +1,4 @@
+import os
 import re
 import time
 from typing import Optional
@@ -1354,6 +1355,160 @@ def topical_relevance_problem(report: str) -> str | None:
     return f"topical_mismatch:{', '.join(irrelevant[:3])}"
 
 
+def _all_citation_claim_pairs(report: str) -> list[tuple[str, str, str]]:
+    """Sibling to _grounded_claim_pairs, built specifically for editorializing_problem
+    (2026-08-29): every OTHER model-based check in this module deliberately runs only on lines
+    that already passed extract_salient_terms term-overlap, because entailment/topical-relevance
+    judgments need a shared anchor to compare against. Editorializing detection is the opposite
+    case -- confirmed live via direct calibration against a real incident's exact bad sentences
+    ("...which is atypical compared to standard tiered structures", "...but no subsequent source
+    confirms that these events occurred"): pure editorial commentary routinely carries NO number or
+    proper-noun of its own (extract_salient_terms returns an empty set for both), so
+    _grounded_claim_pairs' term-overlap gate silently excludes exactly the highest-risk sentences
+    before a classifier ever sees them -- a zero-anchor claim is not evidence of nothing to check,
+    it's the shape editorializing itself tends to take. This function yields a (window, claim,
+    citation) triple for EVERY claim segment with a resolvable citation, with no term-overlap gate
+    at all -- LettuceDetect is a semantic span classifier and needs no lexical anchor the way the
+    NLI/reranker cross-encoders do.
+
+    window here is NOT _select_relevant_window's best-overlapping paragraph (that helper itself
+    requires nonzero claim_terms to score against, so it would return None on exactly the
+    zero-anchor claims this function exists for) -- it's simply the cited source's own body,
+    capped at a generous sanity ceiling (not tightly truncated): MiniCheck (the classifier this
+    feeds, 2026-08-30) does its own internal sentence-chunking across its max_model_len and
+    aggregates via max-over-chunks, so a large hand-truncation here would only throw away
+    evidence its own algorithm is built to handle."""
+    prose = split_prose_from_sources(report)
+    fetched = _fetched_url_files()
+    ref_map = parse_academic_references(report)
+
+    pairs = []  # (window, claim_line_text, display_citation)
+    for line in prose.splitlines():
+        for segment in decompose_claim_segments(line):
+            if _is_citation_only_line(segment):
+                continue
+            display = (extract_cited_urls(segment) + [m.group(0) for m in _PARENTHETICAL_CITATION_RE.finditer(segment)])
+            if not display:
+                continue
+            # Strip the FULL markdown link construct ("[Title](url)"), not just the bare URL --
+            # found live during calibration (2026-08-29): leaving "[Reslink Energy]()" residue in
+            # the text handed to the span classifier produced flagged spans on the citation's OWN
+            # bracket/paren syntax, not on genuine unsupported content. _grounded_claim_pairs above
+            # only strips the bare URL because its downstream consumers (NLI/reranker) score
+            # against TERM overlap, where this residue is comparatively harmless; a token-level
+            # span classifier has no such tolerance.
+            stripped_segment = re.sub(r'\[[^\]]*\]\([^)]*\)', '', segment)
+            stripped_segment = re.sub(r'https?://[^\s\)\]\}"\'>【】]+', '', stripped_segment)
+            stripped_segment = _PARENTHETICAL_CITATION_RE.sub('', stripped_segment).strip()
+            if not stripped_segment:
+                continue
+            files = _line_cited_files(segment, fetched, ref_map)
+            if not files:
+                continue
+            for fn in files:
+                content = _source_body(get_workspace_file_content(fn) or "")
+                if len(content.strip()) < 50:
+                    continue
+                # 50000-char cap matches this project's own established convention for "how much
+                # raw source text is reasonable to hand a model at once" (config_template.yaml's
+                # context_budget_chars). Found live (2026-08-30): a tighter 20000-char cap silently
+                # flipped a genuinely well-supported real claim to a false positive (0.88 -> 0.044
+                # support probability) against a real 44640-char fetched page -- the claim's
+                # anchoring keyword appeared within the first 20000 chars, but MiniCheck's own
+                # chunk-and-max-aggregate algorithm needed later chunks the truncation discarded to
+                # confirm it. Still capped, not unbounded: a real latency/DoS guard against a
+                # pathological multi-MB fetch, matching every other size cap in this module.
+                pairs.append((content[:50000], stripped_segment, display[0]))
+                break  # one resolvable source is enough evidence to classify this segment against
+    return pairs
+
+
+_editorial_detector = None
+_editorial_load_failed = False
+
+
+def _get_editorial_detector():
+    """Lazy, process-wide singleton -- same pattern as _get_nli_model/_get_topical_relevance_model.
+    Fifth grounding layer (2026-08-29/30, RAGTruth arXiv:2401.00396's "Subtle Introduction of
+    Baseless Information" -- see this session's research): catches the model attaching its own
+    editorial commentary/inference to a real citation as if the source said it, a distinct failure
+    from entailment CONTRADICTION (nli_unsupported) or topical UNRELATEDNESS (topical_mismatch) --
+    here the claim is neither contradicted nor off-topic, it simply adds unsupported content the
+    source never stated.
+
+    MiniCheck (Tang et al., "MiniCheck: Efficient Fact-Checking of LLMs on Grounding Documents"),
+    NOT LettuceDetect (tried first, DISCARDED -- see session_status/CURRENT.md: 0/1 true positive,
+    up to 5/5 false positives on the one real calibration incident, on both its base and large
+    checkpoints). MiniCheck is purpose-built for exactly this claim-vs-document support judgment,
+    unlike LettuceDetect's RAG-QA span-detection objective. Uses the OFFICIAL `minicheck` pip
+    package (git-installed, no PyPI release), not a hand-rolled reimplementation of its scoring
+    algorithm -- confirmed live (2026-08-30) that a manual reimplementation of MiniCheck's own
+    documented (doc, claim) concatenation + sentence-chunking recipe produced garbage (0.094 on an
+    obvious verbatim quote that should score near 1.0), while the official package, correctly
+    configured, scored that same case at 0.963. `CUDA_VISIBLE_DEVICES=""` forces CPU (this process
+    never wants CUDA for anything -- same VRAM-isolation policy as every model in this module);
+    the `minicheck` package's own device_map="auto" would otherwise grab GPU/VRAM if visible.
+    Fails OPEN (returns None) on any load error (missing package, missing nltk punkt data, no
+    network for first-run download), same philosophy as every other check here."""
+    global _editorial_detector, _editorial_load_failed
+    if _editorial_detector is not None or _editorial_load_failed:
+        return _editorial_detector
+    try:
+        os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
+        from minicheck.minicheck import MiniCheck
+        _editorial_detector = MiniCheck(model_name="deberta-v3-large")
+    except Exception:
+        _editorial_load_failed = True
+    return _editorial_detector
+
+
+# Claims where the model is HONESTLY flagging its own uncertainty about a future-dated or
+# ambiguous source detail -- the opposite behavior from editorializing (smuggling unsupported
+# content in AS fact). Found live (2026-08-30 calibration): MiniCheck flagged both "12 ct/kWh
+# (unit inferred)" and "...no subsequent source confirms whether this occurred" as unsupported
+# (label 0, the same signal used for genuine editorializing), even though both are the CORRECT,
+# honest way to write an uncertain claim. Same style/spirit as _NULL_FINDING_RE/_QUOTA_BLOCKED_RE
+# -- a narrow, conservative vocabulary match, not a broad exemption.
+_HEDGE_MARKER_RE = re.compile(
+    r"\b(?:unit (?:inferred|implied|assumed)"
+    r"|no (?:subsequent|later|further) source[s]? (?:confirms?|corroborates?)"
+    r"|(?:cannot|unable to) (?:be )?(?:confirm(?:ed)?|verify|verified)"
+    r"|pending confirmation|not yet confirmed|remains unconfirmed)\b",
+    re.IGNORECASE,
+)
+
+
+def editorializing_problem(report: str) -> str | None:
+    """Fifth-stage grounding check: for each (window, claim, citation) triple
+    _all_citation_claim_pairs matched (own docstring explains why this check deliberately does NOT
+    reuse _grounded_claim_pairs' term-overlap gate), does MiniCheck judge the claim as NOT
+    supported by the source's own content -- the model's own inference/interpretation smuggled in
+    as if it were sourced fact -- while the claim itself carries no honest hedge marker of its own
+    (_HEDGE_MARKER_RE)? UNVALIDATED at scale as of introduction: calibrated against exactly ONE
+    real incident (opt-in via settings.grounding_check.editorial_detection_check, default False) --
+    see session_status/CURRENT.md's calibration note before flipping the default. Fails open
+    (returns None) if the model isn't available, same as every check in this module."""
+    pairs = _all_citation_claim_pairs(report)
+    if not pairs:
+        return None
+
+    detector = _get_editorial_detector()
+    if detector is None:
+        return None
+
+    pred_label, _raw_prob, _, _ = detector.score(
+        docs=[window for window, _, _ in pairs],
+        claims=[claim for _, claim, _ in pairs],
+    )
+    flagged = [
+        display for (label, (_, claim, display)) in zip(pred_label, pairs)
+        if label == 0 and not _HEDGE_MARKER_RE.search(claim)
+    ]
+    if not flagged:
+        return None
+    return f"editorializing:{', '.join(flagged[:3])}"
+
+
 def excluded_topic_semantic_hit(excluded_topics: set, heading_text: str) -> str | None:
     """Cross-lingual backstop for `check_excluded_topic` (completion_checks.py), which otherwise
     only catches an excluded topic by literal substring match against the query's own wording.
@@ -1658,6 +1813,11 @@ async def real_grounding_problem(content: str) -> str | None:
 
     if gc_cfg.get("topical_relevance_check", True):
         problem = topical_relevance_problem(content)
+        if problem:
+            return problem
+
+    if gc_cfg.get("editorial_detection_check", False):
+        problem = editorializing_problem(content)
         if problem:
             return problem
 

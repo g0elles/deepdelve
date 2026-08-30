@@ -47,6 +47,7 @@ from engine.completion_checks import (  # noqa: F401 — re-exported for test_st
     check_duplicate_report_sections, check_claim_unsupported, check_no_urls,
     check_regulation_unsupported, check_specific_figure_unsupported, check_quote_paraphrased,
     check_non_url_citation, check_stub_source, check_nli_unsupported, check_topical_mismatch,
+    check_editorializing_content,
     check_uncited_claims, check_excluded_topic, check_cross_source_contradiction,
     check_propagated_ungrounded_content, check_not_grounded,
     find_duplicate_report_sections, find_duplicate_heading_text, _findings_facet_coverage, _facet_coverage,
@@ -137,6 +138,10 @@ GROUNDING_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
     check_non_url_citation,
     check_nli_unsupported,
     check_topical_mismatch,
+    # Fifth grounding layer, same tier as its two siblings above (term-overlap passed, not
+    # contradicted, not topically unrelated) -- see its own docstring for the whack-a-mole
+    # root-cause this closes (2026-08-29). UNVALIDATED, opt-in (config default False).
+    check_editorializing_content,
     check_uncited_claims,
     check_excluded_topic,
     check_cross_source_contradiction,
@@ -191,7 +196,7 @@ _BUILDER_FIXABLE_PROBLEMS = ("missing_artifact", "not_grounded", "claim_unsuppor
                              "non_url_citation", "regulation_unsupported",
                              "specific_figure_unsupported", "quote_paraphrased",
                              "stub_source", "duplicate_report_sections",
-                             "nli_unsupported", "topical_mismatch", "uncited_claims",
+                             "nli_unsupported", "topical_mismatch", "editorializing", "uncited_claims",
                              "excluded_topic_present", "cross_source_contradiction",
                              "report_underuses_findings", "report_style_violation",
                              # Added 2026-08-29, live incident: previously had no fix path at all
