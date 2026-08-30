@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src
 from engine.orchestrator import (
     _extract_excluded_topics, _lacks_concrete_subject, _extract_follow_up_directions,
     _strip_follow_up_directions,
-    _ring_fenced_deadline, _looks_like_renamed_task,
+    _ring_fenced_deadline, _looks_like_renamed_task, _extract_required_facets,
 )
 from engine.completion import (
     _CUTOFF_ONLY_SUMMARY_RE, _reorder_findings_for_position_bias, _find_propagated_bad_content,
@@ -30,6 +30,25 @@ def main():
     assert any("vr/ar-education" in t for t in topics), topics
     assert _extract_excluded_topics("How to avoid mosquito bites in the tropics") == set()
     assert _extract_excluded_topics("Compare React and Vue") == set()
+
+    # --- required-facet extraction (2026-08-29, feeds check_missing_query_facet): conservative,
+    # cue-phrase-gated -- must fire on an unambiguous enumeration, stay silent on incidental
+    # co-occurring proper nouns or a single-subject "compare ... to" phrasing. ---
+    assert len(_extract_required_facets("Compare Lisbon and Mexico City rent prices.")) == 2
+    assert len(_extract_required_facets("Lisbon vs Mexico City rent")) == 2
+    assert len(_extract_required_facets("For each of Brazil, Colombia, and Peru, find GDP.")) == 3
+    assert len(_extract_required_facets("Both Python and Rust have strong async support.")) == 2
+    assert len(_extract_required_facets(
+        "Compare the vector search capabilities of Elasticsearch and PostgreSQL's pgvector "
+        "extension.")) == 2
+    assert _extract_required_facets(
+        "Research trends in tech hubs like Lisbon, Berlin, and Mexico City.") == [], (
+        "incidental co-occurring proper nouns with no cue phrase must never be treated as "
+        "required facets")
+    assert _extract_required_facets(
+        "How does inflation in Colombia compare to its own historical CPI data?") == [], (
+        "a single-subject 'compare ... to' phrasing must not fabricate a second facet")
+    assert _extract_required_facets("Who created the Python programming language?") == []
 
     # --- unresolved-referent detection (live case: 'its' resolved to Microsoft, not Python) ---
     assert _lacks_concrete_subject("Summarize its headline feature.")
@@ -2073,6 +2092,18 @@ Some intro text.
              {"task_name": "niche_manufacturing", "source_url": "https://gov.example.co/mfg",
               "summary": "real content, no warning marker.", "depth": 1},
          ]),
+        # check_missing_query_facet (2026-08-29): query unambiguously enumerates two facets
+        # (Lisbon, Mexico City) via "compare X and Y" -- only a Lisbon task was ever dispatched
+        # (real, non-null-summary source, so check_not_delegated/check_requested_count_shortfall
+        # both stay silent), so Mexico City is caught as never mentioned by any delegated task.
+        ("missing_query_facet", True, {}, "missing_query_facet", "no delegated task mentions",
+         "Compare rents in Lisbon and Mexico City.", [], [
+             {"task_name": "lisbon_rent", "source_url": "https://gov.example.co/lisbon-rent",
+              "summary": "real content, no warning marker.", "depth": 1},
+         ],
+         {"dispatched_tasks": [
+             {"task_name": "lisbon_rent", "instructions": "Research rent prices in Lisbon."},
+         ]}),
         # check_task_verification_flagged (2026-07-26, VERIMAP-inspired): fires before findings.md
         # even needs to exist -- reads the per-task ledger _update_task_verification maintains from
         # run_state.data["findings"] alone. 'task_kept' has a real citable finding (verified);
@@ -2356,6 +2387,61 @@ Some intro text.
             assert check_requested_count_shortfall(_ctx_with("Identify 4 to 6 niches.", 4)) is None
 
     contextvars.copy_context().run(_requested_count_shortfall_boundary_scenario)
+
+    # --- check_missing_query_facet boundary conditions (2026-08-29) -- the matrix row above pins
+    # the full run_completion_check integration; this pins the check's own conservative gates and
+    # the exclusion-clause false-positive guard directly. ---
+    def _missing_query_facet_boundary_scenario():
+        from engine.completion import check_missing_query_facet
+
+        with tempfile.TemporaryDirectory() as tmpdir_mqf:
+            def _ctx_with(query: str, dispatched: list) -> "Ctx":
+                rs = RunState(tmpdir_mqf + f"/{abs(hash((query, len(dispatched))))}")
+                rs.set_query(query)
+                rs.data["dispatched_tasks"] = dispatched
+                return Ctx(req_artifact="final_report.md", attempt=0, max_attempts=8,
+                           delegated=True, files=[], content=None, quotas={}, run_state=rs)
+
+            lisbon_only = [{"task_name": "lisbon_rent",
+                            "instructions": "Research rent prices in Lisbon."}]
+            both_covered = lisbon_only + [{"task_name": "mexico_city_rent",
+                            "instructions": "Research rent prices in Mexico City."}]
+
+            # (a) Query names fewer than 2 unambiguous facets -> never engages, regardless of
+            # what's dispatched.
+            assert check_missing_query_facet(
+                _ctx_with("Research Colombian B2B niches.", lisbon_only)) is None
+
+            # (b) 2+ facets named, but nothing dispatched yet -> silent, check_not_delegated owns
+            # that state instead.
+            assert check_missing_query_facet(
+                _ctx_with("Compare rents in Lisbon and Mexico City.", [])) is None
+
+            # (c) Both facets covered -> silent.
+            assert check_missing_query_facet(
+                _ctx_with("Compare rents in Lisbon and Mexico City.", both_covered)) is None
+
+            # (d) One facet missing -> fires, naming the missing facet.
+            v = check_missing_query_facet(
+                _ctx_with("Compare rents in Lisbon and Mexico City.", lisbon_only))
+            assert v is not None and v.problem == "missing_query_facet", v
+            assert "Mexico" in v.inject, v.inject
+
+            # (e) Exclusion-clause guard: a task instruction that restates the missing facet only
+            # to rule it OUT of scope must not count as covering it.
+            excluded_mexico = lisbon_only + [{"task_name": "scope_note",
+                "instructions": "Focus on Lisbon; excluding Mexico City, that's out of scope here."}]
+            v2 = check_missing_query_facet(
+                _ctx_with("Compare rents in Lisbon and Mexico City.", excluded_mexico))
+            assert v2 is not None and v2.problem == "missing_query_facet", v2
+
+            # (f) Escalated wording on the second consecutive occurrence.
+            ctx3 = _ctx_with("Compare rents in Lisbon and Mexico City.", lisbon_only)
+            ctx3.run_state.data["completion_check_attempts"] = [{"problem": "missing_query_facet"}]
+            v3 = check_missing_query_facet(ctx3)
+            assert v3 is not None and "after a prior warning" in v3.inject, v3.inject
+
+    contextvars.copy_context().run(_missing_query_facet_boundary_scenario)
 
     # --- check_no_urls/check_non_url_citation/check_uncited_claims: style-aware citation-format
     # guidance (2026-08-24 live incident). Before this fix, all three hardcoded standard style's

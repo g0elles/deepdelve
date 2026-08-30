@@ -38,6 +38,7 @@ from engine.artifact_salvage import (
 from engine.completion_checks import (  # noqa: F401 — re-exported for test_structural_checks.py/finetune/*
     Ctx, Verdict,
     check_not_delegated, check_requested_count_shortfall, _extract_requested_item_range,
+    check_missing_query_facet,
     check_thin_coverage, check_task_verification_flagged,
     check_findings_ungrounded, check_missing_findings, check_stale_findings,
     check_findings_underuses_evidence, check_missing_artifact,
@@ -87,6 +88,10 @@ COMPLETION_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
     # Upstream of check_thin_coverage (below): "did you plan ENOUGH" before "did what you planned
     # succeed" -- see its own docstring (2026-08-28) for the live incident this closes.
     check_requested_count_shortfall,
+    # Same family, same "did the Planner scope this correctly" question, different axis (facet
+    # IDENTITY rather than facet COUNT) -- see its own docstring for the live capability gap this
+    # closes (2026-08-29).
+    check_missing_query_facet,
     check_thin_coverage,
     check_task_verification_flagged,
     check_findings_ungrounded,
@@ -117,7 +122,7 @@ COMPLETION_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
 # question). A new COMPLETION_CHECKS entry needs its problem name added here too (see that list's
 # own "one row in the verdict matrix test" reminder -- this is the same kind of paired update).
 _COMPLETION_TIER_PROBLEMS = frozenset({
-    "not_delegated", "requested_count_shortfall", "thin_coverage", "task_verification_flagged",
+    "not_delegated", "requested_count_shortfall", "missing_query_facet", "thin_coverage", "task_verification_flagged",
     "findings_ungrounded", "missing_findings", "stale_findings", "findings_underuses_evidence",
     "missing_artifact", "report_style_violation", "uneven_task_investment", "untracked_delegation",
 })

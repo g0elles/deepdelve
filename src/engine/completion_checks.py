@@ -24,7 +24,10 @@ from utils.grounding import (
     find_cross_source_contradictions, extract_cited_urls, parse_academic_references,
     excluded_topic_semantic_hit,
 )
-from engine.orchestrator import _extract_excluded_topics, _content_word_overlap
+from engine.orchestrator import (
+    _extract_excluded_topics, _content_word_overlap, _extract_required_facets,
+    _instruction_entities, _EXCLUSION_CUE_RE,
+)
 
 class Verdict(NamedTuple):
     problem: str      # recorded in _run_state.json's completion_check_attempts
@@ -205,6 +208,96 @@ def check_requested_count_shortfall(ctx: Ctx) -> Optional[Verdict]:
     return _capped(ctx, "requested_count_shortfall", Verdict(
         "requested_count_shortfall",
         f"Query asks for {floor}+ distinct items but only {total} research tasks were delegated. Pushing agent to broaden the plan or acknowledge the gap.",
+        f"SYSTEM WARNING: {ctx.last_chance_prefix}{directive}",
+    ))
+
+
+def check_missing_query_facet(ctx: Ctx) -> Optional[Verdict]:
+    """Same family as check_requested_count_shortfall just above (did the Planner even scope this
+    correctly at dispatch time, one layer before check_thin_coverage asks whether what WAS
+    dispatched succeeded) -- catches gpt-oss:20b's documented, literature-validated tendency to
+    neglect the harder half of a multi-facet query (2026-08-29, see ROADMAP.md/wiki
+    Model-Bakeoff's "Passed" section note: "on multi facet queries it reliably abandons the harder
+    half rather than fabricating... a genuine model capability limit, not a bug"). A prior
+    dedicated investigation (RESEARCH.md §16-17) already fixed the part of this that was a genuine
+    engine bug -- a facet silently vanishing from a report with nothing able to detect it -- via
+    per-facet FindingsWriter dispatch and five sibling fixes. What's left is narrower: nothing
+    parses the raw query up front to know which facets are REQUIRED, so the Planner is only
+    prompted ("keep each slot single-facet," PLANNER_INSTRUCTIONS) to self-police it, and any drop
+    is caught only after the fact via task-naming convention + coverage checks.
+
+    Deliberately conservative, mirroring check_requested_count_shortfall's own construction:
+    `_extract_required_facets` only ever returns a non-empty result when the query UNAMBIGUOUSLY
+    enumerates 2+ facets via an explicit cue phrase ("X vs Y", "compare X and Y", "for each of A,
+    B, C", "both X and Y") -- a query that merely mentions several proper nouns in passing, with no
+    such cue, never engages this check at all, so the false-positive risk (nudging the Planner to
+    redundantly split a legitimately single-facet plan) is structurally bounded at the extraction
+    layer, not left to runtime heuristics here.
+
+    Compares each required facet (a token set, e.g. {'Mexico', 'City'}) against the UNION of
+    `_instruction_entities` extracted from every dispatched task's own name + instructions so far.
+    A facet token counts as covered by an exact match OR a shared >=4-char PREFIX in either
+    direction -- live-caught 2026-08-29, NOT a hypothetical: a real gpt-oss:20b run genuinely
+    covering both "Germany" and "Japan" phrased its task instructions with the demonym adjective
+    ("German regulation", "Japanese policy") rather than the bare country noun, and a strict exact
+    match would have wrongly fired "missing" on a run that was actually fully covered -- exactly
+    the false-positive class this check exists to avoid. A prefix match (not full fuzzy/edit-
+    distance matching, which both extractors' looseness makes too risky to stack) directly covers
+    this common country/demonym relationship ("German" is a prefix of "Germany", "Japan" is a
+    prefix of "Japanese") while staying conservative: the >=4-char floor keeps a short facet token
+    from spuriously prefix-matching an unrelated word.
+    `_EXCLUSION_CUE_RE.sub` strips an exclusion clause from each task's text first, the same call
+    `_dispatch_tasks_batch` already makes before its own exclusion-topic check -- otherwise a task
+    that restates the missing facet only to rule it out of scope ("Focus on Lisbon; Mexico City is
+    out of scope here") would wrongly count as "covering" it.
+
+    Not Builder/FindingsWriter-fixable -- delegating a task for the missing facet is a Planner-only
+    action (delegate_tasks isn't in either writer role's toolset), same reasoning as
+    check_requested_count_shortfall. Capped via the shared _capped helper for the same reason: a
+    facet that's genuinely unresearchable must not starve every check below it forever."""
+    if not config.get_setting("facet_coverage_check", {}).get("enabled", True):
+        return None
+    facets = _extract_required_facets(ctx.run_state.data.get("query") or "")
+    if len(facets) < 2:
+        return None
+    dispatched = ctx.run_state.data.get("dispatched_tasks", [])
+    if not dispatched:
+        return None  # check_not_delegated already owns this state
+
+    covered = set()
+    for t in dispatched:
+        text = _EXCLUSION_CUE_RE.sub(" ", f"{t.get('task_name', '')} {t.get('instructions', '')}")
+        covered |= _instruction_entities(text)
+
+    def _token_covered(tok: str) -> bool:
+        return any(
+            tok == c or (len(tok) >= 4 and len(c) >= 4 and (tok.startswith(c) or c.startswith(tok)))
+            for c in covered
+        )
+
+    missing = [f for f in facets if not all(_token_covered(tok) for tok in f)]
+    if not missing:
+        return None
+
+    from engine.completion import _capped, _consecutive_occurrences
+    missing_str = ", ".join(" ".join(sorted(f)) for f in missing)
+    prior_same = _consecutive_occurrences(ctx.run_state, "missing_query_facet")
+    if prior_same == 0:
+        directive = (
+            f"Your query names distinct required facets, but no delegated task's instructions "
+            f"mention: {missing_str}. delegate_tasks for the missing facet(s) before finishing, "
+            f"or explicitly state in the report why that facet is out of scope."
+        )
+    else:
+        directive = (
+            f"Still no delegated task mentions {missing_str} after a prior warning. If you have "
+            f"genuinely determined it's out of scope, say so explicitly in the report as an "
+            f"acknowledged gap rather than silently omitting it."
+        )
+    return _capped(ctx, "missing_query_facet", Verdict(
+        "missing_query_facet",
+        f"Query enumerates distinct facets but no delegated task mentions: {missing_str}. "
+        f"Pushing agent to cover the missing facet(s).",
         f"SYSTEM WARNING: {ctx.last_chance_prefix}{directive}",
     ))
 

@@ -271,6 +271,103 @@ def _extract_excluded_topics(query: str) -> set:
                 topics.add(part)
     return topics
 
+# Conservative, single-purpose cue regexes for _extract_required_facets below -- deliberately four
+# narrow patterns rather than one broad one, same discipline as _EXCLUSION_CUE_RE: a missed real
+# case is fine, a spurious facet-split nudge is not.
+_FACET_VS_RE = re.compile(
+    r"\b([A-Z][\w.\-]+(?:\s+[A-Z][\w.\-]+){0,2})\s+(?:vs\.?|versus)\s+"
+    r"([A-Z][\w.\-]+(?:\s+[A-Z][\w.\-]+){0,2})\b"
+)
+_FACET_BOTH_RE = re.compile(
+    r"(?i:\bboth\b)\s+([A-Z][\w.\-]+(?:\s+[A-Z][\w.\-]+){0,2})\s+and\s+"
+    r"([A-Z][\w.\-]+(?:\s+[A-Z][\w.\-]+){0,2})\b"
+)
+_FACET_COMPARE_RE = re.compile(
+    r"(?i:compar(?:e|ing|ison\s+of))\s+([^.;\n]{2,200}?)"
+    r"(?=\s+(?:in\s+terms\s+of|regarding|for\s+each)\b|,\s+\w+ing\b|[.;\n]|$)"
+)
+# The captured list must itself look like a proper-noun list (each item starts with a capital
+# letter) -- this is what stops the match at the list's real end instead of running on into the
+# next clause ('for each of Brazil, Colombia, and Peru, find GDP' stops after 'Peru', since 'find'
+# is lowercase and fails the next repetition's own [A-Z] requirement).
+_FACET_FOR_EACH_RE = re.compile(
+    r"(?i:for\s+each\s+of)\s+"
+    r"([A-Z][\w.\-]*(?:\s+[A-Z][\w.\-]*)*(?:\s*,\s*(?:and\s+)?[A-Z][\w.\-]*(?:\s+[A-Z][\w.\-]*)*)+)"
+)
+
+# Bare administrative/generic nouns that never uniquely identify anything on their own -- a facet
+# phrase reducing to ONLY one of these (no real proper noun alongside it) is discarded outright.
+_FACET_GENERIC_NOUNS = frozenset({"City", "Republic", "State", "Islands", "Region"})
+
+def _facet_phrase_tokens(phrase: str) -> frozenset:
+    """Diacritic-folded capitalized-word tokens in a short facet NAME/phrase (e.g. 'Mexico City')
+    pulled straight from a cue-regex match. Deliberately NOT `_instruction_entities`'s
+    sentence-initial-skip behavior -- a facet phrase is a bare noun phrase, not a sentence with a
+    real leading word to skip; skipping its first word would wrongly discard a single-word facet
+    like 'Brazil' entirely. Same fold + regex convention as `_instruction_entities` otherwise, so
+    the resulting tokens compare correctly against its output. A multi-word facet keeps every
+    token, generic nouns included ('Mexico City' -> {'Mexico', 'City'}, both required downstream)
+    -- only a phrase reducing to ONLY generic nouns, with no real proper noun alongside, is
+    discarded, since that never uniquely identifies anything on its own."""
+    tokens = set()
+    for w in phrase.split():
+        folded = unicodedata.normalize("NFKD", w).encode("ascii", "ignore").decode()
+        m = re.match(r"[A-Z][a-zA-Z]{2,}", folded)
+        if m:
+            # Strip a trailing possessive ("PostgreSQL's" -> "PostgreSQL") -- unlike
+            # _instruction_entities (untouched, existing tested behavior), this side's whole job
+            # is matching against possibly-rephrased instructions, so reducing an avoidable
+            # mismatch here is strictly safer, never a new false positive.
+            token = m.group().strip(",().")
+            tokens.add(token)
+    if tokens and tokens <= _FACET_GENERIC_NOUNS:
+        return frozenset()
+    return frozenset(tokens)
+
+def _extract_required_facets(query: str) -> list:
+    """Distinct facets the query UNAMBIGUOUSLY enumerates as separately-required (e.g. 'compare
+    Lisbon and Mexico City rent' -> [{'Lisbon'}, {'Mexico', 'City'}]) -- feeds
+    check_missing_query_facet (completion_checks.py), a narrow structural tripwire for gpt-oss:20b's
+    documented tendency to neglect the harder half of a multi-facet query (see ROADMAP.md/wiki
+    Model-Bakeoff's "Passed" section note).
+
+    Deliberately conservative, mirroring `_extract_excluded_topics`/`_EXCLUSION_CUE_RE`'s own
+    narrow-cue discipline: returns [] unless at least 2 facets survive extraction from an EXPLICIT
+    cue phrase ('X vs Y', 'both X and Y', 'compare X and Y', 'for each of A, B, C') -- there is no
+    fallback path inferring facets from bare co-occurring capitalized words, since a query merely
+    mentioning several proper nouns in passing (no cue at all) must never trigger this. The
+    `compare`/`for each of` shapes additionally require their captured span to itself split into
+    2+ parts on `,|and|or` (same split `_extract_excluded_topics` uses just above) -- 'compare
+    Colombia's inflation to historical CPI data' has only one proper-noun part after the split and
+    is correctly discarded, not treated as a facet pair."""
+    query = query or ""
+    facet_phrases = []
+    for m in _FACET_VS_RE.finditer(query):
+        facet_phrases.append(m.group(1))
+        facet_phrases.append(m.group(2))
+    for m in _FACET_BOTH_RE.finditer(query):
+        facet_phrases.append(m.group(1))
+        facet_phrases.append(m.group(2))
+    for m in _FACET_COMPARE_RE.finditer(query):
+        parts = [p.strip(" .:;*-—\t") for p in re.split(r",|\band\b|\bor\b", m.group(1))]
+        parts = [p for p in parts if p]
+        if len(parts) >= 2:
+            facet_phrases.extend(parts)
+    for m in _FACET_FOR_EACH_RE.finditer(query):
+        parts = [p.strip(" .:;*-—\t") for p in re.split(r",|\band\b|\bor\b", m.group(1))]
+        parts = [p for p in parts if p]
+        if len(parts) >= 2:
+            facet_phrases.extend(parts)
+
+    facets = []
+    seen = set()
+    for phrase in facet_phrases:
+        tokens = _facet_phrase_tokens(phrase)
+        if tokens and tokens not in seen:
+            seen.add(tokens)
+            facets.append(tokens)
+    return facets if len(facets) >= 2 else []
+
 _BARE_REFERENT_RE = re.compile(
     r"\b(?:it|its|they|them|the\s+(?:above|previous|aforementioned|same))\b", re.IGNORECASE
 )

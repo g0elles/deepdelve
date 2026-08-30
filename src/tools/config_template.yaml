@@ -251,6 +251,14 @@ settings:
   # (floor - delegated tasks >= 2), never a near-miss.
   requested_count_check:
     enabled: true
+  # check_missing_query_facet (2026-08-29): catches the Planner neglecting the harder half of a
+  # multi-facet query (e.g. "compare Lisbon and Mexico City rent" ending up researching only
+  # Lisbon) -- a known gap in gpt-oss:20b, the project's baseline. Conservative: only engages
+  # when the query itself unambiguously enumerates 2+ facets via an explicit cue phrase ("X vs
+  # Y", "compare X and Y", "for each of A, B, C", "both X and Y") -- a query that merely mentions
+  # multiple proper nouns in passing, with no such cue, never triggers this at all.
+  facet_coverage_check:
+    enabled: true
   # ROADMAP Phase 5 ("Coverage accounting / ResearchMap"): distinct from every grounding_check
   # below, which all verify content that ALREADY EXISTS is properly cited -- this instead asks
   # whether the Planner's own top-level delegated research plan actually paid off. A report can be
