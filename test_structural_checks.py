@@ -2276,6 +2276,31 @@ Some intro text.
               "Source-URL: https://gov.example.jp/2040-target\n\nJapan targets a 40 to 50 percent "
               "renewable energy share by 2040, up from 22.9 percent in 2023."),
          ]),
+        # check_missing_specific_item_per_facet's match-embedded-entity fix (2026-08-30, third
+        # live-calibration fix, found on a FOURTH real report): a regulation's own name often
+        # carries the country as a leading adjective ("German Renewable Energy Sources Act") --
+        # its markdown-link bullet has NO entity at all in its PRECEDING text, so
+        # nearest-preceding-word attribution alone fell through past it to "Japan" from an
+        # unrelated earlier sentence in the same shared section, wrongly crediting Japan again, a
+        # different way than the previous row's bug. Fixed by checking the match's own text first.
+        ("missing_specific_item_per_facet_match_embedded_entity", True, {"findings.md": _FINDINGS_OK,
+          "final_report.md": (
+              "## Introduction\n"
+              "This report covers renewable energy policy in Germany and Japan.\n\n"
+              "- **[German Renewable Energy Sources Act](https://gov.example.de/eeg-act2)**\n\n"
+              "## Japan's Renewable Energy Policy\n"
+              "- Japan targets a 40 to 50 percent renewable energy share by 2040. "
+              "[gov](https://gov.example.jp/2040-target2)\n")},
+         "missing_specific_item_per_facet", "requires a specific regulation per entity",
+         "Compare Germany and Japan's renewable energy policy, citing at least one specific "
+         "regulation for each.", [
+             ("https://gov.example.de/eeg-act2", "sources/de_eeg2.md",
+              "Source-URL: https://gov.example.de/eeg-act2\n\nGermany's Renewable Energy Sources "
+              "Act (EEG) mandates increased funding for renewable energy generation nationwide."),
+             ("https://gov.example.jp/2040-target2", "sources/jp_target2.md",
+              "Source-URL: https://gov.example.jp/2040-target2\n\nJapan targets a 40 to 50 percent "
+              "renewable energy share by 2040, up from 22.9 percent in 2023."),
+         ]),
         # Live case 2026-07-24: a report quoted a plausible-sounding sentence and attributed it to
         # a real, fetched source -- the underlying claim can be true and traceable while the exact
         # wording still never appears there, which content_level_check's term-overlap check alone

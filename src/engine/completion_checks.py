@@ -1487,16 +1487,28 @@ def _facet_mentions(text: str) -> frozenset:
     )
 
 
-def _nearest_preceding_facet(preceding_text: str, facets: list) -> Optional[int]:
-    """Index into `facets` of whichever required facet's entity the LAST (closest, rightmost)
-    capitalized word before a regulation match names -- used to attribute a regulation found in a
-    SHARED/comparative section (one discussing more than one facet) to the specific entity it's
-    actually about, instead of crediting every facet the section happens to mention. Confirmed
-    necessary live: a real intro sentence ("Germany's Renewable Energy Sources Act (EEG) sets
-    binding capacity targets, while Japan's FIT policy guarantees...") mentions BOTH entities, but
-    only Germany's is adjacent to the actual regulation name -- "which entities does this section
-    mention" (the naive first attempt) wrongly credited Japan too. Returns None if no capitalized
-    word precedes the match, or the nearest one names no required facet."""
+def _facet_for_regulation_match(match_text: str, preceding_text: str, facets: list) -> Optional[int]:
+    """Index into `facets` of whichever required facet a regulation match is actually about --
+    used to attribute a regulation found in a SHARED/comparative section (one discussing more than
+    one facet) to the specific entity it's actually about, instead of crediting every facet the
+    section happens to mention.
+
+    Checks the match's OWN text first (e.g. "German Renewable Energy Sources Act" -- the country
+    adjective is often the regulation NAME's own leading word, not external context at all), then
+    falls back to the LAST (closest, rightmost) capitalized word in the preceding text. Confirmed
+    both paths necessary live, in that order, on the SAME report: (1) a real intro sentence
+    ("Germany's Renewable Energy Sources Act (EEG) sets binding capacity targets, while Japan's
+    FIT policy guarantees...") mentions both entities, but only Germany's is adjacent to the
+    regulation name -- "which entities does this section mention" (the first fix attempt) wrongly
+    credited Japan too, fixed by preceding-text proximity; (2) a markdown bullet
+    "[German Renewable Energy Sources Act](url)" has NO entity in its preceding text at all (the
+    entity is the match's own leading adjective) -- proximity alone then fell back past it to
+    "Japan" from an unrelated EARLIER sentence, wrongly crediting Japan a second, different way.
+    Returns None if neither the match nor the preceding text names a required facet."""
+    match_tokens = _facet_mentions(match_text)
+    for i, f in enumerate(facets):
+        if _facet_token_match(f, match_tokens):
+            return i
     matches = list(_CAPITALIZED_WORD_RE.finditer(preceding_text))
     if not matches:
         return None
@@ -1531,9 +1543,10 @@ def check_missing_specific_item_per_facet(ctx: Ctx) -> Optional[Verdict]:
        dedicated section routinely refers to its own subject implicitly, e.g. "the Act mandates
        ..." with no repeated country name nearby).
     2. A section whose heading names ZERO or 2+ facets (a shared intro/comparison/conclusion
-       section) requires PROXIMITY: each regulation match found in it is attributed to whichever
-       facet's entity is the NEAREST preceding capitalized word (`_nearest_preceding_facet`), not
-       every facet the section happens to discuss.
+       section) requires PROXIMITY: each regulation match found in it is attributed via
+       `_facet_for_regulation_match` -- the match's OWN text first (a regulation's name often
+       carries its country as a leading adjective, e.g. "German Renewable Energy Sources Act"),
+       then the nearest preceding capitalized word -- not every facet the section discusses.
 
     Tier 2 exists because tier 1 alone (the first fix attempt: scan a section only if its HEADING
     names the facet) wrongly flagged Germany as missing -- its regulation name lived only in a
@@ -1541,8 +1554,12 @@ def check_missing_specific_item_per_facet(ctx: Ctx) -> Optional[Verdict]:
     Widening tier 1 to "any section MENTIONING the facet, anywhere" (the second fix attempt) then
     overcorrected: that same Introduction section discusses both Germany and Japan, so Germany's
     actual regulation mention got wrongly credited to Japan too, silencing the check entirely on
-    the same real report it was built to catch. Nearest-preceding-entity attribution is what
-    actually distinguishes the two entities within one shared sentence.
+    the same real report it was built to catch. Proximity attribution (the third fix attempt) fixed
+    that, but a FOURTH live report then found a second contamination path the same proximity logic
+    still missed: a markdown bullet "[German Renewable Energy Sources Act](url)" has no entity
+    at all in its preceding text (the entity is the match's own leading word), so proximity fell
+    through past it to "Japan" from an unrelated earlier sentence. Checking the match's own text
+    first (now in `_facet_for_regulation_match`) closes that gap.
 
     A facet mentioned in NO section at all (checked via `_facet_mentions` over the whole
     document) is skipped, not flagged -- that's check_missing_query_facet's job (total omission).
@@ -1594,7 +1611,7 @@ def check_missing_specific_item_per_facet(ctx: Ctx) -> Optional[Verdict]:
             continue
         for pattern in (_NAMED_REGULATION_RE, _REGULATION_ID_RE):
             for m in pattern.finditer(clean_sec):
-                i = _nearest_preceding_facet(clean_sec[:m.start()], facets)
+                i = _facet_for_regulation_match(m.group(), clean_sec[:m.start()], facets)
                 if i is not None:
                     covered[i] = True
 
