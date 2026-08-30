@@ -205,6 +205,35 @@ def main():
         "an empty summary has nothing to check against -- don't invent a problem"
     )
 
+    # --- explicit-citation override (2026-08-29 live incident): a synthesis that explicitly
+    # cites URLs never fetched this run can coincidentally share enough generic topic vocabulary
+    # with an unrelated co-fetched page to pass word-containment alone -- the explicit citation
+    # must override that regardless of overlap. ---
+    fabricated_synthesis = (
+        "Germany's renewable energy policy for 2026 sets ambitious EEG targets, "
+        "*Source:* [Yahoo Finance](https://finance.example.com/germany-renewable-article) and "
+        "[Clean Energy Wire](https://cleanenergywire.example.com/other-article)."
+    )
+    coincidentally_similar_page = (
+        "Germany renewable energy EEG policy overview 2026: this official government page "
+        "discusses Germany's renewable energy targets and EEG funding reforms in detail."
+    )
+    assert _synthesis_reflects_url_content(
+        fabricated_synthesis, coincidentally_similar_page,
+        "https://iclg.com/practice-areas/renewable-energy-laws-and-regulations/germany",
+    ) is False, (
+        "a synthesis citing URLs never fetched this run must be flagged against an uncited "
+        "co-fetched page even when word-containment alone would pass on shared topic vocabulary")
+    assert _synthesis_reflects_url_content(
+        fabricated_synthesis, coincidentally_similar_page,
+        "https://finance.example.com/germany-renewable-article",
+    ) is True, (
+        "a page matching one of the synthesis's own explicit citations must still be treated as "
+        "reflected")
+    assert _synthesis_reflects_url_content(real_synthesis, matching_page, "") is True, (
+        "no url passed (url='') must behave exactly as before -- pure word-containment, no "
+        "citation check attempted")
+
     multi_urls = [
         {"url": "https://awnewscenter.example.co/habilitation", "filename": "aw.md"},
         {"url": "https://itsitio.example.co/exports", "filename": "itsitio.md"},

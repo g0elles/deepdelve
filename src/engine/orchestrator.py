@@ -452,16 +452,34 @@ def _content_word_overlap(a: str, b: str) -> float:
 _SYNTHESIS_ATTRIBUTION_MIN_OVERLAP = 0.15
 
 
-def _synthesis_reflects_url_content(finding_summary: str, page_content: str) -> bool:
+def _synthesis_reflects_url_content(finding_summary: str, page_content: str, url: str = "") -> bool:
     """True if `page_content` (one fetched source's own raw text) plausibly supports
     `finding_summary` (the SAME shared synthesis text a multi-URL dispatch turn attaches to
     EVERY URL it fetched via one add_finding call per URL -- see _dispatch_single_task's own
     add_finding loop, and _collapse_multi_url_task_findings' docstring for the general shape).
-    Containment (what fraction of the summary's own content words appear in the page), not
-    Jaccard: page_content is typically orders of magnitude longer than a ~1500-char summary, and
-    a size-symmetric Jaccard would unfairly penalize every real match just for the length gap.
-    Only meaningful when a dispatch fetched >1 URL in one turn -- a single-URL dispatch's summary
-    is trivially "about" the one URL it came from, nothing to disambiguate."""
+
+    Explicit-citation check FIRST, deterministic (2026-08-29, live incident: a WebSearcher fetched
+    5 URLs, wrote one shared synthesis explicitly citing 3 URLs it never fetched at all, attached
+    to all 5 real URLs -- word-containment alone only flagged 2 of 5, since the other 3
+    coincidentally shared enough generic domain vocabulary ('Germany', 'renewable', 'EEG') with the
+    fabricated synthesis to pass, even though the synthesis's own citations point elsewhere
+    entirely). If the synthesis names at least one explicit cited URL (extract_cited_urls, same
+    utility _verification_warning_targets_url already uses for this job) and `url` doesn't
+    `_urls_prefix_match` any of them, the synthesis is definitively not about this page --
+    overrides vocabulary overlap rather than being defeated by it.
+
+    Falls through to containment (what fraction of the summary's own content words appear in the
+    page, not Jaccard: page_content is typically orders of magnitude longer than a ~1500-char
+    summary, and a size-symmetric Jaccard would unfairly penalize every real match just for the
+    length gap) when the synthesis names no explicit citation at all -- nothing to compare
+    against. Only meaningful when a dispatch fetched >1 URL in one turn -- a single-URL dispatch's
+    summary is trivially "about" the one URL it came from, nothing to disambiguate."""
+    if url:
+        from utils.grounding import extract_cited_urls, _urls_prefix_match
+        cited = extract_cited_urls(finding_summary)
+        if cited and not any(_urls_prefix_match(url, c) for c in cited):
+            return False
+
     def words(t: str) -> set:
         return {w.lower().strip(",()") for w in re.findall(r"[A-Za-z][A-Za-z\-']+", t or "")} - _TASK_SIMILARITY_STOPWORDS
     summary_words = words(finding_summary)
@@ -482,7 +500,7 @@ def _select_unreflected_urls(final_text: str, new_urls: list, page_contents: dic
         return []
     return [
         u["url"] for u in new_urls
-        if not _synthesis_reflects_url_content(final_text, page_contents.get(u["filename"], ""))
+        if not _synthesis_reflects_url_content(final_text, page_contents.get(u["filename"], ""), u["url"])
     ]
 
 
@@ -1663,7 +1681,7 @@ async def _dispatch_single_task(
                         unreflected_urls = {
                             u["url"] for u in new_urls
                             if not _synthesis_reflects_url_content(
-                                finding_summary, get_workspace_file_content(u["filename"]) or "")
+                                finding_summary, get_workspace_file_content(u["filename"]) or "", u["url"])
                         }
                     for u in new_urls:
                         per_url_summary = finding_summary
