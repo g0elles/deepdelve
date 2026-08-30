@@ -5197,6 +5197,11 @@ Some intro text.
 
     contextvars.copy_context().run(_deepening_round_scenario)
 
+    from engine.completion import _BUILDER_FIXABLE_PROBLEMS as _bfp_check
+    assert "propagated_ungrounded" in _bfp_check, (
+        "2026-08-29 fix: this problem must have a real Builder-dispatch remediation path, not "
+        "just a Planner nag with no fix mechanism")
+
     # --- Builder Build->Review->Fix dispatch loop (see engine/completion.py's
     # _dispatch_writer_review_fix / _BUILDER_FIXABLE_PROBLEMS): for artifact-authoring problems,
     # run_completion_check must dispatch a fresh-context Builder (+PeerReviewer check) instead of
@@ -5425,6 +5430,52 @@ Some intro text.
                     "missing_findings must still use the classic inject-into-Planner path", new_input)
                 assert rs.data["completion_check_attempts"][-1]["problem"] == "missing_findings"
                 _IN_MEMORY_FS["findings.md"] = _FINDINGS_OK
+
+            # (f) propagated_ungrounded (2026-08-29, live incident: this problem had no fix path
+            # at all before today, exhausting a real run's retry budget) must now dispatch Builder
+            # too, same as any other _BUILDER_FIXABLE_PROBLEMS entry -- same findings shape as the
+            # propagated_ungrounded matrix row above (a same-task_name uncited/citable pair sharing
+            # identical content), but with dispatch_task/Builder+PeerReviewer registered this time.
+            with tempfile.TemporaryDirectory() as tmpdir_f:
+                _IN_MEMORY_FS["final_report.md"] = (
+                    f"- el pais avanza de forma sostenida segun cifras oficiales [gov]({_SRC})\n"
+                    "- The Temporal Fusion Transformer improved forecast accuracy by 23% over "
+                    "classical baselines in a 2024 benchmark study of Time Series Models. "
+                    "[source](https://forecastio.ai/other)"
+                )
+                record_fetched_url("https://forecastio.ai/other", filename="sources/other.md")
+                _IN_MEMORY_FS["sources/other.md"] = (
+                    "Source-URL: https://forecastio.ai/other\n\nThe Temporal Fusion Transformer "
+                    "improved forecast accuracy by 23% over classical baselines in a 2024 "
+                    "benchmark study of Time Series Models."
+                )
+                rs = RunState(tmpdir_f)
+                run_state_ctx.set(rs)
+                rs.add_finding("background_heuristics", "The Temporal Fusion Transformer improved "
+                    "forecast accuracy by 23% over classical baselines in a 2024 benchmark study "
+                    "of Time Series Models.", task_name="background_heuristics")
+                rs.add_finding("https://forecastio.ai/other", "The Temporal Fusion Transformer "
+                    "improved forecast accuracy by 23% over classical baselines in a 2024 "
+                    "benchmark study of Time Series Models.", task_name="background_heuristics")
+                msgs = []
+
+                async def _side_effect_f(name, instructions, role):
+                    if role == "Builder":
+                        _IN_MEMORY_FS["final_report.md"] = _CLEAN_REPORT
+                        return "## Result for BuilderFix\nWrote report\n---"
+                    return "REVIEW: CLEAN\nNo issues found."
+
+                dispatch = AsyncMock(side_effect=_side_effect_f)
+                should_retry, new_input = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append,
+                    dispatch_task=dispatch))
+                assert dispatch.call_args_list[0].args[2] == "Builder", (
+                    "propagated_ungrounded must now dispatch Builder, not just nudge the Planner",
+                    dispatch.call_args_list)
+                assert not should_retry, (
+                    "a Builder dispatch that genuinely fixes the artifact must converge", msgs)
+                _IN_MEMORY_FS["findings.md"] = _FINDINGS_OK
+                reset_fetched_urls()
         finally:
             _IN_MEMORY_FS.clear()
             _IN_MEMORY_FS.update(saved_fs)

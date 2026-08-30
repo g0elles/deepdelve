@@ -193,7 +193,13 @@ _BUILDER_FIXABLE_PROBLEMS = ("missing_artifact", "not_grounded", "claim_unsuppor
                              "stub_source", "duplicate_report_sections",
                              "nli_unsupported", "topical_mismatch", "uncited_claims",
                              "excluded_topic_present", "cross_source_contradiction",
-                             "report_underuses_findings", "report_style_violation")
+                             "report_underuses_findings", "report_style_violation",
+                             # Added 2026-08-29, live incident: previously had no fix path at all
+                             # (nagged the Planner's own conversation, no writer dispatch) --
+                             # exhausted a run's retry budget 5+ times before falling back to a
+                             # stale, off-topic salvage. See check_propagated_ungrounded_content's
+                             # own docstring for the fix reasoning.
+                             "propagated_ungrounded")
 
 # Appended to every Builder-dispatch instruction (both the classic and force_whole_rebuild
 # branches) right after verdict.inject -- a single shared clarification rather than hand-rewriting

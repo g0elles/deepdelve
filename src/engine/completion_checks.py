@@ -1786,12 +1786,22 @@ def check_propagated_ungrounded_content(ctx: Ctx) -> Optional[Verdict]:
 
     Capped via the shared _capped helper (2026-07-31, found by systematically auditing every
     GROUNDING_CHECKS/COMPLETION_CHECKS entry against the landmine class documented in
-    ARCHITECTURE.md -- not a live incident this time, the audit itself caught it first). This
-    check's problem name ("propagated_ungrounded") is in NEITHER _BUILDER_FIXABLE_PROBLEMS nor
-    _FINDINGS_WRITER_FIXABLE_PROBLEMS and had no escalation/cap logic at all -- positioned right
-    before check_report_underuses_findings/evidence/check_not_grounded in GROUNDING_CHECKS, an
-    unresolved propagated-content condition could permanently starve all three the same way
-    check_task_verification_flagged and check_thin_coverage did before their own fixes."""
+    ARCHITECTURE.md -- not a live incident this time, the audit itself caught it first) -- an
+    unresolved propagated-content condition could otherwise permanently starve
+    check_report_underuses_findings/evidence/check_not_grounded, positioned right after this one in
+    GROUNDING_CHECKS, the same way check_task_verification_flagged and check_thin_coverage did
+    before their own fixes.
+
+    Builder-fixable (added 2026-08-29, live incident): this problem sat in NEITHER
+    _BUILDER_FIXABLE_PROBLEMS nor _FINDINGS_WRITER_FIXABLE_PROBLEMS for over a month, meaning a
+    correct detection had no structural fix path at all -- only a nag into the Planner's own
+    conversation. A real run fired this 5+ times, exhausted its retry budget, and fell back to a
+    stale, off-topic salvage draft instead of either a correct report or a clean failure. Now in
+    _BUILDER_FIXABLE_PROBLEMS: the problem is entirely about what ctx.content (the report) cites,
+    not how findings.md itself was assembled, and Builder already only ever draws from findings.md
+    (never delegates new research), so a fresh-context Builder told exactly which task's content is
+    suspect can simply stop citing it -- same mechanism claim_unsupported/report_underuses_findings
+    already use successfully."""
     if not ctx.content:
         return None
     findings = ctx.run_state.data.get("findings", []) if ctx.run_state else []
@@ -1822,8 +1832,10 @@ def check_propagated_ungrounded_content(ctx: Ctx) -> Optional[Verdict]:
                         f"'{task_name}' in findings.md closely matches an EARLIER, ungrounded attempt "
                         f"at that same task (one that was cut off or never fetched a real source) — "
                         f"this looks like content propagated forward without being independently "
-                        f"re-verified. Do not simply repeat it in '{ctx.req_artifact}'; either confirm "
-                        f"it against a real fetched source or omit it.",
+                        f"re-verified. Do not simply repeat it in '{ctx.req_artifact}'; cite a "
+                        f"DIFFERENT, independently-grounded finding for task '{task_name}' from "
+                        f"findings.md instead, or omit that claim entirely if no other genuine "
+                        f"finding for it exists.",
                     ))
     return None
 
