@@ -2327,6 +2327,42 @@ Some intro text.
               "Source-URL: https://gov.example.jp/2040-target3\n\nJapan will exclude large "
               "ground-mounted solar from its FIT/FIP system starting fiscal 2027."),
          ]),
+        # check_missing_specific_item_per_facet's nested-subsection false positive (2026-09-07,
+        # FIFTH live-calibration fix, first real incident from a genuinely DIFFERENT topic --
+        # Canada/South Korea AI-safety regulation, not the original Germany/Japan renewable-energy
+        # report): a dedicated "## Canada" heading with named laws nested one level deeper under
+        # their own "### Safe Social Media Act (Bill C-34)"/"### Artificial Intelligence and Data
+        # Act (AIDA)" subsection headings -- neither tier matched before the fix (parent heading
+        # names Canada but its own pre-subsection body has no regulation; each child heading names
+        # a regulation but no facet, so it fell into the shared tier with nothing in its own short
+        # body to anchor proximity to). Must be a CLEAN PASS: both real named laws are right there.
+        ("missing_specific_item_per_facet_nested_subsection", True, {"findings.md": _FINDINGS_OK,
+          "final_report.md": (
+              "## South Korea\n"
+              "- The Framework Act on the Development of Artificial Intelligence and Establishment "
+              "of Trust governs AI safety obligations. [gov](https://gov.example.kr/framework-act)\n\n"
+              "## Canada\n"
+              "Canada relies on several federal bills to address AI safety.\n\n"
+              "### Safe Social Media Act (Bill C-34)\n"
+              "- Requires AI chatbot services to disclose their nature and provide user controls. "
+              "[gov](https://gov.example.ca/c34)\n\n"
+              "### Artificial Intelligence and Data Act (AIDA)\n"
+              "- Proposed in 2022 as a comprehensive AI statute, suspended in January 2025. "
+              "[gov](https://gov.example.ca/aida)\n")},
+         None, None,
+         "Compare Canada and South Korea's approach to AI safety regulation, citing at least one "
+         "specific law for each country.", [
+             ("https://gov.example.kr/framework-act", "sources/kr_framework.md",
+              "Source-URL: https://gov.example.kr/framework-act\n\nThe Framework Act on the "
+              "Development of Artificial Intelligence and Establishment of Trust governs AI safety "
+              "obligations."),
+             ("https://gov.example.ca/c34", "sources/ca_c34.md",
+              "Source-URL: https://gov.example.ca/c34\n\nRequires AI chatbot services to disclose "
+              "their nature and provide user controls."),
+             ("https://gov.example.ca/aida", "sources/ca_aida.md",
+              "Source-URL: https://gov.example.ca/aida\n\nProposed in 2022 as a comprehensive AI "
+              "statute, suspended in January 2025."),
+         ]),
         # Live case 2026-07-24: a report quoted a plausible-sounding sentence and attributed it to
         # a real, fetched source -- the underlying claim can be true and traceable while the exact
         # wording still never appears there, which content_level_check's term-overlap check alone

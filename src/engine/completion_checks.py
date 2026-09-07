@@ -1574,6 +1574,20 @@ def check_missing_specific_item_per_facet(ctx: Ctx) -> Optional[Verdict]:
     unattributed. Calibrate against more real reports before fully trusting this (see
     session_status/CURRENT.md's own note on this open design risk).
 
+    FIFTH bug, found via different-topic calibration (2026-09-07, Canada/South Korea AI-safety-
+    regulation query -- the first real calibration incident NOT from the original Germany/Japan
+    renewable-energy report): a report nesting each named law under its own dedicated "###"
+    subsection heading beneath a facet's "##" heading (e.g. "## 2. Canada" > "### 2.1 Safe Social
+    Media Act (Bill C-34)") wrongly flagged Canada as missing a named law even though two real,
+    correctly-named laws (Safe Social Media Act, Artificial Intelligence and Data Act) were right
+    there -- neither tier matched: the parent heading names the facet but its own (pre-subsection)
+    body has no regulation, and each child heading names a regulation but no facet, so it fell into
+    the "shared" tier with nothing in its own short body to anchor proximity to. Fixed by tracking
+    the nearest ancestor dedicated heading's facet + `#`-level and inheriting it into any deeper
+    (higher `#` count) child section that names zero facets of its own -- a sibling or
+    higher-level heading (same or shallower level) still resets the inherited context, so this
+    doesn't bleed into an unrelated later section.
+
     Builder-fixable, not Planner-only (unlike check_missing_query_facet): the fix here is "cite an
     already-fetched source you forgot to use," which Builder can do directly from findings.md,
     not "delegate new research" -- matching this project's real incident, where the source was
@@ -1596,10 +1610,23 @@ def check_missing_specific_item_per_facet(ctx: Ctx) -> Optional[Verdict]:
         return None
 
     covered = [False] * len(facets)
+    # (dedicated facet index, its heading's # level) inherited from the nearest ancestor heading --
+    # confirmed live (2026-09-07, Canada/South Korea AI-regulation calibration run, a genuinely
+    # different topic from the original Germany/Japan incident): a report that nests each named law
+    # under its own "### 2.1 Safe Social Media Act" subsection heading beneath a dedicated
+    # "## 2. Canada" heading has NEITHER heading naming both the facet AND the regulation together
+    # -- the parent names Canada with no regulation in its own (pre-subsection) body, and each child
+    # names a regulation with no facet in ITS own heading, so tier 1 (own-heading-names-the-facet)
+    # missed it and tier 2 (shared-section proximity) had nothing in that short subsection to anchor
+    # to either. A dedicated heading's inheritance now propagates to any deeper-level child section
+    # with zero facets of its own, since it's still entirely about the parent's subject.
+    current_dedicated, current_level = None, None
     for sec in split_into_heading_sections(ctx.content):
         if not sec:
             continue
         clean_sec = re.sub(r'[*_]', '', "\n".join(sec))
+        level_m = re.match(r'(#{1,3})\s', sec[0])
+        level = len(level_m.group(1)) if level_m else None
         heading_facets = [
             i for i, f in enumerate(facets)
             if _facet_token_match(f, _facet_mentions(re.sub(r'[*_]', '', sec[0])))
@@ -1608,7 +1635,14 @@ def check_missing_specific_item_per_facet(ctx: Ctx) -> Optional[Verdict]:
             i = heading_facets[0]
             if not covered[i] and (_NAMED_REGULATION_RE.search(clean_sec) or _REGULATION_ID_RE.search(clean_sec)):
                 covered[i] = True
+            current_dedicated, current_level = i, level
             continue
+        if not heading_facets and level is not None and current_dedicated is not None and level > (current_level or 0):
+            i = current_dedicated
+            if not covered[i] and (_NAMED_REGULATION_RE.search(clean_sec) or _REGULATION_ID_RE.search(clean_sec)):
+                covered[i] = True
+            continue
+        current_dedicated, current_level = None, level
         for pattern in (_NAMED_REGULATION_RE, _REGULATION_ID_RE):
             for m in pattern.finditer(clean_sec):
                 i = _facet_for_regulation_match(m.group(), clean_sec[:m.start()], facets)
