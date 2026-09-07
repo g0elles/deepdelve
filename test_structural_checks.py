@@ -6110,6 +6110,123 @@ Some intro text.
 
     contextvars.copy_context().run(_cross_tier_starvation_yield_different_problems_scenario)
 
+    # --- WITHIN-GROUNDING_CHECKS starvation yield to check_missing_specific_item_per_facet
+    # (2026-09-04, closing the "never fires live" gap noted in session_status/CURRENT.md's
+    # 2026-08-30 entries): that check doesn't key off the single shared ctx.grounding_problem the
+    # way most of its GROUNDING_CHECKS siblings do, so it's starved for as long as ANY
+    # earlier-positioned entry keeps winning -- even across attempts where the winning PROBLEM
+    # changes every time (exactly the shape live-confirmed across 4 real runs: propagated_
+    # ungrounded/non_url_citation/uncited_claims/claim_unsupported each won in turn, and the check
+    # never once fired inside the real dispatch loop). Report has a genuine duplicate-section
+    # problem (wins the main GROUNDING_CHECKS scan, positioned earlier in the list) AND a genuine
+    # missing-per-facet-regulation gap (Japan cites only a target, never a named regulation) --
+    # pre-seeded history uses two DIFFERENT tier problems (proving this is _GROUNDING_TIER_
+    # PROBLEMS-wide, not same-problem-only) neither equal to duplicate_report_sections or
+    # missing_specific_item_per_facet. ---
+    def _within_grounding_tier_starvation_yield_scenario():
+        from tools.fs import _IN_MEMORY_FS
+        from tools.core import tool_quotas_ctx as q_ctx
+        from unittest.mock import AsyncMock
+        from engine.orchestrator import available_sub_agents_ctx
+
+        class _FakeSubAgentConfig:
+            def __init__(self, name):
+                self.name = name
+
+        _orig_ws_gt = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
+        _orig_gc_gt = _config.cfg.get("settings", {}).get("grounding_check")
+        _config.cfg["settings"]["grounding_check"] = {"nli_verify": False, "topical_relevance_check": False}
+        _orig_uc_gt = _config.cfg.get("settings", {}).get("uneven_coverage_check")
+        _config.cfg["settings"]["uneven_coverage_check"] = {"enabled": False}
+        de_url = "https://gov.example.de/eeg-act-gt"
+        jp_url = "https://gov.example.jp/2040-target-gt"
+        de_text = ("Source-URL: " + de_url + "\n\nGermany's Renewable Energy Sources Act (EEG) "
+                   "mandates increased funding for renewable energy generation nationwide.")
+        jp_text = ("Source-URL: " + jp_url + "\n\nJapan targets a 40 to 50 percent renewable "
+                   "energy share by 2040.")
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            _IN_MEMORY_FS.clear()
+            reset_fetched_urls()
+            record_fetched_url(de_url, filename="sources/de_gt.md")
+            record_fetched_url(jp_url, filename="sources/jp_gt.md")
+            _IN_MEMORY_FS["sources/de_gt.md"] = de_text
+            _IN_MEMORY_FS["sources/jp_gt.md"] = jp_text
+            _IN_MEMORY_FS["findings.md"] = (
+                f"### [DE]({de_url})\n- Germany's Renewable Energy Sources Act (EEG) mandates "
+                f"increased funding for renewable energy generation nationwide.\n\n"
+                f"### [JP]({jp_url})\n- Japan targets a 40 to 50 percent renewable energy share "
+                f"by 2040.\n")
+            _IN_MEMORY_FS["final_report.md"] = (
+                "## Germany's Renewable Energy Policy\n"
+                f"- Germany's Renewable Energy Sources Act (EEG) mandates increased funding for "
+                f"renewable energy generation nationwide. [gov]({de_url})\n\n"
+                "## Germany - Policy Overview\n"
+                f"- Germany's Renewable Energy Sources Act (EEG) mandates increased funding for "
+                f"renewable energy generation nationwide. [gov]({de_url})\n\n"
+                "## Japan's Renewable Energy Policy\n"
+                f"- Japan targets a 40 to 50 percent renewable energy share by 2040. [gov]({jp_url})\n"
+            )
+
+            with tempfile.TemporaryDirectory() as tmpdir_gt:
+                rs = RunState(tmpdir_gt)
+                rs.set_query("Compare Germany and Japan's renewable energy policy, citing at "
+                             "least one specific regulation for each.")
+                run_state_ctx.set(rs)
+                rs.add_finding(de_url, "Germany finding", task_name="germany", depth=1)
+                rs.add_finding(jp_url, "Japan finding", task_name="japan", depth=1)
+                q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5}})
+                available_sub_agents_ctx.set([_FakeSubAgentConfig("Builder"), _FakeSubAgentConfig("PeerReviewer")])
+
+                # TWO DIFFERENT GROUNDING_CHECKS-tier problems, neither equal to this attempt's
+                # own main-scan winner (duplicate_report_sections) nor to missing_specific_item_
+                # per_facet -- the same-problem-only check would see 0 consecutive occurrences and
+                # never yield.
+                rs.record_attempt(0, "non_url_citation", 0)
+                rs.record_attempt(1, "propagated_ungrounded", 2)
+                rs.attempt = 2
+
+                async def _side_effect_gt(name, instructions, role):
+                    if role == "Builder":
+                        assert "Japan" in instructions, instructions
+                        return "## Result\nNo change needed for this test\n---"
+                    return "REVIEW: CLEAN\nNo issues found."
+
+                dispatch = AsyncMock(side_effect=_side_effect_gt)
+                msgs = []
+                should_retry, _ = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append,
+                    dispatch_task=dispatch))
+                recorded_problems = [a["problem"] for a in rs.data["completion_check_attempts"]]
+                assert "missing_specific_item_per_facet" in recorded_problems, (
+                    "a run where GROUNDING_CHECKS keeps winning with a DIFFERENT problem every "
+                    "attempt (none of them missing_specific_item_per_facet, which doesn't key off "
+                    "ctx.grounding_problem at all) must still yield to it once the whole TIER has "
+                    "recurred _STARVATION_SKIP_THRESHOLD times", recorded_problems, msgs)
+                assert any(
+                    call.args[2] == "Builder" and "Japan" in call.args[1]
+                    for call in dispatch.call_args_list
+                ), dispatch.call_args_list
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            if _orig_ws_gt is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws_gt
+            if _orig_gc_gt is None:
+                _config.cfg["settings"].pop("grounding_check", None)
+            else:
+                _config.cfg["settings"]["grounding_check"] = _orig_gc_gt
+            if _orig_uc_gt is None:
+                _config.cfg["settings"].pop("uneven_coverage_check", None)
+            else:
+                _config.cfg["settings"]["uneven_coverage_check"] = _orig_uc_gt
+
+    contextvars.copy_context().run(_within_grounding_tier_starvation_yield_scenario)
+
     # --- Per-facet FindingsWriter dispatch for findings_underuses_evidence (2026-08-01): the
     # combined-instruction version (routed through _FINDINGS_WRITER_FIXABLE_PROBLEMS until this
     # fix) got the same live-confirmed negative result as report_underuses_evidence's own Builder-

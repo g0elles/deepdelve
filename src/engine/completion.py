@@ -165,6 +165,26 @@ GROUNDING_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
     check_not_grounded,  # generic catch-all: fires on ANY grounding problem — keep it LAST
 ]
 
+# Every problem name a GROUNDING_CHECKS member OTHER than check_missing_specific_item_per_facet
+# can produce -- one-to-one with the list above, minus that one check's own problem, same
+# "starving tier" convention as _COMPLETION_TIER_PROBLEMS. Exists because check_missing_specific_
+# item_per_facet sits deliberately late in the list (a first-match-wins scan) and, unlike its
+# siblings, does NOT key off the single shared ctx.grounding_problem -- so it structurally never
+# gets evaluated at all as long as ANY earlier entry keeps winning, even if the winning PROBLEM
+# changes every attempt (the same "tier keeps winning, specific problem doesn't repeat" shape
+# _consecutive_tier_wins was built for at the COMPLETION/GROUNDING boundary). Live-confirmed
+# 2026-08-30: across 4 separate live runs of the same query, this check never once fired inside
+# run_completion_check's real dispatch loop -- propagated_ungrounded/non_url_citation/
+# uncited_claims/claim_unsupported kept winning first, in a different order each run, every one
+# of the check's real bugs was only ever found by replaying a delivered report through it by hand.
+_GROUNDING_TIER_PROBLEMS = frozenset({
+    "not_grounded", "claim_unsupported", "stub_source", "regulation_unsupported",
+    "specific_figure_unsupported", "quote_paraphrased", "non_url_citation", "nli_unsupported",
+    "topical_mismatch", "editorializing", "uncited_claims", "excluded_topic_present",
+    "cross_source_contradiction", "propagated_ungrounded", "report_underuses_findings",
+    "report_underuses_evidence", "duplicate_report_sections",
+})
+
 # Problems whose bad draft gets quarantined (renamed aside) before the retry, and which count as
 # "the check the quarantined draft actually failed" when restoring it at the final verdict.
 # run_completion_check derives its quarantine branch from this tuple (findings_ungrounded
@@ -417,6 +437,17 @@ async def _detect_verdict(req_artifact: str, attempt: int, max_attempts: int,
         # form structurally cannot repeat this ordering bug the way a hand-written lambda
         # could.
         verdict = _apply_starvation_yield(verdict, ctx)
+        # 2026-08-30 fix (see _GROUNDING_TIER_PROBLEMS' own comment for the live incident):
+        # check_missing_specific_item_per_facet doesn't key off ctx.grounding_problem at all, so
+        # it's otherwise starved for as long as ANY earlier GROUNDING_CHECKS entry keeps winning
+        # -- even across attempts where the winning PROBLEM changes every time. Same mechanism
+        # already protecting check_report_underuses_evidence at the COMPLETION/GROUNDING
+        # boundary (above), applied within GROUNDING_CHECKS itself. never_final_blocker=False
+        # (default): a genuinely missing per-facet item winning as the run's terminal reported
+        # blocker is correct, not something to protect against.
+        if verdict is not None:
+            verdict = _yield_to_starved_check(verdict, ctx, check_missing_specific_item_per_facet,
+                                               tier_problems=_GROUNDING_TIER_PROBLEMS)
         # 2026-07-29 (live incident, see _other_grounding_problems' docstring): check_
         # stub_source shadowed check_uncited_claims for 3 whole attempts, silently, because
         # both key off the single ctx.grounding_problem string real_grounding_problem
