@@ -8,11 +8,14 @@
 # first verdict wins, and there are no elif headers left to swallow. Adding a check = one function
 # + one list entry. test_structural_checks.py's verdict matrix pins every problem's routing.
 #
-# The check_* functions themselves, Ctx/Verdict, and their 4 dedicated helpers
-# (_findings_facet_coverage/_facet_coverage/find_duplicate_report_sections/_redelegate_directive)
-# moved to engine/completion_checks.py (2026-08-24, group A of the completion.py decomposition
-# plan -- see session_status/CURRENT.md and ROADMAP.md's completion.py entry). Imported back here
-# because COMPLETION_CHECKS/GROUNDING_CHECKS (the routing tuples) and the rest of this module's
+# The check_* functions themselves, Ctx/Verdict, and their dedicated helpers moved to
+# engine/completion_checks.py (2026-08-24, group A of the completion.py decomposition plan -- see
+# session_status/CURRENT.md and ROADMAP.md's completion.py entry), then split further (2026-09-07,
+# ponytail-audit finding) into engine/completion_checks.py (shared core: Ctx/Verdict/
+# _citation_format_reminder), engine/completion_checks_structural.py (COMPLETION_CHECKS members),
+# and engine/completion_checks_grounding.py (GROUNDING_CHECKS members + _facet_coverage/
+# find_duplicate_report_sections/_redelegate_directive). Imported back here because
+# COMPLETION_CHECKS/GROUNDING_CHECKS (the routing tuples) and the rest of this module's
 # dispatch/starvation machinery still reference them by name -- re-exported below the same way
 # engine/tui.py re-exports _restore_quarantined_draft from engine.artifact_salvage via this module.
 import re
@@ -35,22 +38,29 @@ from engine.artifact_salvage import (
     _salvage_narrated_report,
     _ensure_writer_quota_headroom, _ensure_reader_quota_headroom,
 )
-from engine.completion_checks import (  # noqa: F401 — re-exported for test_structural_checks.py/finetune/*
-    Ctx, Verdict,
+# Shared core (Verdict/Ctx/_citation_format_reminder) + the two tier-specific modules
+# (2026-09-07 split of what was a single 2098-line engine/completion_checks.py -- see that file's
+# own header). All three still re-exported under `engine.completion` below for
+# test_structural_checks.py/finetune/*, exactly as before the split.
+from engine.completion_checks import Ctx, Verdict  # noqa: F401 — re-exported for test_structural_checks.py/finetune/*
+from engine.completion_checks_structural import (  # noqa: F401 — re-exported for test_structural_checks.py/finetune/*
     check_not_delegated, check_requested_count_shortfall, _extract_requested_item_range,
     check_missing_query_facet,
     check_thin_coverage, check_task_verification_flagged,
     check_findings_ungrounded, check_missing_findings, check_stale_findings,
     check_findings_underuses_evidence, check_missing_artifact,
     check_academic_citation_style_abandoned, check_uneven_task_investment,
-    check_untracked_delegation, check_report_underuses_findings, check_report_underuses_evidence,
+    check_untracked_delegation, _findings_facet_coverage,
+)
+from engine.completion_checks_grounding import (  # noqa: F401 — re-exported for test_structural_checks.py/finetune/*
+    check_report_underuses_findings, check_report_underuses_evidence,
     check_duplicate_report_sections, check_missing_specific_item_per_facet, check_claim_unsupported, check_no_urls,
     check_regulation_unsupported, check_specific_figure_unsupported, check_quote_paraphrased,
     check_non_url_citation, check_stub_source, check_nli_unsupported, check_topical_mismatch,
     check_editorializing_content,
     check_uncited_claims, check_excluded_topic, check_cross_source_contradiction,
     check_propagated_ungrounded_content, check_not_grounded,
-    find_duplicate_report_sections, find_duplicate_heading_text, _findings_facet_coverage, _facet_coverage,
+    find_duplicate_report_sections, find_duplicate_heading_text, _facet_coverage,
 )
 # Findings evidence-assembly (group B, 2026-08-24) -- see engine/findings_evidence.py's own header.
 # Re-exported below the same way group A's completion_checks import above is: completion.py's own

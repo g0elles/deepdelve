@@ -286,6 +286,44 @@ tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
   control) is the genuinely irreducible core, and the routing tuples correctly live beside their
   only consumer.
 
+  **Follow-up, 2026-09-07 (ponytail-audit finding): `completion_checks.py` itself had grown back
+  to 2098 lines** (from group A's 1468, as new checks landed: `check_editorializing_content`,
+  `check_missing_specific_item_per_facet`) and was split further along the SAME
+  `COMPLETION_CHECKS`/`GROUNDING_CHECKS` boundary `completion.py`'s own routing tuples already
+  draw. Three files now: `completion_checks.py` (shrunk to the shared core — `Ctx`/`Verdict`/
+  `_citation_format_reminder` — 76 lines), `completion_checks_structural.py` (the 13
+  `COMPLETION_CHECKS` members + their private helpers, 1038 lines), `completion_checks_grounding.py`
+  (the 19 `GROUNDING_CHECKS` members + their private helpers — `_facet_coverage`,
+  `find_duplicate_report_sections`, `_redelegate_directive`, etc. — 1036 lines). Pure move, verified
+  clean along an already-contiguous physical boundary (every `COMPLETION_CHECKS` function was
+  already contiguous in the file, followed immediately by every `GROUNDING_CHECKS` function — no
+  interleaving to untangle).
+
+  **Deliberately did NOT touch the external import surface**: `test_structural_checks.py` has 50+
+  scattered `from engine.completion import ...` call sites (not just one top-of-file block) and
+  5 `finetune/generate_synthetic_*_prompts.py` scripts import the same way — `engine.completion`
+  is a genuine, actively-used facade, not dead re-export bloat (an earlier same-session ponytail
+  pass flagged it as a "delete the shim" candidate before this full blast-radius count was traced
+  — corrected before acting on it). `completion.py`'s own import block was restructured into three
+  clearer per-module imports but still re-exports every name under `engine.completion` unchanged,
+  so all 50+ call sites needed zero edits. One direct (non-`completion.py`) consumer did need a
+  fix: `completion_starvation.py` imported `check_report_underuses_evidence` straight from
+  `engine.completion_checks` at module level — repointed to `engine.completion_checks_grounding`.
+
+  Also applied, same session: a `_gp(ctx, prefix)` helper in `completion_checks_grounding.py`
+  replacing 10 near-identical `gp = ctx.grounding_problem; if not (gp and
+  gp.startswith("...")): return None` gates that had been hand-repeated across
+  `check_claim_unsupported`/`check_regulation_unsupported`/`check_specific_figure_unsupported`/
+  `check_quote_paraphrased`/`check_non_url_citation`/`check_stub_source`/`check_nli_unsupported`/
+  `check_topical_mismatch`/`check_editorializing_content`/`check_uncited_claims`.
+
+  Verified: `ruff check src/ test_structural_checks.py test_tools.py`, the full
+  `test_structural_checks.py`/`test_tools.py` suites, and a direct import smoke-test of every
+  affected module (`engine.completion`/`completion_checks`/`completion_checks_structural`/
+  `completion_checks_grounding`/`completion_starvation`/`completion_dispatch`/`findings_evidence`/
+  `engine.tui`/`api.py`) plus the 6 external finetune/eval scripts that import from
+  `engine.completion` — all clean, no behavior change.
+
 - **`run_cli`/`BasicTuiAgent`/`api.py` full run-lifecycle unification, re-scoped 2026-07-29,
   widened 2026-08-24, still open.** A dedicated audit found the two entry points aren't just
   stylistic duplicates in places that matter: the TUI's approval handling actually executes tools

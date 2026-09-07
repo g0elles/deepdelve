@@ -11,7 +11,8 @@ from typing import Optional
 import config
 from utils.run_state import get_fetched_urls
 from utils.grounding import cheap_grounding_problems
-from engine.completion_checks import Ctx, Verdict, check_report_underuses_evidence
+from engine.completion_checks import Ctx, Verdict
+from engine.completion_checks_grounding import check_report_underuses_evidence
 
 
 def _consecutive_occurrences(run_state: "RunState", problem: str,  # noqa: F821
