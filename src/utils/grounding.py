@@ -1506,7 +1506,13 @@ def editorializing_problem(report: str) -> str | None:
     as if it were sourced fact -- while the claim itself carries no honest hedge marker of its own
     (_HEDGE_MARKER_RE)? UNVALIDATED at scale as of introduction: calibrated against exactly ONE
     real incident (opt-in via settings.grounding_check.editorial_detection_check, default False) --
-    see session_status/CURRENT.md's calibration note before flipping the default. Fails open
+    see session_status/CURRENT.md's calibration note before flipping the default. A SECOND real
+    firing occurred 2026-09-07 on a genuinely different topic (Canada/South Korea AI-safety
+    regulation) but could not be certified true/false-positive after the fact -- the detail string
+    at the time only recorded the citation URL, not the flagged claim's own wording, and the
+    report had already been rewritten by the time this was checked. Fixed going forward (see the
+    `flagged` list below, now includes a claim snippet) so a future firing can actually be audited
+    without needing to catch the report mid-run. Fails open
     (returns None) if the model isn't available, same as every check in this module."""
     pairs = _all_citation_claim_pairs(report)
     if not pairs:
@@ -1520,8 +1526,14 @@ def editorializing_problem(report: str) -> str | None:
         docs=[window for window, _, _ in pairs],
         claims=[claim for _, claim, _ in pairs],
     )
+    # Includes a truncated snippet of the flagged CLAIM itself, not just its citation -- found
+    # missing during 2026-09-07 different-topic calibration (Canada/South Korea AI-safety-
+    # regulation run): a live firing's run_state only ever recorded the citation URL(s), so once
+    # the report was rewritten by a later Builder pass there was no way to audit after the fact
+    # whether that firing was a true or false positive. The citation alone was never the
+    # ambiguous part -- the claim's wording is.
     flagged = [
-        display for (label, (_, claim, display)) in zip(pred_label, pairs)
+        f"{claim.strip()[:100]!r} ({display})" for (label, (_, claim, display)) in zip(pred_label, pairs)
         if label == 0 and not _HEDGE_MARKER_RE.search(claim)
     ]
     if not flagged:
