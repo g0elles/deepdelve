@@ -324,6 +324,23 @@ tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
   `engine.tui`/`api.py`) plus the 6 external finetune/eval scripts that import from
   `engine.completion` — all clean, no behavior change.
 
+  **Follow-up, same day: `test_structural_checks.py` itself split into 19 topic files.** Much
+  harder than the source-side split above — the whole 10,701-line file was ONE `main()` function
+  (814 top-level statements, 199 comment-delimited scenarios), chronologically ordered rather than
+  topically contiguous, with several shared fixtures (`_SRC`/`_FINDINGS_OK`/`_SOURCE_TEXT`/
+  `RunState`/`Ctx`/`Verdict`/etc.) set up once early and reused bare thousands of lines later. A
+  Python `ast`-based static checker traced every cross-section name dependency (479 total) back to
+  its defining section BEFORE any text was moved, confirming a proposed 19-file topic grouping had
+  ZERO cross-file violations once a shared ~40-line common header (real imports + 4 literal test
+  constants) was included in every file. `test_structural_checks.py` is now a ~95-line thin
+  orchestrator calling all 19 files' `main()`s in original order — same filename/invocation, so
+  CLAUDE.md's "run before commit" rule and `.github/workflows/ci.yml` needed zero changes.
+  Verified via a sorted-line-set diff (every non-blank line identical, same order, across the
+  original vs. all 19 extracted bodies), the full suite via `python test_structural_checks.py`
+  (identical output, including the pass@k/pass^k summary), each of the 19 files standalone, and
+  `ruff check .` (whole repo) — all clean. See `session_status/CURRENT.md`'s 2026-09-07 entry for
+  the full file-to-topic map and methodology detail.
+
 - **`run_cli`/`BasicTuiAgent`/`api.py` full run-lifecycle unification, re-scoped 2026-07-29,
   widened 2026-08-24, still open.** A dedicated audit found the two entry points aren't just
   stylistic duplicates in places that matter: the TUI's approval handling actually executes tools
