@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "DeepDelve Runtime Architecture",
+    "output": "deepdelve-architecture.html",
+    "quality_profile": "showcase",
+    "repository": { "url": "https://github.com/g0elles/deepdelve", "revision": "6eb1b0b5c101079fb4bd03bcb299b74ca34029ad" },
+    "views": [
+      { "id": "primary-path", "label": "One research query, end to end", "focus": ["entry", "planner", "researchers", "writers", "completion", "workspace"], "note": "Follow a query from entry to a verified final report." },
+      { "id": "grounding-loop", "label": "The grounding retry loop", "focus": ["workspace", "completion", "writers"], "note": "How an ungrounded claim gets caught and sent back for a fix." },
+      { "id": "evidence-intake", "label": "How raw evidence enters", "focus": ["researchers", "tools", "web", "rag_cache"], "note": "Fetched web content becomes a findings entry before anything is written." }
+    ]
+  },
+  "components": [
+    { "id": "entry", "type": "frontend", "label": "Entry Points", "sublabel": "CLI / TUI / API", "tag": "user-facing", "pos": [40, 300], "size": [130, 62], "sources": [{ "path": "src/engine/tui.py", "label": "run_cli / BasicTuiAgent" }, { "path": "src/api.py", "label": "api.py" }] },
+    { "id": "planner", "type": "backend", "label": "Planner", "sublabel": "orchestrator.py", "tag": "delegates research", "pos": [250, 300], "size": [130, 62], "sources": [{ "path": "src/engine/orchestrator.py" }] },
+    { "id": "researchers", "type": "backend", "label": "Research Sub-Agents", "sublabel": "WebSearcher, DocumentAnalyzer", "pos": [460, 170], "size": [150, 64] },
+    { "id": "writers", "type": "backend", "label": "Writer Sub-Agents", "sublabel": "Builder + FindingsWriter", "pos": [460, 460], "size": [150, 64] },
+    { "id": "tools", "type": "backend", "label": "Tool Layer", "sublabel": "fetch, workspace, quotas", "pos": [680, 170], "size": [140, 64], "sources": [{ "path": "src/tools/web.py" }, { "path": "src/tools/fs.py" }] },
+    { "id": "rag_cache", "type": "database", "label": "RAG Findings Cache", "sublabel": "similarity reuse", "pos": [680, 30], "size": [140, 60] },
+    { "id": "workspace", "type": "database", "label": "Workspace / Run State", "sublabel": "research_output/<run>/", "pos": [680, 460], "size": [150, 64], "sources": [{ "path": "src/utils/run_state.py" }] },
+    { "id": "completion", "type": "security", "label": "Completion-Check Engine", "sublabel": "grounding verdict pipeline", "pos": [900, 460], "size": [160, 64], "sources": [{ "path": "src/engine/completion.py" }, { "path": "src/utils/grounding.py" }] },
+    { "id": "web", "type": "external", "label": "Live Web", "sublabel": "untrusted fetched content", "pos": [900, 170], "size": [130, 62] },
+    { "id": "llm", "type": "external", "label": "LLM Backend", "sublabel": "Ollama / OpenAI-compatible", "pos": [250, 470], "size": [130, 62] }
+  ],
+  "boundaries": [
+    { "kind": "security-group", "label": "grounding trust boundary — fetched content is unverified until checked", "wraps": ["tools", "workspace", "completion"], "pad": 16 }
+  ],
+  "connections": [
+    { "id": "entry-to-planner", "from": "entry", "to": "planner", "label": "submits query", "variant": "emphasis" },
+    { "id": "planner-to-researchers", "from": "planner", "to": "researchers", "label": "delegate_tasks()", "variant": "emphasis" },
+    { "id": "planner-to-llm", "from": "planner", "to": "llm", "label": "chat completions", "fromSide": "bottom", "toSide": "top", "labelAt": [315, 376] },
+    { "id": "planner-to-writers", "from": "planner", "to": "writers", "label": "dispatch write/fix" },
+    { "id": "researchers-to-tools", "from": "researchers", "to": "tools", "label": "fetch_url_to_workspace", "labelAt": [645, 248] },
+    { "id": "researchers-to-cache", "from": "researchers", "to": "rag_cache", "label": "reuse cached findings", "variant": "dashed" },
+    { "id": "tools-to-web", "from": "tools", "to": "web", "label": "HTTPS fetch", "variant": "dashed" },
+    { "id": "tools-to-workspace", "from": "tools", "to": "workspace", "label": "save source + finding", "fromSide": "bottom", "toSide": "top", "labelAt": [748, 248] },
+    { "id": "writers-to-workspace", "from": "writers", "to": "workspace", "label": "write report / findings.md", "labelAt": [645, 538] },
+    { "id": "workspace-to-completion", "from": "workspace", "to": "completion", "label": "run_completion_check()", "labelAt": [865, 538] },
+    { "id": "completion-to-writers", "from": "completion", "to": "writers", "label": "retry: fix ungrounded claim", "variant": "dashed", "fromSide": "bottom", "toSide": "bottom", "via": [[980, 580], [535, 580]], "labelAt": [755, 594] },
+    { "id": "completion-to-workspace-final", "from": "completion", "to": "workspace", "label": "final_report.md verified", "variant": "emphasis", "fromSide": "top", "toSide": "top" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Sub-Agent Roles", "items": ["Researchers fetch and analyze evidence", "Builder + FindingsWriter produce the report, PeerReviewer checks it"] },
+    { "dot": "violet", "title": "Completion-Check Engine", "items": ["Structural, then grounding checks; every claim must trace to a fetched URL", "A stuck draft is quarantined and restored labeled, never discarded"] },
+    { "dot": "emerald", "title": "Persistence", "items": ["Each run gets its own research_output/ workspace", "RAG cache lets a similar query reuse prior findings"] }
+  ]
+}

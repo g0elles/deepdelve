@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "DeepDelve Research Run Sequence",
+    "output": "research-run.html",
+    "viewBox": [1060, 615],
+    "quality_profile": "showcase",
+    "column_fit": "spread",
+    "views": [
+      { "id": "intake-and-research", "label": "Intake and research", "focus": ["user", "planner", "researcher", "web"], "note": "Follow a query from the user through delegated research." },
+      { "id": "write-and-verify", "label": "Write and verify", "focus": ["planner", "writer", "workspace", "completion"], "note": "See the report get written, then checked before it counts as done." },
+      { "id": "delivery", "label": "Delivery", "focus": ["completion", "user"], "note": "The verified report returns to the user, not just a draft." }
+    ]
+  },
+  "participants": [
+    { "id": "user", "type": "external", "label": "User", "sublabel": "CLI / TUI / API" },
+    { "id": "planner", "type": "backend", "label": "Planner", "sublabel": "orchestrator.py" },
+    { "id": "researcher", "type": "backend", "label": "Researcher", "sublabel": "WebSearcher" },
+    { "id": "web", "type": "external", "label": "Live Web", "sublabel": "untrusted" },
+    { "id": "workspace", "type": "database", "label": "Workspace", "sublabel": "run_state + files" },
+    { "id": "writer", "type": "backend", "label": "Writer", "sublabel": "Builder" },
+    { "id": "completion", "type": "security", "label": "Completion", "sublabel": "grounding verdict" }
+  ],
+  "segments": [
+    { "from": 150, "to": 300, "label": "Query & research" },
+    { "from": 314, "to": 448, "label": "Write & verify" },
+    { "from": 462, "to": 570, "label": "Deliver" }
+  ],
+  "messages": [
+    { "id": "submit-query", "from": "user", "to": "planner", "y": 172, "label": "submits research query", "variant": "default" },
+    { "id": "delegate", "from": "planner", "to": "researcher", "y": 200, "label": "delegate_tasks()", "variant": "emphasis" },
+    { "id": "fetch", "from": "researcher", "to": "web", "y": 228, "label": "fetch_url_to_workspace", "variant": "default" },
+    { "id": "raw-content", "from": "web", "to": "researcher", "y": 256, "label": "raw content", "variant": "return" },
+    { "id": "write-finding", "from": "researcher", "to": "workspace", "y": 284, "label": "write finding", "variant": "default" },
+    { "id": "dispatch-writer", "from": "planner", "to": "writer", "y": 320, "label": "dispatch Builder", "variant": "emphasis" },
+    { "id": "read-findings", "from": "writer", "to": "workspace", "y": 348, "label": "read findings.md", "variant": "default" },
+    { "id": "findings-back", "from": "workspace", "to": "writer", "y": 376, "label": "findings", "variant": "return" },
+    { "id": "write-report", "from": "writer", "to": "workspace", "y": 404, "label": "write final_report.md", "variant": "default" },
+    { "id": "run-check", "from": "writer", "to": "completion", "y": 432, "label": "run_completion_check()", "variant": "emphasis" },
+    { "id": "read-evidence", "from": "completion", "to": "workspace", "y": 460, "label": "read report + fetched sources", "variant": "default" },
+    { "id": "evidence-back", "from": "workspace", "to": "completion", "y": 488, "label": "content", "variant": "return" },
+    { "id": "verified", "from": "completion", "to": "user", "y": 524, "label": "verified: final_report.md ready", "variant": "emphasis" }
+  ],
+  "activations": [
+    { "participant": "planner", "from": 196, "to": 324, "type": "backend" },
+    { "participant": "researcher", "from": 224, "to": 288, "type": "backend" },
+    { "participant": "web", "from": 224, "to": 260, "type": "external" },
+    { "participant": "workspace", "from": 280, "to": 492, "type": "database" },
+    { "participant": "writer", "from": 316, "to": 436, "type": "backend" },
+    { "participant": "completion", "from": 428, "to": 528, "type": "security" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "One Query, One Verified Answer", "items": ["The user replies only once completion-check verifies the report", "Not shown: a real run may loop completion_check -> writer first"] }
+  ]
+}

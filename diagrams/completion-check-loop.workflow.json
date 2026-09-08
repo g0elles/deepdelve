@@ -1,0 +1,55 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Completion-Check Retry Loop",
+    "output": "completion-check-loop.html",
+    "quality_profile": "showcase",
+    "views": [
+      { "id": "happy-path", "label": "Clean pass", "focus": ["draft", "structural", "grounding", "verdict", "verified"], "note": "A draft that passes both check tiers on the first try." },
+      { "id": "retry-loop", "label": "Problem found and fixed", "focus": ["verdict", "dispatch", "structural"], "note": "A problem is dispatched to a fresh writer, then the rewritten draft is rechecked." },
+      { "id": "stuck-run", "label": "Stuck run", "focus": ["verdict", "escalate", "quarantine"], "note": "The same problem repeats until escalation, then the budget runs out." }
+    ]
+  },
+  "lanes": [
+    { "id": "artifact", "label": "Artifact" },
+    { "id": "engine", "label": "Completion-Check Engine" },
+    { "id": "recovery", "label": "Recovery & Escalation", "variant": "exception" },
+    { "id": "writer", "label": "Writer Dispatch" }
+  ],
+  "phases": [
+    { "id": "draft-phase", "label": "Draft", "fromCol": 0, "toCol": 0 },
+    { "id": "verify-phase", "label": "Two-tier verify", "fromCol": 1, "toCol": 2, "variant": "emphasis" },
+    { "id": "decide-phase", "label": "Decide", "fromCol": 3, "toCol": 3 },
+    { "id": "recover-phase", "label": "Recover or accept", "fromCol": 4, "toCol": 5, "variant": "dashed" }
+  ],
+  "groups": [
+    { "id": "retry_loop_group", "label": "Retry loop", "lane": "recovery", "fromCol": 4, "toCol": 5, "variant": "dashed" }
+  ],
+  "mainPath": ["draft", "structural", "grounding", "verdict", "verified"],
+  "nodes": [
+    { "id": "draft", "lane": "artifact", "col": 0, "type": "backend", "label": "Draft Written", "sublabel": "final_report.md / findings.md", "width": 150 },
+    { "id": "structural", "lane": "engine", "col": 1, "type": "backend", "label": "Structural Checks", "sublabel": "COMPLETION_CHECKS", "width": 150 },
+    { "id": "grounding", "lane": "engine", "col": 2, "type": "backend", "label": "Grounding Checks", "sublabel": "GROUNDING_CHECKS", "width": 150 },
+    { "id": "verdict", "lane": "engine", "col": 3, "type": "backend", "label": "Verdict", "sublabel": "one problem, or none", "width": 150 },
+    { "id": "verified", "lane": "artifact", "col": 5, "type": "backend", "label": "Verified Report", "sublabel": "clean pass, run ends", "width": 150 },
+    { "id": "dispatch", "lane": "writer", "col": 4, "type": "messagebus", "label": "Dispatch Fix", "sublabel": "Builder + FindingsWriter", "width": 150 },
+    { "id": "escalate", "lane": "recovery", "col": 4, "type": "security", "label": "Escalate", "sublabel": "3x same problem -> rebuild", "width": 150 },
+    { "id": "quarantine", "lane": "recovery", "col": 5, "type": "security", "label": "Quarantine + Salvage", "sublabel": "retry budget exhausted", "width": 150 }
+  ],
+  "edges": [
+    { "id": "draft-to-structural", "from": "draft", "to": "structural", "variant": "default" },
+    { "id": "structural-to-grounding", "from": "structural", "to": "grounding", "label": "no structural problem", "variant": "default" },
+    { "id": "grounding-to-verdict", "from": "grounding", "to": "verdict", "variant": "default" },
+    { "id": "verdict-to-verified", "from": "verdict", "to": "verified", "label": "clean", "variant": "emphasis" },
+    { "id": "verdict-to-dispatch", "from": "verdict", "to": "dispatch", "label": "problem found", "variant": "security", "role": "branch" },
+    { "id": "verdict-to-escalate", "from": "verdict", "to": "escalate", "label": "same problem, 3x in a row", "variant": "dashed", "role": "branch" },
+    { "id": "escalate-to-dispatch", "from": "escalate", "to": "dispatch", "label": "rewrite from scratch", "variant": "emphasis" },
+    { "id": "dispatch-to-structural", "from": "dispatch", "to": "structural", "label": "recheck rewritten draft", "variant": "dashed", "role": "return" },
+    { "id": "verdict-to-quarantine", "from": "verdict", "to": "quarantine", "label": "budget exhausted", "variant": "security", "role": "error" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Two Tiers", "items": ["Grounding checks run only once structural checks are clean", "First verdict wins; starvation-yield surfaces the next one"] },
+    { "dot": "rose", "title": "Escalation, Not Retries", "items": ["3 identical repeats trigger one whole-rebuild attempt", "Still stuck: quarantine and salvage, never silently accept"] }
+  ]
+}
