@@ -8,6 +8,7 @@ A from-scratch rebuild of an earlier prototype that worked end-to-end but was un
 - [`METHODOLOGY.md`](METHODOLOGY.md): why the verification layer is built the way it is, and what's actually novel about it versus prior art.
 - [`ROADMAP.md`](ROADMAP.md): what's done, what's open, and the incident history.
 - [`MODELS.md`](MODELS.md) / the [wiki's Model Bake off](https://github.com/g0elles/deepdelve/wiki/Model-Bakeoff): the full local-model bake-off, why each candidate failed.
+- [`diagrams/`](diagrams/): interactive HTML system diagrams (open directly in a browser) — the whole-project runtime architecture, the completion-check retry loop, and one research query's agent-to-agent call sequence.
 
 ## Architecture
 
