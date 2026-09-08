@@ -34,7 +34,7 @@
     { "id": "verdict", "lane": "engine", "col": 3, "type": "backend", "label": "Verdict", "sublabel": "one problem, or none", "width": 150 },
     { "id": "verified", "lane": "artifact", "col": 5, "type": "backend", "label": "Verified Report", "sublabel": "clean pass, run ends", "width": 150 },
     { "id": "dispatch", "lane": "writer", "col": 4, "type": "messagebus", "label": "Dispatch Fix", "sublabel": "Builder + FindingsWriter", "width": 150 },
-    { "id": "escalate", "lane": "recovery", "col": 4, "type": "security", "label": "Escalate", "sublabel": "3x same problem -> rebuild", "width": 150 },
+    { "id": "escalate", "lane": "recovery", "col": 4, "type": "security", "label": "Escalate", "sublabel": "force_whole_rebuild", "width": 150 },
     { "id": "quarantine", "lane": "recovery", "col": 5, "type": "security", "label": "Quarantine + Salvage", "sublabel": "retry budget exhausted", "width": 150 }
   ],
   "edges": [
@@ -49,7 +49,8 @@
     { "id": "verdict-to-quarantine", "from": "verdict", "to": "quarantine", "label": "budget exhausted", "variant": "security", "role": "error" }
   ],
   "cards": [
-    { "dot": "cyan", "title": "Two Tiers", "items": ["Grounding checks run only once structural checks are clean", "First verdict wins; starvation-yield surfaces the next one"] },
-    { "dot": "rose", "title": "Escalation, Not Retries", "items": ["3 identical repeats trigger one whole-rebuild attempt", "Still stuck: quarantine and salvage, never silently accept"] }
+    { "dot": "cyan", "title": "The Three-Bucket Invariant", "items": ["Self-resolving/clearing checks may re-fire forever", "Else: self-cap via _capped or starve checks below"] },
+    { "dot": "violet", "title": "Named Starvation Mechanisms", "items": ["_yield_to_starved_check protects one check", "_apply_starvation_yield: dict beats a bad lambda"] },
+    { "dot": "rose", "title": "Four Tuples Must Agree", "items": ["4 lists route each problem to its fix", "Miss one: the fix silently goes wrong"] }
   ]
 }
