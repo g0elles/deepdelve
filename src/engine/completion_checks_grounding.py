@@ -27,6 +27,7 @@ from utils.run_state import get_fetched_urls
 from utils.grounding import (
     split_into_heading_sections, find_cross_source_contradictions,
     excluded_topic_semantic_hit, _NAMED_REGULATION_RE, _REGULATION_ID_RE,
+    normalize_dashes, find_acronym_regulation_matches,
 )
 from engine.orchestrator import (
     _extract_excluded_topics, _content_word_overlap, _extract_required_facets,
@@ -516,9 +517,24 @@ def check_missing_specific_item_per_facet(ctx: Ctx) -> Optional[Verdict]:
     prior misattribution bug here) and the unattributed-match count exactly equals the
     uncovered-facet count; an unequal ratio still falls through unresolved rather than guessing.
 
-    Still not exhaustive: an entity-free section with an unequal match/uncovered-facet count
-    (e.g. 3 regulations in one table but only 1 facet still uncovered) still can't be resolved
-    and stays unattributed. Calibrate against more real reports before fully trusting this.
+    SEVENTH fix (2026-09-09, live incident: a real Germany/Japan run named Germany's own
+    regulation as "Erneuerbare-Energien-Gesetz (EEG)" directly under its dedicated heading, but
+    _NAMED_REGULATION_RE/_REGULATION_ID_RE only recognize English/Spanish regulation-noun
+    keywords -- neither has German "Gesetz", so the section matched nothing even though the
+    entity plainly named a real law right there). Rather than add "Gesetz" (the next language
+    to hit this is only a matter of time -- see grounding.py::find_acronym_regulation_matches'
+    own docstring), added a language-agnostic acronym-initials check: any "(ACRONYM)" whose
+    letters are literally the initials of the capitalized words right before it counts as a
+    named regulation too, regardless of what language named it. Needed dash normalization
+    alongside it (grounding.py::normalize_dashes) since the live report used Unicode dashes
+    (U+2011/U+2013) that made "Germany" and the regulation name read as one unbroken phrase,
+    which would have polluted the initials count with the country name itself.
+
+    Still not exhaustive: an entity-free section (SIXTH fix) with an unequal match/uncovered-
+    facet count still can't be resolved and stays unattributed; a named regulation with NO
+    acronym at all, in a language whose word for "law" isn't in the keyword list (e.g. a bare
+    French "Loi relative a..." never abbreviated), still isn't caught by either tier. Calibrate
+    against more real reports before fully trusting this.
 
     FIFTH bug, found via different-topic calibration (2026-09-07, Canada/South Korea AI-safety-
     regulation query -- the first real calibration incident NOT from the original Germany/Japan
@@ -550,7 +566,7 @@ def check_missing_specific_item_per_facet(ctx: Ctx) -> Optional[Verdict]:
     if len(facets) < 2:
         return None
 
-    clean_content = re.sub(r'[*_]', '', ctx.content)
+    clean_content = normalize_dashes(re.sub(r'[*_]', '', ctx.content))
     mentioned = [_facet_token_match(f, _facet_mentions(clean_content)) for f in facets]
     if not any(mentioned):
         return None
@@ -570,22 +586,25 @@ def check_missing_specific_item_per_facet(ctx: Ctx) -> Optional[Verdict]:
     for sec in split_into_heading_sections(ctx.content):
         if not sec:
             continue
-        clean_sec = re.sub(r'[*_]', '', "\n".join(sec))
+        clean_sec = normalize_dashes(re.sub(r'[*_]', '', "\n".join(sec)))
         level_m = re.match(r'(#{1,3})\s', sec[0])
         level = len(level_m.group(1)) if level_m else None
         heading_facets = [
             i for i, f in enumerate(facets)
             if _facet_token_match(f, _facet_mentions(re.sub(r'[*_]', '', sec[0])))
         ]
+        acronym_matches = find_acronym_regulation_matches(clean_sec)
         if len(heading_facets) == 1:
             i = heading_facets[0]
-            if not covered[i] and (_NAMED_REGULATION_RE.search(clean_sec) or _REGULATION_ID_RE.search(clean_sec)):
+            if not covered[i] and (_NAMED_REGULATION_RE.search(clean_sec) or _REGULATION_ID_RE.search(clean_sec)
+                                    or acronym_matches):
                 covered[i] = True
             current_dedicated, current_level = i, level
             continue
         if not heading_facets and level is not None and current_dedicated is not None and level > (current_level or 0):
             i = current_dedicated
-            if not covered[i] and (_NAMED_REGULATION_RE.search(clean_sec) or _REGULATION_ID_RE.search(clean_sec)):
+            if not covered[i] and (_NAMED_REGULATION_RE.search(clean_sec) or _REGULATION_ID_RE.search(clean_sec)
+                                    or acronym_matches):
                 covered[i] = True
             continue
         current_dedicated, current_level = None, level
@@ -597,6 +616,12 @@ def check_missing_specific_item_per_facet(ctx: Ctx) -> Optional[Verdict]:
                     covered[i] = True
                 else:
                     unattributed.append(m)
+        for match_text, preceding_text in acronym_matches:
+            i = _facet_for_regulation_match(match_text, preceding_text, facets)
+            if i is not None:
+                covered[i] = True
+            else:
+                unattributed.append(match_text)
         # Entity-free-section fallback (2026-09-08, live-repro'd, not yet from a real report):
         # a section with NO capitalized entity word anywhere in its own body (a bare two-column
         # regulation table, each entity named only in an earlier section) gives

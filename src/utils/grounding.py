@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import unicodedata
 from typing import Optional
 import config
 from utils.run_state import get_fetched_urls
@@ -631,6 +632,72 @@ _NAMED_REGULATION_RE = re.compile(
     r'Law(?!\s+(?:Office|Firm|Group|School|LLP|LLC|Partners|Associates)\b))\b'
     r'(?:\s*\([A-Z]{2,6}\))?'
 )
+
+
+def normalize_dashes(text: str) -> str:
+    """Every Unicode dash/hyphen variant (non-breaking hyphen U+2011, en/em dash, ...) folded to
+    plain ASCII, using unicodedata's own dash-punctuation category ('Pd') instead of a hardcoded
+    code-point list -- catches whatever variant a model's output happens to use without needing
+    to enumerate them. A dash with NO adjacent whitespace (word-joining, e.g. a German compound
+    "Erneuerbare‑Energien‑Gesetz") becomes '-'; one WITH adjacent whitespace (used as a
+    separator/em-dash, e.g. "Germany – Erneuerbare...") becomes '.' instead, so it acts as a
+    hard boundary for find_acronym_regulation_matches below -- otherwise "Germany –
+    Erneuerbare‑Energien‑Gesetz" reads as one unbroken capitalized phrase and the
+    country name pollutes that function's acronym-initials check."""
+    out = []
+    n = len(text)
+    for i, ch in enumerate(text):
+        if unicodedata.category(ch) == 'Pd':
+            prev_space = i > 0 and text[i - 1].isspace()
+            next_space = i + 1 < n and text[i + 1].isspace()
+            out.append('.' if (prev_space or next_space) else '-')
+        else:
+            out.append(ch)
+    return ''.join(out)
+
+
+# Language-agnostic alternative to _NAMED_REGULATION_RE's fixed English/Spanish keyword list --
+# feeds check_missing_specific_item_per_facet (2026-09-09 live incident: a real Germany/Japan
+# report named Germany's actual regulation as "Erneuerbare-Energien-Gesetz (EEG)" in its own
+# dedicated heading, but neither keyword list recognizes German "Gesetz", so the section had
+# nothing to match even though the entity plainly named a real law right there). Every REAL
+# live incident this check has hit so far (EEG, AIDA, "Bill C-34", FIT) carried an English
+# keyword or a parenthetical acronym -- this covers the acronym case for ANY language by
+# validating that the acronym's letters are literally the initials of the capitalized words
+# immediately before it, which needs no per-language word list at all (lowercase connector
+# words like "and"/"of"/"der"/"sur" are automatically skipped since only capitalized words
+# contribute an initial). Deliberately NOT a general "any Title Case phrase near parens"
+# match (rejected after testing: that alone false-positived on "The Ministry (MOE)").
+_BARE_ACRONYM_RE = re.compile(r'\(([A-Z]{2,6})\)')
+
+
+def find_acronym_regulation_matches(text: str) -> list:
+    """(phrase_with_acronym, preceding_text) pairs for each "(ACRONYM)" in `text` whose letters
+    are the initials of the capitalized words in the current sentence/phrase fragment before it
+    -- same (match_text, preceding_text) shape _NAMED_REGULATION_RE/_REGULATION_ID_RE matches
+    already produce, so check_missing_specific_item_per_facet's existing _facet_for_regulation_
+    match attribution logic handles these identically, no separate code path needed there.
+
+    `text` must already be run through normalize_dashes -- the fragment boundary this relies on
+    (splitting on '.'/newline/comma/semicolon/colon) depends on a separator dash having already
+    become '.', not a word-joining one becoming '-'. Requires at least 2 capitalized words (a
+    single one, e.g. "The Ministry (MOE)"'s "Ministry" alone, isn't enough signal) and an EXACT
+    initials match -- deliberately strict since, unlike this function's keyword-based siblings,
+    there is no keyword to lean on at all here, only the initials themselves."""
+    results = []
+    for m in _BARE_ACRONYM_RE.finditer(text):
+        acronym = m.group(1)
+        preceding = text[:m.start()]
+        fragment = re.split(r'[.\n,;:]', preceding)[-1]
+        cap_words = [w for w in re.findall(r"[A-Za-z']+", fragment) if w[0].isupper()]
+        if len(cap_words) < 2:
+            continue
+        initials = ''.join(w[0] for w in cap_words)
+        if initials.upper() != acronym.upper():
+            continue
+        phrase = " ".join(cap_words)
+        results.append((f"{phrase} ({acronym})", preceding[:len(preceding) - len(fragment)]))
+    return results
 
 
 # Dollar/currency figures and day/month-count claims -- small, specific numbers that

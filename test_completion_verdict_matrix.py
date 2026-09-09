@@ -319,6 +319,34 @@ def main():
               "Source-URL: https://gov.example.jp/2040-target4\n\nJapan's Feed-in Tariff Act "
               "guarantees long-term purchase of renewable electricity."),
          ]),
+        # check_missing_specific_item_per_facet's acronym-initials fix (2026-09-09, SEVENTH fix,
+        # live incident): a real Germany/Japan run named Germany's regulation as "Erneuerbare-
+        # Energien-Gesetz (EEG)" (with real Unicode dashes, U+2013/U+2011, exactly as the live
+        # model output used them) directly under its own dedicated heading -- neither
+        # _NAMED_REGULATION_RE nor _REGULATION_ID_RE recognizes German "Gesetz", so the section
+        # matched nothing even though the entity plainly named a real law right there. Must be a
+        # CLEAN PASS: pins both the language-agnostic acronym-initials match AND that the
+        # Unicode em-dash between "Germany" and the regulation name doesn't pollute the initials
+        # count with "Germany" itself (a real risk this fix's own dash-normalization handles).
+        ("missing_specific_item_per_facet_foreign_language_acronym", True, {"findings.md": _FINDINGS_OK,
+          "final_report.md": (
+              "## Germany – Erneuerbare‑Energien‑Gesetz (EEG)\n"
+              "- Germany's Renewable Energy legal framework, the EEG, mandates increased funding "
+              "for renewable energy generation nationwide. [gov](https://gov.example.de/eeg-act5)\n\n"
+              "## Japan's Renewable Energy Policy\n"
+              "- Japan's Feed-in Tariff Act guarantees long-term purchase of renewable "
+              "electricity. [gov](https://gov.example.jp/2040-target5)\n")},
+         None, None,
+         "Compare renewable energy laws in Germany and Japan, citing at least one specific "
+         "regulation for each.", [
+             ("https://gov.example.de/eeg-act5", "sources/de_eeg5.md",
+              "Source-URL: https://gov.example.de/eeg-act5\n\nGermany's Renewable Energy legal "
+              "framework (known as the EEG) mandates increased funding for renewable energy "
+              "generation nationwide."),
+             ("https://gov.example.jp/2040-target5", "sources/jp_target5.md",
+              "Source-URL: https://gov.example.jp/2040-target5\n\nJapan's Feed-in Tariff Act "
+              "guarantees long-term purchase of renewable electricity."),
+         ]),
         # Live case 2026-07-24: a report quoted a plausible-sounding sentence and attributed it to
         # a real, fetched source -- the underlying claim can be true and traceable while the exact
         # wording still never appears there, which content_level_check's term-overlap check alone
