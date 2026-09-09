@@ -507,10 +507,18 @@ def check_missing_specific_item_per_facet(ctx: Ctx) -> Optional[Verdict]:
     with `**` never matches `[A-Z][a-zA-Z]{2,}` at all -- a heading's "## Introduction" only worked
     by accident, since the space there keeps "##" and "Introduction" as separate tokens.
 
-    Still not exhaustive: a regulation named with no capitalized word of its entity anywhere
-    earlier in the same shared section (e.g. a table cell with no lead-in sentence) stays
-    unattributed. Calibrate against more real reports before fully trusting this (see
-    session_status/CURRENT.md's own note on this open design risk).
+    SIXTH fix (2026-09-08, live-repro'd from the docstring's own prior "not exhaustive" note,
+    not yet from a real report): a section with NO capitalized entity word anywhere in its own
+    body (a bare regulation table, entities established only in an earlier section) left
+    `_facet_for_regulation_match` nothing to attribute to, wrongly flagging entities that WERE
+    genuinely covered. Closed by an entity-free-section fallback: only engages when the section
+    mentions no facet at all (so there's no ambiguous nearby entity to guess wrong, unlike every
+    prior misattribution bug here) and the unattributed-match count exactly equals the
+    uncovered-facet count; an unequal ratio still falls through unresolved rather than guessing.
+
+    Still not exhaustive: an entity-free section with an unequal match/uncovered-facet count
+    (e.g. 3 regulations in one table but only 1 facet still uncovered) still can't be resolved
+    and stays unattributed. Calibrate against more real reports before fully trusting this.
 
     FIFTH bug, found via different-topic calibration (2026-09-07, Canada/South Korea AI-safety-
     regulation query -- the first real calibration incident NOT from the original Germany/Japan
@@ -581,10 +589,28 @@ def check_missing_specific_item_per_facet(ctx: Ctx) -> Optional[Verdict]:
                 covered[i] = True
             continue
         current_dedicated, current_level = None, level
+        unattributed = []
         for pattern in (_NAMED_REGULATION_RE, _REGULATION_ID_RE):
             for m in pattern.finditer(clean_sec):
                 i = _facet_for_regulation_match(m.group(), clean_sec[:m.start()], facets)
                 if i is not None:
+                    covered[i] = True
+                else:
+                    unattributed.append(m)
+        # Entity-free-section fallback (2026-09-08, live-repro'd, not yet from a real report):
+        # a section with NO capitalized entity word anywhere in its own body (a bare two-column
+        # regulation table, each entity named only in an earlier section) gives
+        # `_facet_for_regulation_match` nothing to attribute to at all -- see this function's
+        # own docstring "Still not exhaustive" note. Safe specifically BECAUSE the section is
+        # entity-free: every prior misattribution bug here required a section mentioning
+        # MULTIPLE entities near the match (ambiguous which one), which by this guard's
+        # definition cannot happen. Only applied when the match count exactly equals the
+        # uncovered-facet count -- an unequal ratio is still genuinely ambiguous and falls
+        # through unresolved rather than guessing.
+        if unattributed and not any(_facet_token_match(f, _facet_mentions(clean_sec)) for f in facets):
+            uncovered = [i for i in range(len(facets)) if mentioned[i] and not covered[i]]
+            if len(unattributed) == len(uncovered):
+                for i in uncovered:
                     covered[i] = True
 
     missing = [" ".join(sorted(facets[i])) for i in range(len(facets)) if mentioned[i] and not covered[i]]

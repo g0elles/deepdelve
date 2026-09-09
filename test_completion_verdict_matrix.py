@@ -294,6 +294,31 @@ def main():
               "Source-URL: https://gov.example.ca/aida\n\nProposed in 2022 as a comprehensive AI "
               "statute, suspended in January 2025."),
          ]),
+        # check_missing_specific_item_per_facet's entity-free-section fix (2026-09-08, live-repro
+        # of the docstring's own prior "not exhaustive" note, SIXTH fix, not yet from a real
+        # report): both country names appear once in "## Introduction", then a LATER
+        # "## Regulations Table" section names both regulations in a bare two-column table with
+        # no per-row country repetition at all -- nothing in that section to attribute either
+        # match to under the old logic. Must be a CLEAN PASS: both real named laws are right there.
+        ("missing_specific_item_per_facet_entity_free_table", True, {"findings.md": _FINDINGS_OK,
+          "final_report.md": (
+              "## Introduction\n"
+              "This report compares renewable energy law in Germany and Japan.\n\n"
+              "## Regulations Table\n"
+              "| Regulation | Source |\n"
+              "|---|---|\n"
+              "| Renewable Energy Sources Act | [gov](https://gov.example.de/eeg-act4) |\n"
+              "| Feed-in Tariff Act | [gov](https://gov.example.jp/2040-target4) |\n")},
+         None, None,
+         "Compare renewable energy laws in Germany and Japan, citing at least one specific "
+         "regulation for each.", [
+             ("https://gov.example.de/eeg-act4", "sources/de_eeg4.md",
+              "Source-URL: https://gov.example.de/eeg-act4\n\nGermany's Renewable Energy Sources "
+              "Act (EEG) mandates increased funding for renewable energy generation nationwide."),
+             ("https://gov.example.jp/2040-target4", "sources/jp_target4.md",
+              "Source-URL: https://gov.example.jp/2040-target4\n\nJapan's Feed-in Tariff Act "
+              "guarantees long-term purchase of renewable electricity."),
+         ]),
         # Live case 2026-07-24: a report quoted a plausible-sounding sentence and attributed it to
         # a real, fetched source -- the underlying claim can be true and traceable while the exact
         # wording still never appears there, which content_level_check's term-overlap check alone
