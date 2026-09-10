@@ -2,9 +2,13 @@
 coverage before this file (confirmed via codegraph before this fix) -- this pins the one new
 piece of logic added 2026-08-24: malformed-tool-call retry + QuotaAbortException handling in
 _run_research's stream-consumption loop, mirroring run_cli/run_agent's own already-tested copies
-of this exact pattern (engine/tui.py). Does not exercise the rest of _run_research (job queueing,
-SSE draining, file uploads) -- those are unchanged by this fix and still uncovered; a fuller
-api.py test harness is a separate, larger undertaking than this one targeted pin.
+of this exact pattern (engine/tui.py). Also pins _worker/_job_queue's single-flight guarantee
+(added after a QA audit flagged it as untested) -- ARCHITECTURE.md §5's whole safety argument for
+api.py's module-level globals (_session, tui.py's session-log state) not being contextvar-safe is
+that the FIFO queue+worker never runs two jobs concurrently "by construction, not by a lock"; this
+was previously asserted only in prose, never verified. Does not exercise the rest of _run_research
+(SSE draining, file uploads) -- still uncovered; a fuller api.py test harness is a separate, larger
+undertaking than this one targeted pin.
 Run: ~/.venvs/deepdelve/bin/python test_api.py (no framework needed, same convention as
 test_tools.py/test_structural_checks.py).
 """
@@ -103,6 +107,68 @@ def _run_scenario(first_call_exc, expect_completion_check_called):
                 config.cfg["settings"]["workspace"] = orig_ws
 
 
+async def _queue_serialization_scenario():
+    """Two jobs enqueued back-to-back must never run concurrently -- _worker() pulls one job at a
+    time and awaits it fully before calling _job_queue.get() again. Proves that by construction,
+    not by inspecting the source: a fake _run_research tracks how many instances are in flight at
+    once and records start/end order, so a regression that let _worker overlap two jobs (e.g. a
+    stray asyncio.create_task instead of an awaited call) would show max_concurrent > 1 or
+    interleaved start/end order, not just a slower test."""
+    import api
+
+    concurrent = 0
+    max_concurrent = 0
+    order = []
+
+    async def _fake_run_research(run_id, query, opts, events):
+        nonlocal concurrent, max_concurrent
+        concurrent += 1
+        max_concurrent = max(max_concurrent, concurrent)
+        order.append(("start", run_id))
+        await asyncio.sleep(0.05)
+        order.append(("end", run_id))
+        concurrent -= 1
+
+    orig_run_research = api._run_research
+    orig_jobs = api._jobs
+    orig_queue = api._job_queue
+    orig_worker_started = api._worker_started
+    api._run_research = _fake_run_research
+    api._jobs = {}
+    api._job_queue = asyncio.Queue()
+    # Bypass _ensure_worker (module-global, would spawn against the REAL _job_queue) -- start our
+    # own worker directly against the swapped-in fake queue/jobs, same object _worker() closes
+    # over via the module attribute, then mark _worker_started so nothing else double-spawns one.
+    api._worker_started = True
+    worker_task = asyncio.create_task(api._worker())
+
+    try:
+        for run_id in ("run_a", "run_b"):
+            api._jobs[run_id] = {
+                "status": "queued", "queue": asyncio.Queue(), "error": None, "task": None, "query": "q",
+            }
+            await api._job_queue.put((run_id, "q", {"mode": "fresh"}))
+
+        for run_id in ("run_a", "run_b"):
+            while True:
+                event = await asyncio.wait_for(api._jobs[run_id]["queue"].get(), timeout=5)
+                if event.get("type") == "done":
+                    break
+
+        assert max_concurrent == 1, f"expected single-flight (max 1 concurrent job), got {max_concurrent}"
+        assert order == [("start", "run_a"), ("end", "run_a"), ("start", "run_b"), ("end", "run_b")], order
+    finally:
+        worker_task.cancel()
+        try:
+            await worker_task
+        except asyncio.CancelledError:
+            pass
+        api._run_research = orig_run_research
+        api._jobs = orig_jobs
+        api._job_queue = orig_queue
+        api._worker_started = orig_worker_started
+
+
 def main():
     # --- Malformed tool call: must retry once (via classify_malformed_retry), not crash the job.
     # Before this fix, this exact exception propagated straight out of _run_research uncaught. ---
@@ -124,6 +190,8 @@ def main():
         raise AssertionError("an unrecognized exception must propagate, not be swallowed")
     except ValueError as e:
         assert str(e) == "something else entirely", e
+
+    asyncio.run(_queue_serialization_scenario())
 
     print("All api.py assertions passed.")
 

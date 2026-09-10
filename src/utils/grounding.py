@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 import time
@@ -1921,7 +1922,14 @@ async def real_grounding_problem(content: str) -> str | None:
             return problem
 
     if gc_cfg.get("academic_citation_verify", False):
-        problem = academic_citation_existence_problem(content)
+        # academic_citation_existence_problem/_semantic_scholar_lookup are synchronous, blocking
+        # (time.sleep rate-limit floor + a sync httpx.get network call) -- run off-thread so a
+        # multi-citation academic report doesn't stall the whole asyncio event loop (and every
+        # concurrently-dispatched sub-agent with it) for seconds at a time. asyncio.to_thread,
+        # not an async rewrite of the lookup itself: _semantic_scholar_lookup is directly
+        # unit-tested as a sync function (test_routing_cache_and_misc.py), and this keeps that
+        # contract unchanged.
+        problem = await asyncio.to_thread(academic_citation_existence_problem, content)
         if problem:
             return problem
 
