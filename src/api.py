@@ -264,44 +264,67 @@ async def _run_research(run_id: str, query: str, opts: dict, events: asyncio.Que
 
             try:
                 stream = agent.run(current_input, session=session, stream=True)
-                async for update in iter_agent_stream(stream, budget_deadline):
-                    run_stream_chars += stream_content_chars(update)
-                    for c in getattr(update, "contents", None) or []:
-                        if getattr(c, "type", None) == "text" and getattr(c, "text", None):
-                            turn_text += c.text
-                            await events.put({"type": "text", "agent": "Planner", "text": c.text})
-                        elif hasattr(c, "function_call") and c.function_call is not None:
-                            user_input_requests.append(c)
+                try:
+                    async for update in iter_agent_stream(stream, budget_deadline):
+                        run_stream_chars += stream_content_chars(update)
+                        for c in getattr(update, "contents", None) or []:
+                            if getattr(c, "type", None) == "text" and getattr(c, "text", None):
+                                turn_text += c.text
+                                await events.put({"type": "text", "agent": "Planner", "text": c.text})
+                            elif hasattr(c, "function_call") and c.function_call is not None:
+                                user_input_requests.append(c)
+                except asyncio.TimeoutError:
+                    # Missing entirely before this fix, unlike run_cli's identical inner
+                    # try/except (tui.py): iter_agent_stream raises asyncio.TimeoutError directly
+                    # once budget_deadline has passed (mid-stream, not just at the post-loop
+                    # check below) -- without this, the outer except BaseException below caught it
+                    # instead, classify_malformed_retry didn't recognize a bare TimeoutError, and
+                    # its reraise=True crashed the whole job instead of finishing gracefully.
+                    await events.put({
+                        "type": "system",
+                        "text": f"max_run_minutes ({max_run_minutes}) exceeded — cutting the current turn short.",
+                    })
             except BaseException as e:
                 if isinstance(e, asyncio.CancelledError):
                     # /cancel relies on this propagating -- must not be swallowed.
                     raise
                 from tools import QuotaAbortException
                 if isinstance(e, QuotaAbortException):
+                    # Mirrors run_cli's 2026-08-27 fix (tui.py's own comment on this exact branch):
+                    # `break`ing straight out of `while has_requests:` skips run_completion_check
+                    # entirely, which throws away real fetched research with zero quarantine-
+                    # restore/salvage attempt. Falling through (has_requests already False, no
+                    # break) reaches the same salvage path the malformed-tool-call give-up branch
+                    # below uses -- this API surface never got that later fix propagated to it.
                     await events.put({"type": "system", "text": f"Task forcefully aborted: {e}"})
-                    break
-                from engine.orchestrator import classify_malformed_retry
-                result = classify_malformed_retry(e, malformed_retries, current_input)
-                malformed_retries = result.new_malformed_retries
-                if result.should_retry:
+                    has_requests = False
+                    run_state.attempt = 10**6
+                else:
+                    # Guarded under else (matches run_cli): QuotaAbortException is handled entirely
+                    # by the branch above and must not also fall into this malformed-tool-call-
+                    # specific classifier, which doesn't know how to interpret it and would re-raise.
+                    from engine.orchestrator import classify_malformed_retry
+                    result = classify_malformed_retry(e, malformed_retries, current_input)
+                    malformed_retries = result.new_malformed_retries
+                    if result.should_retry:
+                        await events.put({
+                            "type": "system",
+                            "text": f"Model emitted a malformed tool call — retrying the turn ({malformed_retries}/2).",
+                        })
+                        current_input = result.new_current_input
+                        has_requests = True
+                        continue
+                    if result.reraise:
+                        raise
+                    # Retry budget exhausted for this specific, already-recognized failure class --
+                    # degrade to the final-verdict path instead of crashing the whole run, same as
+                    # run_cli/run_agent's own copies of this exact branch.
                     await events.put({
                         "type": "system",
-                        "text": f"Model emitted a malformed tool call — retrying the turn ({malformed_retries}/2).",
+                        "text": f"Model kept emitting malformed tool calls after {malformed_retries} "
+                                f"retries — giving up on this turn and finishing with whatever exists.",
                     })
-                    current_input = result.new_current_input
-                    has_requests = True
-                    continue
-                if result.reraise:
-                    raise
-                # Retry budget exhausted for this specific, already-recognized failure class --
-                # degrade to the final-verdict path instead of crashing the whole run, same as
-                # run_cli/run_agent's own copies of this exact branch.
-                await events.put({
-                    "type": "system",
-                    "text": f"Model kept emitting malformed tool calls after {malformed_retries} "
-                            f"retries — giving up on this turn and finishing with whatever exists.",
-                })
-                run_state.attempt = 10**6
+                    run_state.attempt = 10**6
 
             if turn_text:
                 planner_text_history.append(turn_text)
@@ -368,8 +391,17 @@ async def _run_research(run_id: str, query: str, opts: dict, events: asyncio.Que
                     continue
                 run_state.attempt = 10**6
             elif budget_deadline and time.monotonic() > budget_deadline:
+                # Mirrors run_cli's equivalent notify (tui.py) -- this used to silently force the
+                # final-verdict path with no event at all, so an SSE client watching the stream
+                # saw the run wrap up with no explanation.
+                await events.put({
+                    "type": "system",
+                    "text": f"max_run_minutes ({max_run_minutes}) exceeded — no more retries; "
+                            f"finishing with whatever exists (salvage still applies).",
+                })
                 run_state.attempt = 10**6
 
+            prior_input_len = len(current_input) if isinstance(current_input, list) else 1
             should_continue, current_input = await run_completion_check(
                 query=query, current_input=current_input, run_state=run_state, notify=_api_notify,
                 last_assistant_text=turn_text, dispatch_task=dispatch_task,
@@ -377,6 +409,16 @@ async def _run_research(run_id: str, query: str, opts: dict, events: asyncio.Que
             )
             if should_continue:
                 has_requests = True
+                # context_budget_chars blind spot, mirrors run_cli (tui.py): a classic
+                # inject-into-Planner completion-check directive appends a message to
+                # current_input entirely outside the stream loop that run_stream_chars normally
+                # measures. Only count what was actually appended here.
+                if isinstance(current_input, list) and len(current_input) > prior_input_len:
+                    for injected_msg in current_input[prior_input_len:]:
+                        for c in getattr(injected_msg, "contents", None) or []:
+                            text = getattr(c, "text", None)
+                            if text:
+                                run_stream_chars += len(text)
 
         run_state.save()
         _write_bibliography(run_state)

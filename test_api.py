@@ -6,9 +6,20 @@ of this exact pattern (engine/tui.py). Also pins _worker/_job_queue's single-fli
 (added after a QA audit flagged it as untested) -- ARCHITECTURE.md §5's whole safety argument for
 api.py's module-level globals (_session, tui.py's session-log state) not being contextvar-safe is
 that the FIFO queue+worker never runs two jobs concurrently "by construction, not by a lock"; this
-was previously asserted only in prose, never verified. Does not exercise the rest of _run_research
-(SSE draining, file uploads) -- still uncovered; a fuller api.py test harness is a separate, larger
-undertaking than this one targeted pin.
+was previously asserted only in prose, never verified.
+
+2026-09-09: pins three fixes closing a real drift from run_cli's ALREADY-fixed behavior, found by
+a QA audit tracing all three run-lifecycle loops in full: (1) QuotaAbortException falling through
+into run_completion_check instead of `break`ing past it (run_cli fixed this exact mistake
+2026-08-27; api.py never got the update); (2) a deadline-exceeded cutoff now emits a system event
+instead of silently forcing the final-verdict path; (3) context_budget_chars accounting for a
+completion-check-injected message (mirrors run_cli's own re-scan) -- this third one has no
+dedicated test here (run_stream_chars is a local var with no externally observable effect in this
+black-box harness), verified instead by direct code symmetry with run_cli's already-correct copy,
+not independent test coverage.
+
+Does not exercise the rest of _run_research (SSE draining, file uploads) -- still uncovered; a
+fuller api.py test harness is a separate, larger undertaking than this one targeted pin.
 Run: ~/.venvs/deepdelve/bin/python test_api.py (no framework needed, same convention as
 test_tools.py/test_structural_checks.py).
 """
@@ -52,12 +63,17 @@ class _FakeAgent:
         return _FakeStream(raise_exc=None)
 
 
-def _run_scenario(first_call_exc, expect_completion_check_called):
+def _run_scenario(first_call_exc, expect_completion_check_called, extra_settings=None):
     import api
 
     with tempfile.TemporaryDirectory() as tmpdir:
         orig_ws = config.cfg.get("settings", {}).get("workspace")
         config.cfg.setdefault("settings", {})["workspace"] = {"type": "disk", "dir": tmpdir}
+
+        orig_extra = {}
+        for key, val in (extra_settings or {}).items():
+            orig_extra[key] = config.cfg["settings"].get(key)
+            config.cfg["settings"][key] = val
 
         orig_create_local_agent = api.create_local_agent
         orig_run_completion_check = api.run_completion_check
@@ -105,6 +121,11 @@ def _run_scenario(first_call_exc, expect_completion_check_called):
                 config.cfg["settings"].pop("workspace", None)
             else:
                 config.cfg["settings"]["workspace"] = orig_ws
+            for key, val in orig_extra.items():
+                if val is None:
+                    config.cfg["settings"].pop(key, None)
+                else:
+                    config.cfg["settings"][key] = val
 
 
 async def _queue_serialization_scenario():
@@ -177,12 +198,30 @@ def main():
     assert retry_events, f"expected a retry notification, got {events}"
     assert "1/2" in retry_events[0]["text"], retry_events[0]
 
-    # --- QuotaAbortException: must abort cleanly with a system event, not crash the job. ---
+    # --- QuotaAbortException: must abort cleanly with a system event AND still reach
+    # run_completion_check (2026-09-09 fix: this used to `break` and skip it entirely, throwing
+    # away real fetched research with zero quarantine-restore/salvage attempt -- the exact mistake
+    # run_cli itself fixed on 2026-08-27, never propagated here until now). ---
     from tools import QuotaAbortException
-    events = _run_scenario(QuotaAbortException("stuck in a loop"), expect_completion_check_called=False)
+    events = _run_scenario(QuotaAbortException("stuck in a loop"), expect_completion_check_called=True)
     abort_events = [e for e in events if "forcefully aborted" in e.get("text", "")]
     assert abort_events, f"expected a forced-abort notification, got {events}"
     assert "stuck in a loop" in abort_events[0]["text"], abort_events[0]
+
+    # --- Deadline exceeded must be explicitly narrated to the client (mirrors run_cli's own
+    # notify), not silently forced into the final-verdict path with zero explanation, and must
+    # NOT crash the job. A negative max_run_minutes puts budget_deadline in the past
+    # deterministically (no race with real wall-clock time). Two distinct notifications are
+    # expected here, mirroring run_cli's two separate deadline checks: iter_agent_stream raises
+    # asyncio.TimeoutError immediately (mid-stream cutoff, now caught by the inner try/except
+    # added alongside this fix), then the post-loop `elif budget_deadline...` check ALSO still
+    # sees the deadline exceeded (nothing advanced the clock) and fires its own notification
+    # right before run_completion_check. ---
+    events = _run_scenario(None, expect_completion_check_called=True, extra_settings={"max_run_minutes": -1})
+    deadline_events = [e for e in events if "max_run_minutes" in e.get("text", "")]
+    assert len(deadline_events) >= 2, f"expected 2 deadline notifications (mid-stream + post-loop), got {events}"
+    assert any("cutting the current turn short" in e["text"] for e in deadline_events), deadline_events
+    assert any("finishing with whatever exists" in e["text"] for e in deadline_events), deadline_events
 
     # --- A genuinely unrecognized exception must still propagate (not silently swallowed). ---
     try:
