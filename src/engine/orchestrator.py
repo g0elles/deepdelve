@@ -717,6 +717,30 @@ _HOSTED_PROVIDER_THINKING_EXTRA_BODY = {
 
 def _get_default_options():
     options = {"temperature": config.get_setting("temperature", 0.0)}
+    # Hard per-completion generation-length ceiling (2026-09-09, Tongyi-DeepResearch-30B-A3B
+    # research finding): before this, NOTHING bounded a single completion's length independent of
+    # the whole-run max_run_minutes budget (default 45 min) -- confirmed live, a Planner turn ran
+    # past 58,000 decoded tokens over 27+ minutes without ever emitting a stop/tool-call token.
+    # Root-caused (not guessed) to a documented failure class of aggressively-quantized reasoning
+    # models -- EOS/stop-token probability degradation under low-bit GGUF quantization inflates
+    # reasoning-token counts and can cause outright non-termination (arxiv 2606.02011, arxiv
+    # 2606.25519; same-family precedent: unslothai/unsloth#3721, "Qwen2.5 fails to generate
+    # eos_token and repeats endlessly ... until max_new_tokens is reached" -- that issue's own
+    # accepted mitigation IS a hard generation cap, not a decoding-parameter fix). Confirmed this
+    # is NOT a sampling-parameter problem this project's config can just correct: a live A/B test
+    # (temperature 0.2 vs the model's own Modelfile-recommended 0.6) found the LOWER temperature
+    # terminated MORE reliably, the opposite of generic "avoid greedy decoding" advice -- config
+    # tuning does not reliably prevent this, only a hard ceiling bounds its cost when it recurs.
+    # Deliberately separate from max_output_tokens (4096, client-side compaction bookkeeping only,
+    # never sent to the model) -- generous headroom for a legitimate long report/findings write,
+    # while still failing in a few minutes instead of the full run budget. Works identically across
+    # every backend below: the OpenAI-compat client passes max_tokens straight through (it's the
+    # native field name), and agent_framework_ollama's OllamaChatOptions auto-translates max_tokens
+    # -> options.num_predict (confirmed by reading the installed package source, not assumed).
+    # 0/absent disables, same opt-out convention as context_budget_chars/max_context_window_tokens.
+    _max_gen_tokens = config.get_setting("max_generation_tokens", 12000)
+    if _max_gen_tokens:
+        options["max_tokens"] = _max_gen_tokens
     backend = config.cfg.get("api", {}).get("backend", "openai")
     # api.backend: "ollama" (2026-07-28) -- OllamaChatOptions has a genuine, already-correctly-
     # implemented `think: bool` field (agent_framework_ollama's _chat_client.py maps it straight

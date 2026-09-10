@@ -386,6 +386,16 @@ settings:
   # than an independently-invented number.
   max_context_window_tokens: 16384
   max_output_tokens: 4096
+  # Hard per-completion generation-length ceiling sent to the model itself (max_tokens/num_predict,
+  # depending on backend) -- 0/absent disables. Distinct from max_output_tokens above (client-side
+  # compaction bookkeeping only, never transmitted to the model). Added 2026-09-09 after a live
+  # incident: a Planner turn ran past 58,000 decoded tokens over 27+ minutes with no stop/tool-call
+  # token, on a candidate model later root-caused to a documented low-bit-quantization reasoning
+  # failure class (EOS-token degradation), not something a sampling-parameter change reliably
+  # prevents. 12000 is generous headroom above max_output_tokens for a legitimate long report/
+  # findings write, while still failing in a few minutes instead of burning the whole
+  # max_run_minutes budget on one runaway turn.
+  max_generation_tokens: 12000
   # When true, the Planner's write_todos call requires human approval before it commits (TUI mode
   # shows the plan content in an interactive approve/deny widget; headless/--prompt mode falls back
   # to the existing --auto-approve flag). Lets you review/reject the research plan before quota is

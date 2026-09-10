@@ -520,6 +520,48 @@ def main():
 
     _default_options_scenario()
 
+    # --- max_generation_tokens (2026-09-09, Tongyi-DeepResearch-30B-A3B research finding): a
+    # hard per-completion generation-length ceiling, sent to the model itself as max_tokens
+    # (translated to num_predict on the native ollama backend by agent_framework_ollama's own
+    # OllamaChatOptions) -- before this, nothing bounded a single completion independent of the
+    # whole-run max_run_minutes budget. Must apply identically across every backend branch (the
+    # option is set once, before the backend if/elif chain), default on (12000), and honor the
+    # same 0/absent-disables opt-out convention as context_budget_chars/max_context_window_tokens. ---
+    def _max_generation_tokens_scenario():
+        from engine.orchestrator import _get_default_options
+
+        _orig_backend = _config.cfg.get("api", {}).get("backend")
+        _orig_mgt = _config.cfg.get("settings", {}).get("max_generation_tokens")
+        try:
+            # Default (unset) -> 12000, applied on every backend.
+            _config.cfg["settings"].pop("max_generation_tokens", None)
+            for backend in ("openai", "ollama", "openai_hosted"):
+                _config.cfg.setdefault("api", {})["backend"] = backend
+                opts = _get_default_options()
+                assert opts.get("max_tokens") == 12000, (backend, opts)
+
+            # Explicit override respected.
+            _config.cfg["settings"]["max_generation_tokens"] = 4000
+            _config.cfg["api"]["backend"] = "ollama"
+            assert _get_default_options()["max_tokens"] == 4000
+
+            # 0 disables -- must not send max_tokens at all (same opt-out convention as the
+            # other budget settings), not send a literal 0 (which some servers would treat as
+            # "generate nothing" rather than "no limit").
+            _config.cfg["settings"]["max_generation_tokens"] = 0
+            assert "max_tokens" not in _get_default_options()
+        finally:
+            if _orig_mgt is None:
+                _config.cfg["settings"].pop("max_generation_tokens", None)
+            else:
+                _config.cfg["settings"]["max_generation_tokens"] = _orig_mgt
+            if _orig_backend is None:
+                _config.cfg["api"].pop("backend", None)
+            else:
+                _config.cfg["api"]["backend"] = _orig_backend
+
+    _max_generation_tokens_scenario()
+
     # --- _compaction_strategy_for_role (2026-07-24): FindingsWriter's whole evidence base is one
     # front-loaded first-turn message -- generic truncation has nothing else to evict once that
     # crosses threshold and deletes it outright (confirmed live: empty findings.md / false "no
