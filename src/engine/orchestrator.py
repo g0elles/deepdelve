@@ -733,14 +733,27 @@ def _get_default_options():
     # tuning does not reliably prevent this, only a hard ceiling bounds its cost when it recurs.
     # Deliberately separate from max_output_tokens (4096, client-side compaction bookkeeping only,
     # never sent to the model) -- generous headroom for a legitimate long report/findings write,
-    # while still failing in a few minutes instead of the full run budget. Works identically across
-    # every backend below: the OpenAI-compat client passes max_tokens straight through (it's the
-    # native field name), and agent_framework_ollama's OllamaChatOptions auto-translates max_tokens
-    # -> options.num_predict (confirmed by reading the installed package source, not assumed).
-    # 0/absent disables, same opt-out convention as context_budget_chars/max_context_window_tokens.
+    # while still failing in a few minutes instead of the full run budget. 0/absent disables, same
+    # opt-out convention as context_budget_chars/max_context_window_tokens.
+    #
+    # LANDMINE, found live 2026-09-09 during the very re-test this fix was added for: setting this
+    # via the generic ChatOptions "max_tokens" field is NOT sufficient for Ollama's OpenAI-compat
+    # endpoint. agent_framework_openai's OpenAIChatCompletionClient unconditionally translates
+    # "max_tokens" -> "max_completion_tokens" before sending the request (confirmed at the
+    # installed package source, agent_framework_openai/_chat_completion_client.py's own field-name
+    # map) -- the modern OpenAI convention, correct for the real api.openai.com and for standards-
+    # compliant hosted providers, but Ollama's OpenAI-compat shim silently IGNORES
+    # "max_completion_tokens" entirely. Confirmed directly: a raw request with ONLY
+    # max_completion_tokens ran unbounded past 120s+ (the same essay-writing prompt that stopped
+    # at exactly the requested count with plain "max_tokens" every time). The first version of
+    # this fix passed its own unit test (which only checked _get_default_options()'s RETURN VALUE,
+    # never the actual wire request) and then failed completely on the very re-test it was built
+    # for -- a real live run blew past 40,000+ decoded tokens with the "cap" silently doing
+    # nothing. Fixed below by sending the raw "max_tokens" key via extra_body specifically for the
+    # Ollama-compat-shim path (bypassing agent_framework's translation for that path only) --
+    # every other path (ollama-native backend, openai_hosted, real api.openai.com) keeps using the
+    # standard ChatOptions field, since those all correctly understand max_completion_tokens.
     _max_gen_tokens = config.get_setting("max_generation_tokens", 12000)
-    if _max_gen_tokens:
-        options["max_tokens"] = _max_gen_tokens
     backend = config.cfg.get("api", {}).get("backend", "openai")
     # api.backend: "ollama" (2026-07-28) -- OllamaChatOptions has a genuine, already-correctly-
     # implemented `think: bool` field (agent_framework_ollama's _chat_client.py maps it straight
@@ -751,8 +764,15 @@ def _get_default_options():
     # reasoning back in on tool-calling turns even with enable_thinking:false.
     if backend == "ollama":
         options["think"] = config.get_setting("enable_thinking", False)
+        # OllamaChatOptions.max_tokens auto-translates to options.num_predict (confirmed at the
+        # installed agent_framework_ollama source) -- this path was never affected by the
+        # max_completion_tokens landmine above, only the OpenAI-compat shim path was.
+        if _max_gen_tokens:
+            options["max_tokens"] = _max_gen_tokens
         return options
     if backend == "openai_hosted":
+        if _max_gen_tokens:
+            options["max_tokens"] = _max_gen_tokens
         if not config.cfg["settings"].get("enable_thinking", False):
             base_url = config.cfg.get("api", {}).get("openai_base_url", "")
             for marker, extra_body in _HOSTED_PROVIDER_THINKING_EXTRA_BODY.items():
@@ -773,6 +793,8 @@ def _get_default_options():
     # auto-detection (this project has repeatedly found string-matching model-family guesses
     # unreliable) -- set this explicitly per config, same philosophy as settings.specialist_model.
     if config.get_setting("skip_chat_template_kwargs", False):
+        if _max_gen_tokens:
+            options["max_tokens"] = _max_gen_tokens
         return options
     base_url = config.cfg.get("api", {}).get("openai_base_url", "")
     # OpenAI's official API rejects "chat_template_kwargs"
@@ -789,7 +811,17 @@ def _get_default_options():
             # unknown field. Only sent when disabling -- no reason to force an "effort" value when
             # enable_thinking=True, that path already works for every model tested so far.
             extra_body["reasoning_effort"] = "none"
+        if _max_gen_tokens:
+            # Raw key, via extra_body, NOT the ChatOptions "max_tokens" field -- see this
+            # function's own landmine comment above. Ollama tolerates an unrecognized
+            # max_completion_tokens key harmlessly if some other layer also sends it, so this is
+            # safe even if that ever changes upstream.
+            extra_body["max_tokens"] = _max_gen_tokens
         options["extra_body"] = extra_body
+    elif _max_gen_tokens:
+        # Real api.openai.com: the standard ChatOptions field is correct here (translates to the
+        # modern max_completion_tokens, which the real API actually understands).
+        options["max_tokens"] = _max_gen_tokens
     return options
 
 

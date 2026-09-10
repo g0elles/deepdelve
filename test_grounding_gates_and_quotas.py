@@ -521,35 +521,68 @@ def main():
     _default_options_scenario()
 
     # --- max_generation_tokens (2026-09-09, Tongyi-DeepResearch-30B-A3B research finding): a
-    # hard per-completion generation-length ceiling, sent to the model itself as max_tokens
-    # (translated to num_predict on the native ollama backend by agent_framework_ollama's own
-    # OllamaChatOptions) -- before this, nothing bounded a single completion independent of the
-    # whole-run max_run_minutes budget. Must apply identically across every backend branch (the
-    # option is set once, before the backend if/elif chain), default on (12000), and honor the
-    # same 0/absent-disables opt-out convention as context_budget_chars/max_context_window_tokens. ---
+    # hard per-completion generation-length ceiling. LANDMINE (found live on the very re-test this
+    # fix was built for): agent_framework_openai's OpenAIChatCompletionClient translates the
+    # generic ChatOptions "max_tokens" field to "max_completion_tokens" before sending the actual
+    # request -- correct for real api.openai.com, but Ollama's OpenAI-compat shim silently IGNORES
+    # max_completion_tokens entirely (confirmed live: a real request with only that field ran
+    # unbounded past 120s+, while the same request with plain "max_tokens" capped exactly as
+    # requested). This scenario asserts the field lands in the RIGHT place per path -- the first
+    # version of this test only checked "max_tokens" was present in the returned dict, which
+    # passed even though the actual wire request silently dropped it; that's why the live re-test
+    # blew past 40,000+ decoded tokens despite this test being green. ---
     def _max_generation_tokens_scenario():
         from engine.orchestrator import _get_default_options
 
         _orig_backend = _config.cfg.get("api", {}).get("backend")
+        _orig_base_url = _config.cfg.get("api", {}).get("openai_base_url")
         _orig_mgt = _config.cfg.get("settings", {}).get("max_generation_tokens")
         try:
-            # Default (unset) -> 12000, applied on every backend.
-            _config.cfg["settings"].pop("max_generation_tokens", None)
-            for backend in ("openai", "ollama", "openai_hosted"):
-                _config.cfg.setdefault("api", {})["backend"] = backend
-                opts = _get_default_options()
-                assert opts.get("max_tokens") == 12000, (backend, opts)
+            _config.cfg["settings"].pop("max_generation_tokens", None)  # -> default 12000
 
-            # Explicit override respected.
+            # ollama-native backend: OllamaChatOptions.max_tokens auto-translates to num_predict,
+            # never affected by the max_completion_tokens landmine -- top-level field is correct.
+            _config.cfg.setdefault("api", {})["backend"] = "ollama"
+            opts = _get_default_options()
+            assert opts.get("max_tokens") == 12000, opts
+            assert "extra_body" not in opts or "max_tokens" not in opts.get("extra_body", {})
+
+            # openai_hosted (real hosted providers, e.g. DeepSeek/OpenRouter): standards-compliant,
+            # understand max_completion_tokens fine -- top-level ChatOptions field is correct.
+            _config.cfg["api"]["backend"] = "openai_hosted"
+            opts = _get_default_options()
+            assert opts.get("max_tokens") == 12000, opts
+
+            # openai backend pointed at Ollama (this project's actual default/primary shape,
+            # openai_base_url NOT api.openai.com) -- must go through extra_body as a raw
+            # "max_tokens" key, NOT the top-level ChatOptions field (which would get silently
+            # mistranslated to max_completion_tokens and ignored by Ollama).
+            _config.cfg["api"]["backend"] = "openai"
+            _config.cfg["api"]["openai_base_url"] = "http://localhost:11434/v1"
+            opts = _get_default_options()
+            assert "max_tokens" not in opts, (
+                "must NOT set the top-level ChatOptions field for Ollama's OpenAI-compat shim -- "
+                "agent_framework_openai silently mistranslates it to max_completion_tokens, which "
+                "Ollama ignores", opts)
+            assert opts.get("extra_body", {}).get("max_tokens") == 12000, opts
+
+            # openai backend pointed at the REAL api.openai.com -- standard field is correct there.
+            _config.cfg["api"]["openai_base_url"] = "https://api.openai.com/v1"
+            opts = _get_default_options()
+            assert opts.get("max_tokens") == 12000, opts
+
+            # Explicit override respected (Ollama-shim path, the one that needed the fix).
             _config.cfg["settings"]["max_generation_tokens"] = 4000
-            _config.cfg["api"]["backend"] = "ollama"
-            assert _get_default_options()["max_tokens"] == 4000
+            _config.cfg["api"]["openai_base_url"] = "http://localhost:11434/v1"
+            assert _get_default_options()["extra_body"]["max_tokens"] == 4000
 
-            # 0 disables -- must not send max_tokens at all (same opt-out convention as the
-            # other budget settings), not send a literal 0 (which some servers would treat as
-            # "generate nothing" rather than "no limit").
+            # 0 disables -- must not send max_tokens anywhere (same opt-out convention as the
+            # other budget settings), not a literal 0 (some servers would read that as "generate
+            # nothing" rather than "no limit").
             _config.cfg["settings"]["max_generation_tokens"] = 0
-            assert "max_tokens" not in _get_default_options()
+            opts = _get_default_options()
+            assert "max_tokens" not in opts
+            assert "max_tokens" not in opts.get("extra_body", {})
         finally:
             if _orig_mgt is None:
                 _config.cfg["settings"].pop("max_generation_tokens", None)
@@ -559,6 +592,10 @@ def main():
                 _config.cfg["api"].pop("backend", None)
             else:
                 _config.cfg["api"]["backend"] = _orig_backend
+            if _orig_base_url is None:
+                _config.cfg["api"].pop("openai_base_url", None)
+            else:
+                _config.cfg["api"]["openai_base_url"] = _orig_base_url
 
     _max_generation_tokens_scenario()
 
