@@ -15,9 +15,19 @@ A Searcher that gets a cache hit still has to read, cite, and incorporate that f
 summary, exactly as it would with a fresh web_search result — there is no mechanism by which a
 cache hit can make one model's output look like another model's writing. It is also never injected
 automatically: `src/tools/rag.py`'s `search_verified_findings` is an explicit tool the Searcher
-chooses to call, and a cache hit is never registered as "fetched this run" (unlike the old cache,
-which defeated the grounding check this way) — it's presented as pre-verified content cited by its
-real original source URL and real historical verification timestamp.
+chooses to call.
+
+Two things closed a real live gap found by a 2026-09-09 QA audit, not the original design:
+(1) `lookup()` now filters candidates to the CURRENTLY configured model (see its own docstring) —
+`save()` always recorded `model` per entry, but nothing filtered on it until this fix, the exact
+model-isolation lapse this project's own history says is non-negotiable for any persistent
+cross-run cache. (2) A cache hit's `source_url` is never "fetched this run" (no real content is
+saved to disk for it), but `search_verified_findings`' own instructions tell the Searcher to cite
+it directly without a fresh fetch — so `src/tools/rag.py` now calls
+`utils.run_state.record_verified_cache_url` for every hit actually surfaced, a list the grounding
+gate (`utils/grounding.py`'s `_cross_run_grounded_urls`) unions in alongside real fetched URLs.
+Before this fix, following the tool's own instructions got that exact citation flagged as
+hallucinated by the fetched-this-run hard gate — confirmed via source, not just suspected.
 
 Lazy, process-wide singleton, same pattern as agent_routing.py/grounding.py's `_get_nli_model` —
 loaded at most once per process, fails OPEN (returns None/[] ) on any load error (missing
@@ -104,7 +114,17 @@ def lookup(
 ) -> list[dict]:
     """Returns up to top_k prior verified findings whose task_context is semantically similar to
     query_text, above min_similarity, and no older than max_age_days. Always returns a list (empty
-    on any failure or no-match) — never fabricates, never raises."""
+    on any failure or no-match) — never fabricates, never raises.
+
+    Isolated to the CURRENTLY configured model (2026-09-09 QA audit fix): a candidate entry whose
+    recorded `model` (see save()) doesn't match settings.api.openai_model is excluded, regardless
+    of how well it matches semantically. This is this project's own hard-learned, non-negotiable
+    rule (ROADMAP.md's "RAG-augmented small model" item): the deleted predecessor cache
+    (knowledge_cache/experience_cache, commit 929b987) was confirmed live to contaminate model
+    bake-off comparisons this same way. save() already recorded `model` per entry from the start,
+    specifically for this purpose, but lookup() never actually filtered on it until this fix —
+    a real gap the module's own prior docstring argued around (atomic-finding granularity is
+    lower-risk than the deleted cache's whole-answer granularity) without actually enforcing it."""
     if not _get_cache_settings().get("enabled", False):
         return []
     _load_embedder()
@@ -123,6 +143,7 @@ def lookup(
     query_vec = query_vec / norm
     similarities = _matrix @ query_vec  # cosine similarity, both sides pre-normalized
 
+    current_model = config.cfg.get("api", {}).get("openai_model", "")
     now = time.time()
     max_age_seconds = max_age_days * 86400
     candidates = []
@@ -130,6 +151,8 @@ def lookup(
         if sim < min_similarity:
             continue
         entry = _entries[idx]
+        if entry.get("model") != current_model:
+            continue
         age_seconds = now - entry.get("timestamp", 0)
         if age_seconds > max_age_seconds:
             continue

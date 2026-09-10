@@ -736,6 +736,7 @@ class BasicTuiAgent(App):
         # the sources the conversation just gathered. Reset by /new.
         self._active_run_dir = None
         self._conv_fetched = None
+        self._conv_verified_cache_urls = None
         self._conv_run_state = None
         # /resume-run (second full audit follow-up, 2026-07-12): --resume-run existed in the
         # headless CLI for a full session before anyone noticed the TUI had no equivalent at
@@ -894,6 +895,7 @@ class BasicTuiAgent(App):
             self._clarify_done = False
             self._active_run_dir = None
             self._conv_fetched = None
+            self._conv_verified_cache_urls = None
             self._conv_run_state = None
 
             global _current_session_id, _session_events, _current_call_by_source, _current_text_by_source
@@ -1351,17 +1353,22 @@ class BasicTuiAgent(App):
         # as run_cli's resume branch. See _scale_resume_quota_pool's own docstring.
         if getattr(self, "_resuming_run", False):
             _scale_resume_quota_pool(tool_quotas_ctx.get())
-        from utils.run_state import fetched_urls_ctx
+        from utils.run_state import fetched_urls_ctx, verified_cache_urls_ctx
         if is_followup and self._conv_fetched is not None:
             # Workers each get their own contextvars copy — carry the conversation's fetched-URL
             # list across turns via the instance, so follow-up answers citing turn-1 sources
             # still pass the grounding check.
             fetched_urls_ctx.set(self._conv_fetched)
+            if self._conv_verified_cache_urls is not None:
+                # Same carry-across-turns reasoning as fetched_urls_ctx above, for a rag_cache hit
+                # surfaced in an earlier turn of this same conversation.
+                verified_cache_urls_ctx.set(self._conv_verified_cache_urls)
         else:
             reset_fetched_urls()
         # The ctx list itself, NOT get_fetched_urls() — that helper returns a fresh [] when the
         # record is empty, which would silently break the shared-object carry across turns.
         self._conv_fetched = fetched_urls_ctx.get()
+        self._conv_verified_cache_urls = verified_cache_urls_ctx.get()
         run_state_token = None
         run_state = None
 
@@ -1959,6 +1966,9 @@ class BasicTuiAgent(App):
 
         self._active_run_dir = run_dir_name
         self._conv_fetched = list(prior_state.get("fetched_urls") or [])
+        # Same carryover as fetched_urls above, for a rag_cache hit the interrupted run already
+        # surfaced -- see record_verified_cache_url's own docstring.
+        self._conv_verified_cache_urls = list(prior_state.get("verified_cache_urls") or [])
         rs = RunState(_current_run_dir(run_dir_name))
         # merge_resumed_state (utils/run_state.py, extracted 2026-07-29): carries the same
         # allowlist of prior-run keys onto this fresh RunState that run_cli's --resume-run branch
@@ -2464,8 +2474,11 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
         session_token = session_dir_ctx.set(run_dir_name)
         # The grounding check's source of truth: URLs the interrupted run actually fetched still
         # count as fetched, otherwise every prior citation would be flagged as fabricated.
-        from utils.run_state import fetched_urls_ctx
+        from utils.run_state import fetched_urls_ctx, verified_cache_urls_ctx
         fetched_urls_ctx.set(list(prior_state.get("fetched_urls") or []))
+        # Same reasoning as fetched_urls_ctx just above, for a rag_cache hit the interrupted run
+        # already surfaced (never fetched, but pre-verified -- see record_verified_cache_url).
+        verified_cache_urls_ctx.set(list(prior_state.get("verified_cache_urls") or []))
         # See _scale_resume_quota_pool's own docstring: a resumed run is meant to finish up, not
         # repeat a full fresh research budget on top of whatever the interrupted run already
         # spent.

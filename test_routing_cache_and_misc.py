@@ -129,6 +129,12 @@ def main():
                 "enabled": True, "path": cache_path, "max_age_days": 7,
                 "min_similarity": 0.75, "top_k": 3,
             }
+            # lookup() is now model-isolated (2026-09-09 QA audit fix) -- explicitly pin the
+            # CURRENT model to match save()'s own "test-model" below, so the rest of this
+            # scenario's assertions keep testing similarity/staleness, not incidentally relying on
+            # whatever openai_model happens to be configured on the machine running the suite.
+            orig_openai_model = _config.cfg.setdefault("api", {}).get("openai_model")
+            _config.cfg["api"]["openai_model"] = "test-model"
             # Force a clean in-memory state -- this module-level singleton persists across scenario
             # functions in the same test process, same caution as agent_routing's own self-test.
             _rag_cache._entries = None
@@ -151,6 +157,21 @@ def main():
             )
             assert no_hits == [], "an unrelated query must not return the Rust finding"
 
+            # Model isolation (2026-09-09 QA audit fix): the SAME entry, an otherwise-perfect
+            # query, but the CURRENTLY configured model differs from the entry's recorded model --
+            # must be excluded regardless of similarity/age. This is the non-negotiable rule
+            # ROADMAP.md's own history established (the deleted knowledge_cache/experience_cache's
+            # confirmed live contamination during model bake-off comparisons).
+            _config.cfg["api"]["openai_model"] = "a-different-model"
+            cross_model_hits = _rag_cache.lookup(
+                "current stable version of Rust programming language", min_similarity=0.5
+            )
+            assert cross_model_hits == [], (
+                "an entry recorded under a different model must be excluded even on a perfect "
+                "similarity match"
+            )
+            _config.cfg["api"]["openai_model"] = "test-model"  # restore for the staleness check below
+
             # A stale entry (older than max_age_days) must be excluded even with a perfect query.
             _rag_cache._entries[0]["timestamp"] = _time.time() - (8 * 86400)
             _rag_cache._matrix = None  # force rebuild so the mutated timestamp is picked up
@@ -162,6 +183,10 @@ def main():
 
             _rag_cache._entries = None
             _rag_cache._matrix = None
+            if orig_openai_model is None:
+                _config.cfg["api"].pop("openai_model", None)
+            else:
+                _config.cfg["api"]["openai_model"] = orig_openai_model
 
     _rag_cache_lookup_scenario()
 

@@ -3,6 +3,7 @@ import time
 from agent_framework import tool
 from tools.core import with_quota
 from utils import rag_cache
+from utils.run_state import record_verified_cache_url
 
 
 @tool
@@ -26,6 +27,11 @@ def search_verified_findings(query: str) -> str:
 
     lines = []
     for r in results:
+        # Marks this URL as grounded without a fresh fetch (2026-09-09 QA audit fix) -- this
+        # tool's own instructions above tell the Searcher to cite source_url directly, and without
+        # this the grounding gate would flag that exact citation as hallucinated. See
+        # record_verified_cache_url's own docstring.
+        record_verified_cache_url(r["source_url"])
         age_days = (time.time() - r["timestamp"]) / 86400
         lines.append(
             f"### {r['source_url']}\n"

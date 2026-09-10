@@ -26,8 +26,9 @@ from tools.fs import _IN_MEMORY_FS
 from utils.grounding import (
     real_grounding_problem, _is_null_finding_summary, claim_grounding_problem,
     decompose_claim_segments, find_unsupported_specific_figures, parse_academic_references,
+    fully_ungrounded, partially_ungrounded,
 )
-from utils.run_state import RunState, run_state_ctx
+from utils.run_state import RunState, run_state_ctx, record_verified_cache_url, verified_cache_urls_ctx
 
 # Literal test fixtures reused across many topic files below (constants, not code) --
 # hoisting these verbatim into every file's header is simpler than a separate shared-fixtures
@@ -770,6 +771,65 @@ def main():
                 _config.cfg["settings"]["grounding_check"] = _orig_gc
 
     contextvars.copy_context().run(_stub_gate_scenario)
+
+    # --- rag_cache grounding exemption (2026-09-09 QA audit fix): search_verified_findings' own
+    # instructions tell the Searcher to cite a cache hit's source_url directly without a fresh
+    # fetch. Before this fix, every one of the three citation-verification gates
+    # (real_grounding_problem, fully_ungrounded, partially_ungrounded) flagged that exact citation
+    # as hallucinated, since it was never registered in fetched_urls. Confirms the URL is rejected
+    # BEFORE record_verified_cache_url (proving the test is meaningful, not vacuous) and accepted
+    # by all three gates after it. ---
+    def _rag_cache_grounding_exemption_scenario():
+        _orig_ws6 = _config.cfg.get("settings", {}).get("workspace")
+        _orig_gc6 = _config.cfg.get("settings", {}).get("grounding_check")
+        _config.cfg["settings"]["workspace"] = {"type": "memory"}
+        # Isolate to just the URL-presence gate -- no NLI/topical/editorial model inference noise.
+        _config.cfg["settings"]["grounding_check"] = {
+            "live_http_verify": False, "nli_verify": False, "topical_relevance_check": False,
+            "editorial_detection_check": False,
+        }
+        saved_fs = dict(_IN_MEMORY_FS)
+        cache_url = "https://releases.rs/"
+        report = f"- Rust 1.97.1 is the current stable release. [releases]({cache_url})"
+        try:
+            _IN_MEMORY_FS.clear()
+            reset_fetched_urls()
+
+            # Never fetched this run, never cache-verified either -> all three gates must reject.
+            problem = _asyncio.run(real_grounding_problem(report))
+            assert problem and "unverified_urls" in problem, problem
+            assert fully_ungrounded(report) == "all_cited_urls_unverified", fully_ungrounded(report)
+            assert partially_ungrounded(report) is not None, partially_ungrounded(report)
+
+            # Register it as a rag_cache hit search_verified_findings actually surfaced this run --
+            # still never fetched, but now legitimately pre-verified.
+            record_verified_cache_url(cache_url)
+
+            problem2 = _asyncio.run(real_grounding_problem(report))
+            assert problem2 is None, (
+                f"a rag-cache-verified citation must pass real_grounding_problem, got {problem2!r}"
+            )
+            assert fully_ungrounded(report) is None, (
+                "a rag-cache-verified citation must pass fully_ungrounded"
+            )
+            assert partially_ungrounded(report) is None, (
+                "a rag-cache-verified citation must pass partially_ungrounded"
+            )
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            verified_cache_urls_ctx.set([])
+            if _orig_ws6 is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws6
+            if _orig_gc6 is None:
+                _config.cfg["settings"].pop("grounding_check", None)
+            else:
+                _config.cfg["settings"]["grounding_check"] = _orig_gc6
+
+    contextvars.copy_context().run(_rag_cache_grounding_exemption_scenario)
 
     # --- URL prefix-match boundary (2026-07-12 audit G1: a genuinely fetched .../article
     # grounded an invented .../article-fake-2024 via bare string-prefixing) ---

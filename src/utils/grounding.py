@@ -5,7 +5,7 @@ import time
 import unicodedata
 from typing import Optional
 import config
-from utils.run_state import get_fetched_urls
+from utils.run_state import get_fetched_urls, get_verified_cache_urls
 from tools.fs import get_workspace_file_content
 
 # -------------------------------------------------------------
@@ -62,6 +62,19 @@ def _url_is_grounded(key: str, fetched: set[str]) -> bool:
         return True
     key_lower = key.lower()
     return any(key_lower == f.lower() for f in fetched)
+
+
+def _cross_run_grounded_urls() -> set[str]:
+    """URLs a report may legitimately cite as grounded without a fresh fetch THIS run: currently
+    only rag_cache hits search_verified_findings actually surfaced (utils/run_state.py's
+    verified_cache_urls, via record_verified_cache_url) — see utils/rag_cache.py's own module
+    docstring for why a cache hit is legitimately pre-verified. fully_ungrounded/
+    partially_ungrounded/real_grounding_problem must all union this in alongside get_fetched_urls()
+    — the ONE shared place that union happens, so a genuinely grounded rag-cache citation can't be
+    flagged as hallucinated in one gate while passing another (confirmed live 2026-09-09: before
+    this existed, following search_verified_findings' own instructions to cite a hit directly got
+    that exact citation rejected by every one of these three gates)."""
+    return {_normalize_url(u) for u in get_verified_cache_urls()}
 
 
 def _urls_prefix_match(a: str, b: str) -> bool:
@@ -1664,7 +1677,7 @@ def fully_ungrounded(content: str) -> str | None:
     cited = extract_cited_urls(content)
     if not cited:
         return "no_urls"
-    fetched = {_normalize_url(entry["url"]) for entry in get_fetched_urls()}
+    fetched = {_normalize_url(entry["url"]) for entry in get_fetched_urls()} | _cross_run_grounded_urls()
     for u in cited:
         if _url_is_grounded(_normalize_url(u), fetched):
             return None
@@ -1699,7 +1712,7 @@ def partially_ungrounded(content: str) -> str | None:
     cited = extract_cited_urls(content)
     if not cited:
         return None  # fully_ungrounded's own no_urls case already covers a wholesale-empty file
-    fetched = {_normalize_url(entry["url"]) for entry in get_fetched_urls()}
+    fetched = {_normalize_url(entry["url"]) for entry in get_fetched_urls()} | _cross_run_grounded_urls()
     bad = [u for u in cited if not _url_is_grounded(_normalize_url(u), fetched)]
     if not bad:
         return None
@@ -1887,7 +1900,11 @@ async def real_grounding_problem(content: str) -> str | None:
         return "no_urls"
 
     fetched_entries = get_fetched_urls()
-    fetched = {_normalize_url(entry["url"]) for entry in fetched_entries}
+    # fetched_entries itself (the raw list) stays real-fetches-only below for cheap_grounding_
+    # problems' stub-detection, which is inherently about "did a fetch return stub content" -- a
+    # rag-cache-verified URL was never fetched this run at all, so it can't be stub either. Only
+    # the URL-verification SET gets the cross-run union.
+    fetched = {_normalize_url(entry["url"]) for entry in fetched_entries} | _cross_run_grounded_urls()
     unverified = [u for u in cited if not _url_is_grounded(_normalize_url(u), fetched)]
 
     gc_cfg = config.get_setting("grounding_check", {})

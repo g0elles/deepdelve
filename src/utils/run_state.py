@@ -26,6 +26,18 @@ import config
 
 fetched_urls_ctx = contextvars.ContextVar('fetched_urls', default=None)
 
+# Separate from fetched_urls_ctx on purpose: a URL search_verified_findings surfaces from
+# utils/rag_cache.py was never fetched THIS run (no real content saved to disk this run), but
+# rag_cache.py's own docstring is explicit that a cache hit is legitimately pre-verified, not a
+# fresh fabrication risk. Kept as its own list (not merged into fetched_urls_ctx) so
+# _build_findings_source_material's "these are real fetched files" listing never tries to read a
+# workspace file that doesn't exist for a cache-only citation. Every grounding gate that checks
+# "was this cited URL actually verified this run" (utils/grounding.py's fully_ungrounded/
+# partially_ungrounded/real_grounding_problem) must union this in alongside fetched_urls_ctx, or a
+# genuinely grounded rag-cache citation gets flagged as hallucinated — see grounding.py's own
+# _cross_run_grounded_urls, the one shared place that union happens.
+verified_cache_urls_ctx = contextvars.ContextVar('verified_cache_urls', default=None)
+
 # Per-task-scoped fetch tracking, separate from fetched_urls_ctx above. fetched_urls_ctx is one
 # list shared for the whole run (correct for the run-wide grounding check, which wants every URL
 # ever fetched). But engine/orchestrator.py's _run_single_task used to derive "URLs fetched by
@@ -98,6 +110,11 @@ scope_entities_ctx = contextvars.ContextVar('scope_entities', default=None)
 
 def reset_fetched_urls() -> None:
     fetched_urls_ctx.set([])
+    # Reset alongside fetched_urls: both need the identical "start fresh per run" lifecycle, and
+    # folding it in here means every existing reset_fetched_urls() call site (run_cli, run_agent,
+    # api.py) already gets this right for free, instead of needing its own new call added in three
+    # places by hand.
+    verified_cache_urls_ctx.set([])
 
 
 def record_fetched_url(url: str, filename: str, stub: Optional[str] = None,
@@ -139,6 +156,32 @@ def record_fetched_url(url: str, filename: str, stub: Optional[str] = None,
 
 def get_fetched_urls() -> list[dict]:
     return fetched_urls_ctx.get() or []
+
+
+def record_verified_cache_url(url: str) -> None:
+    """Marks a URL utils/tools/rag.py's search_verified_findings actually surfaced to the model
+    this run — the sibling of record_fetched_url for a rag_cache hit, which was never fetched this
+    run but is presented as pre-verified content (see rag_cache.py's own module docstring). Without
+    this, a Searcher following search_verified_findings' own instructions ("cite its source_url
+    directly, you do NOT need to delegate it to an Analyzer again") would have that exact citation
+    flagged as hallucinated by real_grounding_problem's hard fetched-this-run gate — a confirmed
+    live contradiction between the tool's own instructions and the grounding pipeline's
+    enforcement, closed by unioning this list in via grounding.py's _cross_run_grounded_urls."""
+    lst = verified_cache_urls_ctx.get()
+    if lst is None:
+        lst = []
+        verified_cache_urls_ctx.set(lst)
+    if url not in lst:
+        lst.append(url)
+
+    rs = run_state_ctx.get()
+    if rs is not None:
+        rs.data["verified_cache_urls"] = list(lst)
+        rs.save()
+
+
+def get_verified_cache_urls() -> list[str]:
+    return verified_cache_urls_ctx.get() or []
 
 
 def build_bibliography(report_text: str, fetched_urls: list[dict]) -> str:
@@ -235,6 +278,9 @@ class RunState:
             "model": config.cfg.get("api", {}).get("openai_model", ""),
             "findings": [],
             "fetched_urls": [],
+            # Rag-cache hits actually surfaced to the model this run (record_verified_cache_url) —
+            # never fetched this run, but pre-verified, see that function's own docstring.
+            "verified_cache_urls": [],
             "completion_check_attempts": [],
             "started_at": time.time(),
             # Structured diagnostics (2026-07-12, live investigation of a run that gathered
@@ -467,6 +513,12 @@ _RESUME_CARRYOVER_KEYS = (
     # failures loses the escalated nudge wording on resume and starts back at the mild
     # first-time message.
     "no_urls_count",
+    # verified_cache_urls (2026-09-09, QA audit): without this, a resumed run's carried-over
+    # findings.md/report content that legitimately cited a rag_cache hit would get re-flagged as
+    # ungrounded on resume, since the contextvar (utils.run_state.verified_cache_urls_ctx) resets
+    # fresh and only this key's carryover restores it -- same trap this data dict's own comments
+    # already document for fetched_urls/etc.
+    "verified_cache_urls",
 )
 
 
