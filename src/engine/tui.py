@@ -729,7 +729,10 @@ async def _resolve_tui_approval_requests(requests, chat, calls: dict, agent_name
             tool_func = next((t for t in WORKSPACE_TOOLS if t.name == req.function_call.name), None)
             try:
                 if tool_func and hasattr(tool_func, "func"):
-                    result_str = str(tool_func.func(**args_dict))
+                    if asyncio.iscoroutinefunction(tool_func.func):
+                        result_str = str(await tool_func.func(**args_dict))
+                    else:
+                        result_str = str(tool_func.func(**args_dict))
                 else:
                     result_str = "Executed natively."
             except Exception as e:

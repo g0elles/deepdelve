@@ -129,22 +129,26 @@ here got moved out, most already live in the wiki's [Completed](https://github.c
 or [Changelog](https://github.com/g0elles/deepdelve/wiki/Changelog); anything not yet migrated is
 tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
 
-- **TUI's client-side tool execution never awaits an async tool, found live 2026-09-11.** In
-  `engine/tui.py`'s `_resolve_tui_approval_requests` (the interactive-approval tool-execution
-  path, reached only when `settings.permissions` marks a tool `"require_approval"` — off by
-  default, which is presumably why this went unnoticed): `result_str =
-  str(tool_func.func(**args_dict))` calls the tool's underlying function directly with no
+- **TUI's client-side tool execution never awaits an async tool, found live 2026-09-11 — CLOSED
+  2026-09-11.** In `engine/tui.py`'s `_resolve_tui_approval_requests` (the interactive-approval
+  tool-execution path, reached only when `settings.permissions` marks a tool `"require_approval"`
+  — off by default, which is presumably why this went unnoticed): `result_str =
+  str(tool_func.func(**args_dict))` called the tool's underlying function directly with no
   `await`. Harmless for a sync tool, but `web_search` (`tools/web.py`) is `async def` — confirmed
   live via a real Pilot-driven TUI run with `settings.permissions = {"web_search":
   "require_approval"}`: clicking Approve produced `RuntimeWarning: coroutine 'web_search' was
   never awaited` and a stringified coroutine object (`"<coroutine object web_search at 0x...>"`)
   instead of real search results, fed straight back to the model as a tool result. Confirmed
-  pre-existing (not introduced by the 2026-09-11 run-lifecycle unification below) via `git show
+  pre-existing (not introduced by the 2026-09-11 run-lifecycle unification) via `git show
   HEAD~2:src/engine/tui.py` — both of run_agent's former near-duplicate approval blocks (now
-  merged into this one helper) had the identical unawaited call. Needs: await when
-  `inspect.iscoroutinefunction(tool_func.func)`, call plainly otherwise (mirrors how other
-  call sites in this codebase already branch on sync vs. async tool functions — check
-  `orchestrator.py` for the existing pattern before inventing a new one).
+  merged into this one helper) had the identical unawaited call. Fixed by branching on
+  `asyncio.iscoroutinefunction(tool_func.func)` (`tui.py:731-735`), the same pattern already used
+  by `tools/core.py`'s `with_quota` decorator — `await` the async case, call plainly otherwise.
+  Regression test added: `test_resume_and_tui_qoe.py`'s `_async_tool_approval_scenario`, which
+  registers a fake async tool in `WORKSPACE_TOOLS`, drives `_resolve_tui_approval_requests`
+  directly with `config.AUTO_APPROVE = True`, and asserts the returned tool-result `Content` holds
+  the real string, not a stringified coroutine — confirmed to fail with the pre-fix code (via
+  `git stash`) and pass with the fix.
 
 - **`create_local_agent`'s nested-closure god-function — CLOSED 2026-08-24.** `_run_single_task` and
   `delegate_tasks` were deeply nested closures inside `create_local_agent` (1098 lines), capturing

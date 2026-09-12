@@ -635,6 +635,58 @@ def main():
     assert cfg["settings"]["quotas"]["web_search"] == 8
     assert cfg["settings"]["quotas"]["read_workspace_file"]["limit"] == 30  # dict quotas untouched
 
+    # --- _resolve_tui_approval_requests must await an async tool_func.func, not stringify the
+    # coroutine (ROADMAP.md Pending item, found live 2026-09-11 via a real web_search approval) ---
+    _async_tool_approval_scenario()
+
+
+class _FakeChat:
+    def mount(self, widget): pass
+    def scroll_end(self, animate=False): pass
+
+
+class _FakeApprovalRequest:
+    def __init__(self, function_call):
+        self.function_call = function_call
+
+
+def _async_tool_approval_scenario():
+    import asyncio as _asyncio
+    from agent_framework import Content as _Content
+    from engine.tui import _resolve_tui_approval_requests
+    import tools as _tools_mod
+
+    async def _fake_async_tool(**kwargs):
+        return "ok-from-async-tool"
+
+    class _FakeTool:
+        name = "fake_async_tool"
+        func = staticmethod(_fake_async_tool)
+
+    _orig_tools = _tools_mod.WORKSPACE_TOOLS
+    _orig_auto_approve = getattr(_config, "AUTO_APPROVE", None)
+    _tools_mod.WORKSPACE_TOOLS = [_FakeTool]
+    _config.AUTO_APPROVE = True
+    try:
+        function_call = _Content.from_function_call("call-1", "fake_async_tool", arguments={})
+        req = _FakeApprovalRequest(function_call)
+        responses = _asyncio.run(
+            _resolve_tui_approval_requests([req], _FakeChat(), {}, "TestAgent")
+        )
+        tool_result_content = responses[1].contents[0]
+        assert "ok-from-async-tool" in tool_result_content.result, (
+            f"expected awaited async tool result, got {tool_result_content.result!r} "
+            "(coroutine was not awaited)"
+        )
+        assert "coroutine" not in tool_result_content.result
+    finally:
+        _tools_mod.WORKSPACE_TOOLS = _orig_tools
+        if _orig_auto_approve is None:
+            if hasattr(_config, "AUTO_APPROVE"):
+                del _config.AUTO_APPROVE
+        else:
+            _config.AUTO_APPROVE = _orig_auto_approve
+
 
 
 if __name__ == "__main__":
