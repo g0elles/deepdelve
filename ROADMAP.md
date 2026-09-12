@@ -129,6 +129,27 @@ here got moved out, most already live in the wiki's [Completed](https://github.c
 or [Changelog](https://github.com/g0elles/deepdelve/wiki/Changelog); anything not yet migrated is
 tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
 
+- **Completion-check escalation ladder is model-capability-agnostic, raised
+  `RESEARCH_small_model_agentic_reliability.md` Finding B (2026-08-27) — CLOSED 2026-09-11.**
+  `CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD` (`engine/completion_starvation.py`, default 3)
+  is the one shared number `_capped` (every non-self-resolving completion check) and
+  `_compute_force_whole_rebuild`'s escalation both use to decide when a run has re-litigated the
+  same problem enough times to bail into salvage — previously a hardcoded module constant, so
+  every model got the identical 3-strike budget regardless of whether its own run history
+  (`completion_check_attempts`) already showed it wasn't converging. Added
+  `get_escalation_threshold()`, which reads `settings.completion_check_escalation_threshold`
+  (default unchanged at 3) — both call sites now go through it instead of the bare constant. A
+  small-model eval config can set this lower (e.g. 1) so a known-weaker candidate reaches an
+  honest acknowledged-gap/salvage report sooner instead of burning its whole `max_run_minutes`
+  budget mid-correction, which live `_run_state.json` data from the `qwen3.5-9b`/`hermes4-14b-fix`/
+  `granite4.1-8b` bake-off (2026-08-28/29) confirmed is exactly how those runs were failing:
+  `time_taken` clustered at the configured `max_run_minutes` (1080s) with `completion_check_
+  attempts` still in progress, not a converged or even a fully-exhausted retry budget. New test:
+  `test_completion_starvation.py`'s `_escalation_threshold_override_scenario`. This does not by
+  itself fix small-model reliability — it only lets a config trade completeness for survivability;
+  RESEARCH's other findings (A, already fixed as a side effect of the run-lifecycle unification
+  below; C, D) remain informational, not actioned.
+
 - **TUI's client-side tool execution never awaits an async tool, found live 2026-09-11 — CLOSED
   2026-09-11.** In `engine/tui.py`'s `_resolve_tui_approval_requests` (the interactive-approval
   tool-execution path, reached only when `settings.permissions` marks a tool `"require_approval"`

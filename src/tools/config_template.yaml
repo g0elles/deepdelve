@@ -239,6 +239,16 @@ settings:
   # agent keep revising than stop early. Each extra attempt costs wall-clock time and the
   # retry_quota_topup allowance above, not memory — this is not a resource-limited setting.
   max_completion_check_attempts: 3
+  # Overrides CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD's default of 3 (engine/
+  # completion_starvation.py's get_escalation_threshold()) -- the shared "how many times in a row
+  # has this exact problem fired" cap every non-self-resolving completion check and
+  # force_whole_rebuild's own escalation both read from. Unset/absent = unchanged default
+  # behavior. Lower this (e.g. to 1) for a known-weaker/small-model candidate config so it bails
+  # into an acknowledged-gap/salvage report sooner instead of burning its whole attempt budget
+  # re-litigating a problem its own history already shows it isn't going to fix -- trades
+  # completeness for survivability inside a tight max_run_minutes budget. See
+  # RESEARCH_small_model_agentic_reliability.md Finding B (2026-08-27).
+  completion_check_escalation_threshold: 3
   # check_requested_count_shortfall (2026-08-28): ONE LEVEL UPSTREAM of coverage_check below --
   # that check verifies whether delegated tasks that WERE planned actually got a real source; this
   # instead catches the Planner never even PLANNING enough of them, when the query itself states an

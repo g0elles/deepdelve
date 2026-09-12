@@ -60,11 +60,18 @@ per-instance patch — see below for the invariant and the mechanism that now en
   under the same name — counting that as a genuine interruption would trap a check in its weakest
   wording forever). Used by `_capped`, `_apply_starvation_yield`, and `run_completion_check`'s own
   `force_whole_rebuild` escalation — all four share one definition now, not four drifting copies.
-- **`CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD`** (module-level constant, currently 3) — the
-  ONE number every cap and escalation references. This used to be a local inside
-  `run_completion_check` while `_capped`-equivalent logic used its own separate number; they
-  disagreed once already before being unified (a real bug caught mid-session by the test suite,
-  not found live).
+- **`CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD`** (module-level constant, default 3,
+  `engine/completion_starvation.py`) — the ONE number every cap and escalation references. This
+  used to be a local inside `run_completion_check` while `_capped`-equivalent logic used its own
+  separate number; they disagreed once already before being unified (a real bug caught
+  mid-session by the test suite, not found live). **Read it via `get_escalation_threshold()`, not
+  the bare constant** (2026-09-11) — the constant is still the default, but
+  `settings.completion_check_escalation_threshold` can override it per-config, so `_capped` and
+  `_compute_force_whole_rebuild` both call the function, not the module attribute directly (see
+  `test_completion_starvation.py`'s override scenario). Added so a known-weaker/small-model eval
+  config can lower this (e.g. to 1) and bail into an acknowledged-gap/salvage report sooner
+  instead of burning its whole attempt budget on a problem its own history shows it isn't going to
+  fix — `RESEARCH_small_model_agentic_reliability.md` Finding B.
 - **`_capped(ctx, problem, verdict, skip_problems=frozenset())`** — bucket 3's own required call.
   Once `problem` has fired `CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD` times in a row, returns
   `None` instead of `verdict`, letting `COMPLETION_CHECKS`/`GROUNDING_CHECKS`' own first-match

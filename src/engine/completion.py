@@ -299,10 +299,10 @@ from engine.completion_dispatch import (  # noqa: F401,E402 — re-exported for 
 # still existing here.
 from engine.completion_starvation import (  # noqa: F401,E402 — re-exported for test_structural_checks.py/finetune/*
     _consecutive_occurrences, _consecutive_tier_wins, _STARVATION_SKIP_THRESHOLD,
-    CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD, _capped, _yield_to_starved_check,
-    _STARVATION_YIELD_TARGETS, _apply_starvation_yield, _OTHER_ACTIVE_PROBLEMS_CAP,
-    _collect_other_active_problems, _with_other_problems_addendum, _other_grounding_problems,
-    _with_other_grounding_addendum,
+    CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD, get_escalation_threshold, _capped,
+    _yield_to_starved_check, _STARVATION_YIELD_TARGETS, _apply_starvation_yield,
+    _OTHER_ACTIVE_PROBLEMS_CAP, _collect_other_active_problems, _with_other_problems_addendum,
+    _other_grounding_problems, _with_other_grounding_addendum,
 )
 
 # Constant boundary marker both _with_other_problems_addendum/_with_other_grounding_addendum use
@@ -501,11 +501,12 @@ def _compute_force_whole_rebuild(run_state: "RunState", problem: Optional[str], 
     strategy rather than keep re-patching the same failed local fix. Bounded to exactly
     ONE extra, more expensive attempt per problem type (whole_approach_retry_used_for,
     on run_state.data) before falling through to the pre-existing early-exit behavior
-    unchanged -- never an unbounded loop. Threshold is the module-level
-    CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD (2026-07-31, hoisted out of local
-    scope) -- shared with _capped's own cap logic so the two can never silently disagree
-    on the number again (they did, once, before this fix: _capped's own threshold was
-    first set to 2, which pre-empted this exact escalation's one guaranteed shot).
+    unchanged -- never an unbounded loop. Threshold is get_escalation_threshold()
+    (2026-07-31, hoisted out of local scope; made config-overridable 2026-09-11, see
+    that function's own docstring) -- shared with _capped's own cap logic so the two
+    can never silently disagree on the number again (they did, once, before this fix:
+    _capped's own threshold was first set to 2, which pre-empted this exact
+    escalation's one guaranteed shot).
 
     Returns (force_whole_rebuild, attempt) — attempt is forced to max_attempts once a run has
     already used its one force_whole_rebuild shot for this problem and is STILL stuck, the same
@@ -525,7 +526,7 @@ def _compute_force_whole_rebuild(run_state: "RunState", problem: Optional[str], 
         # -- scoped narrowly to that one problem, not generically for every problem pair.
         skip = frozenset({"untracked_delegation"}) if problem == "task_verification_flagged" else frozenset()
         consecutive = _consecutive_occurrences(run_state, problem, skip)
-        stuck = consecutive >= CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD
+        stuck = consecutive >= get_escalation_threshold()
         # Content-identity escalation (2026-08-17 live incident, see
         # _content_unchanged_since_last_quarantine's own docstring): the SAME evidence
         # producing the SAME rejected content is just as provably stuck as 3 consecutive
@@ -1055,7 +1056,7 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                 # directive telling the Planner to reconsider its whole approach instead of
                 # repeating the same fix.
                 inject_text = (
-                    f"SYSTEM: The last {CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD} attempts to "
+                    f"SYSTEM: The last {get_escalation_threshold()} attempts to "
                     f"fix this the same way have not worked. Do not repeat the same fix again -- "
                     f"reconsider your whole approach to this task from scratch before retrying: "
                     # Addendum stripped here too, same reasoning as the Builder-fixable branch

@@ -80,24 +80,39 @@ _STARVATION_SKIP_THRESHOLD = 2
 CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD = 3
 
 
+def get_escalation_threshold() -> int:
+    """settings.completion_check_escalation_threshold overrides CONSECUTIVE_SAME_PROBLEM_
+    ESCALATION_THRESHOLD's default of 3 (unset/absent = unchanged default behavior). RESEARCH_
+    small_model_agentic_reliability.md Finding B (2026-08-27): the escalation ladder every non-
+    self-resolving check and force_whole_rebuild share is model-capability-agnostic -- it grants
+    a known-weaker candidate the same 3-strikes-then-salvage budget as a stronger one, even though
+    this run's OWN completion_check_attempts history (the same evidence _consecutive_occurrences
+    already reads) can show a candidate re-litigating a problem it isn't going to fix. Lowering
+    this in an eval config (e.g. to 1) lets such a candidate reach an acknowledged-gap/salvage
+    report sooner -- trading completeness for survivability inside its wall-clock budget -- without
+    touching the mechanism itself or any one check's wording. Read fresh via config.get_setting
+    each call (not cached), matching every other runtime setting in this module."""
+    return config.get_setting("completion_check_escalation_threshold", CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD)
+
+
 def _capped(ctx: "Ctx", problem: str, verdict: Optional["Verdict"],  # noqa: F821
             skip_problems: frozenset = frozenset()) -> Optional["Verdict"]:  # noqa: F821
     """For a check that is NOT Builder/FindingsWriter-fixable (cannot dispatch its own real fix
     via the Write->Review->Fix loop -- absent from both _BUILDER_FIXABLE_PROBLEMS and
-    _FINDINGS_WRITER_FIXABLE_PROBLEMS): once it has fired CONSECUTIVE_SAME_PROBLEM_ESCALATION_
-    THRESHOLD times in a row, go quiet instead of returning verdict again, so COMPLETION_CHECKS/
-    GROUNDING_CHECKS' own first-match ordering can fall through to whatever check is next in the
-    list. Without this, such a check wins first-match on EVERY attempt for as long as its
-    underlying condition stays true, permanently starving every check below it -- confirmed live
-    twice the same night (check_task_verification_flagged starving check_missing_findings/
-    check_missing_artifact; check_thin_coverage, one priority slot higher, doing the same thing).
+    _FINDINGS_WRITER_FIXABLE_PROBLEMS): once it has fired get_escalation_threshold() times in a
+    row, go quiet instead of returning verdict again, so COMPLETION_CHECKS/GROUNDING_CHECKS' own
+    first-match ordering can fall through to whatever check is next in the list. Without this,
+    such a check wins first-match on EVERY attempt for as long as its underlying condition stays
+    true, permanently starving every check below it -- confirmed live twice the same night
+    (check_task_verification_flagged starving check_missing_findings/check_missing_artifact;
+    check_thin_coverage, one priority slot higher, doing the same thing).
     See ARCHITECTURE.md's completion-check section for the full incident writeup and the standing
     test (test_structural_checks.py) that enforces every non-self-resolving check in either list
     calls this -- a future check that skips it fails the suite immediately instead of being found
     via a live incident."""
     if verdict is None:
         return None
-    if _consecutive_occurrences(ctx.run_state, problem, skip_problems) >= CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD:
+    if _consecutive_occurrences(ctx.run_state, problem, skip_problems) >= get_escalation_threshold():
         return None
     return verdict
 

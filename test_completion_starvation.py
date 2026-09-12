@@ -148,6 +148,42 @@ def main():
 
     _capped_scenario()
 
+    # --- get_escalation_threshold (2026-09-11, RESEARCH_small_model_agentic_reliability.md
+    # Finding B): settings.completion_check_escalation_threshold overrides the shared 3-strike
+    # default so a known-weaker candidate config can bail into salvage sooner. Unset/absent must
+    # be a true no-op (same default _capped_scenario above already pins); when set, _capped must
+    # actually honor the lower number, not just the module constant. ---
+    import config as _config_mod
+    from engine.completion import get_escalation_threshold
+
+    def _escalation_threshold_override_scenario():
+        _orig = _config_mod.cfg.get("settings", {}).get("completion_check_escalation_threshold")
+        try:
+            # Absent -> falls back to the unchanged default of 3.
+            _config_mod.cfg["settings"].pop("completion_check_escalation_threshold", None)
+            assert get_escalation_threshold() == CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD == 3
+
+            # Overridden to 1 -> _capped must go quiet after just ONE occurrence, not three.
+            _config_mod.cfg["settings"]["completion_check_escalation_threshold"] = 1
+            assert get_escalation_threshold() == 1
+            with tempfile.TemporaryDirectory() as tmpdir_esc:
+                rs = RunState(tmpdir_esc)
+                rs.set_query("q")
+                ctx = Ctx(req_artifact="final_report.md", attempt=0, max_attempts=8, delegated=True,
+                          files=[], content=None, quotas={}, run_state=rs)
+                v = Verdict("thin_coverage", "w", "i")
+                rs.data["completion_check_attempts"] = [{"problem": "thin_coverage"}]
+                assert _capped(ctx, "thin_coverage", v) is None, (
+                    "a lowered threshold must cap after 1 occurrence, not the default 3"
+                )
+        finally:
+            if _orig is None:
+                _config_mod.cfg["settings"].pop("completion_check_escalation_threshold", None)
+            else:
+                _config_mod.cfg["settings"]["completion_check_escalation_threshold"] = _orig
+
+    _escalation_threshold_override_scenario()
+
     # --- _apply_starvation_yield (2026-07-31): declarative sibling-yield -- report_underuses_
     # findings must yield to report_underuses_evidence once stuck _STARVATION_SKIP_THRESHOLD times,
     # structurally unable to repeat the old dead-code `lambda c: A(c) or B(c)` bug (A always wins
