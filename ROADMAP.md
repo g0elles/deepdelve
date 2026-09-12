@@ -129,6 +129,23 @@ here got moved out, most already live in the wiki's [Completed](https://github.c
 or [Changelog](https://github.com/g0elles/deepdelve/wiki/Changelog); anything not yet migrated is
 tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
 
+- **TUI's client-side tool execution never awaits an async tool, found live 2026-09-11.** In
+  `engine/tui.py`'s `_resolve_tui_approval_requests` (the interactive-approval tool-execution
+  path, reached only when `settings.permissions` marks a tool `"require_approval"` — off by
+  default, which is presumably why this went unnoticed): `result_str =
+  str(tool_func.func(**args_dict))` calls the tool's underlying function directly with no
+  `await`. Harmless for a sync tool, but `web_search` (`tools/web.py`) is `async def` — confirmed
+  live via a real Pilot-driven TUI run with `settings.permissions = {"web_search":
+  "require_approval"}`: clicking Approve produced `RuntimeWarning: coroutine 'web_search' was
+  never awaited` and a stringified coroutine object (`"<coroutine object web_search at 0x...>"`)
+  instead of real search results, fed straight back to the model as a tool result. Confirmed
+  pre-existing (not introduced by the 2026-09-11 run-lifecycle unification below) via `git show
+  HEAD~2:src/engine/tui.py` — both of run_agent's former near-duplicate approval blocks (now
+  merged into this one helper) had the identical unawaited call. Needs: await when
+  `inspect.iscoroutinefunction(tool_func.func)`, call plainly otherwise (mirrors how other
+  call sites in this codebase already branch on sync vs. async tool functions — check
+  `orchestrator.py` for the existing pattern before inventing a new one).
+
 - **`create_local_agent`'s nested-closure god-function — CLOSED 2026-08-24.** `_run_single_task` and
   `delegate_tasks` were deeply nested closures inside `create_local_agent` (1098 lines), capturing
   dozens of enclosing locals by reference, with zero direct test coverage. Resolved 2026-08-23/24:
@@ -342,46 +359,41 @@ tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
   the full file-to-topic map and methodology detail.
 
 - **`run_cli`/`BasicTuiAgent`/`api.py` full run-lifecycle unification, re-scoped 2026-07-29,
-  widened 2026-08-24, still open.** A dedicated audit found the two entry points aren't just
-  stylistic duplicates in places that matter: the TUI's approval handling actually executes tools
-  client-side and constructs full message pairs, the CLI's doesn't; the TUI has no
-  context-budget/wall-clock-deadline concept by design, since a human can just stop it. The
-  genuinely safe subset (the resume-merge allowlist, the `required_artifact` lookup, a missing
-  `QuotaAbortException` handler, a missing crash-time `run_state.save()`) is already fixed and
-  merged. **`src/api.py`'s `_run_research` is a THIRD independent copy of this exact run-lifecycle
-  loop, not a unifying layer** — correction to a 2026-08-24 note that first framed this as a new
-  finding: `src/api.py`'s own module docstring, and `~/.claude/plans/cosmic-growing-canyon.md`'s
-  Phase 4 section (the plan that built `api.py`), already document this as a **deliberate,
-  reasoned tradeoff**, not an oversight — that plan explicitly says extracting a shared
-  abstraction at API-build time "would mean touching the two already-shipped, already-tested
-  entry points as a side effect of an unrelated change" and defers real unification to this exact
-  ROADMAP item's "own dedicated session." `api.py` correctly reuses the shared engine pieces
-  (`create_local_agent`, `run_completion_check`), but hand-duplicates the surrounding
-  stream-consumption loop, the context-budget nudge-then-cutoff mechanism, the wall-clock deadline
-  check, and its own `_find_substantial_text`/`_api_notify` pair. Still accurate that any future
-  strategy-object design must account for THREE call sites, not two — just not a new discovery.
-  **2026-08-24: one real parity bug found and fixed while reading all three loops in full to plan
-  the eventual unification** — `api.py`'s stream-consumption loop had NO malformed-tool-call
-  retry or `QuotaAbortException` handling at all (confirmed via direct source read: no
-  `classify_malformed_retry` call, no `except BaseException` around the stream, anywhere in
-  `_run_research`), while `run_cli`/`run_agent` both wrap theirs in exactly this pattern. Any such
-  exception previously propagated straight out of `_run_research` uncaught, hit only `_worker`'s
-  generic `except Exception` (job marked "failed", no retry, no salvage/quarantine final-verdict
-  attempt) — the same "check every surface" gap CLAUDE.md's rule exists for, just found in the
-  direction of a robustness fix that landed in two surfaces and never propagated to the third.
-  Fixed by mirroring `run_cli`'s exact try/except shape (same shared `classify_malformed_retry`
-  helper, same `QuotaAbortException` catch). New `test_api.py` (api.py had ZERO test coverage
-  before this — confirmed via codegraph) pins the new behavior with 3 scenarios: malformed-call
-  retry, clean `QuotaAbortException` abort, and a genuinely unrecognized exception still
-  propagating rather than being silently swallowed. `ruff check .` and the existing suites
-  (`test_structural_checks.py`, `test_tools.py`) also still pass.
-  Still open, and deliberately NOT attempted in this pass per the plan's own explicit
-  "dedicated session" framing (a multi-hour, high-risk undertaking given how deeply stateful and
-  subtly different all three loops are — confirmed by reading each in full): unifying the
-  stream-consumption loop and the approval-handling block behind explicit strategy objects, a
-  real design decision (what varies between CLI/TUI/API), not a mechanical extraction. Recommended
-  approach: design the strategy interface first, then extract the loop body to take it as a
-  parameter, not "extract the whole function and see what breaks."
+  widened 2026-08-24, CLOSED 2026-09-11.** New `src/engine/run_loop.py` (`RunLoopSurface` +
+  `run_agent_loop`) is now the single shared implementation of the `while has_requests:` loop, the
+  malformed-tool-call/`QuotaAbortException` dispatch, the budget nudge-then-cutoff mechanics, and
+  the completion-check invocation — all three surfaces call it instead of hand-rolling their own
+  copy. Migrated one surface per phase, each with its own tests and a live smoke test against a
+  real model before moving to the next: `run_cli` (Phase 1), `_run_research`/`api.py` (Phase 2),
+  `run_agent`/`BasicTuiAgent` (Phase 3, including deduplicating its own two near-identical
+  approval-handling copies — the main-turn loop and its sub-agent `ui_callback` — into one
+  `_resolve_tui_approval_requests` helper). Closes a real, previously-undocumented gap as a side
+  effect: `_run_research` used to only call `run_state.save()` on `asyncio.CancelledError`, never
+  on a generic exception, so a mid-run crash left no forensic `_run_state.json`; the shared loop's
+  own `except Exception` wrapper now covers every surface automatically. `RunLoopSurface` grew a
+  handful of optional hooks (`on_stream_update`, `on_turn_start`, `on_stream_exhausted`,
+  `render_retry_notice`, `render_quota_abort`, `on_malformed_give_up`, `get_last_assistant_text`)
+  specifically to let `run_agent` preserve its own deliberate, pre-existing divergences without
+  forcing a false unification: it never re-raises an unrecognized exception (shows a generic error
+  widget and continues with a normal, not forced, completion check instead of crashing — see
+  `on_malformed_give_up`'s docstring), it renders one whole stream update as a unit rather than
+  per-`Content`-item (its Textual widget lifecycle spans multiple items), and it still has no
+  wall-clock/context-char budget by design (`context_budget`/`budget_deadline` stay `None`,
+  always). One live bug found and fixed mid-migration: the shared loop's exception handler needed
+  an explicit early `isinstance(e, asyncio.CancelledError): raise` — without it, a surface with
+  `on_malformed_give_up` set (`run_agent`) would have silently swallowed `/stop`'s
+  `CancelledError` into a red error widget instead of ever letting it propagate; caught by a
+  dedicated regression test before it ever shipped. One separate, pre-existing (not introduced by
+  this migration — confirmed via `git show HEAD~2`) bug found live while smoke-testing Phase 3's
+  interactive approval path: the TUI's client-side tool execution (`tool_func.func(**args_dict)`)
+  never `await`s the result, so an interactively-approved tool whose `.func` is itself `async def`
+  (confirmed live with `web_search`) silently returns a stringified coroutine object instead of
+  real results — rare in practice since `settings.permissions` defaults to no tool requiring
+  approval at all, but real once a tool is configured that way. Flagged, not fixed, since it
+  predates and is out of scope for this unification; needs its own fix (await when the tool's
+  `.func` is a coroutine function, call plainly otherwise).
+  See `session_status/2026-09-11.md` for full phase-by-phase detail, live-test transcripts, and
+  the exact new-hook rationale.
 
 - **RAG-augmented small model, raised 2026-07-20, not yet scoped.** The project's own prior "RAG
   failure" turned out to be a benchmark-isolation bug in a deleted exact-string-match cache, not a

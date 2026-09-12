@@ -7,7 +7,7 @@ from textual.command import Hit, Hits, Provider
 from textual.suggester import SuggestFromList
 from textual.containers import VerticalScroll, Horizontal, Vertical
 from rich.markdown import Markdown
-from engine.orchestrator import create_local_agent, reset_session, delegation_depth_ctx, build_quota_pool, iter_agent_stream
+from engine.orchestrator import create_local_agent, reset_session, delegation_depth_ctx, build_quota_pool
 import engine.orchestrator as orchestrator_module
 # The completion-check engine (verdict checks, quarantine/restore/salvage) lives in
 # engine/completion.py as a data-driven check list — see its header for why it left this file.
@@ -23,7 +23,6 @@ from engine.run_loop import RunLoopSurface, run_agent_loop
 import asyncio
 import json
 import config
-from agent_framework import Message, Content
 from textual import events
 import hashlib
 import os
@@ -689,6 +688,76 @@ class ToolCallWidget(Collapsible):
         elapsed = datetime.now() - self._start_time
         agent_label = self.agent_name if self.agent_name else ("Sub-Agent" if self.is_subagent else "Agent")
         self.title = f"\N{HAMMER AND WRENCH} \\[{agent_label}] {self.tool_name} \N{OCTAGONAL SIGN} ({elapsed.total_seconds():.1f}s)"
+
+async def _resolve_tui_approval_requests(requests, chat, calls: dict, agent_name: str) -> list:
+    """Resolve a turn's pending tool-call approval requests for the TUI: mount an ApprovalWidget
+    and wait for a real click (unless config.AUTO_APPROVE), then -- unlike run_cli/_run_research,
+    which only send back an approve/deny response and let the model framework execute the tool
+    server-side -- execute the tool client-side (looked up from WORKSPACE_TOOLS) and hand-build
+    the resulting assistant-call + tool-result message pair, since the framework's own tool-runner
+    never sees this approval loop at all.
+
+    Was two near-identical hand-copies of this exact logic (run_agent's own main-turn loop and its
+    ui_callback for sub-agents), differing only in which `calls` state dict and `agent_name` label
+    to use -- both now call this with their own values instead.
+    """
+    from agent_framework import Message, Content
+    from tools import WORKSPACE_TOOLS
+
+    responses = []
+    for req in requests:
+        is_auto_approved = getattr(config, 'AUTO_APPROVE', False)
+        if not is_auto_approved:
+            widget = ApprovalWidget(req.function_call.name, agent_name=agent_name, arguments=getattr(req.function_call, "arguments", ""))
+            chat.mount(widget)
+            chat.scroll_end(animate=False)
+            await widget.event.wait()
+            is_approved = widget.approved
+        else:
+            is_approved = True
+
+        call_id = getattr(req.function_call, "id", None) if hasattr(req, "function_call") else None
+        target_widget = calls.get(call_id)
+        if not target_widget:
+            for cw in calls.values():
+                if hasattr(req, "function_call") and cw.tool_name == req.function_call.name and not cw._done:
+                    target_widget = cw
+                    break
+
+        if is_approved:
+            args_dict = req.function_call.parse_arguments() or {}
+            tool_func = next((t for t in WORKSPACE_TOOLS if t.name == req.function_call.name), None)
+            try:
+                if tool_func and hasattr(tool_func, "func"):
+                    result_str = str(tool_func.func(**args_dict))
+                else:
+                    result_str = "Executed natively."
+            except Exception as e:
+                result_str = f"Error: {e}"
+
+            if target_widget:
+                target_widget.set_result(result_str)
+                log_stream_content(agent_name, "function_result", {
+                    "call_id": getattr(req.function_call, "call_id", getattr(req.function_call, "id", None)),
+                    "result": result_str
+                })
+
+            responses.append(Message("assistant", [req.function_call]))
+            responses.append(Message("tool", [Content.from_function_result(
+                call_id=getattr(req.function_call, "call_id", getattr(req.function_call, "id", None)),
+                result=result_str
+            )]))
+        else:
+            if target_widget:
+                target_widget.set_result("Denied by user.")
+                log_stream_content(agent_name, "function_result", {
+                    "call_id": getattr(req.function_call, "call_id", getattr(req.function_call, "id", None)),
+                    "result": "Denied by user."
+                })
+            responses.append(Message("assistant", [req.function_call]))
+            responses.append(Message("user", [req.to_function_approval_response(False)]))
+    return responses
+
 
 class BasicTuiAgent(App):
     COMMANDS = App.COMMANDS | {SlashCommandProvider}
@@ -1387,61 +1456,7 @@ class BasicTuiAgent(App):
 
             requests = kwargs.get("approval_requests", [])
             if requests:
-                from agent_framework import Message, Content
-                from tools import WORKSPACE_TOOLS
-                responses = []
-                for req in requests:
-                    is_auto_approved = getattr(config, 'AUTO_APPROVE', False)
-                    if not is_auto_approved:
-                        widget = ApprovalWidget(req.function_call.name, agent_name=aname, arguments=getattr(req.function_call, "arguments", ""))
-                        chat.mount(widget)
-                        chat.scroll_end(animate=False)
-                        await widget.event.wait()
-                        is_approved = widget.approved
-                    else:
-                        is_approved = True
-
-                    call_id = getattr(req.function_call, "id", None) if hasattr(req, "function_call") else None
-                    target_widget = subagent_states[aname]["calls"].get(call_id)
-                    if not target_widget:
-                        for cw in subagent_states[aname]["calls"].values():
-                            if hasattr(req, "function_call") and cw.tool_name == req.function_call.name and not cw._done:
-                                target_widget = cw
-                                break
-
-                    if is_approved:
-                        args_dict = req.function_call.parse_arguments() or {}
-                        tool_func = next((t for t in WORKSPACE_TOOLS if t.name == req.function_call.name), None)
-                        try:
-                            if tool_func and hasattr(tool_func, "func"):
-                                result_str = str(tool_func.func(**args_dict))
-                            else:
-                                result_str = "Executed natively."
-                        except Exception as e:
-                            result_str = f"Error: {e}"
-
-                        if target_widget:
-                            target_widget.set_result(result_str)
-                            log_stream_content(aname, "function_result", {
-                                "call_id": getattr(req.function_call, "call_id", getattr(req.function_call, "id", None)),
-                                "result": result_str
-                            })
-
-                        responses.append(Message("assistant", [req.function_call]))
-                        responses.append(Message("tool", [Content.from_function_result(
-                            call_id=getattr(req.function_call, "call_id", getattr(req.function_call, "id", None)),
-                            result=result_str
-                        )]))
-                    else:
-                        if target_widget:
-                            target_widget.set_result("Denied by user.")
-                            log_stream_content(aname, "function_result", {
-                                "call_id": getattr(req.function_call, "call_id", getattr(req.function_call, "id", None)),
-                                "result": "Denied by user."
-                            })
-                        responses.append(Message("assistant", [req.function_call]))
-                        responses.append(Message("user", [req.to_function_approval_response(False)]))
-                return responses
+                return await _resolve_tui_approval_requests(requests, chat, subagent_states[aname]["calls"], aname)
 
             if update or is_done:
                 await self.handle_agent_update(update, subagent_states.setdefault(aname, {"calls": {}, "current_call_id": None, "current_msg": None}), chat, is_subagent=is_subagent, agent_name=aname, is_done=is_done)
@@ -1490,8 +1505,6 @@ class BasicTuiAgent(App):
                         + "\n".join(f"- {f}" for f in seeded_docs)
                     )
                 self._pending_seed_docs = []
-            has_requests = True
-            malformed_retries = 0
             state = {"calls": {}, "current_call_id": None, "current_msg": None}
             if is_followup and self._conv_run_state is not None:
                 # Same conversation, same _run_state.json: one continuous forensic timeline.
@@ -1524,231 +1537,120 @@ class BasicTuiAgent(App):
                 in get_workspace_files()
             )
 
-            while has_requests:
-                has_requests = False
-                user_input_requests = []
-
-                stream = agent.run(current_input, session=session, stream=True)
+            async def _tui_on_turn_start():
                 state["current_msg"] = None
                 state["has_first_token"] = False
                 state["processing_widget"] = ProcessingWidget("Agent")
                 chat.mount(state["processing_widget"])
                 self._safe_scroll_end(chat)
 
-                try:
-                    # iter_agent_stream(stream, None) (engine/orchestrator.py, shared with run_cli
-                    # since 2026-07-14, ROADMAP "B4") is behavior-identical to a plain `async for`
-                    # here — deadline=None means asyncio.wait_for never times out — kept as a
-                    # shared call so a future change to the iteration mechanics can't land in only
-                    # one of the two surfaces. The TUI deliberately has no wall-clock deadline of
-                    # its own (a user can /stop).
-                    async for update in iter_agent_stream(stream, None):
-                        await self.handle_agent_update(update, state, chat, is_subagent=False)
+            async def _tui_on_stream_update(update):
+                await self.handle_agent_update(update, state, chat, is_subagent=False)
 
-                        if hasattr(update, "user_input_requests") and update.user_input_requests:
-                            user_input_requests.extend(update.user_input_requests)
+            async def _tui_on_stream_exhausted():
+                # -------------------------------------------------------------
+                # [!CAUTION] AGENT-FRAMEWORK SYNCHRONIZATION BUGFIX
+                # -------------------------------------------------------------
+                # The agent framework's ResponseStream only populates `session.state`
+                # via its `after_run` hooks AFTER the async generator exhausts entirely.
+                # Since _write_log is constantly called mid-stream by log_stream_content,
+                # the final file written during standard generation would often contain
+                # `{"state": {"in_memory": {}}}` because the stream hadn't reached its end yet.
+                # We definitively evaluate `_write_log()` here once the stream guarantees finalization.
+                _write_log(force=True)
 
-                    # -------------------------------------------------------------
-                    # [!CAUTION] AGENT-FRAMEWORK SYNCHRONIZATION BUGFIX
-                    # -------------------------------------------------------------
-                    # The agent framework's ResponseStream only populates `session.state`
-                    # via its `after_run` hooks AFTER the async generator exhausts entirely.
-                    # Since _write_log is constantly called mid-stream by log_stream_content,
-                    # the final file written during standard generation would often contain
-                    # `{"state": {"in_memory": {}}}` because the stream hadn't reached its end yet.
-                    # We definitively evaluate `_write_log()` here once the stream guarantees finalization.
-                    _write_log(force=True)
+                # ProcessingWidget.stop() (in _tui_on_turn_start's widget) only fires reactively on
+                # the turn's first content token. A turn that streams NO content at all (e.g. the
+                # model's final attempt after tool quotas are exhausted, with nothing left to say)
+                # never triggers that, so its set_interval keeps animating and its elapsed-seconds
+                # counter climbs forever even after the run has genuinely concluded — confirmed
+                # live 2026-07-12 (counter still climbing minutes after the final verdict banner
+                # had already printed). Unconditional cleanup once the stream is guaranteed
+                # exhausted, regardless of whether content ever arrived.
+                leftover_widget = state.get("processing_widget")
+                if leftover_widget:
+                    leftover_widget.stop()
+                    state["processing_widget"] = None
 
-                    # ProcessingWidget.stop() (above) only fires reactively on the turn's first
-                    # content token. A turn that streams NO content at all (e.g. the model's final
-                    # attempt after tool quotas are exhausted, with nothing left to say) never
-                    # triggers that, so its set_interval keeps animating and its elapsed-seconds
-                    # counter climbs forever even after the run has genuinely concluded — confirmed
-                    # live 2026-07-12 (counter still climbing minutes after the final verdict
-                    # banner had already printed). Unconditional cleanup once the stream is
-                    # guaranteed exhausted, regardless of whether content ever arrived.
-                    leftover_widget = state.get("processing_widget")
-                    if leftover_widget:
-                        leftover_widget.stop()
-                        state["processing_widget"] = None
+            def _tui_render_retry_notice(malformed_retries: int):
+                p_widget = state.get("processing_widget")
+                if p_widget:
+                    p_widget.stop()
+                    state["processing_widget"] = None
+                chat.mount(Static(
+                    f"[yellow]Model emitted a malformed tool call — retrying the turn "
+                    f"({malformed_retries}/2).[/yellow]", classes="agent-bubble"))
+                chat.scroll_end(animate=False)
 
-                except BaseException as e:
-                    # TUI/CLI parity fix, 2026-07-29: run_cli explicitly catches QuotaAbortException
-                    # (a model stuck looping on the same tool past its quota's rescue allowance —
-                    # see tools/core.py::check_quota) and cleanly stops the run with a clear
-                    # message. run_agent previously used `except Exception`, which never even
-                    # caught QuotaAbortException at all -- it subclasses BaseException directly
-                    # (tools/core.py), so it would have propagated straight through this try/except
-                    # uncaught, crashing the whole run rather than degrading gracefully. Widened to
-                    # `except BaseException` (same as run_cli's equivalent call site) specifically
-                    # to catch this; every OTHER exception type below still behaves exactly as
-                    # before (classify_malformed_retry/reraise logic is unchanged for non-quota
-                    # errors, so this widening doesn't change behavior for anything else that
-                    # previously reached this block as a plain Exception).
-                    if isinstance(e, asyncio.CancelledError):
-                        # Must NOT be swallowed here -- /stop (self.workers.cancel_all()) relies on
-                        # this propagating all the way up to actually cancel the Textual worker.
-                        # Widening the except clause above to BaseException (to catch
-                        # QuotaAbortException) would otherwise silently break /stop.
-                        raise
-                    from tools import QuotaAbortException
-                    if isinstance(e, QuotaAbortException):
-                        # 2026-08-27 fix: this used to `break` straight out of the
-                        # `while has_requests:` loop, which skips run_completion_check entirely --
-                        # the SAME mistake the malformed-tool-call branch below has an explicit
-                        # comment warning against. Confirmed live: a real run with 12 already-
-                        # fetched sources hit this abort and got "Report: NOT WRITTEN" with zero
-                        # salvage attempt, even though _salvage_narrated_report was structurally
-                        # available. Falling through instead (has_requests already False, no
-                        # break/continue) reaches the SAME quarantine-restore/salvage path the
-                        # malformed-tool-call give-up uses -- the loop-detection trigger itself is
-                        # unchanged (it still correctly aborts), this only stops throwing away
-                        # real research when it fires.
-                        p_widget = state.get("processing_widget")
-                        if p_widget:
-                            p_widget.mark_error(str(e))
-                            state["processing_widget"] = None
-                        else:
-                            chat.mount(Static(f"[red]Task forcefully aborted: {str(e)}[/red]", classes="agent-bubble"))
-                        chat.scroll_end(animate=False)
-                        has_requests = False
-                        if run_state is not None:
-                            run_state.attempt = 10**6
-                    else:
-                        # TUI/CLI parity fix (CLAUDE.md: any headless-only capability must be checked
-                        # against the TUI) -- run_cli already retries a malformed tool call twice with
-                        # a corrective nudge before degrading gracefully (added 2026-07-12 after an
-                        # uncaught crash there); this path previously had NO retry at all, just an
-                        # immediate error widget with no further progress on that turn.
-                        # classify_malformed_retry (engine/orchestrator.py) is the pure decision logic
-                        # shared with run_cli's identical retry pattern, extracted 2026-07-14 (ROADMAP
-                        # "B4"). NOTE: unlike run_cli, this call site deliberately does NOT act on
-                        # result.reraise -- run_agent has never re-raised on an unrecognized exception
-                        # here (it falls through to the same error-widget path as a recognized-but-
-                        # exhausted one, with no force_final_verdict either), and this refactor
-                        # preserves that exact pre-existing behavior rather than silently changing it.
-                        # Guarded under `else` (2026-08-27): QuotaAbortException is handled entirely
-                        # by the branch above and must not also fall into this malformed-tool-call-
-                        # specific classifier, which doesn't know how to interpret it.
-                        from engine.orchestrator import classify_malformed_retry
-                        result = classify_malformed_retry(e, malformed_retries, current_input)
-                        malformed_retries = result.new_malformed_retries
-                        if result.should_retry:
-                            p_widget = state.get("processing_widget")
-                            if p_widget:
-                                p_widget.stop()
-                                state["processing_widget"] = None
-                            chat.mount(Static(
-                                f"[yellow]Model emitted a malformed tool call — retrying the turn "
-                                f"({malformed_retries}/2).[/yellow]", classes="agent-bubble"))
-                            chat.scroll_end(animate=False)
-                            current_input = result.new_current_input
-                            has_requests = True
-                            continue
+            def _tui_render_quota_abort(e):
+                # 2026-08-27 fix (mirrored from run_cli): the shared loop falls through instead of
+                # breaking out of its own while-loop on a QuotaAbortException, so this render-only
+                # hook doesn't need to touch has_requests/run_state.attempt itself -- run_agent_loop
+                # already reaches the same quarantine-restore/salvage path the malformed-tool-call
+                # give-up branch uses.
+                p_widget = state.get("processing_widget")
+                if p_widget:
+                    p_widget.mark_error(str(e))
+                    state["processing_widget"] = None
+                else:
+                    chat.mount(Static(f"[red]Task forcefully aborted: {str(e)}[/red]", classes="agent-bubble"))
+                chat.scroll_end(animate=False)
 
-                        p_widget = state.get("processing_widget")
-                        if p_widget:
-                            p_widget.mark_error(str(e))
-                            state["processing_widget"] = None
-                        else:
-                            chat.mount(Static(f"[red]Error: {str(e)}[/red]", classes="agent-bubble"))
-                        chat.scroll_end(animate=False)
+            def _tui_on_malformed_give_up(e, result):
+                # TUI/CLI parity fix (CLAUDE.md: any headless-only capability must be checked
+                # against the TUI) -- run_cli already retries a malformed tool call twice with a
+                # corrective nudge before degrading gracefully; this path previously had NO retry
+                # at all. NOTE: unlike run_cli/api.py, this call site deliberately does NOT act on
+                # result.reraise -- run_agent has never re-raised on an unrecognized exception here
+                # (it shows the SAME generic error widget as a recognized-but-exhausted one, with no
+                # force_final_verdict either), and this migration preserves that exact pre-existing
+                # behavior rather than silently changing it. run_agent_loop still applies
+                # run_state.attempt = 10**6 afterward when result.force_final_verdict is set,
+                # regardless of this hook.
+                p_widget = state.get("processing_widget")
+                if p_widget:
+                    p_widget.mark_error(str(e))
+                    state["processing_widget"] = None
+                else:
+                    chat.mount(Static(f"[red]Error: {str(e)}[/red]", classes="agent-bubble"))
+                chat.scroll_end(animate=False)
 
-                        if result.force_final_verdict:
-                            # Retry budget exhausted for this SPECIFIC, already-recognized failure
-                            # class -- force the completion check straight to its final-verdict path
-                            # (quarantine-restore/salvage) instead of leaving the turn as a bare error
-                            # widget with no further progress, same degradation run_cli now applies.
-                            # No `continue`: has_requests is already False, so falling through
-                            # naturally into the rest of this iteration is what actually reaches the
-                            # completion-check branch below.
-                            if run_state is not None:
-                                run_state.attempt = 10**6
+            def _tui_notify(msg: str):
+                chat.mount(Static(Markdown(msg), classes="agent-bubble"))
+                chat.scroll_end(animate=False)
+                log_stream_content("Agent", "text", {"text": msg})
 
-                if user_input_requests:
-                    has_requests = True
-                    # current_input, not query: an approval request arriving after a completion-
-                    # check nudge (run_completion_check reassigns current_input to include the
-                    # injected retry message) must keep that nudge in the rebuilt input list, or
-                    # the retry silently reverts to the bare original prompt — the exact bug
-                    # run_cli's copy of this same loop was already fixed for (see its "current_input,
-                    # not prompt" comment below). Second full audit, 2026-07-12, item 1.
-                    new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
+            async def _tui_handle_approvals(requests):
+                # current_input, not query: an approval request arriving after a completion-check
+                # nudge (run_completion_check reassigns current_input to include the injected retry
+                # message) must keep that nudge in the rebuilt input list, or the retry silently
+                # reverts to the bare original prompt — the exact bug run_cli's copy of this same
+                # loop was already fixed for. run_agent_loop already extends the live current_input
+                # with whatever this returns, so this only needs to build the response messages.
+                return await _resolve_tui_approval_requests(requests, chat, state["calls"], "Planner")
 
-                    for req in user_input_requests:
-                        # Mount the interactive widget conditionally
-                        is_auto_approved = getattr(config, 'AUTO_APPROVE', False)
-                        if not is_auto_approved:
-                            widget = ApprovalWidget(req.function_call.name, agent_name="Planner", arguments=getattr(req.function_call, "arguments", ""))
-                            chat.mount(widget)
-                            chat.scroll_end(animate=False)
-
-                            # Pause loop to wait for physical user interaction event loop
-                            await widget.event.wait()
-                            is_approved = widget.approved
-                        else:
-                            is_approved = True
-
-                        call_id = getattr(req.function_call, "id", None) if hasattr(req, "function_call") else None
-                        target_widget = state["calls"].get(call_id)
-                        if not target_widget:
-                            for cw in state["calls"].values():
-                                if hasattr(req, "function_call") and cw.tool_name == req.function_call.name and not cw._done:
-                                    target_widget = cw
-                                    break
-
-                        if is_approved:
-                            args_dict = req.function_call.parse_arguments() or {}
-                            from tools import WORKSPACE_TOOLS
-                            tool_func = next((t for t in WORKSPACE_TOOLS if t.name == req.function_call.name), None)
-                            try:
-                                if tool_func and hasattr(tool_func, "func"):
-                                    result_str = str(tool_func.func(**args_dict))
-                                else:
-                                    result_str = "Executed natively."
-                            except Exception as e:
-                                result_str = f"Error: {e}"
-
-                            if target_widget:
-                                target_widget.set_result(result_str)
-                                log_stream_content("Agent", "function_result", {
-                                    "call_id": getattr(req.function_call, "call_id", getattr(req.function_call, "id", None)),
-                                    "result": result_str
-                                })
-
-                            new_inputs.append(Message("assistant", [req.function_call]))
-                            new_inputs.append(Message("tool", [Content.from_function_result(
-                                call_id=getattr(req.function_call, "call_id", getattr(req.function_call, "id", None)),
-                                result=result_str
-                            )]))
-                        else:
-                            if target_widget:
-                                target_widget.set_result("Denied by user.")
-                                log_stream_content("Agent", "function_result", {
-                                    "call_id": getattr(req.function_call, "call_id", getattr(req.function_call, "id", None)),
-                                    "result": "Denied by user."
-                                })
-                            new_inputs.append(Message("assistant", [req.function_call]))
-                            new_inputs.append(Message("user", [req.to_function_approval_response(False)]))
-
-                    # Push back upstream and flush state
-                    current_input = new_inputs
-
-                if not has_requests and not skip_completion_check:
-                    def _tui_notify(msg: str):
-                        chat.mount(Static(Markdown(msg), classes="agent-bubble"))
-                        chat.scroll_end(animate=False)
-                        log_stream_content("Agent", "text", {"text": msg})
-
-                    turn_msg = state.get("current_msg")
-                    should_continue, current_input = await run_completion_check(
-                        query=query, current_input=current_input, run_state=run_state, notify=_tui_notify,
-                        last_assistant_text=turn_msg.text if turn_msg else "",
-                        dispatch_task=dispatch_task,
-                        find_substantial_text=_find_last_substantial_text,
-                    )
-                    if should_continue:
-                        has_requests = True
+            surface = RunLoopSurface(
+                on_stream_content=None,  # unused -- on_stream_update below takes priority
+                notify=_tui_notify,
+                handle_approvals=_tui_handle_approvals,
+                skip_completion_check=skip_completion_check,
+                # The TUI deliberately has no wall-clock deadline or context-char budget of its
+                # own (a user can /stop) -- must stay None, never a computed default.
+                context_budget=None,
+                budget_deadline=None,
+                query=query,
+                dispatch_task=dispatch_task,
+                find_substantial_text=_find_last_substantial_text,
+                run_state=run_state,
+                on_stream_update=_tui_on_stream_update,
+                on_turn_start=_tui_on_turn_start,
+                on_stream_exhausted=_tui_on_stream_exhausted,
+                render_retry_notice=_tui_render_retry_notice,
+                render_quota_abort=_tui_render_quota_abort,
+                on_malformed_give_up=_tui_on_malformed_give_up,
+                get_last_assistant_text=lambda: (state.get("current_msg").text if state.get("current_msg") else ""),
+            )
+            await run_agent_loop(agent, session, current_input, surface)
 
             run_state.save()
             _write_bibliography(run_state)

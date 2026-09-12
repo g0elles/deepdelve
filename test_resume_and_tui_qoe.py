@@ -274,23 +274,52 @@ def main():
         "run_cli must call the shared merge_resumed_state, not reintroduce its own inline copy "
         "of the resume-carryover key list")
 
-    # --- TUI/CLI parity fixes, 2026-07-29: run_agent previously had NO QuotaAbortException
-    # handling at all (run_cli explicitly catches and cleanly stops on it) and NO crash-time
-    # run_state.save() outside normal loop completion (run_cli guarantees one on any top-level
-    # crash, 2026-07-11). Both read as unintentional gaps, not deliberate TUI/CLI divergences
-    # (unlike the documented `reraise` difference elsewhere in this same function) — pinned here
-    # via source inspection since run_agent itself isn't easily unit-testable in isolation (it's
-    # a Textual @work-decorated method driving live widgets). ---
+    # --- TUI/CLI parity fixes, 2026-07-29, RETARGETED 2026-09-11 (Phase 3 of the run_cli/
+    # run_agent/_run_research lifecycle-loop unification): run_agent previously had NO
+    # QuotaAbortException handling at all (run_cli explicitly catches and cleanly stops on it)
+    # and NO crash-time run_state.save() outside normal loop completion (run_cli guarantees one
+    # on any top-level crash, 2026-07-11). Both read as unintentional gaps, not deliberate
+    # TUI/CLI divergences (unlike run_agent's separate, deliberate choice to never re-raise an
+    # unrecognized exception -- see RunLoopSurface.on_malformed_give_up's docstring in
+    # engine/run_loop.py and test_run_loop.py's
+    # scenario_on_malformed_give_up_suppresses_reraise for that one).
+    # As of Phase 3, run_agent's own turn loop was replaced by a call into the shared
+    # engine.run_loop.run_agent_loop -- the QuotaAbortException dispatch and the /stop-preserving
+    # asyncio.CancelledError check now live THERE, not textually inside run_agent itself (which
+    # still only contains a comment mentioning QuotaAbortException, not the real handling -- a
+    # source-string check against run_agent's own body would now pass coincidentally on that
+    # comment instead of actually verifying the behavior). Retargeted accordingly. ---
+    import engine.run_loop as _run_loop_mod_check
+    _run_agent_loop_src = _inspect.getsource(_run_loop_mod_check.run_agent_loop)
+    assert "QuotaAbortException" in _run_agent_loop_src, (
+        "the shared run_agent_loop must handle QuotaAbortException (used by run_agent, run_cli, "
+        "and _run_research alike), not let it propagate uncaught or fall into the generic "
+        "malformed-retry path")
+    assert "asyncio.CancelledError" in _run_agent_loop_src, (
+        "the shared run_agent_loop's except-BaseException clause (needed to catch "
+        "QuotaAbortException, a BaseException subclass) must not accidentally swallow /stop's "
+        "or /cancel's asyncio.CancelledError")
+    assert "run_state.save()" in _run_agent_loop_src, (
+        "run_agent_loop must save run_state on a generic unrecognized exception before "
+        "propagating (the gap-E fix) -- this is what makes run_agent's own crash-time save "
+        "(checked below) actually redundant-but-safe rather than the only save that ever fires")
+    # run_agent's OWN source still guarantees its two outer-level saves regardless of what the
+    # shared loop does internally: one on normal loop completion, one on a top-level crash
+    # (anything escaping run_agent_loop entirely, e.g. from create_local_agent or seed ingestion,
+    # not just from inside the turn loop) -- this is a real, still-independently-meaningful pin,
+    # not superseded by the run_agent_loop-level check above.
     _run_agent_src = _inspect.getsource(_tui_mod_check.BasicTuiAgent.run_agent)
-    assert "QuotaAbortException" in _run_agent_src, (
-        "run_agent must handle QuotaAbortException like run_cli does, not let it propagate "
-        "uncaught or fall into the generic malformed-retry path")
-    assert "asyncio.CancelledError" in _run_agent_src, (
-        "widening run_agent's except clause to catch QuotaAbortException (a BaseException "
-        "subclass) must not accidentally swallow /stop's asyncio.CancelledError")
-    assert _run_agent_src.count("run_state.save()") >= 2, (
+    assert "run_agent_loop(" in _run_agent_src, (
+        "run_agent must call the shared run_agent_loop, not reintroduce its own inline "
+        "while-has-requests copy")
+    _real_save_calls = [
+        line for line in _run_agent_src.splitlines()
+        if line.strip() == "run_state.save()"
+    ]
+    assert len(_real_save_calls) >= 2, (
         "run_agent must save run_state both at normal loop completion AND on a top-level crash "
-        "(run_cli parity) — expected at least 2 call sites")
+        "(run_cli parity) — expected at least 2 real call sites, found "
+        f"{len(_real_save_calls)}")
 
     # --- Circular import fix, 2026-07-29: engine.completion used to lazy-import
     # _find_last_substantial_text FROM engine.tui at call time, specifically to avoid a real
