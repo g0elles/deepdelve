@@ -399,14 +399,48 @@ tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
   See `session_status/2026-09-11.md` for full phase-by-phase detail, live-test transcripts, and
   the exact new-hook rationale.
 
-- **RAG-augmented small model, raised 2026-07-20, not yet scoped.** The project's own prior "RAG
-  failure" turned out to be a benchmark-isolation bug in a deleted exact-string-match cache, not a
-  real RAG failure, see the wiki's [Architecture Synthesis](https://github.com/g0elles/deepdelve/wiki/Literature-Review-Architecture-Synthesis)
+- **RAG-augmented small model, raised 2026-07-20, SURVEYED 2026-09-11, DEFERRED pending real run
+  data.** The project's own prior "RAG failure" turned out to be a benchmark-isolation bug in a
+  deleted exact-string-match cache, not a real RAG failure, see the wiki's [Architecture
+  Synthesis](https://github.com/g0elles/deepdelve/wiki/Literature-Review-Architecture-Synthesis)
   page for the full literature review. Real RAG (embeddings/chunking/vector retrieval) is
   architecturally different from what failed before, so the old rejection doesn't automatically
   block it, but any persistent cross-run cache, RAG or not, must be explicitly isolated per model
   during comparative benchmarking or the same contamination bug recurs regardless of the retrieval
-  technique underneath it. That's the one non-negotiable constraint from this project's own history.
+  technique underneath it — the one non-negotiable constraint from this project's own history,
+  already enforced in `utils/rag_cache.py` (below).
+  **2026-09-11 scoping survey** (approaches + comparable OSS projects, not yet a full-paper read —
+  see caveat below) found the specific idea this item originally raised — chunk/embed/retrieve over
+  a run's OWN freshly-fetched documents, mid-run, to help the small generator synthesize — is not
+  supported by the evidence at this project's model tier, and has a documented failure mode that
+  could make output worse, not better: arXiv:2603.11513 ("Can Small Language Models Use What They
+  Retrieve?") found models ≤7B fail to extract the correct answer 85-100% of the time even under
+  *oracle* retrieval (the right passage guaranteed present), and that injecting retrieved context
+  destroyed 42-100% of answers the model already knew unaided (a "context-distraction" effect) —
+  for sub-7B models the bottleneck is context UTILIZATION, not retrieval quality. Corroborated by
+  two comparable real projects: `langchain-ai/local-deep-researcher` (the OSS project most
+  architecturally similar to DeepDelve — local Ollama models, iterative research loop) does no
+  chunking/embedding/retrieval at all; `PaperQA2`, the most RAG-native project surveyed, states in
+  its own README that sub-7B models "won't get good performance" with its RAG-reasoning step.
+  GraphRAG/RAPTOR-style advanced patterns were excluded from consideration entirely — their
+  validated numbers are GPT-4/8B+-only, below this project's own Model Evaluation Standard's
+  fairness bar (point 6: a candidate must clear this project's actual context/model floor, not be
+  judged on a bigger setup). **Caveat**: 2603.11513 was only skimmed (abstract + methods/results
+  via WebFetch), not read in full — per this project's own citation rule, it must be read
+  completely before being treated as settled, if this item is ever actually scoped.
+  **Decision (2026-09-11, user call)**: do not scope an in-run RAG build now. Defer until this
+  project has banked several more successful full runs — at that point, re-scope RAG as an
+  OFFLINE, post-hoc process over the REAL verified/cited references those successful runs already
+  produced (download + process into a retrieval store after the fact), not live mid-run retrieval
+  injected into a small model's context — sidestepping the context-distraction failure mode above
+  entirely, since nothing would be forced into the generator's live context window. This is a
+  different shape from both the original ask and from `utils/rag_cache.py`'s existing cross-run
+  verified-findings cache (which already stores source URL + summary per finding, model-isolated,
+  but is populated finding-by-finding as each run happens, not batch-built from a backlog of past
+  successful runs) — when this is picked back up, check whether it's actually best built as an
+  extension of `rag_cache.py` or a genuinely separate offline pipeline before designing either.
+  No concrete run-count trigger was set; revisit when there's a real backlog of successful runs
+  worth mining, not against an invented number.
 
 - **TUI QoE improvements, researched 2026-07-14 — CLOSED 2026-08-24.** A framework capability
   survey (Textual's own source, not assumed from memory) found several likely-already-working
