@@ -20,6 +20,17 @@ not independent test coverage.
 
 Does not exercise the rest of _run_research (SSE draining, file uploads) -- still uncovered; a
 fuller api.py test harness is a separate, larger undertaking than this one targeted pin.
+
+2026-09-11: _run_research's inline loop was replaced by a call into the shared
+engine.run_loop.run_agent_loop (Phase 2 of the run_cli/run_agent/_run_research lifecycle-loop
+unification, see session_status/CURRENT.md and ~/.claude/plans/polymorphic-wibbling-fiddle.md).
+run_completion_check is now called through run_loop's own binding, not api.py's re-export --
+_run_scenario patches engine.run_loop.run_completion_check accordingly. This migration closes a
+real, previously-undocumented gap for free: _run_research used to only call run_state.save() on
+asyncio.CancelledError, never on a generic exception, so a crash mid-run left no forensic
+_run_state.json update; run_agent_loop's own except-Exception wrapper now saves on every exit
+path, pinned below by a dedicated regression case.
+
 Run: ~/.venvs/deepdelve/bin/python test_api.py (no framework needed, same convention as
 test_tools.py/test_structural_checks.py).
 """
@@ -63,8 +74,13 @@ class _FakeAgent:
         return _FakeStream(raise_exc=None)
 
 
-def _run_scenario(first_call_exc, expect_completion_check_called, extra_settings=None):
+def _run_scenario(first_call_exc, expect_completion_check_called, extra_settings=None,
+                   expect_exception=False):
+    """expect_exception: when True, _run_research is expected to raise first_call_exc straight
+    through (the reraise=True classify_malformed_retry path -- a generic, unrecognized exception),
+    and the caller inspects run_state.save() directly rather than the collected event list."""
     import api
+    import engine.run_loop as run_loop
 
     with tempfile.TemporaryDirectory() as tmpdir:
         orig_ws = config.cfg.get("settings", {}).get("workspace")
@@ -75,12 +91,20 @@ def _run_scenario(first_call_exc, expect_completion_check_called, extra_settings
             orig_extra[key] = config.cfg["settings"].get(key)
             config.cfg["settings"][key] = val
 
+        from utils.run_state import RunState
+
         orig_create_local_agent = api.create_local_agent
-        orig_run_completion_check = api.run_completion_check
+        # run_agent_loop calls run_completion_check via its OWN imported binding in
+        # engine/run_loop.py, not through api.py's re-export -- api.py no longer calls it
+        # directly since the run_cli/run_agent/_run_research lifecycle-loop unification (see
+        # session_status/CURRENT.md, 2026-09-11), so the fake must be patched there instead.
+        orig_run_completion_check = run_loop.run_completion_check
         orig_write_bib = api._write_bibliography
         orig_export_pdf = api._export_pdf
+        orig_run_state_save = RunState.save
 
         completion_check_calls = []
+        save_calls = []
 
         def _fake_create_local_agent(builder, subagent_callback=None, session_data=None):
             return _FakeAgent(first_call_exc), None, None
@@ -89,10 +113,15 @@ def _run_scenario(first_call_exc, expect_completion_check_called, extra_settings
             completion_check_calls.append(kwargs)
             return False, kwargs["current_input"]
 
+        def _spy_save(self):
+            save_calls.append(True)
+            orig_run_state_save(self)
+
         api.create_local_agent = _fake_create_local_agent
-        api.run_completion_check = _fake_run_completion_check
+        run_loop.run_completion_check = _fake_run_completion_check
         api._write_bibliography = lambda run_state: None
         api._export_pdf = lambda run_id: (None, None)
+        RunState.save = _spy_save
 
         try:
             events = asyncio.Queue()
@@ -101,6 +130,19 @@ def _run_scenario(first_call_exc, expect_completion_check_called, extra_settings
                 class state:
                     builder = None
             api.app = _FakeApp()
+
+            if expect_exception:
+                raised = None
+                try:
+                    asyncio.run(api._run_research("test_run_id", "test query", {"mode": "fresh"}, events))
+                except type(first_call_exc) as e:
+                    raised = e
+                assert raised is not None and str(raised) == str(first_call_exc), raised
+                # Gap-E regression pin: a generic unrecognized exception must still call
+                # run_state.save() (via run_agent_loop's own except-Exception wrapper) before
+                # propagating to _worker -- previously _run_research only saved on
+                # asyncio.CancelledError, so _run_state.json never got this crash's forensics.
+                return save_calls
 
             asyncio.run(api._run_research("test_run_id", "test query", {"mode": "fresh"}, events))
 
@@ -114,9 +156,10 @@ def _run_scenario(first_call_exc, expect_completion_check_called, extra_settings
             return collected
         finally:
             api.create_local_agent = orig_create_local_agent
-            api.run_completion_check = orig_run_completion_check
+            run_loop.run_completion_check = orig_run_completion_check
             api._write_bibliography = orig_write_bib
             api._export_pdf = orig_export_pdf
+            RunState.save = orig_run_state_save
             if orig_ws is None:
                 config.cfg["settings"].pop("workspace", None)
             else:
@@ -229,6 +272,16 @@ def main():
         raise AssertionError("an unrecognized exception must propagate, not be swallowed")
     except ValueError as e:
         assert str(e) == "something else entirely", e
+
+    # --- Gap-E regression pin (2026-09-11 lifecycle-loop unification): before this, _run_research
+    # only called run_state.save() on asyncio.CancelledError -- a generic unrecognized exception
+    # (this exact ValueError/reraise=True path) reached _worker's `except Exception` with
+    # _run_state.json never updated for that crash. run_agent_loop's own except-Exception wrapper
+    # now saves before propagating, so this must fire here too. ---
+    save_calls = _run_scenario(
+        ValueError("gap-e regression"), expect_completion_check_called=False, expect_exception=True,
+    )
+    assert save_calls, "run_state.save() must be called on a generic exception before it propagates"
 
     asyncio.run(_queue_serialization_scenario())
 

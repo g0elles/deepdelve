@@ -37,13 +37,13 @@ import json
 import config
 from agent_framework import Message
 import engine.orchestrator as orchestrator_module
-from engine.orchestrator import create_local_agent, iter_agent_stream, build_quota_pool, stream_content_chars
-from engine.completion import run_completion_check
+from engine.orchestrator import create_local_agent, build_quota_pool
 from engine.tui import (
     _slugify_run_dir_name, _current_run_dir, _ingest_local_doc, _write_bibliography, _export_pdf,
     _looks_like_tool_error, apply_depth_preset, load_resume_state, build_resume_input,
     _scale_resume_quota_pool,
 )
+from engine.run_loop import RunLoopSurface, run_agent_loop
 from tools.core import tool_quotas_ctx
 from tools.fs import session_dir_ctx
 from utils.run_state import RunState, reset_fetched_urls, merge_resumed_state
@@ -228,9 +228,6 @@ async def _run_research(run_id: str, query: str, opts: dict, events: asyncio.Que
 
         from engine.orchestrator import get_context_budget
         context_budget = get_context_budget()
-        run_stream_chars = 0
-        budget_nudged = False
-        has_requests = True
 
         # Every turn's full Planner text, oldest first -- NOT just the current turn's turn_text.
         # tui.py's own _find_last_substantial_text exists specifically because passing only the
@@ -238,187 +235,54 @@ async def _run_research(run_id: str, query: str, opts: dict, events: asyncio.Que
         # narrated report from an EARLIER turn when a later retry's turn (e.g. one that's pure
         # tool calls, or a short "quota exhausted, stopping" acknowledgment) produces little or no
         # text of its own -- confirmed as a real bug there against a live session log. This
-        # function never had the equivalent: it only ever passed the CURRENT turn_text as
-        # last_assistant_text, with no find_substantial_text callback at all, so it silently
-        # inherited the same already-fixed-elsewhere bug. Confirmed live 2026-08-02: a run whose
-        # Planner narrated a long, real synthesis several turns before quota exhaustion ended with
-        # zero files written at all, because the actual final turn was short and there was nothing
-        # else to fall back to.
+        # surface has no persisted session-event log (unlike run_cli/run_agent), so it keeps its
+        # own in-memory history via RunLoopSurface.on_turn_text instead.
         planner_text_history = []
-        # Malformed-tool-call retry + QuotaAbortException handling (2026-08-24 parity fix):
-        # run_cli/run_agent both wrap their stream consumption in a try/except that classifies a
-        # malformed tool call via the shared classify_malformed_retry (retry twice, then degrade
-        # to the final-verdict path instead of crashing) and catches QuotaAbortException (a model
-        # stuck looping past its quota's rescue allowance) explicitly -- this loop had neither.
-        # Confirmed via direct source read: any such exception here previously propagated
-        # uncaught straight out of _run_research to _worker()'s generic `except Exception`, which
-        # marks the whole job "failed" with no retry and no salvage/quarantine attempt -- the same
-        # class of gap CLAUDE.md's "check every surface" rule exists for, just found the other
-        # direction (a robustness fix that landed in run_cli/run_agent but never propagated here).
-        malformed_retries = 0
 
-        while has_requests:
-            has_requests = False
-            user_input_requests = []
-            turn_text = ""
+        async def _api_on_stream_content(content):
+            if getattr(content, "type", None) == "text" and getattr(content, "text", None):
+                await events.put({"type": "text", "agent": "Planner", "text": content.text})
 
-            try:
-                stream = agent.run(current_input, session=session, stream=True)
-                try:
-                    async for update in iter_agent_stream(stream, budget_deadline):
-                        run_stream_chars += stream_content_chars(update)
-                        for c in getattr(update, "contents", None) or []:
-                            if getattr(c, "type", None) == "text" and getattr(c, "text", None):
-                                turn_text += c.text
-                                await events.put({"type": "text", "agent": "Planner", "text": c.text})
-                            elif hasattr(c, "function_call") and c.function_call is not None:
-                                user_input_requests.append(c)
-                except asyncio.TimeoutError:
-                    # Missing entirely before this fix, unlike run_cli's identical inner
-                    # try/except (tui.py): iter_agent_stream raises asyncio.TimeoutError directly
-                    # once budget_deadline has passed (mid-stream, not just at the post-loop
-                    # check below) -- without this, the outer except BaseException below caught it
-                    # instead, classify_malformed_retry didn't recognize a bare TimeoutError, and
-                    # its reraise=True crashed the whole job instead of finishing gracefully.
-                    await events.put({
-                        "type": "system",
-                        "text": f"max_run_minutes ({max_run_minutes}) exceeded — cutting the current turn short.",
-                    })
-            except BaseException as e:
-                if isinstance(e, asyncio.CancelledError):
-                    # /cancel relies on this propagating -- must not be swallowed.
-                    raise
-                from tools import QuotaAbortException
-                if isinstance(e, QuotaAbortException):
-                    # Mirrors run_cli's 2026-08-27 fix (tui.py's own comment on this exact branch):
-                    # `break`ing straight out of `while has_requests:` skips run_completion_check
-                    # entirely, which throws away real fetched research with zero quarantine-
-                    # restore/salvage attempt. Falling through (has_requests already False, no
-                    # break) reaches the same salvage path the malformed-tool-call give-up branch
-                    # below uses -- this API surface never got that later fix propagated to it.
-                    await events.put({"type": "system", "text": f"Task forcefully aborted: {e}"})
-                    has_requests = False
-                    run_state.attempt = 10**6
-                else:
-                    # Guarded under else (matches run_cli): QuotaAbortException is handled entirely
-                    # by the branch above and must not also fall into this malformed-tool-call-
-                    # specific classifier, which doesn't know how to interpret it and would re-raise.
-                    from engine.orchestrator import classify_malformed_retry
-                    result = classify_malformed_retry(e, malformed_retries, current_input)
-                    malformed_retries = result.new_malformed_retries
-                    if result.should_retry:
-                        await events.put({
-                            "type": "system",
-                            "text": f"Model emitted a malformed tool call — retrying the turn ({malformed_retries}/2).",
-                        })
-                        current_input = result.new_current_input
-                        has_requests = True
-                        continue
-                    if result.reraise:
-                        raise
-                    # Retry budget exhausted for this specific, already-recognized failure class --
-                    # degrade to the final-verdict path instead of crashing the whole run, same as
-                    # run_cli/run_agent's own copies of this exact branch.
-                    await events.put({
-                        "type": "system",
-                        "text": f"Model kept emitting malformed tool calls after {malformed_retries} "
-                                f"retries — giving up on this turn and finishing with whatever exists.",
-                    })
-                    run_state.attempt = 10**6
+        def _api_notify(msg: str):
+            asyncio.create_task(events.put({"type": "system", "text": msg}))
+            # api.py has no persisted session-transcript equivalent to tui.py's
+            # ~/.deepdelve/sessions/session_*.json -- an event only ever reaches whoever happens
+            # to have an SSE connection open at that exact moment, and is gone once drained. That
+            # made a real incident (2026-08-02: a run ended with zero artifacts and no one
+            # watching live) impossible to post-mortem after the fact. These are exactly the
+            # completion-check's own diagnostic messages (retry-budget-exhausted, quarantine-
+            # restore, salvage notices) -- capped small since _run_state.json is already written
+            # frequently and this must not make it meaningfully bigger.
+            log = run_state.data.setdefault("_notify_log", [])
+            log.append(msg)
+            del log[:-20]
 
-            if turn_text:
-                planner_text_history.append(turn_text)
+        def _api_find_substantial_text(min_len: int = 200) -> str:
+            for text in reversed(planner_text_history):
+                if len(text.strip()) >= min_len:
+                    return text.strip()
+            return ""
 
-            if user_input_requests:
-                has_requests = True
-                new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
-                for req in user_input_requests:
-                    new_inputs.append(Message("user", [req.to_function_approval_response(True)]))
-                current_input = new_inputs
-                continue
+        async def _api_handle_approvals(requests):
+            # settings.permissions is a headless-friendly auto-approve/require_approval switch
+            # elsewhere in this project; this API always auto-approves (no interactive operator
+            # to ask) -- same posture run_cli takes with --auto-approve.
+            return [Message("user", [req.to_function_approval_response(True)]) for req in requests]
 
-            if skip_completion_check:
-                continue  # has_requests already False -- the answer was the streamed turn_text itself
-
-            def _api_notify(msg: str):
-                asyncio.create_task(events.put({"type": "system", "text": msg}))
-                # api.py has no persisted session-transcript equivalent to tui.py's
-                # ~/.deepdelve/sessions/session_*.json -- an event only ever reaches whoever
-                # happens to have an SSE connection open at that exact moment, and is gone once
-                # drained. That made a real incident (2026-08-02: a run ended with zero artifacts
-                # and no one watching live) impossible to post-mortem after the fact. These are
-                # exactly the completion-check's own diagnostic messages (retry-budget-exhausted,
-                # quarantine-restore, salvage notices) -- capped small since _run_state.json is
-                # already written frequently and this must not make it meaningfully bigger.
-                log = run_state.data.setdefault("_notify_log", [])
-                log.append(msg)
-                del log[:-20]
-
-            def _find_substantial_text(min_len: int = 200) -> str:
-                for text in reversed(planner_text_history):
-                    if len(text.strip()) >= min_len:
-                        return text.strip()
-                return ""
-
-            # Two-stage nudge-then-cutoff for context_budget_chars, matching run_cli's own
-            # mechanism (tui.py's run_agent) instead of a blunt one-shot cutoff (2026-08-04):
-            # confirmed live against a verbose hosted model (DeepSeek-V4-Flash) that the old
-            # unconditional force-jump gave check_task_verification_flagged's own correctly-
-            # firing redo directive ZERO real completion-check attempts before salvage -- the
-            # budget blew before the Planner's first completion-check-eligible turn even
-            # happened, so a check that was actively working (verified-task count improved
-            # run-over-run) never got a chance to act. One bounded wrap-up turn (not unbounded --
-            # a SECOND overshoot still forces the hard cutoff) costs at most one extra Planner
-            # turn, which does not meaningfully weaken the shared-queue protection the original
-            # blunt-cutoff comment was protecting against.
-            if context_budget and run_stream_chars > context_budget:
-                if not budget_nudged:
-                    budget_nudged = True
-                    run_stream_chars = 0
-                    req_artifact = config.get_required_artifact()
-                    endgame = (
-                        f"SYSTEM: you have reached your context budget for this run. Do NOT call "
-                        f"delegate_tasks or any research tool again. Write findings.md (if missing) "
-                        f"and '{req_artifact}' RIGHT NOW from the delegated results you already "
-                        f"have, then stop. An incomplete but grounded report now beats a truncated "
-                        f"context."
-                    )
-                    await events.put({"type": "system", "text": "Context budget reached — forcing wrap-up turn."})
-                    new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
-                    new_inputs.append(Message("user", [{"type": "text", "text": endgame}]))
-                    current_input = new_inputs
-                    has_requests = True
-                    continue
-                run_state.attempt = 10**6
-            elif budget_deadline and time.monotonic() > budget_deadline:
-                # Mirrors run_cli's equivalent notify (tui.py) -- this used to silently force the
-                # final-verdict path with no event at all, so an SSE client watching the stream
-                # saw the run wrap up with no explanation.
-                await events.put({
-                    "type": "system",
-                    "text": f"max_run_minutes ({max_run_minutes}) exceeded — no more retries; "
-                            f"finishing with whatever exists (salvage still applies).",
-                })
-                run_state.attempt = 10**6
-
-            prior_input_len = len(current_input) if isinstance(current_input, list) else 1
-            should_continue, current_input = await run_completion_check(
-                query=query, current_input=current_input, run_state=run_state, notify=_api_notify,
-                last_assistant_text=turn_text, dispatch_task=dispatch_task,
-                budget_deadline=budget_deadline, find_substantial_text=_find_substantial_text,
-            )
-            if should_continue:
-                has_requests = True
-                # context_budget_chars blind spot, mirrors run_cli (tui.py): a classic
-                # inject-into-Planner completion-check directive appends a message to
-                # current_input entirely outside the stream loop that run_stream_chars normally
-                # measures. Only count what was actually appended here.
-                if isinstance(current_input, list) and len(current_input) > prior_input_len:
-                    for injected_msg in current_input[prior_input_len:]:
-                        for c in getattr(injected_msg, "contents", None) or []:
-                            text = getattr(c, "text", None)
-                            if text:
-                                run_stream_chars += len(text)
+        surface = RunLoopSurface(
+            on_stream_content=_api_on_stream_content,
+            notify=_api_notify,
+            handle_approvals=_api_handle_approvals,
+            skip_completion_check=skip_completion_check,
+            context_budget=context_budget,
+            budget_deadline=budget_deadline,
+            query=query,
+            dispatch_task=dispatch_task,
+            find_substantial_text=_api_find_substantial_text,
+            run_state=run_state,
+            on_turn_text=planner_text_history.append,
+        )
+        await run_agent_loop(agent, session, current_input, surface)
 
         run_state.save()
         _write_bibliography(run_state)

@@ -63,6 +63,14 @@ class RunLoopSurface:
     find_substantial_text: Callable[[], str]
     run_state: Any
 
+    # Optional: called once per turn with that turn's full accumulated text (only when
+    # non-empty), right after the malformed/quota exception handling. run_cli doesn't need this
+    # (its find_substantial_text scans a persisted session-event log that on_stream_content
+    # already writes to as text streams in); _run_research has no such persisted log, so it
+    # accumulates its own in-memory turn-text history here instead, mirroring what used to be an
+    # inline `if turn_text: planner_text_history.append(turn_text)` in its own loop body.
+    on_turn_text: Optional[Callable[[str], None]] = None
+
 
 async def run_agent_loop(agent, session, current_input, surface: RunLoopSurface) -> None:
     """The one `while has_requests:` loop. Mutates `run_state`/`current_input` in place via the
@@ -144,6 +152,9 @@ async def run_agent_loop(agent, session, current_input, surface: RunLoopSurface)
                     )
                     if run_state is not None:
                         run_state.attempt = 10**6
+
+            if turn_text and surface.on_turn_text is not None:
+                surface.on_turn_text(turn_text)
 
             if surface.context_budget and run_stream_chars > surface.context_budget:
                 if not budget_nudged:
