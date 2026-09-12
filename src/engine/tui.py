@@ -19,6 +19,7 @@ import engine.orchestrator as orchestrator_module
 # longer imports anything from engine.tui at all, so this can live at the top like every other
 # import.
 from engine.completion import run_completion_check, _restore_quarantined_draft  # noqa: F401 — re-export, test_structural_checks.py addresses it as engine.tui
+from engine.run_loop import RunLoopSurface, run_agent_loop
 import asyncio
 import json
 import config
@@ -2551,7 +2552,6 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
     try:
         from agent_framework import Message
         current_input = build_resume_input(prompt, prior_state) if prior_state else prompt
-        has_requests = True
         run_state = RunState(_current_run_dir(run_dir_name))
         if prior_state:
             # Carry the interrupted run's record forward — same _run_state.json, one continuous
@@ -2639,204 +2639,66 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
                     + "\n".join(f"- {f}" for f in seeded_docs)
                 )
 
-        malformed_retries = 0
         # Context-budget guard for the Planner stream (see orchestrator.get_context_budget) —
         # headless only, same policy as max_run_minutes. Counts streamed chars across the whole
         # run (with conversational memory the session accumulates across turns).
-        from engine.orchestrator import get_context_budget, stream_content_chars
+        from engine.orchestrator import get_context_budget
         context_budget = get_context_budget()
-        run_stream_chars = 0
-        budget_nudged = False
 
-        while has_requests:
-            has_requests = False
-            user_input_requests = []
-            turn_text = ""
+        def _cli_notify(msg: str):
+            plain = re.sub(r'\*\*', '', msg)
+            sys.stdout.write(f"\n\033[91m[System] {plain}\033[0m\n")
+            log_stream_content("Agent", "text", {"text": plain})
 
-            try:
-                stream = agent.run(current_input, session=session, stream=True)
-                # iter_agent_stream (engine/orchestrator.py) races each update against
-                # budget_deadline via asyncio.wait_for instead of a plain `async for update in
-                # stream` (found live, 2026-07-12): the plain async-for version only checks the
-                # deadline once it actually RECEIVES an update — if the underlying stream goes a
-                # very long time between updates (confirmed with Tongyi-DeepResearch: one single
-                # massive <think> block round-tripped 1h6min+ past a configured max_run_minutes: 60
-                # with the GPU still actively generating and zero cutoff), the deadline check never
-                # gets a chance to run at all. Shared with run_agent (TUI, deadline=None) since
-                # 2026-07-14 (ROADMAP "B4") so this mechanism can't drift between the two surfaces.
-                try:
-                    async for update in iter_agent_stream(stream, budget_deadline if budget_deadline else None):
-                        run_stream_chars += stream_content_chars(update)
-                        if context_budget and run_stream_chars > context_budget:
-                            sys.stdout.write(
-                                f"\n\033[91m[System] context_budget_chars ({context_budget}) exceeded — "
-                                f"cutting the current turn short.\033[0m\n"
-                            )
-                            break
-                        for content in update.contents:
-                            if content.type == "text" and content.text:
-                                log_stream_content("Agent", "text", {"text": content.text})
-                                sys.stdout.write(content.text)
-                                sys.stdout.flush()
-                                turn_text += content.text
-                            elif content.type == "function_call":
-                                call_id = getattr(content, "call_id", None)
-                                name = getattr(content, "name", None)
-                                arguments = getattr(content, "arguments", "") or ""
-                                log_stream_content("Agent", "function_call", {
-                                    "call_id": call_id, "name": name, "arguments": arguments
-                                })
-                                if call_id:
-                                    sys.stdout.write(f"\n\033[96m[Agent] Calling {name}...\033[0m\n")
-                            elif content.type == "function_result":
-                                call_id = getattr(content, "call_id", None)
-                                result = getattr(content, "result", "")
-                                log_stream_content("Agent", "function_result", {
-                                    "call_id": call_id, "result": str(result)
-                                })
-                        if getattr(update, "user_input_requests", None):
-                            user_input_requests.extend(update.user_input_requests)
-                except asyncio.TimeoutError:
-                    sys.stdout.write(
-                        f"\n\033[91m[System] max_run_minutes ({max_run_minutes}) exceeded — "
-                        f"cutting the current turn short.\033[0m\n"
-                    )
-            except BaseException as e:
-                from tools import QuotaAbortException
-                if isinstance(e, QuotaAbortException) or type(e).__name__ == "QuotaAbortException":
-                    # 2026-08-27 fix: this used to `break` straight out of the `while has_requests:`
-                    # loop, which skips run_completion_check entirely -- the SAME mistake the
-                    # malformed-tool-call branch below has an explicit comment warning against.
-                    # Confirmed live: a real run with 12 already-fetched sources hit this abort and
-                    # got "Report: NOT WRITTEN" with zero salvage attempt, even though
-                    # _salvage_narrated_report was structurally available. Falling through instead
-                    # (has_requests already False, no break/continue) reaches the SAME
-                    # quarantine-restore/salvage path the malformed-tool-call give-up uses -- the
-                    # loop-detection trigger itself is unchanged (it still correctly aborts), this
-                    # only stops throwing away real research when it fires.
-                    sys.stdout.write(f"\n\033[91m[System] Task forcefully aborted: {str(e)}\033[0m\n")
-                    has_requests = False
-                    if run_state is not None:
-                        run_state.attempt = 10**6
+        async def _cli_on_stream_content(content):
+            if content.type == "text" and content.text:
+                log_stream_content("Agent", "text", {"text": content.text})
+                sys.stdout.write(content.text)
+                sys.stdout.flush()
+            elif content.type == "function_call":
+                call_id = getattr(content, "call_id", None)
+                name = getattr(content, "name", None)
+                arguments = getattr(content, "arguments", "") or ""
+                log_stream_content("Agent", "function_call", {
+                    "call_id": call_id, "name": name, "arguments": arguments
+                })
+                if call_id:
+                    sys.stdout.write(f"\n\033[96m[Agent] Calling {name}...\033[0m\n")
+            elif content.type == "function_result":
+                call_id = getattr(content, "call_id", None)
+                result = getattr(content, "result", "")
+                log_stream_content("Agent", "function_result", {
+                    "call_id": call_id, "result": str(result)
+                })
+
+        async def _cli_handle_approvals(requests):
+            # current_input, not prompt: on a resumed run the two differ (resume preamble), and
+            # rebuilding from `prompt` here would silently drop it — run_agent_loop already
+            # extends the live current_input with whatever this returns, so this only needs to
+            # build the response messages, not the full new_inputs list.
+            responses = []
+            for req in requests:
+                is_approved = getattr(config, 'AUTO_APPROVE', False)
+                if is_approved:
+                    sys.stdout.write(f"\n\033[93m[Agent] Auto-approving {req.function_call.name}...\033[0m\n")
                 else:
-                    # classify_malformed_retry (engine/orchestrator.py) is the pure decision logic
-                    # shared with run_agent's identical retry pattern, extracted 2026-07-14 (ROADMAP
-                    # "B4") after this exact logic was once found missing from run_agent ("added later
-                    # for parity"). This call site keeps its own stdout notification and run_state
-                    # mutation; the helper only classifies and builds the retry current_input.
-                    # Guarded under `else` (2026-08-27): QuotaAbortException is handled entirely by
-                    # the branch above and must not also fall into this malformed-tool-call-specific
-                    # classifier, which doesn't know how to interpret it.
-                    from engine.orchestrator import classify_malformed_retry
-                    result = classify_malformed_retry(e, malformed_retries, current_input)
-                    malformed_retries = result.new_malformed_retries
-                    if result.should_retry:
-                        sys.stdout.write(f"\n\033[93m[System] Model emitted a malformed tool call — retrying the turn ({malformed_retries}/2).\033[0m\n")
-                        current_input = result.new_current_input
-                        has_requests = True
-                        continue
-                    if result.reraise:
-                        # A genuinely unrecognized exception (not the malformed-tool-call class at
-                        # all) — still a real crash, not something this loop knows how to degrade
-                        # gracefully.
-                        raise
-                    # Retry budget exhausted for this SPECIFIC, already-recognized failure class
-                    # (malformed_tool_call_nudge only returns non-None for "error parsing tool
-                    # call") -- degrade to the final-verdict path instead of crashing the whole run.
-                    # Confirmed live 2026-07-12: 3 consecutive malformed tool calls (a huge
-                    # write_workspace_file argument got truncated mid-JSON) exceeded the 2-retry
-                    # budget and an uncaught 500 killed a run that had already gathered 18 real
-                    # sources and 5 rejected report attempts on disk -- the SAME failure class this
-                    # nudge was originally built for (see malformed_tool_call_nudge's docstring: "an
-                    # otherwise-successful 16-minute run" lost to one transient slip), just recurring
-                    # enough times in a row to blow past the existing safety net. Deliberately does
-                    # NOT `continue` here (that would skip straight past the `while has_requests:`
-                    # check with has_requests already False, exiting the loop WITHOUT ever calling
-                    # run_completion_check — meaning the "finishing with whatever exists" message
-                    # below would be a lie). Falling through naturally into the rest of this same
-                    # iteration's body is what actually reaches the completion-check branch.
-                    sys.stdout.write(
-                        f"\n\033[91m[System] Model kept emitting malformed tool calls after "
-                        f"{malformed_retries} retries — giving up on this turn and finishing with "
-                        f"whatever exists (quarantine-restore/salvage still applies).\033[0m\n"
-                    )
-                    if run_state is not None:
-                        run_state.attempt = 10**6
+                    sys.stdout.write(f"\n\033[91m[Agent] Denied {req.function_call.name} (Auto-approve disabled).\033[0m\n")
+                responses.append(Message("user", [req.to_function_approval_response(is_approved)]))
+            return responses
 
-            if context_budget and run_stream_chars > context_budget:
-                if not budget_nudged:
-                    # One wrap-up turn: no more research tools, write the artifacts NOW from what
-                    # already exists. A second overshoot forces the completion check straight to
-                    # its final verdict (same mechanism as max_run_minutes) — never nudge-loop.
-                    budget_nudged = True
-                    run_stream_chars = 0
-                    req_artifact = config.get_required_artifact()
-                    endgame = (
-                        f"SYSTEM: you have reached your context budget for this run. Do NOT call "
-                        f"delegate_tasks or any research tool again. Write findings.md (if missing) "
-                        f"and '{req_artifact}' RIGHT NOW from the delegated results you already "
-                        f"have, then stop. An incomplete but grounded report now beats a truncated "
-                        f"context."
-                    )
-                    sys.stdout.write("\n\033[93m[System] Context budget reached — forcing wrap-up turn.\033[0m\n")
-                    new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
-                    new_inputs.append(Message("user", [{"type": "text", "text": endgame}]))
-                    current_input = new_inputs
-                    has_requests = True
-                    continue
-                run_state.attempt = 10**6
-
-            if user_input_requests:
-                has_requests = True
-                # current_input, not prompt: on a resumed run the two differ (resume preamble),
-                # and rebuilding from `prompt` here would silently drop it.
-                new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
-                for req in user_input_requests:
-                    is_approved = getattr(config, 'AUTO_APPROVE', False)
-                    if is_approved:
-                        sys.stdout.write(f"\n\033[93m[Agent] Auto-approving {req.function_call.name}...\033[0m\n")
-                    else:
-                        sys.stdout.write(f"\n\033[91m[Agent] Denied {req.function_call.name} (Auto-approve disabled).\033[0m\n")
-                    new_inputs.append(Message("user", [req.to_function_approval_response(is_approved)]))
-                current_input = new_inputs
-
-            if not has_requests:
-                def _cli_notify(msg: str):
-                    plain = re.sub(r'\*\*', '', msg)
-                    sys.stdout.write(f"\n\033[91m[System] {plain}\033[0m\n")
-                    log_stream_content("Agent", "text", {"text": plain})
-
-                if budget_deadline and time.monotonic() > budget_deadline:
-                    _cli_notify(f"max_run_minutes ({max_run_minutes}) exceeded — no more retries; "
-                                f"finishing with whatever exists (salvage still applies).")
-                    # Forces run_completion_check straight past its retry branch into the
-                    # final-verdict path (labeling + salvage), same as an exhausted attempt budget.
-                    run_state.attempt = 10**6
-
-                prior_input_len = len(current_input) if isinstance(current_input, list) else 1
-                should_continue, current_input = await run_completion_check(
-                    query=prompt, current_input=current_input, run_state=run_state, notify=_cli_notify,
-                    last_assistant_text=turn_text,
-                    dispatch_task=dispatch_task,
-                    budget_deadline=budget_deadline,
-                    find_substantial_text=_find_last_substantial_text,
-                )
-                if should_continue:
-                    has_requests = True
-                    # context_budget_chars blind spot (ROADMAP "Pending"): a Write->Review->Fix
-                    # dispatch success returns current_input UNCHANGED (nothing to count), but the
-                    # classic inject-into-Planner path (not_delegated when both writer pairs are
-                    # registered; any of missing_findings/findings_ungrounded/missing_artifact too
-                    # if a writer role isn't registered) appends a real message to current_input
-                    # entirely outside the stream loop that run_stream_chars normally measures.
-                    # Without this, that text could in principle grow the Planner's context on
-                    # repeat with no accounting at all. Only count what was actually appended here.
-                    if isinstance(current_input, list) and len(current_input) > prior_input_len:
-                        for injected_msg in current_input[prior_input_len:]:
-                            for c in getattr(injected_msg, "contents", None) or []:
-                                text = getattr(c, "text", None)
-                                if text:
-                                    run_stream_chars += len(text)
+        surface = RunLoopSurface(
+            on_stream_content=_cli_on_stream_content,
+            notify=_cli_notify,
+            handle_approvals=_cli_handle_approvals,
+            skip_completion_check=False,
+            context_budget=context_budget,
+            budget_deadline=budget_deadline,
+            query=prompt,
+            dispatch_task=dispatch_task,
+            find_substantial_text=_find_last_substantial_text,
+            run_state=run_state,
+        )
+        await run_agent_loop(agent, session, current_input, surface)
 
         run_state.save()
         _write_bibliography(run_state)
