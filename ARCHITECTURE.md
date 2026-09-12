@@ -577,6 +577,29 @@ a fix in one without the other is an incomplete fix, not a smaller one.
 **Where**: `src/api.py`, added 2026-08-02 as an optional FastAPI HTTP API + web UI, alongside
 `run_cli`/`run_agent` (`src/engine/tui.py`).
 
+**Update, 2026-09-11 — the run-lifecycle LOOP itself is no longer duplicated three times.**
+Everything below this point in §5 is about a DIFFERENT concern (the module-globals concurrency
+gap, and the follow-up/session-persistence precedent) and is still accurate as written — `api.py`
+still runs single-flight through its own FIFO queue for exactly the reasons described below. But
+the three-independent-copies problem this section used to also describe (each of `run_cli`,
+`run_agent`, and `_run_research` hand-rolling its own `while has_requests:` turn loop) is CLOSED:
+`src/engine/run_loop.py`'s `RunLoopSurface` dataclass + `run_agent_loop(agent, session,
+current_input, surface)` is now the one shared implementation of the stream-consumption loop, the
+malformed-tool-call/`QuotaAbortException` dispatch, the context-budget/wall-clock-deadline
+mechanics, and the completion-check invocation. **Building a fourth dispatch surface that runs
+research turns**: call `run_agent_loop` with a `RunLoopSurface` built for that surface, don't
+hand-roll a new copy of the loop. `RunLoopSurface`'s fields fall into two groups: the always-set
+ones (`notify`, `handle_approvals`, `skip_completion_check`, `context_budget`/`budget_deadline` —
+`None` for a surface with no wall-clock/context concept, like the TUI; `query`, `dispatch_task`,
+`find_substantial_text`, `run_state`) and a handful of optional hooks that only `run_agent`
+currently needs (`on_stream_update`, `on_turn_start`, `on_stream_exhausted`,
+`render_retry_notice`, `render_quota_abort`, `on_malformed_give_up`, `get_last_assistant_text`) to
+preserve its own genuinely different behavior (client-side tool execution instead of an
+approve/deny response, per-whole-update Textual widget rendering instead of per-`Content`-item,
+and a deliberate choice to never re-raise an unrecognized exception). Read
+`RunLoopSurface`'s own field-by-field docstrings in `run_loop.py` before adding a new hook — most
+new surfaces should need zero of the optional ones.
+
 **The landmine, found before writing any of it, not after**: `src/engine/orchestrator.py`'s
 `_session` (conversational-memory cache, mutated inside `create_local_agent`) and `src/engine/
 tui.py`'s `_session_events`/`_current_session_id`/`_current_call_by_source`/
@@ -626,7 +649,7 @@ it.
 | A new completion-check problem | §1's four-tuple checklist + verdict-matrix test row |
 | A new `run_state.data` key that should survive `--resume-run` | §3: `_RESUME_CARRYOVER_KEYS` (`utils/run_state.py`), shared by both `run_cli` and `_resume_run` via `merge_resumed_state` |
 | A new sub-agent dispatch role | Does its first message look like FindingsWriter's (one big self-contained blob) or like everyone else's (built up turn-by-turn)? → §2's compaction-exclusion question. Does it need `write_workspace_file` gated behind something else? → `writer_gate_ctx` pattern. |
-| A new entry point that dispatches research turns (beyond `run_cli`/`run_agent`) | §5: does it run turns concurrently in one process? The five module-level globals (`_session` and `tui.py`'s session-log state) are NOT contextvar-safe — either guarantee single-flight (the route `api.py` took) or make those globals contextvars first. Does it need follow-up/same-conversation continuation? → persist `AgentSession.to_dict()` per-run, don't trust the global to survive between calls. Does it need "Q&A on an existing report" semantics? → mirror `skip_completion_check`'s exact condition, don't approximate it. |
+| A new entry point that dispatches research turns (beyond `run_cli`/`run_agent`/`api.py`) | §5: call the shared `run_loop.run_agent_loop` with a `RunLoopSurface`, don't hand-roll a new `while has_requests:` copy — read `RunLoopSurface`'s field docstrings first, most new surfaces need none of the optional hooks. Does it run turns concurrently in one process? The five module-level globals (`_session` and `tui.py`'s session-log state) are NOT contextvar-safe — either guarantee single-flight (the route `api.py` took) or make those globals contextvars first. Does it need follow-up/same-conversation continuation? → persist `AgentSession.to_dict()` per-run, don't trust the global to survive between calls. Does it need "Q&A on an existing report" semantics? → mirror `skip_completion_check`'s exact condition, don't approximate it. |
 | A new config key under `settings.*` | `config_template.yaml` (documented default) AND confirm it's read with a safe `.get(..., default)` — this project's convention is "absent in the live `~/.deepdelve/config.yaml` is fine," never require a live-config edit for a new default-on feature |
 | Anything that changes behavior based on "how far has this run gotten" | §4: both `run_cli` and the TUI's resume/follow-up paths |
 | A new tool result shape or error format | `CLAUDE.md`'s own blast-radius rule: the TUI's `ToolCallWidget` rendering, `log_stream_content`'s persisted event log, `utils/grounding.py`'s citation/error detection |
