@@ -58,7 +58,7 @@ def sentences(text: str) -> list[str]:
     for para in re.split(r"\n+", text):
         for sent in re.split(r"(?<=[.!?])\s+", clean(para)):
             if (40 <= len(sent) <= 400 and sum(c.isalpha() for c in sent) > 0.5 * len(sent)
-                    and sent[-1] in '.!?"\u201d)' and not sent.startswith(("#", "|"))):
+                    and sent[-1] in '.!?"\u201d)' and not sent.startswith(("#", "|")) and "](" not in sent and "\u2023" not in sent):
                 out.append(sent)
     return out
 

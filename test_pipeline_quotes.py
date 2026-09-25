@@ -35,3 +35,9 @@ def test_cited_lines_parse():
     assert cited_lines("- fact (lines 6‑7)") == {6, 7}
     assert cited_lines("- fact (line 4) and more (lines 10-11)") == {4, 10, 11}
     assert cited_lines("- fact with no citation") == set()
+
+
+def test_link_and_crossref_residue_dropped():
+    from pipeline.run import sentences
+    src = "Results are summarized in Table 1 \u2023 Lethe \u2023 Lethe: Layer-Adaptive KV Cache Pruning for LLM Serving. Real sentence about caches that is long enough to pass the filter here. See the rules...](/en/geo/1) for details on the rules of export."
+    assert sentences(src) == ["Real sentence about caches that is long enough to pass the filter here."]
