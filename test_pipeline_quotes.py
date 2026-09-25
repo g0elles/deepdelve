@@ -41,3 +41,9 @@ def test_link_and_crossref_residue_dropped():
     from pipeline.run import sentences
     src = "Results are summarized in Table 1 \u2023 Lethe \u2023 Lethe: Layer-Adaptive KV Cache Pruning for LLM Serving. Real sentence about caches that is long enough to pass the filter here. See the rules...](/en/geo/1) for details on the rules of export."
     assert sentences(src) == ["Real sentence about caches that is long enough to pass the filter here."]
+
+
+def test_bibliography_lines_dropped():
+    from pipeline.run import sentences
+    src = "Topham (1987), 'Benefit-Cost Rules for Urban Transit Subsidies', Journal of Transport Economics and Policy, 21(1), pp. 15-30. The 2010 decree created the federal data protection law for private parties."
+    assert sentences(src) == ["The 2010 decree created the federal data protection law for private parties."]

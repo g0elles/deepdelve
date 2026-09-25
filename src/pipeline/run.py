@@ -53,12 +53,16 @@ def clean(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+_BIB = re.compile(r"\bpp\.|\bvol\.|Journal of|Proceedings of|accessed on|\(\d{4}[a-z]?\)[,'\u2018\u201c\"]", re.I)
+
+
 def sentences(text: str) -> list[str]:
     out = []
     for para in re.split(r"\n+", text):
         for sent in re.split(r"(?<=[.!?])\s+", clean(para)):
             if (40 <= len(sent) <= 400 and sum(c.isalpha() for c in sent) > 0.5 * len(sent)
-                    and sent[-1] in '.!?"\u201d)' and not sent.startswith(("#", "|")) and "](" not in sent and "\u2023" not in sent):
+                    and sent[-1] in '.!?"\u201d)' and not sent.startswith(("#", "|")) and "](" not in sent and "\u2023" not in sent
+                    and not _BIB.search(sent)):
                 out.append(sent)
     return out
 
@@ -105,7 +109,9 @@ def plan(model: str, query: str) -> list[dict]:
     p = (f"Break this research request into 2-6 facets that together fully answer it. Each facet gets "
          f"an id (f1, f2, ...), a short name, and 1-3 specific web search questions. Every facet must "
          f"be answerable from a single web page. If the request compares things, make one facet per "
-         f"side and aspect; do NOT make a facet for the comparison itself (it is done later).\n\nRequest: {query}")
+         f"side and aspect; do NOT make a facet for the comparison itself (it is done later). Name a law "
+         f"or institution only if you are certain it exists in that jurisdiction; otherwise say "
+         f"'the regulator' or 'the law' instead of guessing a name.\n\nRequest: {query}")
     return call_json(model, p, PLAN_SCHEMA)["facets"]
 
 
