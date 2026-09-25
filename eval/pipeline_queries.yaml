@@ -29,3 +29,5 @@
 - {id: q25, cat: contested,    split: dev,  q: "What does the evidence say for and against universal basic income pilots on employment?"}
 - {id: q26, cat: contested,    split: dev,  q: "Is nuclear power cost-competitive with solar plus storage? Summarize evidence from both sides."}
 - {id: q27, cat: contested,    split: test, q: "What is the evidence on school phone bans and student outcomes?"}
+- {id: q29, cat: spanish,      split: dev,  q: "¿Qué es el efecto rebote en la eficiencia energética y qué estudios lo han medido en hogares europeos?"}
+- {id: q30, cat: spanish,      split: dev,  q: "¿Cómo se regula la protección de datos personales en México y qué sanciones prevé la ley vigente?"}
