@@ -1,0 +1,31 @@
+# Query bank for the stage-graph pipeline. Rules: (1) tune/develop ONLY on split=dev; (2) split=test is
+# run once per milestone, never inspected or tuned on; (3) never reuse a query from a prior eval
+# (Colombia B2B, Germany/Japan energy, Lisbon/Mexico City, BERT, Python, Tokyo are RETIRED);
+# (4) refresh: replace dev queries every ~2 weeks, keep category balance.
+- {id: q01, cat: comparison,   split: dev,  q: "Compare Sweden's and Chile's approaches to pension system reform since 2000, including key laws and outcomes."}
+- {id: q02, cat: comparison,   split: dev,  q: "Compare PostgreSQL and MySQL for write-heavy workloads: replication, locking and benchmark evidence."}
+- {id: q03, cat: comparison,   split: test, q: "Compare the EU AI Act and Brazil's AI bill on high-risk system obligations."}
+- {id: q04, cat: legal,        split: dev,  q: "What does Kenya's Data Protection Act 2019 require for cross-border data transfers?"}
+- {id: q05, cat: legal,        split: dev,  q: "How do US states differ on non-compete agreement enforceability, and what changed after the 2024 FTC rule litigation?"}
+- {id: q06, cat: legal,        split: test, q: "What are Canada's rules on employer obligations for remote workers' health and safety by province?"}
+- {id: q07, cat: technical,    split: dev,  q: "Survey approaches to KV-cache compression for long-context LLM inference and their reported tradeoffs."}
+- {id: q08, cat: technical,    split: dev,  q: "How do CRDTs differ from operational transformation for collaborative editing, with real system examples?"}
+- {id: q09, cat: technical,    split: test, q: "What are the main techniques for detecting data leakage in machine learning benchmarks?"}
+- {id: q10, cat: scientific,   split: dev,  q: "What is the current evidence on intermittent fasting and cardiovascular risk markers in adults?"}
+- {id: q11, cat: scientific,   split: dev,  q: "Explain how CRISPR base editing differs from prime editing and which diseases have clinical trials."}
+- {id: q12, cat: scientific,   split: test, q: "What causes the Chandler wobble in Earth's rotation and how is it measured?"}
+- {id: q13, cat: historical,   split: dev,  q: "What were the causes and consequences of the 1997 Asian financial crisis in Thailand and South Korea?"}
+- {id: q14, cat: historical,   split: dev,  q: "How did the printing press spread across Europe between 1450 and 1500, by city and year?"}
+- {id: q15, cat: historical,   split: test, q: "Summarize the history of the Suez Canal's ownership and the 1956 crisis."}
+- {id: q16, cat: news_recent,  split: dev,  q: "What are the most recent developments in global semiconductor export controls?"}
+- {id: q17, cat: news_recent,  split: dev,  q: "What is the current status of the Mercosur-EU trade agreement ratification?"}
+- {id: q18, cat: news_recent,  split: test, q: "What are the latest findings on GLP-1 drugs and alcohol use disorder?"}
+- {id: q19, cat: numeric,      split: dev,  q: "What were Nigeria's GDP growth, inflation and unemployment figures for the last three reported years?"}
+- {id: q20, cat: numeric,      split: dev,  q: "How much installed offshore wind capacity do the UK, Denmark and Taiwan each have, and what are their 2030 targets?"}
+- {id: q21, cat: numeric,      split: test, q: "What are the average commute times and modal shares in Bogota, Lima and Santiago?"}
+- {id: q22, cat: spanish,      split: dev,  q: "¿Cuáles son los requisitos y plazos para constituir una SAS en Colombia y qué obligaciones tributarias tiene el primer año?"}
+- {id: q23, cat: spanish,      split: dev,  q: "¿Qué dice la evidencia sobre el impacto de los subsidios al transporte público en la desigualdad en América Latina?"}
+- {id: q24, cat: spanish,      split: test, q: "¿Cómo funciona el sistema de pensiones de Uruguay y qué reformas se aprobaron recientemente?"}
+- {id: q25, cat: contested,    split: dev,  q: "What does the evidence say for and against universal basic income pilots on employment?"}
+- {id: q26, cat: contested,    split: dev,  q: "Is nuclear power cost-competitive with solar plus storage? Summarize evidence from both sides."}
+- {id: q27, cat: contested,    split: test, q: "What is the evidence on school phone bans and student outcomes?"}
