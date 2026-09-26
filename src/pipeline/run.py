@@ -118,6 +118,52 @@ def _fold(s: str) -> str:
     return unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode().casefold()
 
 
+_COUNTRIES = {k: re.compile(v) for k, v in {
+    "mx": r"\bmexic", "co": r"\bcolomb", "cl": r"\bchile", "ar": r"\bargentin", "pe": r"\bperu\b|\bperuan", "ec": r"\becuador",
+    "ve": r"\bvenezuel", "bo": r"\bbolivia", "uy": r"\buruguay", "py": r"\bparaguay", "br": r"\bbrasil|\bbrazil",
+    "es": r"\bespana|\bspain|\bspanish law", "fr": r"\bfrance|\bfrancia", "de": r"\balemania|\bgermany", "it": r"\bitaly|\bitalia",
+    "pt": r"\bportugal", "us": r"\bunited states|\bestados unidos|\bu\.s\.|\bus\b", "uk": r"\bunited kingdom|\breino unido|\buk\b",
+    "cn": r"\bchina\b", "jp": r"\bjapan|\bjapon", "in": r"\bindia\b", "ca": r"\bcanada", "ng": r"\bnigeria", "ke": r"\bkenya",
+    "za": r"\bsouth africa", "au": r"\baustralia", "kr": r"\bsouth korea|\bcorea del sur", "tw": r"\btaiwan", "dk": r"\bdenmark|\bdinamarca",
+    "no": r"\bnorway|\bnoruega", "se": r"\bsweden|\bsuecia", "nl": r"\bnetherlands|\bpaises bajos", "ru": r"\brussia|\brusia",
+    "gt": r"\bguatemala", "cr": r"\bcosta rica", "pa": r"\bpanama", "cu": r"\bcuba\b", "do": r"\bdominican|\brepublica dominicana",
+    "eg": r"\begypt", "tr": r"\bturkey|\bturquia", "ie": r"\bireland|\birlanda", "eu": r"\beuropean union|\bunion europea",
+}.items()}
+
+
+def countries(text: str) -> set[str]:
+    f = _fold(text)
+    return {k for k, r in _COUNTRIES.items() if r.search(f)}
+
+
+def jurisdiction_ok(sent: str, qkeys: set[str]) -> bool:
+    """A sentence about only OTHER countries than the query's is off-jurisdiction (Colombian law in a Mexico answer)."""
+    got = countries(sent)
+    return not qkeys or not got or bool(got & qkeys)
+
+
+def source_off_jurisdiction(source: str, qkeys: set[str]) -> bool:
+    """A page dominated by another country (>=5 mentions and 2x the query country's) is about the wrong jurisdiction.
+    On the Spanish sheet: drops 14 negatives / 2 positives of 37 (n small)."""
+    if not qkeys:
+        return False
+    f = _fold(source)
+    c = {k: len(r.findall(f)) for k, r in _COUNTRIES.items()}
+    top = max(c, key=c.get)
+    return top not in qkeys and c[top] >= 5 and c[top] >= 2 * max(sum(c[k] for k in qkeys), 1)
+
+
+_RECENT = re.compile(r"\b(recent|latest|current|currently|last (?:\w+ ){1,2}years?|newest|now|today|reciente|ultimos?|actual|vigente)\b", re.I)
+
+
+def year_score(t: str, now: int) -> float:
+    """Only for recency queries: +0.3 for a year within 2 years of now, -0.3 if the newest year cited is 4+ years old."""
+    ys = [int(y) for y in re.findall(r"\b(20[0-3]\d)\b", t)]
+    if not ys:
+        return 0.0
+    return 0.3 if max(ys) >= now - 2 else -0.3 if max(ys) <= now - 4 else 0.0
+
+
 def facet_entities(facets: list[dict]) -> dict[str, set[str]]:
     """Per facet: stems of capitalized words in its name/questions that are NOT in every facet (what tells it apart)."""
     caps = {}
@@ -134,6 +180,8 @@ def entity_ok(fid: str, sent: str, source: str, ents: dict[str, set[str]]) -> bo
     """Entity-specific facets: reject a sentence that names a rival facet's entity but not this facet's own.
     (Requiring the own entity starved acronym-only facets, e.g. 'CVD'.)"""
     mine, f = ents[fid], _fold(sent)
+    if not mine:
+        return True  # no distinguishing entity: cannot judge
     rivals = set().union(*(v for k, v in ents.items() if k != fid)) - mine
     return any(e in f for e in mine) or not any(e in f for e in rivals)
 
@@ -141,7 +189,7 @@ def entity_ok(fid: str, sent: str, source: str, ents: dict[str, set[str]]) -> bo
 def plan(model: str, query: str) -> list[dict]:
     p = (f"Break this research request into 2-6 facets that together fully answer it. Each facet gets "
          f"an id (f1, f2, ...), a short name, and 1-3 specific web search questions. Every facet must "
-         f"be answerable from a single web page. If the request compares things, make one facet per "
+         f"be answerable from a single web page. Today is {time.strftime('%Y-%m-%d')}; use it for words like recent or latest.  If the request compares things, make one facet per "
          f"side and aspect; do NOT make a facet for the comparison itself (it is done later). Name a law "
          f"or institution only if you are certain it exists in that jurisdiction; otherwise say "
          f"'the regulator' or 'the law' instead of guessing a name. Each facet must be a concrete topic whose answer is "
@@ -228,6 +276,9 @@ def run(query: str, model: str, out: Path, topk: int, extractor: str = "ce") -> 
 
     owner: dict[str, str] = {}  # sentence -> facet id that claimed it (a quote serves one facet)
     ents = facet_entities(facets)
+    qkeys = countries(query)
+    recent = bool(_RECENT.search(_fold(query)))
+    now = time.localtime().tm_year
 
     def process_ce(urls: list[str]):
         """No-LLM extractor: BM25 pool -> CPU cross-encoder rerank -> specificity rerank -> keep top."""
@@ -243,9 +294,9 @@ def run(query: str, model: str, out: Path, topk: int, extractor: str = "ce") -> 
                 cands += [(u, t) for _, t in bm25_top(pools[u], q, POOL)]
             scored = sorted(((ce_score(q, t, ce_model), u, t) for u, t in cands), key=lambda z: -z[0])
             emitted_total += len(scored)
-            per_facet[f["id"]] = [z for z in scored[:CE_POOL] if z[0] > CE_MIN[ce_model] and entity_ok(f["id"], z[2], seen[z[1]], ents)]
+            per_facet[f["id"]] = [z for z in scored[:CE_POOL] if z[0] > CE_MIN[ce_model] and entity_ok(f["id"], z[2], seen[z[1]], ents) and jurisdiction_ok(z[2], qkeys) and not source_off_jurisdiction(seen[z[1]], qkeys)]
         for f in facets:  # a quote already claimed by another facet is demoted, not dropped (dropping starved later facets)
-            ranked = sorted(per_facet[f["id"]], key=lambda z: (owner.get(z[2], f["id"]) != f["id"], -specificity(z[2])))
+            ranked = sorted(per_facet[f["id"]], key=lambda z: (owner.get(z[2], f["id"]) != f["id"], -specificity(z[2]) - (year_score(z[2], now) if recent else 0)))
             for sc, u, t in ranked[:PER_JUDGE]:
                 owner.setdefault(t, f["id"])
                 kept_total += 1

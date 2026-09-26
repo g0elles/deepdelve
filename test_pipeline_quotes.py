@@ -59,3 +59,22 @@ def test_entity_and_specificity():
     assert not entity_ok("f1", "Commutes in Bogota average 60 minutes.", "Lima " * 9, ents)  # rival named
     assert entity_ok("f1", "Commutes average 90 minutes.", "", ents)  # names no entity: kept
     assert specificity("The fine is 320 days of pay for firms that break the data law under this rule.") > specificity("Modal share is an important part of transport.")
+
+
+def test_jurisdiction_and_recency():
+    from pipeline.run import countries, jurisdiction_ok, year_score
+    q = countries("¿Cómo se regula la protección de datos en México?")
+    assert q == {"mx"}
+    assert not jurisdiction_ok("En Colombia la multa diaria es de 5.000 salarios mínimos.", q)
+    assert jurisdiction_ok("La multa es de 100 a 320,000 días de salario mínimo.", q)  # names none: kept
+    assert jurisdiction_ok("A diferencia de Colombia, en México la multa es mayor.", q)  # names query country too
+    assert countries("UK, Denmark and Taiwan") == {"uk", "dk", "tw"}
+    assert year_score("Inflation was 15.9% in June 2026.", 2026) > 0 > year_score("Inflation hit 17% in July 2022.", 2026)
+    assert year_score("Inflation was high.", 2026) == 0
+
+
+def test_source_off_jurisdiction():
+    from pipeline.run import source_off_jurisdiction
+    assert source_off_jurisdiction("Chile " * 8 + "Mexico", {"mx"})
+    assert not source_off_jurisdiction("Mexico " * 8 + "Chile " * 8, {"mx"})
+    assert not source_off_jurisdiction("Chile " * 8, set())
