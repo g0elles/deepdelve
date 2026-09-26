@@ -112,7 +112,7 @@ def plan(model: str, query: str) -> list[dict]:
          f"side and aspect; do NOT make a facet for the comparison itself (it is done later). Name a law "
          f"or institution only if you are certain it exists in that jurisdiction; otherwise say "
          f"'the regulator' or 'the law' instead of guessing a name.\n\nRequest: {query}")
-    return call_json(model, p, PLAN_SCHEMA)["facets"]
+    return call_json(model, p, PLAN_SCHEMA, think="low")["facets"]  # gpt-oss: default reasoning + `format` can run >5 min and return empty JSON (q06, q21)
 
 
 def search(question: str, k: int) -> list[str]:
