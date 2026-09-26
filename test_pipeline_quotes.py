@@ -47,3 +47,15 @@ def test_bibliography_lines_dropped():
     from pipeline.run import sentences
     src = "Topham (1987), 'Benefit-Cost Rules for Urban Transit Subsidies', Journal of Transport Economics and Policy, 21(1), pp. 15-30. The 2010 decree created the federal data protection law for private parties."
     assert sentences(src) == ["The 2010 decree created the federal data protection law for private parties."]
+
+
+def test_entity_and_specificity():
+    from pipeline.run import facet_entities, entity_ok, specificity
+    fs = [{"id": "f1", "name": "Safety Adherence Events", "questions": ["average Lima commute"]},
+          {"id": "f2", "name": "Safety Adherence Events", "questions": ["average Bogota commute"]}]
+    ents = facet_entities(fs)
+    assert ents["f1"] == {"lima"} and ents["f2"] == {"bogot"}
+    assert entity_ok("f1", "Commutes in Lima average 90 minutes.", "", ents)
+    assert not entity_ok("f1", "Commutes in Bogota average 60 minutes.", "Lima " * 9, ents)  # rival named
+    assert entity_ok("f1", "Commutes average 90 minutes.", "", ents)  # names no entity: kept
+    assert specificity("The fine is 320 days of pay for firms that break the data law under this rule.") > specificity("Modal share is an important part of transport.")

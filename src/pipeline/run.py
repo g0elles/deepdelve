@@ -53,7 +53,7 @@ def clean(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
-_BIB = re.compile(r"\bpp\.|\bvol\.|Journal of|Proceedings of|accessed on|\(\d{4}[a-z]?\)[,'\u2018\u201c\"]", re.I)
+_BIB = re.compile(r"\bpp\.|\bvol\.|Journal of|Proceedings of|accessed on|search terms|(?:should be|were) extracted|inclusion criteria|\(\d{4}[a-z]?\)[,'\u2018\u201c\"]", re.I)
 
 
 def sentences(text: str) -> list[str]:
@@ -105,13 +105,48 @@ def judge(model: str, facet: dict, cands: list[tuple[str, str]]) -> list[int]:
         return []
 
 
+CE_POOL = 40
+
+
+def specificity(t: str) -> float:
+    """Longer, number-bearing sentences were likelier real facts on the hand-labeled Spanish sheet (AUC 0.70 vs CE 0.53)."""
+    return min(len(t), 250) / 250 + 0.3 * bool(re.search(r"\d", t))
+
+
+def _fold(s: str) -> str:
+    import unicodedata
+    return unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode().casefold()
+
+
+def facet_entities(facets: list[dict]) -> dict[str, set[str]]:
+    """Per facet: stems of capitalized words in its name/questions that are NOT in every facet (what tells it apart)."""
+    caps = {}
+    for f in facets:
+        caps[f["id"]] = set()
+        for q in f["questions"]:  # questions only: facet names are Title Case and would all look like entities
+            ws = re.findall(r"\w+", q)
+            caps[f["id"]] |= {_fold(w)[:5] for i, w in enumerate(ws) if i > 0 and w[0].isupper() and len(w) > 2}
+    common = set.intersection(*caps.values()) if caps else set()
+    return {k: v - common for k, v in caps.items()}
+
+
+def entity_ok(fid: str, sent: str, source: str, ents: dict[str, set[str]]) -> bool:
+    """Entity-specific facets: reject a sentence that names a rival facet's entity but not this facet's own.
+    (Requiring the own entity starved acronym-only facets, e.g. 'CVD'.)"""
+    mine, f = ents[fid], _fold(sent)
+    rivals = set().union(*(v for k, v in ents.items() if k != fid)) - mine
+    return any(e in f for e in mine) or not any(e in f for e in rivals)
+
+
 def plan(model: str, query: str) -> list[dict]:
     p = (f"Break this research request into 2-6 facets that together fully answer it. Each facet gets "
          f"an id (f1, f2, ...), a short name, and 1-3 specific web search questions. Every facet must "
          f"be answerable from a single web page. If the request compares things, make one facet per "
          f"side and aspect; do NOT make a facet for the comparison itself (it is done later). Name a law "
          f"or institution only if you are certain it exists in that jurisdiction; otherwise say "
-         f"'the regulator' or 'the law' instead of guessing a name.\n\nRequest: {query}")
+         f"'the regulator' or 'the law' instead of guessing a name. Each facet must be a concrete topic whose answer is "
+         f"stated as facts in web pages (a specific thing, measure, place, or period). Do NOT make meta facets "
+         f"such as summary, limitations, gaps, population characteristics, or implications.\n\nRequest: {query}")
     return call_json(model, p, PLAN_SCHEMA, think="low")["facets"]  # gpt-oss: default reasoning + `format` can run >5 min and return empty JSON (q06, q21)
 
 
@@ -191,12 +226,16 @@ def run(query: str, model: str, out: Path, topk: int, extractor: str = "ce") -> 
             for i in keep:
                 evidence[f["id"]].setdefault(cands[i][1], []).append(cands[i][2])
 
+    owner: dict[str, str] = {}  # sentence -> facet id that claimed it (a quote serves one facet)
+    ents = facet_entities(facets)
+
     def process_ce(urls: list[str]):
-        """No-LLM extractor: BM25 pool -> CPU cross-encoder rerank -> keep top by score."""
+        """No-LLM extractor: BM25 pool -> CPU cross-encoder rerank -> specificity rerank -> keep top."""
         nonlocal emitted_total, kept_total
         from pipeline.tune import ce_score
         ce_model = CE_ML if re.search(r"[\u00bf\u00a1\u00e1\u00e9\u00ed\u00f3\u00fa\u00f1]", query.lower()) else CE_EN  # ponytail: accent heuristic, use langdetect for more languages
         pools = {u: sentences(seen[u]) for u in urls}
+        per_facet = {}
         for f in facets:
             q = f["name"] + " " + " ".join(f["questions"])
             cands = []
@@ -204,10 +243,13 @@ def run(query: str, model: str, out: Path, topk: int, extractor: str = "ce") -> 
                 cands += [(u, t) for _, t in bm25_top(pools[u], q, POOL)]
             scored = sorted(((ce_score(q, t, ce_model), u, t) for u, t in cands), key=lambda z: -z[0])
             emitted_total += len(scored)
-            for sc, u, t in scored[:PER_JUDGE]:
-                if sc > CE_MIN[ce_model]:
-                    kept_total += 1
-                    evidence[f["id"]].setdefault(u, []).append(t)
+            per_facet[f["id"]] = [z for z in scored[:CE_POOL] if z[0] > CE_MIN[ce_model] and entity_ok(f["id"], z[2], seen[z[1]], ents)]
+        for f in facets:  # a quote already claimed by another facet is demoted, not dropped (dropping starved later facets)
+            ranked = sorted(per_facet[f["id"]], key=lambda z: (owner.get(z[2], f["id"]) != f["id"], -specificity(z[2])))
+            for sc, u, t in ranked[:PER_JUDGE]:
+                owner.setdefault(t, f["id"])
+                kept_total += 1
+                evidence[f["id"]].setdefault(u, []).append(t)
 
     def process_llm(urls: list[str]):
         nonlocal emitted_total, kept_total, failed_total, calls
