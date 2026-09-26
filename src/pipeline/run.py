@@ -167,7 +167,8 @@ def source_off_jurisdiction(source: str, qkeys: set[str]) -> bool:
     f = _fold(source)
     c = {k: len(r.findall(f)) for k, r in _COUNTRIES.items()}
     top = max(c, key=c.get)
-    return top not in qkeys and c[top] >= 5 and c[top] >= 2 * max(sum(c[k] for k in qkeys), 1)
+    mine = sum(c[k] for k in qkeys)
+    return top not in qkeys and ((c[top] >= 5 and c[top] >= 2 * max(mine, 1)) or (mine == 0 and c[top] >= 2))
 
 
 _RECENT = re.compile(r"\b(recent|latest|current|currently|last (?:\w+ ){1,2}years?|newest|now|today|reciente|ultimos?|actual|vigente)\b", re.I)
@@ -201,6 +202,11 @@ def query_entities(query: str) -> set[str]:
         run = m.group().split()
         if len(run) == 1 and m.start() > (1 if query[:1] in "\u00bf\u00a1" else 0):
             out.add(_fold(re.sub(r"['\u2019]s$", "", run[0])))
+    f = _fold(query)
+    for r in _COUNTRIES.values():  # countries the capitalized-word rule drops (multi-word, or sentence-initial run "Compare Japan's")
+        m = r.search(f)
+        if m:
+            out.add(m.group())
     return out - _STOP
 
 
@@ -233,9 +239,10 @@ def plan(model: str, query: str) -> list[dict]:
          f"or institution only if you are certain it exists in that jurisdiction; otherwise say "
          f"'the regulator' or 'the law' instead of guessing a name. Each facet must be a concrete topic whose answer is "
          f"stated as facts in web pages (a specific thing, measure, place, or period). Do NOT make meta facets "
-         f"such as summary, limitations, gaps, population characteristics, or implications. Set `entity` to the one "
-         f"named place, organization, or person the facet is about (e.g. a city or province), or \"\" if the facet "
-         f"is not about one specific named entity.\n\nRequest: {query}")
+         f"such as summary, limitations, gaps, population characteristics, or implications. Do NOT make facets for arguments "
+         f"for or against, pros or cons, or evidence for one side: make facets for measurable topics or outcomes. "
+         f"Set `entity` to the one named place, country, organization, person, technology or method the facet is about "
+         f"(e.g. a city, a country, a data structure), or \"\" if the facet is not about one specific named entity.\n\nRequest: {query}")
     return call_json(model, p, PLAN_SCHEMA, think="low")["facets"]  # gpt-oss: default reasoning + `format` can run >5 min and return empty JSON (q06, q21)
 
 
@@ -317,7 +324,13 @@ def select_ce(query, facets, seen, urls, evidence, owner, funnel, cfg=None):
         def key(z):
             spec = -specificity(z[2]) - (year_score(z[2], now) if recent else 0) if cfg["spec"] else -z[0]
             return (cfg["dedup"] and owner.get(z[2], f["id"]) != f["id"], spec)
-        ranked = sorted(per_facet[f["id"]], key=key)[:JUDGE_N if cfg.get("judge") else PER_JUDGE]
+        ranked, dup = [], set()
+        for z in sorted(per_facet[f["id"]], key=key):  # same sentence on two pages (mirrors, syndication) counts once per facet
+            n = re.sub(r"\W+", " ", _fold(z[2])).strip()
+            if n not in dup:
+                dup.add(n)
+                ranked.append(z)
+        ranked = ranked[:JUDGE_N if cfg.get("judge") else PER_JUDGE]
         if cfg.get("judge") and ranked:
             # LLM judge: precision 0.67 / recall 0.68 vs CE-only 0.36 / 1.0 on the hand-labeled Spanish sheet. [] on error -> keep all.
             keep = judge(cfg["judge"], f, [(u, t) for _, u, t in ranked])
