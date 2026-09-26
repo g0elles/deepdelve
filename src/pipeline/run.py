@@ -13,8 +13,8 @@ from pipeline.llm import call_json
 
 PLAN_SCHEMA = {"type": "object", "required": ["facets"], "properties": {"facets": {
     "type": "array", "minItems": 2, "maxItems": 6, "items": {
-        "type": "object", "required": ["id", "name", "questions"], "properties": {
-            "id": {"type": "string"}, "name": {"type": "string"},
+        "type": "object", "required": ["id", "name", "entity", "questions"], "properties": {
+            "id": {"type": "string"}, "name": {"type": "string"}, "entity": {"type": "string"},
             "questions": {"type": "array", "minItems": 1, "maxItems": 3, "items": {"type": "string"}}}}}}}
 EXTRACT_SCHEMA = {"type": "object", "required": ["spans"], "properties": {"spans": {
     "type": "array", "maxItems": 6, "items": {
@@ -56,9 +56,25 @@ def clean(s: str) -> str:
 _BIB = re.compile(r"\bpp\.|\bvol\.|Journal of|Proceedings of|accessed on|search terms|(?:should be|were) extracted|inclusion criteria|\(\d{4}[a-z]?\)[,'\u2018\u201c\"]", re.I)
 
 
+def reflow(text: str) -> list[str]:
+    """PDF-derived pages hard-wrap mid-sentence (even with blank lines between wraps). Join a line onto the previous one
+    unless that one ended a sentence or either is a heading/list/table line. Found losing 'commuting durations in Santiago
+    typically ranging between 40 and 60 minutes' as an unpunctuated fragment."""
+    paras: list[str] = []
+    for line in (ln.strip() for ln in text.split("\n")):
+        if not line:
+            continue
+        structural = line.startswith(("#", "|", "*", "-", ">", "!")) or (paras and paras[-1].startswith(("#", "|", "*", "-", ">", "!")))
+        if paras and not structural and not re.search(r"[.!?:;\"\u201d)\]]$", paras[-1]):
+            paras[-1] += " " + line
+        else:
+            paras.append(line)
+    return paras
+
+
 def sentences(text: str) -> list[str]:
     out = []
-    for para in re.split(r"\n+", text):
+    for para in reflow(text):
         for sent in re.split(r"(?<=[.!?])\s+", clean(para)):
             if (40 <= len(sent) <= 400 and sum(c.isalpha() for c in sent) > 0.5 * len(sent)
                     and sent[-1] in '.!?"\u201d)' and not sent.startswith(("#", "|")) and "](" not in sent and "\u2023" not in sent
@@ -100,12 +116,13 @@ def judge(model: str, facet: dict, cands: list[tuple[str, str]]) -> list[int]:
          f"Return the numbers of candidates that state a specific fact (a date, number, named law, "
          f"mechanism, or comparison) relevant to this facet. Skip vague or off-topic ones.")
     try:
-        return [i for i in call_json(model, p, JUDGE_SCHEMA)["keep"] if 0 <= i < len(cands)]
+        return [i for i in call_json(model, p, JUDGE_SCHEMA, think="low", timeout=120)["keep"] if 0 <= i < len(cands)]
     except Exception:
         return []
 
 
 CE_POOL = 40
+JUDGE_N = 20
 
 
 def specificity(t: str) -> float:
@@ -164,26 +181,48 @@ def year_score(t: str, now: int) -> float:
     return 0.3 if max(ys) >= now - 2 else -0.3 if max(ys) <= now - 4 else 0.0
 
 
-def facet_entities(facets: list[dict]) -> dict[str, set[str]]:
-    """Per facet: stems of capitalized words in its name/questions that are NOT in every facet (what tells it apart)."""
-    caps = {}
+def _mentions(text_folded: str, ent: str) -> bool:
+    ck = countries(ent)
+    if ck:  # aliases: "United Kingdom" facet, "UK" in the sentence
+        return bool(countries(text_folded) & ck)
+    if " " in ent:
+        return ent in text_folded
+    return bool(re.search(rf"\b{re.escape(ent)}\b", text_folded)) if len(ent) <= 3 else ent[:5] in text_folded
+
+
+_CAP_RUN = re.compile(r"[A-Z\u00c1\u00c9\u00cd\u00d3\u00da\u00d1]\w+(?:['\u2019]s)?(?:[ \t]+[A-Z\u00c1\u00c9\u00cd\u00d3\u00da\u00d1]\w+(?:['\u2019]s)?)*")
+
+
+def query_entities(query: str) -> set[str]:
+    """Single capitalized words the user typed mid-sentence (Bogota, Lima, UK). Multi-word capitalized runs are titles
+    ("Data Protection Act"), not entities that tell facets apart."""
+    out = set()
+    for m in _CAP_RUN.finditer(query):
+        run = m.group().split()
+        if len(run) == 1 and m.start() > (1 if query[:1] in "\u00bf\u00a1" else 0):
+            out.add(_fold(re.sub(r"['\u2019]s$", "", run[0])))
+    return out - _STOP
+
+
+def facet_entities(facets: list[dict], query: str = "") -> dict[str, set[str]]:
+    """Per facet: the planner's `entity`; else the query's typed entities its name/questions single out.
+    A facet naming all of them (or none) is unconstrained."""
+    qe = query_entities(query)
+    out = {}
     for f in facets:
-        caps[f["id"]] = set()
-        for q in f["questions"]:  # questions only: facet names are Title Case and would all look like entities
-            ws = re.findall(r"\w+", q)
-            caps[f["id"]] |= {_fold(w)[:5] for i, w in enumerate(ws) if i > 0 and w[0].isupper() and len(w) > 2}
-    common = set.intersection(*caps.values()) if caps else set()
-    return {k: v - common for k, v in caps.items()}
+        own = _fold(f.get("entity", "")).strip()
+        if own:
+            out[f["id"]] = {own}
+            continue
+        got = {e for e in qe if _mentions(_fold(f["name"] + " " + " ".join(f["questions"])), e)}
+        out[f["id"]] = got if got != qe else set()
+    return out
 
 
 def entity_ok(fid: str, sent: str, source: str, ents: dict[str, set[str]]) -> bool:
-    """Entity-specific facets: reject a sentence that names a rival facet's entity but not this facet's own.
-    (Requiring the own entity starved acronym-only facets, e.g. 'CVD'.)"""
-    mine, f = ents[fid], _fold(sent)
-    if not mine:
-        return True  # no distinguishing entity: cannot judge
-    rivals = set().union(*(v for k, v in ents.items() if k != fid)) - mine
-    return any(e in f for e in mine) or not any(e in f for e in rivals)
+    """An entity-specific facet only takes sentences that name its entity (else Europe-wide stats fill the Lima facet)."""
+    mine = ents[fid]
+    return not mine or any(_mentions(_fold(sent), e) for e in mine)
 
 
 def plan(model: str, query: str) -> list[dict]:
@@ -194,16 +233,27 @@ def plan(model: str, query: str) -> list[dict]:
          f"or institution only if you are certain it exists in that jurisdiction; otherwise say "
          f"'the regulator' or 'the law' instead of guessing a name. Each facet must be a concrete topic whose answer is "
          f"stated as facts in web pages (a specific thing, measure, place, or period). Do NOT make meta facets "
-         f"such as summary, limitations, gaps, population characteristics, or implications.\n\nRequest: {query}")
+         f"such as summary, limitations, gaps, population characteristics, or implications. Set `entity` to the one "
+         f"named place, organization, or person the facet is about (e.g. a city or province), or \"\" if the facet "
+         f"is not about one specific named entity.\n\nRequest: {query}")
     return call_json(model, p, PLAN_SCHEMA, think="low")["facets"]  # gpt-oss: default reasoning + `format` can run >5 min and return empty JSON (q06, q21)
 
 
-def search(question: str, k: int) -> list[str]:
+def search(question: str, k: int, stats: dict | None = None) -> list[str]:
+    """Up to k+3 result URLs (extras cover fetch failures); one retry, since ddgs returns [] on throttling."""
     from ddgs import DDGS
-    try:
-        return [r["href"] for r in DDGS().text(question, max_results=k + 2, backend="auto") if r.get("href")]
-    except Exception:
-        return []
+    for attempt in range(2):
+        try:
+            urls = [r["href"] for r in DDGS().text(question, max_results=k + 3, backend="auto") if r.get("href")]
+        except Exception:
+            urls = []
+        if urls:
+            break
+        time.sleep(1.5)
+    if stats is not None:
+        stats["searches"] = stats.get("searches", 0) + 1
+        stats["empty_searches"] = stats.get("empty_searches", 0) + (not urls)
+    return urls
 
 
 def fetch(url: str) -> str | None:
@@ -236,7 +286,51 @@ def extract(model: str, facets: list[dict], text: str) -> tuple[list[dict], int,
     return kept, emitted, failed
 
 
-def run(query: str, model: str, out: Path, topk: int, extractor: str = "ce") -> dict:
+def select_ce(query, facets, seen, urls, evidence, owner, funnel, cfg=None):
+    """No-LLM extractor: BM25 pool -> CPU cross-encoder -> filters -> specificity rerank -> keep top.
+    `cfg` flags (all default on) exist so filters can be ablated on saved sources; `funnel` records per-facet stage counts."""
+    from pipeline.tune import ce_score
+    cfg = {"entity": True, "juris": True, "dedup": True, "spec": True, **(cfg or {})}
+    ce_model = CE_ML if re.search(r"[\u00bf\u00a1\u00e1\u00e9\u00ed\u00f3\u00fa\u00f1]", query.lower()) else CE_EN  # ponytail: accent heuristic, use langdetect for more languages
+    ents, qkeys = facet_entities(facets, query), countries(query)
+    recent, now = bool(_RECENT.search(_fold(query))), time.localtime().tm_year
+    pools = {u: sentences(seen[u]) for u in urls}
+    off = {u for u in urls if cfg["juris"] and source_off_jurisdiction(seen[u], qkeys)}
+    emitted = kept = 0
+    per_facet = {}
+    for f in facets:
+        q = f["name"] + " " + " ".join(f["questions"])
+        cands = []
+        for u in urls:
+            cands += [(u, t) for _, t in bm25_top(pools[u], q, POOL)]
+        scored = sorted(((ce_score(q, t, ce_model), u, t) for u, t in cands), key=lambda z: -z[0])
+        emitted += len(scored)
+        top = scored[:CE_POOL]
+        pos = [z for z in top if z[0] > CE_MIN[ce_model]]
+        ent = [z for z in pos if not cfg["entity"] or entity_ok(f["id"], z[2], seen[z[1]], ents)]
+        jur = [z for z in ent if not cfg["juris"] or (jurisdiction_ok(z[2], qkeys) and z[1] not in off)]
+        per_facet[f["id"]] = jur
+        st = funnel.setdefault(f["id"], {"urls": 0, "cands": 0, "ce_pool": 0, "ce_pos": 0, "entity": 0, "juris": 0, "kept": 0})
+        for k, v in zip(("urls", "cands", "ce_pool", "ce_pos", "entity", "juris"), (len(urls), len(scored), len(top), len(pos), len(ent), len(jur))):
+            st[k] += v
+    for f in facets:  # a quote already claimed by another facet is demoted, not dropped (dropping starved later facets)
+        def key(z):
+            spec = -specificity(z[2]) - (year_score(z[2], now) if recent else 0) if cfg["spec"] else -z[0]
+            return (cfg["dedup"] and owner.get(z[2], f["id"]) != f["id"], spec)
+        ranked = sorted(per_facet[f["id"]], key=key)[:JUDGE_N if cfg.get("judge") else PER_JUDGE]
+        if cfg.get("judge") and ranked:
+            # LLM judge: precision 0.67 / recall 0.68 vs CE-only 0.36 / 1.0 on the hand-labeled Spanish sheet. [] on error -> keep all.
+            keep = judge(cfg["judge"], f, [(u, t) for _, u, t in ranked])
+            ranked = [ranked[i] for i in keep] if keep else ranked
+        for sc, u, t in ranked[:PER_JUDGE]:
+            owner.setdefault(t, f["id"])
+            kept += 1
+            funnel[f["id"]]["kept"] += 1
+            evidence[f["id"]].setdefault(u, []).append(t)
+    return emitted, kept
+
+
+def run(query: str, model: str, out: Path, topk: int, extractor: str = "ce", judge_on: bool = True) -> dict:
     t0, calls = time.time(), 0
     out.mkdir(parents=True, exist_ok=True)
     facets = plan(model, query)
@@ -245,17 +339,23 @@ def run(query: str, model: str, out: Path, topk: int, extractor: str = "ce") -> 
     emitted_total = kept_total = failed_total = 0
     seen: dict[str, str | None] = {}
 
+    gstats: dict = {}
+
     def gather_round(qs: list[tuple[str, str]]):
-        urls = []
-        for _, q in qs:
-            urls += [u for u in search(q, topk)[:topk] if u not in seen]
-        urls = list(dict.fromkeys(urls))
+        """Per question keep the first `topk` URLs that actually fetch (a fetch failure no longer costs a slot)."""
+        results = [search(q, topk, gstats) for _, q in qs]
+        todo = list(dict.fromkeys(u for r in results for u in r if u not in seen))
         with cf.ThreadPoolExecutor(4) as ex:
-            for u, txt in zip(urls, ex.map(fetch, urls)):
+            for u, txt in zip(todo, ex.map(fetch, todo)):
                 seen[u] = txt
+                gstats["fetch_ok"] = gstats.get("fetch_ok", 0) + bool(txt)
+                gstats["fetch_fail"] = gstats.get("fetch_fail", 0) + (not txt)
                 if txt:
                     (out / f"src_{hashlib.sha1(u.encode()).hexdigest()[:8]}.md").write_text(txt)
-        return [u for u in urls if seen.get(u)]
+        picked = []
+        for r in results:
+            picked += [u for u in [u for u in r if seen.get(u)][:topk] if u in todo]
+        return list(dict.fromkeys(picked))
 
     def process_bm25(urls: list[str]):
         nonlocal emitted_total, kept_total, calls
@@ -275,32 +375,13 @@ def run(query: str, model: str, out: Path, topk: int, extractor: str = "ce") -> 
                 evidence[f["id"]].setdefault(cands[i][1], []).append(cands[i][2])
 
     owner: dict[str, str] = {}  # sentence -> facet id that claimed it (a quote serves one facet)
-    ents = facet_entities(facets)
-    qkeys = countries(query)
-    recent = bool(_RECENT.search(_fold(query)))
-    now = time.localtime().tm_year
+    funnel: dict[str, dict] = {}
 
     def process_ce(urls: list[str]):
-        """No-LLM extractor: BM25 pool -> CPU cross-encoder rerank -> specificity rerank -> keep top."""
         nonlocal emitted_total, kept_total
-        from pipeline.tune import ce_score
-        ce_model = CE_ML if re.search(r"[\u00bf\u00a1\u00e1\u00e9\u00ed\u00f3\u00fa\u00f1]", query.lower()) else CE_EN  # ponytail: accent heuristic, use langdetect for more languages
-        pools = {u: sentences(seen[u]) for u in urls}
-        per_facet = {}
-        for f in facets:
-            q = f["name"] + " " + " ".join(f["questions"])
-            cands = []
-            for u in urls:
-                cands += [(u, t) for _, t in bm25_top(pools[u], q, POOL)]
-            scored = sorted(((ce_score(q, t, ce_model), u, t) for u, t in cands), key=lambda z: -z[0])
-            emitted_total += len(scored)
-            per_facet[f["id"]] = [z for z in scored[:CE_POOL] if z[0] > CE_MIN[ce_model] and entity_ok(f["id"], z[2], seen[z[1]], ents) and jurisdiction_ok(z[2], qkeys) and not source_off_jurisdiction(seen[z[1]], qkeys)]
-        for f in facets:  # a quote already claimed by another facet is demoted, not dropped (dropping starved later facets)
-            ranked = sorted(per_facet[f["id"]], key=lambda z: (owner.get(z[2], f["id"]) != f["id"], -specificity(z[2]) - (year_score(z[2], now) if recent else 0)))
-            for sc, u, t in ranked[:PER_JUDGE]:
-                owner.setdefault(t, f["id"])
-                kept_total += 1
-                evidence[f["id"]].setdefault(u, []).append(t)
+        e, k = select_ce(query, facets, seen, urls, evidence, owner, funnel, {"judge": model if judge_on else None})
+        emitted_total += e
+        kept_total += k
 
     def process_llm(urls: list[str]):
         nonlocal emitted_total, kept_total, failed_total, calls
@@ -315,12 +396,12 @@ def run(query: str, model: str, out: Path, topk: int, extractor: str = "ce") -> 
                     evidence[s["facet_id"]].setdefault(u, []).append(s["quote"])
 
     process = {"ce": process_ce, "bm25": process_bm25, "llm": process_llm}[extractor]
-    process(gather_round([(f["id"], q) for f in facets for q in f["questions"]]))
+    process(gather_round([(f["id"], q) for f in facets for q in f["questions"] + [f"{f['questions'][0]} {f['name']}"]]))  # question+name doubled good pages vs question alone (n=6 facets, noisy)
     for _ in range(2):  # gap rounds
         gaps = [f for f in facets if len(evidence[f["id"]]) < 2]
         if not gaps:
             break
-        process(gather_round([(f["id"], f"{f['name']} {query}") for f in gaps]))
+        process(gather_round([(f["id"], f"{q} {f['name']}") for f in gaps for q in f["questions"][1:] or f["questions"]]))
 
     covered = sum(1 for f in facets if len(evidence[f["id"]]) >= 2)
     metrics = {
@@ -329,7 +410,7 @@ def run(query: str, model: str, out: Path, topk: int, extractor: str = "ce") -> 
         "quote_match_rate": kept_total / emitted_total if emitted_total else 0.0,
         "sources_fetched": sum(1 for v in seen.values() if v), "extract_calls": calls, "extract_failed": failed_total,
         "sources_per_facet": {f["id"]: len(evidence[f["id"]]) for f in facets},
-        "wall_s": round(time.time() - t0, 1),
+        "wall_s": round(time.time() - t0, 1), "funnel": funnel, "gather": gstats,
     }
     (out / "evidence.json").write_text(json.dumps({"facets": facets, "evidence": evidence}, indent=1))
     (out / "metrics.json").write_text(json.dumps(metrics, indent=1))
@@ -342,7 +423,8 @@ if __name__ == "__main__":
     ap.add_argument("--model", default="deepdelve-gpt-oss:latest")
     ap.add_argument("--out", default="")
     ap.add_argument("--topk", type=int, default=3)
+    ap.add_argument("--no-judge", action="store_true", help="skip the LLM relevance judge after the CE stage")
     ap.add_argument("--extractor", choices=["ce", "bm25", "llm"], default="ce")
     a = ap.parse_args()
     out = Path(a.out or f"research_output/pipeline_{int(time.time())}")
-    print(json.dumps(run(a.query, a.model, out, a.topk, a.extractor), indent=1))
+    print(json.dumps(run(a.query, a.model, out, a.topk, a.extractor, not a.no_judge), indent=1))

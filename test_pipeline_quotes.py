@@ -50,14 +50,20 @@ def test_bibliography_lines_dropped():
 
 
 def test_entity_and_specificity():
-    from pipeline.run import facet_entities, entity_ok, specificity
-    fs = [{"id": "f1", "name": "Safety Adherence Events", "questions": ["average Lima commute"]},
-          {"id": "f2", "name": "Safety Adherence Events", "questions": ["average Bogota commute"]}]
-    ents = facet_entities(fs)
-    assert ents["f1"] == {"lima"} and ents["f2"] == {"bogot"}
+    from pipeline.run import facet_entities, entity_ok, specificity, query_entities
+    q = "Average commute times in Bogota, Lima and UK cities"
+    assert query_entities(q) == {"bogota", "lima", "uk"}
+    assert query_entities("What does Kenya's Data Protection Act 2019 require?") == set()
+    assert query_entities("\u00bfC\u00f3mo se regula en M\u00e9xico y Chile?") == {"mexico", "chile"}
+    fs = [{"id": "f1", "name": "Lima commute", "questions": ["Lima average commute"]},
+          {"id": "f2", "name": "All cities", "questions": ["Bogota Lima UK commute"]},
+          {"id": "f3", "name": "Safety Events", "questions": ["general commute"]}]
+    ents = facet_entities(fs, q)
+    assert ents["f1"] == {"lima"} and ents["f2"] == set() and ents["f3"] == set()
     assert entity_ok("f1", "Commutes in Lima average 90 minutes.", "", ents)
-    assert not entity_ok("f1", "Commutes in Bogota average 60 minutes.", "Lima " * 9, ents)  # rival named
-    assert entity_ok("f1", "Commutes average 90 minutes.", "", ents)  # names no entity: kept
+    assert not entity_ok("f1", "Commutes in Bogota average 60 minutes.", "", ents)
+    assert not entity_ok("f1", "Commutes average 90 minutes.", "", ents)  # names no entity: rejected
+    assert entity_ok("f3", "Anything at all.", "", ents)
     assert specificity("The fine is 320 days of pay for firms that break the data law under this rule.") > specificity("Modal share is an important part of transport.")
 
 
@@ -78,3 +84,26 @@ def test_source_off_jurisdiction():
     assert source_off_jurisdiction("Chile " * 8 + "Mexico", {"mx"})
     assert not source_off_jurisdiction("Mexico " * 8 + "Chile " * 8, {"mx"})
     assert not source_off_jurisdiction("Chile " * 8, set())
+
+
+def test_hard_wrapped_sentences_rejoined():
+    from pipeline.run import sentences
+    src = "This aligns with earlier studies, which\n\nreported commuting durations in Santiago typically ranging between 40 and 60 minutes, the longest in\n\nChile.\n\n# Heading\n\nNext sentence here is long enough to be kept as a sentence of its own."
+    out = sentences(src)
+    assert any("commuting durations in Santiago typically ranging between 40 and 60 minutes" in x for x in out)
+    assert not any(x.startswith("#") for x in out)
+
+
+def test_planner_entity_takes_precedence():
+    from pipeline.run import facet_entities, entity_ok
+    fs = [{"id": "f1", "name": "Manitoba rules", "entity": "Manitoba", "questions": ["q"]},
+          {"id": "f2", "name": "UK capacity", "entity": "United Kingdom", "questions": ["q"]},
+          {"id": "f3", "name": "New Brunswick", "entity": "New Brunswick", "questions": ["q"]},
+          {"id": "f4", "name": "General", "entity": "", "questions": ["q"]}]
+    ents = facet_entities(fs, "Rules by province")
+    assert entity_ok("f1", "Manitoba employers must keep a committee.", "", ents)
+    assert not entity_ok("f1", "Nova Scotia employers must keep a committee.", "", ents)
+    assert entity_ok("f2", "The UK has 14.7 GW installed.", "", ents)  # alias
+    assert entity_ok("f3", "In New Brunswick a committee is required.", "", ents)
+    assert not entity_ok("f3", "In New Zealand a committee is required.", "", ents)
+    assert entity_ok("f4", "Anything.", "", ents)
