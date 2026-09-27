@@ -125,6 +125,7 @@ def judge(model: str, facet: dict, cands: list[tuple[str, str]]) -> list[int]:
 
 
 CE_POOL = 40
+MIN_OWN = 3
 JUDGE_N = 20
 
 
@@ -396,6 +397,9 @@ def select_ce(query, facets, seen, urls, evidence, owner, funnel, cfg=None):
             if n not in dup:
                 dup.add(n)
                 ranked.append(z)
+        if cfg["dedup"]:  # a sentence another facet already kept fills this one only up to MIN_OWN (h17: same Metrocable sentence under two facets)
+            own = [z for z in ranked if owner.get(z[2], f["id"]) == f["id"]]
+            ranked = own + [z for z in ranked if z not in own][:max(0, MIN_OWN - len(own))]
         ranked = ranked[:JUDGE_N if cfg.get("judge") else PER_JUDGE]
         if cfg.get("judge") and ranked:
             # LLM judge: precision 0.67 / recall 0.68 vs CE-only 0.36 / 1.0 on the hand-labeled Spanish sheet. [] on error -> keep all.
