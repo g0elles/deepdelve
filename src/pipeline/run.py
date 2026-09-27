@@ -72,13 +72,16 @@ def reflow(text: str) -> list[str]:
     return paras
 
 
+_JUNK = re.compile(r"\u00e2\u20ac|\u00c3[\u0080-\u00bf]|\ufffd|[a-z]{28,}|\bretrieved \d{4}-\d\d|\bused for the (?:dates|death|figures?)")  # mojibake, run-together words, citation notes
+
+
 def sentences(text: str) -> list[str]:
     out = []
     for para in reflow(text):
         for sent in re.split(r"(?<=[.!?])\s+", clean(para)):
             if (40 <= len(sent) <= 400 and sum(c.isalpha() for c in sent) > 0.5 * len(sent)
                     and sent[-1] in '.!?"\u201d)' and not sent.startswith(("#", "|")) and "](" not in sent and "\u2023" not in sent
-                    and not _BIB.search(sent)):
+                    and not _BIB.search(sent) and not _JUNK.search(sent)):
                 out.append(sent)
     return out
 
@@ -167,27 +170,39 @@ def source_off_jurisdiction(source: str, qkeys: set[str]) -> bool:
     f = _fold(source)
     c = {k: len(r.findall(f)) for k, r in _COUNTRIES.items()}
     top = max(c, key=c.get)
-    mine = sum(c[k] for k in qkeys)
-    return top not in qkeys and ((c[top] >= 5 and c[top] >= 2 * max(mine, 1)) or (mine == 0 and c[top] >= 2))
+    return top not in qkeys and c[top] >= 5 and c[top] >= 2 * max(sum(c[k] for k in qkeys), 1)
 
 
 _RECENT = re.compile(r"\b(recent|latest|current|currently|last (?:\w+ ){1,2}years?|newest|now|today|reciente|ultimos?|actual|vigente)\b", re.I)
 
 
+_ES_W = set("el la los las de del que y en un una por con para es se al como su sus".split())
+_EN_W = set("the of and to in is are was for that with as by on from this it its".split())
+
+
+def _is_spanish(t: str) -> bool:
+    w = re.findall(r"[a-z\u00e1\u00e9\u00ed\u00f3\u00fa\u00f1]+", t.lower())
+    return sum(x in _ES_W for x in w) >= sum(x in _EN_W for x in w)
+
+
 def year_score(t: str, now: int) -> float:
-    """Only for recency queries: +0.3 for a year within 2 years of now, -0.3 if the newest year cited is 4+ years old."""
+    """Only for recency queries: +0.4 if the newest year cited is this year or last, -0.4 if it is 2+ years old (h15: 2024 quotes ranked as "latest" in 2026)."""
     ys = [int(y) for y in re.findall(r"\b(20[0-3]\d)\b", t)]
     if not ys:
         return 0.0
-    return 0.3 if max(ys) >= now - 2 else -0.3 if max(ys) <= now - 4 else 0.0
+    return 0.4 if max(ys) >= now - 1 else -0.4
 
 
 def _mentions(text_folded: str, ent: str) -> bool:
     ck = countries(ent)
     if ck:  # aliases: "United Kingdom" facet, "UK" in the sentence
         return bool(countries(text_folded) & ck)
-    if " " in ent:
-        return ent in text_folded
+    if " " in ent or "-" in ent:  # descriptive planner entities ("Mercosur-EU trade agreement", "EU Parliament") never appear verbatim
+        toks = [t for t in re.findall(r"[a-z0-9]+", ent) if len(t) >= 4]
+        if not toks:
+            return ent in text_folded
+        need = len(toks) if len(toks) <= 2 else -(-len(toks) * 2 // 3)
+        return sum(t[:5] in text_folded for t in toks) >= need
     return bool(re.search(rf"\b{re.escape(ent)}\b", text_folded)) if len(ent) <= 3 else ent[:5] in text_folded
 
 
@@ -231,8 +246,54 @@ def entity_ok(fid: str, sent: str, source: str, ents: dict[str, set[str]]) -> bo
     return not mine or any(_mentions(_fold(sent), e) for e in mine)
 
 
+def _uncovered(facets: list[dict], query: str) -> list[str]:
+    """Entities the user typed (countries, capitalized names) that no facet's name/questions/entity mentions."""
+    text = _fold(" ".join(f"{f['name']} {f.get('entity', '')} {' '.join(f['questions'])}" for f in facets))
+    return sorted(e for e in query_entities(query) if not _mentions(text, e))
+
+
+_POLAR = set("rise rises rising decline declines declining increase increases decrease decreases improvement improvements deterioration "
+             "reduction reductions benefit benefits harm harms advantage advantages disadvantage disadvantages pros cons positive negative "
+             "gain gains loss losses".split())
+
+
+def _merge_polar(facets: list[dict]) -> list[dict]:
+    """Facets that differ only by a direction word (rise/decline, benefits/harms) are one topic: merge, keeping both facets' queries.
+    Prompt bans alone did not stop the planner (h09, h18, q25); such a split also starves the narrower half."""
+    out, by_core = [], {}
+    for f in facets:
+        toks = re.findall(r"[a-z0-9]+", _fold(f["name"]))
+        core = tuple(sorted(t for t in toks if t not in _POLAR))
+        if len(core) == len(toks):
+            out.append(f)
+        elif core in by_core:
+            keep = by_core[core]
+            keep["questions"] = (keep["questions"] + [q for q in f["questions"] if q not in keep["questions"]])[:3]
+        else:
+            f["name"] = " ".join(w for w in f["name"].split() if _fold(w) not in _POLAR) or f["name"]
+            by_core[core] = f
+            out.append(f)
+    return out
+
+
 def plan(model: str, query: str) -> list[dict]:
-    p = (f"Break this research request into 2-6 facets that together fully answer it. Each facet gets "
+    return _merge_polar(_plan_covered(model, query))
+
+
+def _plan_covered(model: str, query: str) -> list[dict]:
+    facets = _plan(model, query)
+    missing = _uncovered(facets, query)
+    if missing:  # planner silently dropped a named entity (h16: Kenya); one re-plan naming it
+        again = _plan(model, query, f"\n\nEvery one of these must be covered by at least one facet: {', '.join(missing)}. If that needs more than 6 "
+                                     f"facets, make one facet per named entity that covers all the measures asked about it.")
+        if len(_uncovered(again, query)) < len(missing):
+            return again
+    return facets
+
+
+def _plan(model: str, query: str, hint: str = "") -> list[dict]:
+    p = (f"Write facet names and search queries in the same language as the request. "
+         f"Break this research request into 2-6 facets that together fully answer it. Each facet gets "
          f"an id (f1, f2, ...), a short name, and 1-3 web search queries. Each query is 4-10 words of keywords as typed "
          f"into a search engine, naming the specific things involved; no dates, parentheses, lists of examples, or "
          f"multi-part questions. Every facet must "
@@ -243,8 +304,10 @@ def plan(model: str, query: str) -> list[dict]:
          f"stated as facts in web pages (a specific thing, measure, place, or period). Do NOT make meta facets "
          f"such as summary, limitations, gaps, population characteristics, or implications. Do NOT make facets for arguments "
          f"for or against, pros or cons, or evidence for one side: make facets for measurable topics or outcomes. "
+         f"Never make two facets that are opposites of each other (increase vs decrease, improvement vs deterioration, "
+         f"benefits vs harms): one facet per outcome, and the sources will show which direction it went. "
          f"Set `entity` to the one named place, country, organization, person, technology or method the facet is about "
-         f"(e.g. a city, a country, a data structure), or \"\" if the facet is not about one specific named entity.\n\nRequest: {query}")
+         f"(e.g. a city, a country, a data structure), or \"\" if the facet is not about one specific named entity.\n\nRequest: {query}{hint}")
     return call_json(model, p, PLAN_SCHEMA, think="low")["facets"]  # gpt-oss: default reasoning + `format` can run >5 min and return empty JSON (q06, q21)
 
 
@@ -302,6 +365,7 @@ def select_ce(query, facets, seen, urls, evidence, owner, funnel, cfg=None):
     cfg = {"entity": True, "juris": True, "dedup": True, "spec": True, **(cfg or {})}
     ce_model = CE_ML if re.search(r"[\u00bf\u00a1\u00e1\u00e9\u00ed\u00f3\u00fa\u00f1]", query.lower()) else CE_EN  # ponytail: accent heuristic, use langdetect for more languages
     ents, qkeys = facet_entities(facets, query), countries(query)
+    es = ce_model == CE_ML
     recent, now = bool(_RECENT.search(_fold(query))), time.localtime().tm_year
     pools = {u: sentences(seen[u]) for u in urls}
     off = {u for u in urls if cfg["juris"] and source_off_jurisdiction(seen[u], qkeys)}
@@ -325,7 +389,7 @@ def select_ce(query, facets, seen, urls, evidence, owner, funnel, cfg=None):
     for f in facets:  # a quote already claimed by another facet is demoted, not dropped (dropping starved later facets)
         def key(z):
             spec = -specificity(z[2]) - (year_score(z[2], now) if recent else 0) if cfg["spec"] else -z[0]
-            return (cfg["dedup"] and owner.get(z[2], f["id"]) != f["id"], spec)
+            return (cfg["dedup"] and owner.get(z[2], f["id"]) != f["id"], es and not _is_spanish(z[2]), spec)
         ranked, dup = [], set()
         for z in sorted(per_facet[f["id"]], key=key):  # same sentence on two pages (mirrors, syndication) counts once per facet
             n = re.sub(r"\W+", " ", _fold(z[2])).strip()
