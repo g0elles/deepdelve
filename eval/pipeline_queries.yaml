@@ -1,7 +1,8 @@
 # Query bank for the stage-graph pipeline. Rules: (1) tune/develop ONLY on split=dev; (2) split=test is
 # run once per milestone, never inspected or tuned on; (3) never reuse a query from a prior eval
 # (Colombia B2B, Germany/Japan energy, Lisbon/Mexico City, BERT, Python, Tokyo are RETIRED);
-# (4) split=test_used is BURNED (seen twice, tuned around); never score on it again. split=heldout2 was
+# (4) split=test_used is BURNED (seen twice, tuned around); never score on it again. split=heldout2 is BURNED too (run 2026-09-26, fixes tuned against its failure classes); split=heldout3 (h10-h18) was
+# drawn 2026-09-26 AFTER the pipeline was frozen at the commit tagged `heldout3-frozen`: run it once, then it burns. heldout2 was
 # written 2026-09-25 AFTER the pipeline was frozen at the commit tagged `heldout2-frozen`: run it once, no edits to
 # src/pipeline between the tag and the run except bug fixes that are reported as such. (5) refresh: replace dev queries every ~2 weeks, keep category balance.
 - {id: q01, cat: comparison,   split: dev,  q: "Compare Sweden's and Chile's approaches to pension system reform since 2000, including key laws and outcomes."}
@@ -33,12 +34,21 @@
 - {id: q27, cat: contested,    split: test_used, q: "What is the evidence on school phone bans and student outcomes?"}
 - {id: q29, cat: spanish,      split: dev,  q: "¿Qué es el efecto rebote en la eficiencia energética y qué estudios lo han medido en hogares europeos?"}
 - {id: q30, cat: spanish,      split: dev,  q: "¿Cómo se regula la protección de datos personales en México y qué sanciones prevé la ley vigente?"}
-- {id: h01, cat: comparison,   split: heldout2, q: "Compare Japan's and South Korea's approaches to regulating ride-hailing platforms, including key laws and current status."}
-- {id: h02, cat: legal,        split: heldout2, q: "What are the rules on foreign ownership of agricultural land in Australia, Poland and Argentina?"}
-- {id: h03, cat: technical,    split: heldout2, q: "How do Bloom filters, cuckoo filters and xor filters compare in false-positive rate, memory use and deletion support?"}
-- {id: h04, cat: scientific,   split: heldout2, q: "What is the current understanding of how tardigrades survive desiccation, and which proteins are involved?"}
-- {id: h05, cat: historical,   split: heldout2, q: "What were the causes and outcomes of the 1918 influenza pandemic in Brazil and India, with mortality estimates?"}
-- {id: h06, cat: news_recent,  split: heldout2, q: "What are the most recent developments in the EU's Carbon Border Adjustment Mechanism implementation?"}
-- {id: h07, cat: numeric,      split: heldout2, q: "What were Vietnam's, Bangladesh's and Indonesia's textile export values and main destination markets in the last three reported years?"}
-- {id: h08, cat: spanish,      split: heldout2, q: "¿Cómo funciona el sistema de salud pública de Costa Rica y cuáles son sus principales fuentes de financiamiento?"}
-- {id: h09, cat: contested,    split: heldout2, q: "What does the evidence say for and against four-day work weeks on productivity?"}
+- {id: h01, cat: comparison,   split: heldout2_used, q: "Compare Japan's and South Korea's approaches to regulating ride-hailing platforms, including key laws and current status."}
+- {id: h02, cat: legal,        split: heldout2_used, q: "What are the rules on foreign ownership of agricultural land in Australia, Poland and Argentina?"}
+- {id: h03, cat: technical,    split: heldout2_used, q: "How do Bloom filters, cuckoo filters and xor filters compare in false-positive rate, memory use and deletion support?"}
+- {id: h04, cat: scientific,   split: heldout2_used, q: "What is the current understanding of how tardigrades survive desiccation, and which proteins are involved?"}
+- {id: h05, cat: historical,   split: heldout2_used, q: "What were the causes and outcomes of the 1918 influenza pandemic in Brazil and India, with mortality estimates?"}
+- {id: h06, cat: news_recent,  split: heldout2_used, q: "What are the most recent developments in the EU's Carbon Border Adjustment Mechanism implementation?"}
+- {id: h07, cat: numeric,      split: heldout2_used, q: "What were Vietnam's, Bangladesh's and Indonesia's textile export values and main destination markets in the last three reported years?"}
+- {id: h08, cat: spanish,      split: heldout2_used, q: "¿Cómo funciona el sistema de salud pública de Costa Rica y cuáles son sus principales fuentes de financiamiento?"}
+- {id: h09, cat: contested,    split: heldout2_used, q: "What does the evidence say for and against four-day work weeks on productivity?"}
+- {id: h10, cat: comparison,  split: heldout3, q: "Compare Norway's and the Netherlands' approaches to electric vehicle incentives and the resulting EV market share."}
+- {id: h11, cat: legal,       split: heldout3, q: "What are the legal requirements for parental leave in Germany, Sweden and Japan, including duration and pay?"}
+- {id: h12, cat: technical,   split: heldout3, q: "How do Raft and Paxos differ in leader election and log replication, and which production systems use each?"}
+- {id: h13, cat: scientific,  split: heldout3, q: "What is known about how psilocybin works in treating depression, and what do phase 2 and phase 3 trials report?"}
+- {id: h14, cat: historical,  split: heldout3, q: "What were the causes and consequences of the Irish Great Famine of 1845-1852, with population and emigration figures?"}
+- {id: h15, cat: news_recent, split: heldout3, q: "What are the latest developments in the international negotiations for a plastics pollution treaty?"}
+- {id: h16, cat: numeric,     split: heldout3, q: "What were Poland's, Chile's and Kenya's population, urbanization rate and life expectancy in the most recent reported year?"}
+- {id: h17, cat: spanish,     split: heldout3, q: "¿Cómo funciona el sistema de transporte público de Medellín y cuáles son sus principales modos e indicadores de uso?"}
+- {id: h18, cat: contested,   split: heldout3, q: "What does the evidence say for and against congestion pricing on traffic and air quality in city centers?"}
