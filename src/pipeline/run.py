@@ -233,8 +233,10 @@ def entity_ok(fid: str, sent: str, source: str, ents: dict[str, set[str]]) -> bo
 
 def plan(model: str, query: str) -> list[dict]:
     p = (f"Break this research request into 2-6 facets that together fully answer it. Each facet gets "
-         f"an id (f1, f2, ...), a short name, and 1-3 specific web search questions. Every facet must "
-         f"be answerable from a single web page. Today is {time.strftime('%Y-%m-%d')}; use it for words like recent or latest.  If the request compares things, make one facet per "
+         f"an id (f1, f2, ...), a short name, and 1-3 web search queries. Each query is 4-10 words of keywords as typed "
+         f"into a search engine, naming the specific things involved; no dates, parentheses, lists of examples, or "
+         f"multi-part questions. Every facet must "
+         f"be answerable from a single web page. Today is {time.strftime('%Y-%m-%d')}; use it only to interpret words like recent or latest, never write it into a query.  If the request compares things, make one facet per "
          f"side and aspect; do NOT make a facet for the comparison itself (it is done later). Name a law "
          f"or institution only if you are certain it exists in that jurisdiction; otherwise say "
          f"'the regulator' or 'the law' instead of guessing a name. Each facet must be a concrete topic whose answer is "
