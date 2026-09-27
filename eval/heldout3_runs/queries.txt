@@ -1,0 +1,9 @@
+h10	Compare Norway's and the Netherlands' approaches to electric vehicle incentives and the resulting EV market share.
+h11	What are the legal requirements for parental leave in Germany, Sweden and Japan, including duration and pay?
+h12	How do Raft and Paxos differ in leader election and log replication, and which production systems use each?
+h13	What is known about how psilocybin works in treating depression, and what do phase 2 and phase 3 trials report?
+h14	What were the causes and consequences of the Irish Great Famine of 1845-1852, with population and emigration figures?
+h15	What are the latest developments in the international negotiations for a plastics pollution treaty?
+h16	What were Poland's, Chile's and Kenya's population, urbanization rate and life expectancy in the most recent reported year?
+h17	¿Cómo funciona el sistema de transporte público de Medellín y cuáles son sus principales modos e indicadores de uso?
+h18	What does the evidence say for and against congestion pricing on traffic and air quality in city centers?
