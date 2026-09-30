@@ -769,6 +769,22 @@ def _get_default_options():
         # max_completion_tokens landmine above, only the OpenAI-compat shim path was.
         if _max_gen_tokens:
             options["max_tokens"] = _max_gen_tokens
+        # settings.num_ctx (2026-09-29): only the native Ollama backend can actually raise the
+        # model's real context window per-request -- OllamaChatOptions has a genuine num_ctx
+        # field, forwarded straight into the native /api/chat request's `options`. The
+        # OpenAI-compat endpoint (backend: openai) silently ignores both a top-level and an
+        # options-nested num_ctx (confirmed live: `ollama ps` still showed the Modelfile's
+        # baked-in 16384 after both attempts), and editing the Modelfile itself is blocked on
+        # this project's dual-boot NTFS mount (Go's os.Chtimes fails on the model's source GGUF
+        # blob, even from a same-filesystem local copy -- Ollama's content-addressed blob cache
+        # resolves by hash back to the original path regardless). Found live: Builder/
+        # FindingsWriter repeatedly re-reading findings.md/final_report.md wholesale within a
+        # single dispatch (session log, 2026-09-29 stage-graph-pipeline integration test) thrashed
+        # against the 16384 ceiling and never converged on full citation coverage. Default stays
+        # 16384 (unset) so nothing changes for backend: openai or an unconfigured ollama backend.
+        _num_ctx = config.get_setting("num_ctx", 0)
+        if _num_ctx:
+            options["num_ctx"] = _num_ctx
         return options
     if backend == "openai_hosted":
         if _max_gen_tokens:

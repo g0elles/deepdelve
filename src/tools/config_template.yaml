@@ -406,6 +406,18 @@ settings:
   # findings write, while still failing in a few minutes instead of burning the whole
   # max_run_minutes budget on one runaway turn.
   max_generation_tokens: 12000
+  # num_ctx (2026-09-29, backend: ollama only): raises the model's real context window past the
+  # 16384 baked into this project's Ollama Modelfiles -- only the native Ollama backend forwards
+  # this per-request (OllamaChatOptions.num_ctx); the OpenAI-compat endpoint (backend: openai)
+  # silently ignores it, and editing the Modelfile directly hit a dual-boot NTFS chtimes wall (see
+  # orchestrator.py::_get_default_options's own comment for the full story). 0/absent keeps the
+  # Modelfile's 16384 default. When raising this, also raise max_context_window_tokens/
+  # context_budget_chars above to match (proportionally, same 16384 baseline) -- otherwise the
+  # CLIENT-side compaction/budget guards still choke conversations at the old, smaller ceiling
+  # even though the server now has more room. VRAM cost is a one-time model-load reservation, not
+  # per-request: live-measured on this project's 17GB card, 16384->65536 (4x) cost ~825MB extra,
+  # still 100% GPU-resident with ~1GB headroom to spare.
+  num_ctx: 0
   # When true, the Planner's write_todos call requires human approval before it commits (TUI mode
   # shows the plan content in an interactive approve/deny widget; headless/--prompt mode falls back
   # to the existing --auto-approve flag). Lets you review/reject the research plan before quota is
