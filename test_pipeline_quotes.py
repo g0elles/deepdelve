@@ -53,8 +53,8 @@ def test_entity_and_specificity():
     from pipeline.run import facet_entities, entity_ok, specificity, query_entities
     q = "Average commute times in Bogota, Lima and UK cities"
     assert query_entities(q) == {"bogota", "lima", "uk"}
-    assert query_entities("What does Kenya's Data Protection Act 2019 require?") == set()
-    assert query_entities("\u00bfC\u00f3mo se regula en M\u00e9xico y Chile?") == {"mexico", "chile"}
+    assert query_entities("What does Kenya's Data Protection Act 2019 require?") == {"kenya"}  # title words aren't entities; the country regex (d2c579c) still finds Kenya
+    assert {"mexico", "chile"} <= query_entities("\u00bfC\u00f3mo se regula en M\u00e9xico y Chile?")  # also carries regex-prefix dups ("mexic")
     fs = [{"id": "f1", "name": "Lima commute", "questions": ["Lima average commute"]},
           {"id": "f2", "name": "All cities", "questions": ["Bogota Lima UK commute"]},
           {"id": "f3", "name": "Safety Events", "questions": ["general commute"]}]
@@ -65,6 +65,18 @@ def test_entity_and_specificity():
     assert not entity_ok("f1", "Commutes average 90 minutes.", "", ents)  # names no entity: rejected
     assert entity_ok("f3", "Anything at all.", "", ents)
     assert specificity("The fine is 320 days of pay for firms that break the data law under this rule.") > specificity("Modal share is an important part of transport.")
+
+
+def test_entity_detection_heldout_regressions():
+    from pipeline.run import query_entities, _mentions, _fold
+    # h25: "Ghana's GDP" must not fuse into one "title" run (Ghana was silently dropped, no re-plan fired)
+    assert {"portugal", "vietnam", "ghana"} <= query_entities("What were Portugal's, Vietnam's and Ghana's GDP per capita?")
+    # h19/q02: sentence-initial verb must not fuse onto the first entity
+    assert "finland" in query_entities("Compare Finland's and Estonia's digital services.")
+    assert "postgresql" in query_entities("Compare PostgreSQL and MySQL for write-heavy workloads.")
+    # h24: bare "EU" names the European Union; a region entity matches its member countries (UN M49)
+    assert _mentions(_fold("The EU AI Act is delayed."), _fold("European Union"))
+    assert _mentions(_fold("The largest numbers were in India."), "asia") and not _mentions(_fold("Deaths in France."), "asia")
 
 
 def test_jurisdiction_and_recency():

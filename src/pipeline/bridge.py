@@ -9,12 +9,14 @@ from pathlib import Path
 from utils.run_state import record_fetched_url
 
 
-def seed_run_state_from_evidence(run_state, facets: list[dict], evidence: dict, sources_dir: Path) -> int:
+def seed_run_state_from_evidence(run_state, facets: list[dict], evidence: dict, sources_dir: Path, titles: dict | None = None) -> int:
     """For each kept (facet, url, quotes) triple: registers the url as fetched (copying its saved
     source content into the run's own workspace so a citation resolves to a real file, same as a
     normal fetch would) and adds an add_finding entry in the exact shape
     _build_findings_source_material already reads. depth=1 mirrors the Planner's own top-level
     delegate_tasks findings (RunState.add_finding: depth==1 = top-level, no top_level_task_name).
+    `titles` (url -> real page title, evidence.json's "titles"; absent in pre-2026-09-30 runs) is what
+    Sources entries show: never the facet name, which names the research topic, not the page.
     Returns the number of findings added."""
     from tools.fs import _get_safe_path
 
@@ -34,7 +36,7 @@ def seed_run_state_from_evidence(run_state, facets: list[dict], evidence: dict, 
                     if dst:
                         Path(dst).parent.mkdir(parents=True, exist_ok=True)
                         Path(dst).write_text(src_path.read_text())
-                record_fetched_url(url, fname, title=name)
+                record_fetched_url(url, fname, title=(titles or {}).get(url))
             run_state.add_finding(source_url=url, summary=" ".join(quotes), task_name=name, depth=1)
             added += 1
     return added

@@ -793,7 +793,7 @@ class BasicTuiAgent(App):
     #command-list { height: auto; max-height: 15; padding: 0 1; }
     """
 
-    SLASH_COMMANDS = [("/stop", "Stop execution"), ("/new", "New conversation"), ("/exit", "Quit app"), ("/toggle_thinking", "Toggle reasoning trace capability"), ("/toggle_persistence", "Toggle session history saving"), ("/toggle_headless_fetch", "Toggle headless-browser retry for bot-blocked fetches"), ("/depth", "Set research depth: quick|standard|deep"), ("/style", "Set report style: standard|academic|answer"), ("/seed-url", "Queue a URL to pre-fetch before the next run (repeatable)"), ("/seed-doc", "Queue a local file to load before the next run (repeatable)"), ("/config", "Show current configuration"), ("/files", "Browse memory workspace files"), ("/sessions", "List saved sessions"), ("/resume", "Resume a saved session"), ("/resume-run", "Reattach an interrupted research run")]
+    SLASH_COMMANDS = [("/stop", "Stop execution"), ("/new", "New conversation"), ("/exit", "Quit app"), ("/toggle_thinking", "Toggle reasoning trace capability"), ("/toggle_persistence", "Toggle session history saving"), ("/toggle_headless_fetch", "Toggle headless-browser retry for bot-blocked fetches"), ("/depth", "Set research depth: quick|standard|deep"), ("/style", "Set report style: standard|academic|answer"), ("/seed-url", "Queue a URL to pre-fetch before the next run (repeatable)"), ("/seed-doc", "Queue a local file to load before the next run (repeatable)"), ("/pipeline-evidence", "Use a stage-graph pipeline evidence dir instead of the agent's own research"), ("/config", "Show current configuration"), ("/files", "Browse memory workspace files"), ("/sessions", "List saved sessions"), ("/resume", "Resume a saved session"), ("/resume-run", "Reattach an interrupted research run")]
     def __init__(self, builder, session_to_resume: str = None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.builder = builder
@@ -825,6 +825,8 @@ class BasicTuiAgent(App):
         self._pending_seed_urls = []
         # /seed-doc: TUI equivalent of --seed-doc, same lifecycle as _pending_seed_urls above.
         self._pending_seed_docs = []
+        # /pipeline-evidence: TUI equivalent of --pipeline-evidence, same lifecycle as seed docs.
+        self._pending_pipeline_evidence = None
 
     def compose(self) -> ComposeResult:
         yield VerticalScroll(id="chat-container")
@@ -1036,6 +1038,18 @@ class BasicTuiAgent(App):
             else:
                 self._pending_seed_docs.append(os.path.expanduser(arg))
                 chat.mount(Static(Markdown(f"**System:**\nQueued seed document ({len(self._pending_seed_docs)} pending): {arg}"), classes="agent-bubble"))
+            chat.scroll_end(animate=False)
+        elif query.startswith("/pipeline-evidence"):
+            arg = os.path.expanduser(query[len("/pipeline-evidence"):].strip())
+            chat = self.query_one("#chat-container", VerticalScroll)
+            if not arg:
+                msg = "Usage: `/pipeline-evidence <dir>` (dir holding a stage-graph run's evidence.json; used by the next research run instead of its own research phase)"
+            elif not os.path.isfile(os.path.join(arg, "evidence.json")):
+                msg = f"No evidence.json in: `{arg}`"
+            else:
+                self._pending_pipeline_evidence = arg
+                msg = f"Queued pipeline evidence: {arg}"
+            chat.mount(Static(Markdown(f"**System:**\n{msg}"), classes="agent-bubble"))
             chat.scroll_end(animate=False)
         elif query == "/toggle_persistence":
             config.cfg["settings"]["enable_session_persistence"] = not config.cfg["settings"].get("enable_session_persistence", True)
@@ -1528,6 +1542,14 @@ class BasicTuiAgent(App):
                 run_state.set_query(query)
                 self._conv_run_state = run_state
             run_state_token = run_state_ctx.set(run_state)
+            if self._pending_pipeline_evidence and not is_followup:
+                try:
+                    added = _load_pipeline_evidence(run_state, self._pending_pipeline_evidence)
+                    chat.mount(Static(Markdown(f"**System:**\nPipeline evidence loaded: {added} findings. Skipping the agent's own research phase."), classes="agent-bubble"))
+                    current_input += PIPELINE_EVIDENCE_PROMPT
+                except Exception as e:
+                    chat.mount(Static(Markdown(f"**System:**\nPipeline evidence FAILED: {e}"), classes="agent-bubble"))
+                self._pending_pipeline_evidence = None
             # A follow-up in a conversation whose report already exists is Q&A over the gathered
             # research, not a new research run — the artifact/grounding contract was already
             # enforced when the report was produced. ponytail: follow-up answers themselves are
@@ -1995,6 +2017,27 @@ def _write_bibliography(run_state) -> None:
         # either — same convention as RunState.save()'s own except branch just above this
         # function in the same module family (utils/run_state.py).
         sys.stdout.write(f"\033[93m[System] Bibliography export failed: {e}\033[0m\n")
+
+
+PIPELINE_EVIDENCE_PROMPT = (
+    "\n\nYour research evidence has ALREADY been gathered and verified by an "
+    "automated pipeline (see the findings above -- you did not gather this yourself). "
+    "Do NOT call delegate_tasks. Briefly acknowledge the evidence is ready; the system "
+    "will handle writing findings.md and the final report from here."
+)
+
+
+def _load_pipeline_evidence(run_state, evidence_dir: str) -> int:
+    """--pipeline-evidence / `/pipeline-evidence` / API `pipeline_evidence_dir`: bridges a
+    completed stage-graph pipeline run's evidence table (src/pipeline/run.py's evidence.json) into
+    run_state, replacing the Planner's own delegate_tasks research phase for this run while leaving
+    findings_writer_agent/builder_agent and the completion checks unchanged (ROADMAP.md's
+    stage-graph-pipeline entry). Must run AFTER run_state_ctx is set. Returns findings added;
+    raises on a missing/invalid evidence.json (callers surface it)."""
+    from pipeline.bridge import seed_run_state_from_evidence
+    eb_dir = Path(evidence_dir).expanduser()
+    ev = json.loads((eb_dir / "evidence.json").read_text())
+    return seed_run_state_from_evidence(run_state, ev["facets"], ev["evidence"], eb_dir, ev.get("titles"))
 
 
 def _ingest_local_doc(path: str) -> tuple[bool, str]:
@@ -2545,28 +2588,14 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
                     + "\n".join(f"- {f}" for f in seeded_docs)
                 )
 
-        # --pipeline-evidence: bridges a completed stage-graph pipeline run's evidence table
-        # (src/pipeline/run.py, evidence.json) straight into this run's RunState, replacing the
-        # Planner's own delegate_tasks research phase for this run while leaving
-        # findings_writer_agent/builder_agent and the completion-check pipeline unchanged (see
-        # ROADMAP.md's stage-graph-pipeline entry for why). CLI-only for now — TUI/api.py parity
-        # is a known open item, not yet done (project TUI/CLI/API parity rule).
+        # --pipeline-evidence: see _load_pipeline_evidence.
         if pipeline_evidence_dir:
-            import json as _json
-            from pipeline.bridge import seed_run_state_from_evidence
-            eb_dir = Path(pipeline_evidence_dir)
-            ev = _json.loads((eb_dir / "evidence.json").read_text())
-            added = seed_run_state_from_evidence(run_state, ev["facets"], ev["evidence"], eb_dir)
+            added = _load_pipeline_evidence(run_state, pipeline_evidence_dir)
             sys.stdout.write(
                 f"\033[93m[System] Pipeline evidence loaded: {added} findings from "
                 f"{pipeline_evidence_dir}. Skipping the agent's own research phase.\033[0m\n"
             )
-            current_input += (
-                "\n\nYour research evidence has ALREADY been gathered and verified by an "
-                "automated pipeline (see the findings above -- you did not gather this yourself). "
-                "Do NOT call delegate_tasks. Briefly acknowledge the evidence is ready; the system "
-                "will handle writing findings.md and the final report from here."
-            )
+            current_input += PIPELINE_EVIDENCE_PROMPT
 
         # Context-budget guard for the Planner stream (see orchestrator.get_context_budget) —
         # headless only, same policy as max_run_minutes. Counts streamed chars across the whole

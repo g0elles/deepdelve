@@ -206,6 +206,17 @@ tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
   residual quote remains that discusses Paxos Commit's mechanism without naming it in the sentence
   itself — an inherent limit of sentence-level judging, not something the prompt fix could reach).
 
+  Held-out set 4 (h19-h27, `eval/heldout4_results.md`, 2026-09-30, fresh data): 0 OK+ / 3 OK / 5 OK- / 1 WEAK vs heldout3's
+  2/1/4/2, so the post-freeze fixes did not clearly generalize (grades provisional: 3 quotes/facet read, single reader). Root causes found by
+  replaying saved sources (details `session_status/CURRENT.md`): named entity dropped because `query_entities` fused "Ghana's GDP" and
+  sentence-initial "Compare Finland's" into discarded title runs (so the re-plan guard never fired; the planner itself returns the third entity
+  when hinted); `_COUNTRIES["eu"]` lacked bare "EU" (a facet's 60 CE-positive candidates all died at the entity filter); region entities
+  ("Asia") matched literally (UN M49 membership now used for the 42 known countries). Fixed and measured on 24 hand-labeled multi-entity queries:
+  entity recall 0.79 -> 0.86. Still open: judge accepts any numeric fact about the topic (Criteria-Based LLM Relevance Judgments, arXiv:2507.09488,
+  read in full: per-passage kappa 0.3, 92.2% of disagreements too lenient; a prompt change must be validated on the hand-labeled relevance
+  sheets, not the facet it was tuned on), retrieval scarcity for some facets (verified for Finland adoption), and lowercase concept entities.
+  A previously claimed judge non-determinism was NOT reproduced (8 repeats + 2 processes identical) and is withdrawn.
+
 - **Completion-check escalation ladder is model-capability-agnostic, raised
   `RESEARCH_small_model_agentic_reliability.md` Finding B (2026-08-27) — CLOSED 2026-09-11.**
   `CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD` (`engine/completion_starvation.py`, default 3)

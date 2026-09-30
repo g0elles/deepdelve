@@ -151,7 +151,7 @@ _COUNTRIES = {k: re.compile(v) for k, v in {
     "za": r"\bsouth africa", "au": r"\baustralia", "kr": r"\bsouth korea|\bcorea del sur", "tw": r"\btaiwan", "dk": r"\bdenmark|\bdinamarca",
     "no": r"\bnorway|\bnoruega", "se": r"\bsweden|\bsuecia", "nl": r"\bnetherlands|\bpaises bajos", "ru": r"\brussia|\brusia",
     "gt": r"\bguatemala", "cr": r"\bcosta rica", "pa": r"\bpanama", "cu": r"\bcuba\b", "do": r"\bdominican|\brepublica dominicana",
-    "eg": r"\begypt", "tr": r"\bturkey|\bturquia", "ie": r"\bireland|\birlanda", "eu": r"\beuropean union|\bunion europea",
+    "eg": r"\begypt", "tr": r"\bturkey|\bturquia", "ie": r"\bireland|\birlanda", "eu": r"\beuropean union|\bunion europea|\beu\b",
 }.items()}
 
 
@@ -204,7 +204,15 @@ def year_score(t: str, now: int) -> float:
     return 0.4 if max(ys) >= now - 1 else -0.4
 
 
+_REGIONS = {  # UN M49 (unstats.un.org/unsd/methodology/m49/overview, checked 2026-09-30) membership, only countries already in _COUNTRIES; 'tw'/'uk'/'eu' not in M49 (kept by geography); Malaya/Ghana/Indonesia etc. still miss, extend _COUNTRIES when it matters
+    "asia": {"cn", "jp", "in", "kr", "tw", "tr"}, "africa": {"ng", "ke", "za", "eg"},
+    "europe": {"es", "fr", "de", "it", "pt", "uk", "dk", "no", "se", "nl", "ru", "ie", "eu"},
+    "americas": {"us", "ca", "mx", "co", "cl", "ar", "pe", "ec", "ve", "bo", "uy", "py", "br", "gt", "cr", "pa", "cu", "do"}}
+
+
 def _mentions(text_folded: str, ent: str) -> bool:
+    if ent in _REGIONS and countries(text_folded) & _REGIONS[ent]:
+        return True
     ck = countries(ent)
     if ck:  # aliases: "United Kingdom" facet, "UK" in the sentence
         return bool(countries(text_folded) & ck)
@@ -217,16 +225,18 @@ def _mentions(text_folded: str, ent: str) -> bool:
     return bool(re.search(rf"\b{re.escape(ent)}\b", text_folded)) if len(ent) <= 3 else ent[:5] in text_folded
 
 
-_CAP_RUN = re.compile(r"[A-Z\u00c1\u00c9\u00cd\u00d3\u00da\u00d1]\w+(?:['\u2019]s)?(?:[ \t]+[A-Z\u00c1\u00c9\u00cd\u00d3\u00da\u00d1]\w+(?:['\u2019]s)?)*")
+_CAP_RUN = re.compile(r"[A-Z\u00c1\u00c9\u00cd\u00d3\u00da\u00d1]\w+(?:['\u2019]s)?(?:[ \t]+(?![A-Z0-9]+\b)[A-Z\u00c1\u00c9\u00cd\u00d3\u00da\u00d1]\w+(?:['\u2019]s)?)*")  # next word not an ALL-CAPS acronym ("Ghana's GDP")
 
 
 def query_entities(query: str) -> set[str]:
     """Single capitalized words the user typed mid-sentence (Bogota, Lima, UK). Multi-word capitalized runs are titles
     ("Data Protection Act"), not entities that tell facets apart."""
-    out = set()
+    out, lead = set(), (1 if query[:1] in "\u00bf\u00a1" else 0)
     for m in _CAP_RUN.finditer(query):
         run = m.group().split()
-        if len(run) == 1 and m.start() > (1 if query[:1] in "\u00bf\u00a1" else 0):
+        if m.start() <= lead:  # sentence-initial capital carries no signal and fuses a verb onto the entity ("Compare Finland's")
+            run = run[1:]
+        if len(run) == 1:
             out.add(_fold(re.sub(r"['\u2019]s$", "", run[0])))
     f = _fold(query)
     for r in _COUNTRIES.values():  # countries the capitalized-word rule drops (multi-word, or sentence-initial run "Compare Japan's")
@@ -339,15 +349,16 @@ def search(question: str, k: int, stats: dict | None = None) -> list[str]:
     return urls
 
 
-def fetch(url: str) -> str | None:
+def fetch(url: str) -> tuple[str | None, str]:
+    """(text, page title): title is the page's own <head> title when declared, else "" (HTML only; PDFs have none)."""
     from tools.web import _fetch_raw, _stub_reason
     try:
-        data = _fetch_raw(url, True)[0]
+        data, _, meta = _fetch_raw(url, True)
     except Exception:
-        return None
+        return None, ""
     if not isinstance(data, str) or _stub_reason(data):
-        return None
-    return data
+        return None, ""
+    return data, (meta or {}).get("title", "")
 
 
 def extract(model: str, facets: list[dict], text: str) -> tuple[list[dict], int, int]:
@@ -431,6 +442,7 @@ def run(query: str, model: str, out: Path, topk: int, extractor: str = "ce", jud
     evidence = {f["id"]: {} for f in facets}  # facet -> url -> [quotes]
     emitted_total = kept_total = failed_total = 0
     seen: dict[str, str | None] = {}
+    titles: dict[str, str] = {}
 
     gstats: dict = {}
 
@@ -439,8 +451,10 @@ def run(query: str, model: str, out: Path, topk: int, extractor: str = "ce", jud
         results = [search(q, topk, gstats) for _, q in qs]
         todo = list(dict.fromkeys(u for r in results for u in r if u not in seen))
         with cf.ThreadPoolExecutor(4) as ex:
-            for u, txt in zip(todo, ex.map(fetch, todo)):
+            for u, (txt, title) in zip(todo, ex.map(fetch, todo)):
                 seen[u] = txt
+                if title:
+                    titles[u] = title
                 gstats["fetch_ok"] = gstats.get("fetch_ok", 0) + bool(txt)
                 gstats["fetch_fail"] = gstats.get("fetch_fail", 0) + (not txt)
                 if txt:
@@ -505,7 +519,7 @@ def run(query: str, model: str, out: Path, topk: int, extractor: str = "ce", jud
         "sources_per_facet": {f["id"]: len(evidence[f["id"]]) for f in facets},
         "wall_s": round(time.time() - t0, 1), "funnel": funnel, "gather": gstats,
     }
-    (out / "evidence.json").write_text(json.dumps({"facets": facets, "evidence": evidence}, indent=1))
+    (out / "evidence.json").write_text(json.dumps({"facets": facets, "evidence": evidence, "titles": titles}, indent=1))
     (out / "metrics.json").write_text(json.dumps(metrics, indent=1))
     return metrics
 

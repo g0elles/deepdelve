@@ -55,7 +55,7 @@ def main():
             # (only agent/session/_run_single_task are) -- capture it off the `tools` kwarg the
             # SDK's own as_agent() receives, the one place the closure object crosses a boundary
             # this test can intercept.
-            from agent_framework.openai import OpenAIChatCompletionClient
+            from agent_framework import BaseChatClient as OpenAIChatCompletionClient  # both backends inherit as_agent from it
             captured = {}
             orig_as_agent = OpenAIChatCompletionClient.as_agent
 
@@ -269,7 +269,7 @@ def main():
                 return None  # settings.enable_conversational_memory defaults True
 
         def _patch_as_agent(fake_agent):
-            from agent_framework.openai import OpenAIChatCompletionClient
+            from agent_framework import BaseChatClient as OpenAIChatCompletionClient  # both backends inherit as_agent from it
             def _patched(self, *a, **k):
                 return fake_agent
             return _patch_st.object(OpenAIChatCompletionClient, "as_agent", _patched)
@@ -440,7 +440,7 @@ def main():
                 return None
 
         def _patch_as_agent_pl(fake_agent):
-            from agent_framework.openai import OpenAIChatCompletionClient
+            from agent_framework import BaseChatClient as OpenAIChatCompletionClient  # both backends inherit as_agent from it
             def _patched(self, *a, **k):
                 return fake_agent
             return _patch_pl.object(OpenAIChatCompletionClient, "as_agent", _patched)

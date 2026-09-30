@@ -1,0 +1,9 @@
+h19	Compare Finland's and Estonia's approaches to digital public services and the resulting citizen adoption rates.
+h20	What are the legal requirements for minimum paid annual leave in France, Brazil and South Korea, including days and pay?
+h21	How do LSM trees and B-trees differ in write amplification and read performance, and which production databases use each?
+h22	What is known about how GLP-1 receptor agonists work in treating obesity, and what do phase 3 trials report?
+h23	What were the causes and consequences of the 1918 influenza pandemic, with mortality figures by region?
+h24	What are the latest developments in the European Union's AI Act implementation?
+h25	What were Portugal's, Vietnam's and Ghana's GDP per capita, internet penetration and fertility rate in the most recent reported year?
+h26	¿Cómo funciona el sistema de salud pública de Colombia y cuáles son sus principales actores y cifras de cobertura?
+h27	What does the evidence say for and against remote work on productivity and employee wellbeing?
