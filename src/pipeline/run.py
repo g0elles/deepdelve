@@ -400,13 +400,14 @@ def select_ce(query, facets, seen, urls, evidence, owner, funnel, cfg=None):
             cands += [(u, t) for _, t in bm25_top(pools[u], q, POOL)]
         scored = sorted(((ce_score(q, t, ce_model), u, t) for u, t in cands), key=lambda z: -z[0])
         emitted += len(scored)
-        top = scored[:CE_POOL]
-        pos = [z for z in top if z[0] > CE_MIN[ce_model]]
+        # Filter by entity/jurisdiction BEFORE cutting to CE_POOL: CE ranks topical similarity, so for an entity facet ("Asia") wrong-entity
+        # sentences (Europe, world totals) outrank the right ones and, cut first, left ~6 of 40 (h23: 25 entity-first). Unconstrained facets unchanged.
+        pos = [z for z in scored if z[0] > CE_MIN[ce_model]]
         ent = [z for z in pos if not cfg["entity"] or entity_ok(f["id"], z[2], seen[z[1]], ents)]
         jur = [z for z in ent if not cfg["juris"] or (jurisdiction_ok(z[2], qkeys) and z[1] not in off)]
-        per_facet[f["id"]] = jur
+        per_facet[f["id"]] = jur[:CE_POOL]
         st = funnel.setdefault(f["id"], {"urls": 0, "cands": 0, "ce_pool": 0, "ce_pos": 0, "entity": 0, "juris": 0, "kept": 0})
-        for k, v in zip(("urls", "cands", "ce_pool", "ce_pos", "entity", "juris"), (len(urls), len(scored), len(top), len(pos), len(ent), len(jur))):
+        for k, v in zip(("urls", "cands", "ce_pool", "ce_pos", "entity", "juris"), (len(urls), len(scored), min(len(scored), CE_POOL), len(pos), len(ent), len(jur))):
             st[k] += v
     for f in facets:  # a quote already claimed by another facet is demoted, not dropped (dropping starved later facets)
         def key(z):

@@ -79,6 +79,25 @@ def test_entity_detection_heldout_regressions():
     assert _mentions(_fold("The largest numbers were in India."), "asia") and not _mentions(_fold("Deaths in France."), "asia")
 
 
+def test_entity_filter_runs_before_pool_truncation():
+    """h23 Asia/Africa: select_ce took the CE top-40 BEFORE the entity filter, so wrong-entity sentences ranked higher by CE
+    filled the pool and the filter then left ~6 of them (vs 25 entity-first)."""
+    import pipeline.tune as tune
+    from pipeline import run as R
+    facets = [{"id": "f1", "name": "Mortality figures in Asia", "entity": "Asia", "questions": ["Asia mortality deaths figures"]}]
+    # 3 sources x 30 BM25 candidates = 90 > CE_POOL (40): truncation happens, so the wrong-entity block must not crowd out the right one
+    src = {f"u{k}": " ".join([f"Europe reported mortality figures of {k}{i} thousand deaths in 1918 during the influenza outbreak, records show." for i in range(60)]
+                            + [f"Asia reported mortality figures of {k} million deaths in 1918 during the influenza outbreak, records show."]) for k in range(3)}
+    orig, tune.ce_score = tune.ce_score, (lambda q, t, m: 5.0 if t.startswith("Europe") else 1.0)
+    try:
+        ev, funnel = {"f1": {}}, {}
+        R.select_ce("Asia mortality", facets, src, list(src), ev, {}, funnel, {"judge": None})
+    finally:
+        tune.ce_score = orig
+    quotes = [q for qs in ev["f1"].values() for q in qs]
+    assert quotes and all(q.startswith("Asia") for q in quotes), quotes
+
+
 def test_jurisdiction_and_recency():
     from pipeline.run import countries, jurisdiction_ok, year_score
     q = countries("¿Cómo se regula la protección de datos en México?")

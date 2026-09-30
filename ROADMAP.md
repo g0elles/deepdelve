@@ -216,6 +216,13 @@ tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
   read in full: per-passage kappa 0.3, 92.2% of disagreements too lenient; a prompt change must be validated on the hand-labeled relevance
   sheets, not the facet it was tuned on), retrieval scarcity for some facets (verified for Finland adoption), and lowercase concept entities.
   A previously claimed judge non-determinism was NOT reproduced (8 repeats + 2 processes identical) and is withdrawn.
+  Live rerun of h23-h25 at fad56df (no popups, virtual display): h25 now has a Ghana facet, h24's first facet went from 0 to 8 sources.
+  Further root cause, verified by counting: `select_ce` cut the CE top-40 BEFORE the entity filter, so entity facets spent their pool on
+  higher-CE wrong-entity sentences (Asia: 6 survivors vs 25 entity-first); fixed (filter, then cut) and A/B'd on saved h23 sources with the
+  judge: Asia 1 -> 6 kept quotes, Africa 1 -> 2, Europe 3 -> 9. Stemming (Porter/Snowball) was tested and does NOT help (Asia 53 -> 53,
+  Africa 13 -> 15 of 25 targets reach the BM25 pool; arXiv:2402.11757 read in full, English doc-retrieval evidence only) and neither does
+  raising the per-source BM25 cap. Facet-completeness verification is supported in principle by arXiv:2609.35774 (read in full; different
+  stage, closed corpus) but not built.
 
 - **Completion-check escalation ladder is model-capability-agnostic, raised
   `RESEARCH_small_model_agentic_reliability.md` Finding B (2026-08-27) — CLOSED 2026-09-11.**
