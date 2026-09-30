@@ -104,6 +104,8 @@ playwright install chromium
 ```
 On a display-less Linux server, also install system `Xvfb` so the fallback can try a real (non-headless) browser first, which recovers stricter blocks headless alone can't. Without it, the fallback still works, just headless-only.
 
+On a Linux desktop with a real display, that same real (non-headless) Chromium launches ON your actual desktop by default, which pops a visible window and steals focus on every fetch. Set `DEEPDELVE_FORCE_VIRTUAL_DISPLAY=1` to always route it to an Xvfb virtual display instead (needs `pip install pyvirtualdisplay` + system `Xvfb`); it falls back to headless if Xvfb isn't available, never to the real desktop.
+
 ### 2. Model & Endpoint
 
 DeepDelve talks to any **OpenAI-compatible chat-completions endpoint**, Ollama is just the default. Point it elsewhere by editing `~/.deepdelve/config.yaml` (created on first run):

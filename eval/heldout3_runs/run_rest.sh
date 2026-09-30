@@ -1,5 +1,5 @@
 #!/bin/bash
-cd "$(dirname "$0")/../../src"; unset DISPLAY WAYLAND_DISPLAY; export XDG_SESSION_TYPE=x11
+cd "$(dirname "$0")/../../src"; export DEEPDELVE_FORCE_VIRTUAL_DISPLAY=1
 while IFS=$'\t' read -r id q; do
   ~/.venvs/deepdelve/bin/python -m pipeline.run "$q" --out ../eval/heldout3_runs/$id > ../eval/heldout3_runs/$id.log 2>&1
   echo "$id done $?"
