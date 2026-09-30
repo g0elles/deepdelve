@@ -72,5 +72,9 @@ def _citation_format_reminder(report_style: str) -> str:
             "`(Source: [Title](URL))` at the end of the answer sentence, using a URL you actually "
             "fetched this run — this style has no separate References/Sources section"
         )
-    return "the exact format `- **[Title](URL)**`"
+    return (
+        "an in-text `[N]` bracketed number immediately after the claim, with a matching numbered "
+        "Sources entry at the end (`N. **[Title](URL)**`) — NOT the full `- **[Title](URL)**` "
+        "bullet inline after every sentence, that belongs only in the Sources list"
+    )
 

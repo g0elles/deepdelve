@@ -47,7 +47,12 @@
 
 STANDARD_REPORT_STYLE_INSTRUCTIONS = """Dynamically determine the report format based on query complexity:
    - Simple queries: A concise answer with source attribution.
-   - Complex queries: Structured sections (Introduction, Findings, Analysis, Sources)."""
+   - Complex queries: Structured sections (Introduction, Findings, Analysis, Sources).
+   - **Write connected prose within each section, not one citation-bullet per sentence.** A
+     section should read as paragraphs that synthesize and compare multiple findings — see the
+     citation format below for how to attribute claims inline without breaking up the prose.
+   - **Sources** section at the end is mandatory whenever any in-text citation is used (i.e.
+     always, except the shortest simple-query answers) — see the citation format below."""
 
 ACADEMIC_REPORT_STYLE_INSTRUCTIONS = """Write a literature-review-style paper, not a market-research report:
    - **Abstract** (5-6 sentences: background/rationale, scope, method, key findings, implications/gaps).
@@ -62,9 +67,23 @@ ACADEMIC_REPORT_STYLE_INSTRUCTIONS = """Write a literature-review-style paper, n
    - **Conclusion** — 3-5 key takeaways.
    - **References** — see the citation format below; this section is mandatory in this style."""
 
-STANDARD_CITATION_FORMAT_INSTRUCTIONS = """Use this exact format for sources: `- **[Title](URL)**`
-- Example: `- **[ChatGPT-4 Technical Report](https://openai.com/research/chatgpt-4)**`
-- For simple queries, a short factual answer is sufficient.
+STANDARD_CITATION_FORMAT_INSTRUCTIONS = """## Citation format (standard style)
+Two-part format, same split as a numbered-reference paper -- a lightweight in-text marker so
+prose can stay connected, plus a full reference list at the end. Do NOT put the full
+`- **[Title](URL)**` bullet inline after every sentence -- that breaks every section into a
+one-claim-per-line citation dump instead of a written report.
+- **In-text**: cite every claim with a bracketed number immediately after it, e.g. "Raft was
+  designed for understandability [3], whereas Paxos does not specify how to choose a leader [7]."
+  A sentence drawing on more than one source cites both: "...used by CockroachDB and etcd [2][5]."
+  Multiple claims in the same paragraph can share a citation number when they come from the same
+  source -- you do not need to repeat [N] on every clause, only when the source changes.
+- **Sources** section at the end, numbered to match the in-text markers, one entry per source
+  actually cited in-text: `N. **[Title](URL)**`, e.g. `3. **[Raft Explained](https://raft.github.io/)**`.
+  Number sources in the order they're first cited. Every [N] in the body MUST have a matching
+  numbered entry here with a real URL -- an in-text [N] with no matching entry, or an entry with
+  no URL, fails the same grounding check a fabricated citation would.
+- For simple queries, a short factual answer with inline [N] citations and a short Sources list is
+  sufficient -- the two-part format still applies, just briefer.
 - For complex queries, include methodology and source quality notes."""
 
 # ATTRIBUTION (answer mode, ROADMAP.md candidate from dzhng/deep-research's writeFinalAnswer):

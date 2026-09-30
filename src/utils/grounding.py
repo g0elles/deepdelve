@@ -404,6 +404,55 @@ def parse_academic_references(report: str) -> dict[str, str]:
     return mapping
 
 
+# A numbered Sources-list entry in standard style, e.g. "3. **[Raft Explained](https://...)**" —
+# STANDARD_CITATION_FORMAT_INSTRUCTIONS (prompts.py, 2026-09-29 fix for the citation-dump
+# incident: mechanical "<sentence> - **[Title](URL)**" per line, no synthesis possible, root-caused
+# to standard style never having a lightweight in-text marker like academic's "(Author, Year)").
+# Only the leading digit prefix is captured here; extract_cited_urls resolves the URL itself from
+# the rest of the line, same division of labor as _REFERENCE_ENTRY_RE/parse_academic_references.
+_NUMBERED_ENTRY_PREFIX_RE = re.compile(r'^[\s>]*[*_]*(\d+)[.):]')
+
+# In-text `[N]` citation marker, e.g. "Raft was designed for understandability [3]." Deliberately
+# not anchored to word boundaries beyond the brackets themselves -- a footnote-style "[3][7]" for a
+# multi-source claim (STANDARD_CITATION_FORMAT_INSTRUCTIONS' own example) must match both numbers
+# via .finditer, not just the first.
+_NUMBERED_CITATION_RE = re.compile(r'\[(\d+)\]')
+
+
+def parse_numbered_sources(report: str) -> dict[str, str]:
+    """Map in-text `[N]` citation numbers to the real URL on that numbered Sources-list entry, for
+    reports using the project's default standard-style `[N]` + numbered-Sources format instead of
+    academic `(Author, Year)`. Same resolve-or-leave-unresolvable design as
+    parse_academic_references: an entry with no real URL doesn't resolve, so it's still caught as
+    an unverifiable citation elsewhere, same as a fabricated `(Author, Year)` entry with no URL."""
+    section = extract_sources_section(report)
+    if not section:
+        return {}
+    mapping = {}
+    for line in section.splitlines():
+        m = _NUMBERED_ENTRY_PREFIX_RE.match(line.strip())
+        if not m:
+            continue
+        urls = extract_cited_urls(line)
+        if urls:
+            mapping[m.group(1)] = urls[0]
+    return mapping
+
+
+def _resolve_citation_map(report: str) -> dict[str, str]:
+    """Union of every supported in-text citation dialect's key->URL map (academic (surname,year)
+    string keys, standard-style numbered digit-string keys) for the generic, format-agnostic
+    grounding checks (claim_grounding_problem, find_unsupported_regulation_ids, etc.) that already
+    treat academic citations as just one of several dialects on the SAME line-scoped algorithm --
+    see e.g. claim_grounding_problem's own 'so an academic-style claim gets the identical
+    term-overlap check as the default format' comment. The two key shapes never collide, so a
+    plain dict union is safe. Deliberately NOT used by academic_citation_existence_problem, which
+    is genuinely academic-only (splits a key into author/year for a Semantic Scholar lookup that
+    makes no sense for a numeric key) -- that caller keeps calling parse_academic_references
+    directly."""
+    return {**parse_academic_references(report), **parse_numbered_sources(report)}
+
+
 # Line-anchored citation-label shape ("Source: ..." / "- **Fuentes:** ..."), NOT any line merely
 # containing the word "source" — confirmed live (2026-07-11 Colombia benchmark, qwen3.6): a
 # heading "## Methodology & Source Quality Notes" and the prose "No claims were made without
@@ -562,10 +611,13 @@ def _fetched_url_files() -> dict:
 
 
 def _line_cited_files(line: str, fetched: dict, ref_map: dict) -> list[str]:
-    """Resolve every citation on a line — inline `https://...` URLs AND academic-style
-    `(Author, Year)` citations resolved through ref_map — to the fetched source's workspace
-    filename. Shared by find_unsupported_regulation_ids and claim_grounding_problem so both
-    line-scoped checks see academic citations the same way the hard URL gate does."""
+    """Resolve every citation on a line — inline `https://...` URLs, academic-style
+    `(Author, Year)` citations, and standard-style `[N]` numbered citations, all resolved through
+    ref_map — to the fetched source's workspace filename. Shared by find_unsupported_regulation_ids
+    and claim_grounding_problem so both line-scoped checks see every citation dialect the same way
+    the hard URL gate does. ref_map is expected to be _resolve_citation_map's UNION of
+    parse_academic_references and parse_numbered_sources — academic (surname,year) string keys and
+    numbered digit-string keys never collide, so one dict safely serves both dialects."""
     files = []
     for u in extract_cited_urls(line):
         key = _normalize_url(u)
@@ -578,6 +630,15 @@ def _line_cited_files(line: str, fetched: dict, ref_map: dict) -> list[str]:
         if not rkey or rkey not in ref_map:
             continue
         url = _normalize_url(ref_map[rkey])
+        fn = fetched.get(url) or next(
+            (f for orig, f in fetched.items() if _urls_prefix_match(url, orig)), None)
+        if fn and fn not in files:
+            files.append(fn)
+    for nm in _NUMBERED_CITATION_RE.finditer(line):
+        nkey = nm.group(1)
+        if nkey not in ref_map:
+            continue
+        url = _normalize_url(ref_map[nkey])
         fn = fetched.get(url) or next(
             (f for orig, f in fetched.items() if _urls_prefix_match(url, orig)), None)
         if fn and fn not in files:
@@ -609,7 +670,7 @@ def find_unsupported_regulation_ids(text: str) -> list[str]:
     construction: only the identifier's primary number is required, as a whole word, anywhere in
     the source — absence is a strong signal, coincidental presence just means no flag."""
     fetched = _fetched_url_files()
-    ref_map = parse_academic_references(text or "")
+    ref_map = _resolve_citation_map(text or "")
     hits = []
     for line in (text or "").splitlines():
         ids = list(_REGULATION_ID_RE.finditer(line))
@@ -760,7 +821,7 @@ def find_unsupported_specific_figures(text: str) -> list[str]:
     coincidental presence of the same token in the WRONG source for an unrelated reason is a false
     negative this check accepts rather than risk over-firing."""
     fetched = _fetched_url_files()
-    ref_map = parse_academic_references(text or "")
+    ref_map = _resolve_citation_map(text or "")
     hits = []
     # Built lazily (2026-08-25 live incident, second false positive found the same day as the
     # case-insensitivity fix above), only if a named token ever needs it -- see its use below for
@@ -875,7 +936,7 @@ def find_paraphrased_quotes(text: str) -> list[str]:
     joined two non-adjacent real sentences this way) isn't false-flagged just because the joined
     whole isn't one contiguous source substring."""
     fetched = _fetched_url_files()
-    ref_map = parse_academic_references(text or "")
+    ref_map = _resolve_citation_map(text or "")
     hits = []
     for line in (text or "").splitlines():
         quotes = list(_QUOTED_SPAN_RE.finditer(line))
@@ -1020,7 +1081,7 @@ def claim_grounding_problem(report: str) -> str | None:
     so an academic-style claim gets the identical term-overlap check as the default format."""
     prose = split_prose_from_sources(report)
     fetched = _fetched_url_files()
-    ref_map = parse_academic_references(report)
+    ref_map = _resolve_citation_map(report)
 
     unsupported = []
     source_terms_cache: dict = {}
@@ -1163,7 +1224,7 @@ def find_cross_source_contradictions(report: str) -> list[str]:
     both figures has done the job this check exists to force — not a false-flag)."""
     fetched = _fetched_url_files()
     prose = split_prose_from_sources(report)
-    ref_map = parse_academic_references(report)
+    ref_map = _resolve_citation_map(report)
 
     per_file_claims: dict[str, list[tuple[str, str]]] = {}
     for fn in set(fetched.values()):
@@ -1294,7 +1355,7 @@ def _grounded_claim_pairs(report: str) -> list[tuple[str, str, str]]:
     the common single-citation-per-line case."""
     prose = split_prose_from_sources(report)
     fetched = _fetched_url_files()
-    ref_map = parse_academic_references(report)
+    ref_map = _resolve_citation_map(report)
 
     pairs = []  # (window, claim_line_text, display_citation)
     for line in prose.splitlines():
@@ -1481,7 +1542,7 @@ def _all_citation_claim_pairs(report: str) -> list[tuple[str, str, str]]:
     evidence its own algorithm is built to handle."""
     prose = split_prose_from_sources(report)
     fetched = _fetched_url_files()
-    ref_map = parse_academic_references(report)
+    ref_map = _resolve_citation_map(report)
 
     pairs = []  # (window, claim_line_text, display_citation)
     for line in prose.splitlines():
