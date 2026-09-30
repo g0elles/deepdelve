@@ -7,6 +7,7 @@ import json
 import math
 import re
 import time
+import urllib.parse
 from pathlib import Path
 
 from pipeline.llm import call_json
@@ -117,7 +118,9 @@ def judge(model: str, facet: dict, cands: list[tuple[str, str]]) -> list[int]:
     lst = "\n".join(f"{i}. {t}" for i, (_, t) in enumerate(cands))
     p = (f"Facet: {facet['name']}\nQuestions: {'; '.join(facet['questions'])}\n\nCandidate sentences:\n{lst}\n\n"
          f"Return the numbers of candidates that state a specific fact (a date, number, named law, "
-         f"mechanism, or comparison) relevant to this facet. Skip vague or off-topic ones.")
+         f"mechanism, or comparison) relevant to this facet. Skip vague or off-topic ones. Also skip a candidate "
+         f"about a differently-named variant or extension of this facet's subject (e.g. 'Paxos Commit' is not "
+         f"'Paxos', 'Multi-Raft' is not 'Raft') unless the facet's own name or questions ask about that variant.")
     try:
         return [i for i in call_json(model, p, JUDGE_SCHEMA, think="low", timeout=120)["keep"] if 0 <= i < len(cands)]
     except Exception:
@@ -163,13 +166,20 @@ def jurisdiction_ok(sent: str, qkeys: set[str]) -> bool:
     return not qkeys or not got or bool(got & qkeys)
 
 
-def source_off_jurisdiction(source: str, qkeys: set[str]) -> bool:
+def source_off_jurisdiction(url: str, source: str, qkeys: set[str]) -> bool:
     """A page dominated by another country (>=5 mentions and 2x the query country's) is about the wrong jurisdiction.
-    On the Spanish sheet: drops 14 negatives / 2 positives of 37 (n small)."""
+    On the Spanish sheet: drops 14 negatives / 2 positives of 37 (n small).
+    A page hosted on another country's ccTLD (gov.co, .co) is credited 6 mentions of it: a page about a country's
+    institutions by their local name (ADRES, pesos) may barely say the country's own name (h08, Colombian health-fund
+    page on a Costa Rica query slipped through with <5 literal "Colombia" mentions)."""
     if not qkeys:
         return False
     f = _fold(source)
     c = {k: len(r.findall(f)) for k, r in _COUNTRIES.items()}
+    host = urllib.parse.urlparse(url).netloc.lower()
+    tld = host.rsplit(".", 1)[-1] if "." in host else ""
+    if tld in c and tld not in ("us", "uk", "eu"):
+        c[tld] += 6
     top = max(c, key=c.get)
     return top not in qkeys and c[top] >= 5 and c[top] >= 2 * max(sum(c[k] for k in qkeys), 1)
 
@@ -369,7 +379,7 @@ def select_ce(query, facets, seen, urls, evidence, owner, funnel, cfg=None):
     es = ce_model == CE_ML
     recent, now = bool(_RECENT.search(_fold(query))), time.localtime().tm_year
     pools = {u: sentences(seen[u]) for u in urls}
-    off = {u for u in urls if cfg["juris"] and source_off_jurisdiction(seen[u], qkeys)}
+    off = {u for u in urls if cfg["juris"] and source_off_jurisdiction(u, seen[u], qkeys)}
     emitted = kept = 0
     per_facet = {}
     for f in facets:

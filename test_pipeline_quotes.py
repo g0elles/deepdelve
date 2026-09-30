@@ -81,9 +81,12 @@ def test_jurisdiction_and_recency():
 
 def test_source_off_jurisdiction():
     from pipeline.run import source_off_jurisdiction
-    assert source_off_jurisdiction("Chile " * 8 + "Mexico", {"mx"})
-    assert not source_off_jurisdiction("Mexico " * 8 + "Chile " * 8, {"mx"})
-    assert not source_off_jurisdiction("Chile " * 8, set())
+    assert source_off_jurisdiction("https://x.org", "Chile " * 8 + "Mexico", {"mx"})
+    assert not source_off_jurisdiction("https://x.org", "Mexico " * 8 + "Chile " * 8, {"mx"})
+    assert not source_off_jurisdiction("https://x.org", "Chile " * 8, set())
+    # h08: a Colombian institution page rarely says "Colombia" by name but is hosted on .co
+    assert source_off_jurisdiction("https://www.adres.gov.co", "ADRES pesos.", {"cr"})
+    assert not source_off_jurisdiction("https://www.ccss.sa.cr", "CCSS colones.", {"cr"})  # own ccTLD: unaffected
 
 
 def test_hard_wrapped_sentences_rejoined():
