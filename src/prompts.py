@@ -77,11 +77,18 @@ one-claim-per-line citation dump instead of a written report.
   A sentence drawing on more than one source cites both: "...used by CockroachDB and etcd [2][5]."
   Multiple claims in the same paragraph can share a citation number when they come from the same
   source -- you do not need to repeat [N] on every clause, only when the source changes.
-- **Sources** section at the end, numbered to match the in-text markers, one entry per source
-  actually cited in-text: `N. **[Title](URL)**`, e.g. `3. **[Raft Explained](https://raft.github.io/)**`.
-  Number sources in the order they're first cited. Every [N] in the body MUST have a matching
-  numbered entry here with a real URL -- an in-text [N] with no matching entry, or an entry with
-  no URL, fails the same grounding check a fabricated citation would.
+- **Sources** section at the end, numbered to match the in-text markers, ONE entry per REAL,
+  DISTINCT url actually cited in-text (never two entries for the same URL under different
+  numbers -- if a source is cited many times, reuse its existing number): `N. **[Title](URL)**`,
+  e.g. `3. **[Raft Explained](https://raft.github.io/)**`. Number sources in the order they're
+  first cited. Every [N] in the body MUST have a matching numbered entry here with a real URL --
+  an in-text [N] with no matching entry, or an entry with no URL, fails the same grounding check a
+  fabricated citation would.
+- **Title comes from that SPECIFIC url's own heading in `findings.md`** (the text inside the
+  `[...]` of its `### [Title](URL)` line) -- look each one up individually. Never reuse one
+  source's title for a different URL, and never invent a title from memory: a Sources list where
+  several different URLs all show the same title (e.g. every entry reusing the first source's
+  title as a placeholder) is exactly as wrong as citing the wrong URL for a claim.
 - For simple queries, a short factual answer with inline [N] citations and a short Sources list is
   sufficient -- the two-part format still applies, just briefer.
 - For complex queries, include methodology and source quality notes."""
@@ -933,7 +940,9 @@ tool) — instead, remove or rewrite the specific claim using only what `finding
 <Show Your Thinking>
 Before writing, use `think_tool` to check: does every claim I'm about to write trace back to a
 specific line in `findings.md`? Am I about to state anything from my own prior knowledge instead
-of from a finding? If yes, remove or flag it.
+of from a finding? If yes, remove or flag it. If using standard style's numbered Sources list: does
+every number correspond to exactly one distinct URL (no duplicates), and does every entry's title
+come from THAT url's own findings.md heading rather than a copy-pasted placeholder?
 </Show Your Thinking>
 
 <Hard Limits>
@@ -1055,12 +1064,20 @@ what your task instructions' evidence base already has.
   Never introduce a URL that isn't already in your task instructions' evidence base — the engine
   will reject a report built from findings that cite a URL that was never actually fetched this
   run.
+- **The Title is per-URL, not one label for the whole file.** Copy the exact title your task
+  instructions' evidence base gives for THAT SPECIFIC url — never invent one, never guess one from
+  the domain/URL text, and never reuse an earlier entry's title for a different URL. A findings.md
+  where several different URLs all show the same title (e.g. every heading reusing the first
+  source's title as a placeholder) is exactly as wrong as citing the wrong URL for a claim, and it
+  corrupts every downstream report that trusts these headings.
 - Mark any unverified claims from informal sources.
 
 <Show Your Thinking>
 Before writing, use `think_tool` to check: does every line I'm about to write trace back to a
 specific result in my task instructions or a source file I actually read? Am I about to state
 anything from my own prior knowledge instead of from real evidence? If yes, remove or flag it.
+Does every heading's title actually belong to THAT heading's own URL, or did I copy one title
+across several different sources?
 </Show Your Thinking>
 
 <Hard Limits>
