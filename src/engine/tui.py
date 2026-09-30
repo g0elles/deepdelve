@@ -2249,7 +2249,8 @@ def _find_last_substantial_text(min_len: int = 200) -> str:
 
 
 async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_id: str = None,
-                  resume_run: str = None, seed_urls: list = None, seed_docs: list = None):
+                  resume_run: str = None, seed_urls: list = None, seed_docs: list = None,
+                  pipeline_evidence_dir: str = None):
     """Run the agent in headless mode, streaming results to stdout."""
     # Python block-buffers stdout by default when it's redirected to a file/pipe (not a real
     # TTY) — confirmed live 2026-07-12: a background-launched headless run kept writing real
@@ -2544,6 +2545,29 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
                     + "\n".join(f"- {f}" for f in seeded_docs)
                 )
 
+        # --pipeline-evidence: bridges a completed stage-graph pipeline run's evidence table
+        # (src/pipeline/run.py, evidence.json) straight into this run's RunState, replacing the
+        # Planner's own delegate_tasks research phase for this run while leaving
+        # findings_writer_agent/builder_agent and the completion-check pipeline unchanged (see
+        # ROADMAP.md's stage-graph-pipeline entry for why). CLI-only for now — TUI/api.py parity
+        # is a known open item, not yet done (project TUI/CLI/API parity rule).
+        if pipeline_evidence_dir:
+            import json as _json
+            from pipeline.bridge import seed_run_state_from_evidence
+            eb_dir = Path(pipeline_evidence_dir)
+            ev = _json.loads((eb_dir / "evidence.json").read_text())
+            added = seed_run_state_from_evidence(run_state, ev["facets"], ev["evidence"], eb_dir)
+            sys.stdout.write(
+                f"\033[93m[System] Pipeline evidence loaded: {added} findings from "
+                f"{pipeline_evidence_dir}. Skipping the agent's own research phase.\033[0m\n"
+            )
+            current_input += (
+                "\n\nYour research evidence has ALREADY been gathered and verified by an "
+                "automated pipeline (see the findings above -- you did not gather this yourself). "
+                "Do NOT call delegate_tasks. Briefly acknowledge the evidence is ready; the system "
+                "will handle writing findings.md and the final report from here."
+            )
+
         # Context-budget guard for the Planner stream (see orchestrator.get_context_budget) —
         # headless only, same policy as max_run_minutes. Counts streamed chars across the whole
         # run (with conversational memory the session accumulates across turns).
@@ -2679,6 +2703,10 @@ def cli_main(builder):
                              "run's workspace before research starts (repeatable). Headless mode.")
     parser.add_argument("--list-runs", action="store_true",
                         help="List research runs in the workspace dir (report status, date) and exit.")
+    parser.add_argument("--pipeline-evidence", type=str, default=None, metavar="DIR",
+                        help="Skip the agent's own research phase and write findings/report "
+                             "straight from a completed stage-graph pipeline run's evidence.json "
+                             "(src/pipeline/run.py --out DIR). Headless mode, CLI-only for now.")
     args, _ = parser.parse_known_args()
 
     import config
@@ -2736,7 +2764,8 @@ def cli_main(builder):
     if args.prompt_file or args.prompt or args.resume_run:
         asyncio.run(run_cli(builder, prompt=args.prompt, prompt_file=args.prompt_file,
                             session_id=args.resume, resume_run=args.resume_run,
-                            seed_urls=args.seed_url, seed_docs=args.seed_doc))
+                            seed_urls=args.seed_url, seed_docs=args.seed_doc,
+                            pipeline_evidence_dir=args.pipeline_evidence))
     else:
         BasicTuiAgent(builder, session_to_resume=args.resume).run()
 
