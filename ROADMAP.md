@@ -129,6 +129,83 @@ here got moved out, most already live in the wiki's [Completed](https://github.c
 or [Changelog](https://github.com/g0elles/deepdelve/wiki/Changelog); anything not yet migrated is
 tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
 
+- **Stage-graph pipeline prototype (branch `stage-graph-prototype`, `src/pipeline/`) — evaluate,
+  then decide how it merges with the agent loop. NOT started as a task; the prototype itself is
+  mid-build across 16 commits (d741b61 latest), fully additive so far (no file in `src/engine/`,
+  `api.py`, or `ARCHITECTURE.md`'s documented pipeline touched).**
+  Why this exists (plan dated 2026-09-24, `session_status/2026-09-25.md:123-141` — moved here
+  because it's a load-bearing decision, not short-lived working memory): the main agent
+  (`src/engine/completion.py` + the free-form tool-calling loop) was producing thin/wrong `gpt-oss`
+  reports (median ~470 words, missing comparison tables, wrong-paper citations) and the diagnosed
+  cause was the free-form agent itself (98 `delegate_tasks` rejections observed, retries adding no
+  new evidence), not the search/retrieval underneath it. The prototype replaces the agent's control
+  flow with a deterministic pipeline for the retrieval half: one schema-constrained LLM call to
+  plan facets, code-driven search/fetch (no model tool-choice), then non-LLM extraction (BM25 -> CPU
+  cross-encoder -> rule-based entity/jurisdiction/recency/dedup filters -> specificity rerank),
+  with a single LLM judge call per facet at the end. Only two LLM calls per query total, versus the
+  main agent's continuous tool-calling loop — this is the intended slow/inaccurate fix, not a
+  rewrite of the whole agent.
+  **Original go/no-go bar (superseded 2026-09-29, see below): quote-match rate >=80% AND >=80% of
+  facets covered by >=2 distinct sources, on 2 of 3 test queries.** Actual evaluation drifted from
+  it: heldout2 (`eval/heldout2_results.md`) and heldout3 (`eval/heldout3_results.md`) instead
+  graded per-query as OK+/OK/OK-/WEAK by reading quotes per facet. Reconciling the two exposed that
+  the original "quote-match rate" (kept/emitted) had silently changed meaning when the extractor
+  moved from `llm` (emitted = LLM-proposed spans, a small number) to the shipped `ce` default
+  (emitted = every raw BM25-reranked candidate sentence pre-cross-encoder, thousands) — the field
+  name survived the architecture pivot, the measurement didn't. Recomputed on heldout3
+  (2026-09-29): it reads 1.0-1.7% across all 9 queries, structurally incapable of ever approaching
+  80% because the denominator is now the wrong pipeline stage.
+
+  **Evaluation bar, corrected via Es et al. 2024 ("Ragas: Automated Evaluation of Retrieval
+  Augmented Generation," EACL 2024, arXiv:2309.15217 — read in full, 8 pages, `pdfinfo`-confirmed,
+  `papers/ragas_2309.15217.pdf`), replacing the drifted metric above rather than picking a
+  threshold arbitrarily:**
+  - **Coverage** (facets with >=2 distinct sources) — unaffected by the drift, directly comparable
+    to the original bar, already computed in every run's `metrics.json`. Heldout3: 8/9 queries at
+    100%, 1 at 80% (h14), average 97.8% — clears the original 80%-on-2/3-queries bar.
+  - **Context relevance** (Ragas §3: "number of extracted [i.e. kept] sentences / total sentences
+    in the context handed to generation") is what "quote-match rate" was trying to measure, but
+    Ragas scopes the denominator to the already-retrieved context pool, not the whole corpus's raw
+    candidate sentences. Rescoped to the equivalent stage in our funnel (kept / candidates actually
+    shown to the judge, capped at `JUDGE_N=20`): heldout3 gives 50.7% overall (39-65% per query) —
+    a real, comparable number, whereas the old field's 1-1.7% never was. No fixed pass threshold
+    exists yet (Ragas itself proposes none; it validates correlation with human judgment instead —
+    see next point), so this is tracked, not gated, until a threshold is chosen against real data.
+  - **Faithfulness** (Ragas §3: fraction of the answer's claims inferable from context) is
+    structurally satisfied by construction here, not something to keep measuring: every kept quote
+    is verified as a literal substring of its source (`quote_in_source`) before it's ever counted.
+    Ragas built this metric to catch a free-generation LLM inventing claims; this pipeline never
+    generates prose in the extraction step, so the failure mode it targets can't occur here. Worth
+    stating as an architectural property in `ARCHITECTURE.md` if/when this pipeline gets a real
+    architecture section, not as an ongoing eval line item.
+  - **Precision/recall against the hand-labeled Spanish relevance sheet** (already used for
+    extractor tuning, P0.67/R0.68 — CLAUDE.md) is the metric that's actually methodologically sound
+    here, being validated against real human labels the same way Ragas validates its own metrics
+    against the WikiEval human-judgment dataset (0.70-0.95 agreement in their Table 1). This should
+    be the primary "is extraction actually working" gate going forward, not a self-referential
+    kept/emitted ratio.
+  - **Answer relevance** (Ragas §3: embedding similarity between the question and LLM-generated
+    reverse-questions from the answer) has no current equivalent in this pipeline and isn't being
+    added now — noted as a real option if facet-level "does this quote actually answer the
+    question" checks are ever found lacking, not because a gap was found.
+
+  Before any merge decision: (1) pick or validate an actual pass threshold for context relevance
+  against a fresh held-out set, since heldout3 only gives a descriptive number today; (2) name the
+  actual integration shape (replace the agent's retrieval step, become a fast-path alternative
+  surface reachable from CLI/TUI/API, or feed its evidence table into the existing agent as a tool)
+  — currently undecided, not even informally; (3) run the standing TUI/CLI/API parity check and an
+  Ollama-independent path check (project rule) once an integration shape exists, since `python -m
+  pipeline.run` is the only entry point today.
+
+  Two known-open bugs from live held-out runs have been fixed and live-validated (2026-09-29, real
+  data, not just unit tests — see `session_status/CURRENT.md` for the replay methodology):
+  jurisdiction filter missing a ccTLD signal (h08 — confirmed live against the real adres.gov.co
+  page: `False` before the fix, `True` after) and "Paxos" matching "Paxos Commit" (h12 — replayed
+  h12's saved sources through the fixed judge prompt with the real `deepdelve-gpt-oss` model: all 8
+  explicit "Paxos Commit"-named quotes that were previously kept are now excluded from f2/f4; one
+  residual quote remains that discusses Paxos Commit's mechanism without naming it in the sentence
+  itself — an inherent limit of sentence-level judging, not something the prompt fix could reach).
+
 - **Completion-check escalation ladder is model-capability-agnostic, raised
   `RESEARCH_small_model_agentic_reliability.md` Finding B (2026-08-27) — CLOSED 2026-09-11.**
   `CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD` (`engine/completion_starvation.py`, default 3)
@@ -431,24 +508,44 @@ tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
   technique underneath it — the one non-negotiable constraint from this project's own history,
   already enforced in `utils/rag_cache.py` (below).
   **2026-09-11 scoping survey** (approaches + comparable OSS projects, not yet a full-paper read —
-  see caveat below) found the specific idea this item originally raised — chunk/embed/retrieve over
-  a run's OWN freshly-fetched documents, mid-run, to help the small generator synthesize — is not
-  supported by the evidence at this project's model tier, and has a documented failure mode that
-  could make output worse, not better: arXiv:2603.11513 ("Can Small Language Models Use What They
-  Retrieve?") found models ≤7B fail to extract the correct answer 85-100% of the time even under
-  *oracle* retrieval (the right passage guaranteed present), and that injecting retrieved context
-  destroyed 42-100% of answers the model already knew unaided (a "context-distraction" effect) —
-  for sub-7B models the bottleneck is context UTILIZATION, not retrieval quality. Corroborated by
-  two comparable real projects: `langchain-ai/local-deep-researcher` (the OSS project most
-  architecturally similar to DeepDelve — local Ollama models, iterative research loop) does no
-  chunking/embedding/retrieval at all; `PaperQA2`, the most RAG-native project surveyed, states in
-  its own README that sub-7B models "won't get good performance" with its RAG-reasoning step.
-  GraphRAG/RAPTOR-style advanced patterns were excluded from consideration entirely — their
-  validated numbers are GPT-4/8B+-only, below this project's own Model Evaluation Standard's
-  fairness bar (point 6: a candidate must clear this project's actual context/model floor, not be
-  judged on a bigger setup). **Caveat**: 2603.11513 was only skimmed (abstract + methods/results
-  via WebFetch), not read in full — per this project's own citation rule, it must be read
-  completely before being treated as settled, if this item is ever actually scoped.
+  see verification note below) found the specific idea this item originally raised —
+  chunk/embed/retrieve over a run's OWN freshly-fetched documents, mid-run, to help the small
+  generator synthesize — is not supported by the evidence at this project's model tier, and has a
+  documented failure mode that could make output worse, not better: Sanchit Pandey (BITS Pilani),
+  "Can Small Language Models Use What They Retrieve? An Empirical Study of Retrieval Utilization
+  Across Model Scale," arXiv:2603.11513v1 [cs.CL], 12 Mar 2026 — found that for **UNKNOWN**
+  questions (the model cannot answer them unaided), models ≤7B fail to extract the correct answer
+  85-100% of the time even under *oracle* retrieval (the right passage guaranteed present: 7B
+  extracts it only 14.6% of the time, 95% CI [11.9, 17.6]; 1.5B 10.0%; 360M 0.0%) — and that for
+  **KNOWN** questions (the model already answers correctly unaided), injecting retrieved context
+  destroys 42-100% of those correct answers regardless of retrieval quality (oracle and noisy
+  dense retrieval are statistically indistinguishable below 7B, p=0.26 at 1.5B / p=0.07 at 3B — the
+  harm comes from the presence of context, not its accuracy). Net effect of adding retrieval is
+  negative at every model size tested, including 7B (-3.0pp with noisy retrieval, +4.2pp only under
+  perfect oracle retrieval that real systems can't guarantee). Error analysis of 2,588 oracle
+  failures: dominant failure mode is "irrelevant generation" (61-100% of failures depending on
+  scale) — the model ignores the retrieved passage entirely, not that it extracts the wrong span
+  from it. Cross-validated on a second architecture family (Llama-3.1-8B via API, FP16) with the
+  same qualitative pattern, so this isn't a quantization artifact of the four local 4-bit models.
+  One n-caveat the paper itself flags and that carries into ours: the 360M model's KNOWN split is
+  n=11 only, so its 100% figures at that end of the 42-100% range should be read with caution — the
+  1.5B/3B/7B range is 42-64pp and is the load-bearing part of this claim for our (larger)
+  target-model tier.
+  Corroborated by two comparable real projects: `langchain-ai/local-deep-researcher` (the OSS
+  project most architecturally similar to DeepDelve — local Ollama models, iterative research
+  loop) does no chunking/embedding/retrieval at all; `PaperQA2`, the most RAG-native project
+  surveyed, states in its own README that sub-7B models "won't get good performance" with its
+  RAG-reasoning step. GraphRAG/RAPTOR-style advanced patterns were excluded from consideration
+  entirely — their validated numbers are GPT-4/8B+-only, below this project's own Model Evaluation
+  Standard's fairness bar (point 6: a candidate must clear this project's actual context/model
+  floor, not be judged on a bigger setup).
+  **Verification (2026-09-29): read in full (10 pages incl. appendices, `pdfinfo`-confirmed page
+  count, PDF kept at `papers/retrieval_utilization_2603.11513.pdf`), replacing the 2026-09-11
+  WebFetch-abstract-only skim.** All figures above were re-pulled from Tables 4/5 and the error
+  taxonomy (Figure 3) directly, not the abstract. No correction to the original headline claim was
+  needed — it held up — but the abstract-only version omitted the UNKNOWN/KNOWN split that the
+  finding actually depends on, the n=11 caveat on the 360M extreme of the range, and the
+  cross-architecture replication that rules out a quantization-specific artifact.
   **Decision (2026-09-11, user call)**: do not scope an in-run RAG build now. Defer until this
   project has banked several more successful full runs — at that point, re-scope RAG as an
   OFFLINE, post-hoc process over the REAL verified/cited references those successful runs already
