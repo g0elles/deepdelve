@@ -44,6 +44,27 @@ def _gp(ctx: Ctx, prefix: str) -> Optional[str]:
     gp = ctx.grounding_problem
     return gp if (gp and gp.startswith(prefix)) else None
 
+_SOURCE_DUMP_HEADING_RE = re.compile(
+    r'#{1,6}\s*(?:\d+[.)]\s*)?(?:(?:additional|other|further|remaining|neglected|unused|more|supplementary)\s+'
+    r'(?:\w+\s+)?sources?|sources?\s+(?:summary|overview|digest|not\s+\w+)|summary\s+of\s+(?:the\s+)?sources?|'
+    r'(?:annotated|source)\s+(?:summaries|notes))\b', re.I)
+
+
+def _strip_source_dump_sections(report: str) -> str:
+    """Drops standalone source-summary sections ("Neglected Sources", "Additional Sources", ...) so a URL cited
+    only there does not count as the report using it. Without this, the cheapest way to clear
+    report_underuses_findings is to append such a section (2026-09-30 A/B: ~40% of a passing report was padding).
+    Plain "Sources"/"References" headings are untouched: those are the required citation list, not a dump."""
+    out, skip = [], False
+    for raw in (report or "").splitlines():
+        m = re.match(r'(#{1,6})\s', raw)
+        if m:
+            skip = bool(_SOURCE_DUMP_HEADING_RE.match(raw))
+        if not skip:
+            out.append(raw)
+    return "\n".join(out)
+
+
 def check_report_underuses_findings(ctx: Ctx) -> Optional[Verdict]:
     """Builder's own version of check_thin_coverage's diagnosis, one stage downstream: a report
     can be perfectly GROUNDED (every citation it does make traces to a real fetch) while still
@@ -88,7 +109,7 @@ def check_report_underuses_findings(ctx: Ctx) -> Optional[Verdict]:
     min_sources = cov_cfg.get("min_sources", 3)
     if len(findings_urls) < min_sources:
         return None
-    report_urls = set(extract_cited_urls(ctx.content))
+    report_urls = set(extract_cited_urls(_strip_source_dump_sections(ctx.content)))
     unused = sorted(findings_urls - report_urls)
     if not unused:
         return None

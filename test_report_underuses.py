@@ -497,6 +497,16 @@ def main():
                     assert "at least 1 more" in d and "standalone section" in d, ("needed count / anti-dump wording missing", d)
                     assert "insert a new section" not in d, ("old padding directive still present", d)
 
+                # Citations only inside a standalone source-dump section must not count; a plain Sources list must.
+                dump_report = thin_report + "\n\n## Neglected Sources\n" + "\n".join(f"- [S]({u})" for u in urls[2:])
+                vd = check_report_underuses_findings(Ctx(req_artifact="final_report.md", attempt=0, max_attempts=8,
+                                 delegated=True, files=["findings.md"], content=dump_report, quotas=None, run_state=RunState(tmpdir)))
+                assert vd is not None, "URLs cited only in a 'Neglected Sources' dump section must not satisfy the check"
+                ok_report = thin_report + "\n- dato 3. [F3](" + urls[2] + ")\n\n## Sources\n" + "\n".join(f"- [S]({u})" for u in urls)
+                vo = check_report_underuses_findings(Ctx(req_artifact="final_report.md", attempt=0, max_attempts=8,
+                                 delegated=True, files=["findings.md"], content=ok_report, quotas=None, run_state=RunState(tmpdir)))
+                assert vo is None, ("woven citation plus a plain Sources list must pass", vo)
+
                 # --- check_report_underuses_evidence ---
                 heur_urls = ["https://a.example.co/heur1", "https://a.example.co/heur2"]
                 colo_urls = ["https://b.example.co/colo1", "https://b.example.co/colo2", "https://b.example.co/colo3"]
