@@ -266,6 +266,14 @@ tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
   the writer dispatch exception fell through to the Planner, which then did free research (5 delegate_tasks, 11 searches, no report after 31 min, stopped by hand);
   low_1 finished in 7.4 min and passed the project's own checks (n=1 each, NOT a verdict). Both fixed 2026-09-30 (see ARCHITECTURE.md section 2, "Evidence-only runs and
   transient Ollama aborts"): transient-abort retry classification, and a structural evidence_only lock in check_quota. The A/B is being rerun on the fixed code.
+  Third defect found in the same A/B (fixed 2026-09-30, `utils.grounding.snap_urls_to_fetched`, applied in write/edit_workspace_file): every run's first findings.md draft was rejected
+  (`findings_ungrounded`, a wasted writer+reviewer cycle) because gpt-oss damages URLs while WRITING: swapped non-breaking hyphens (U+2011), spliced hyphens plus zero-width spaces
+  (`e-u-ai-act`), ellipsis truncation. Measured: the evidence handed to the writer has none of these characters, accepted artifacts have none inside URLs, the writer's own prose
+  has hundreds (U+2011 258, U+202F 246 across 4 findings.md); raw probe n=5 per setting: copy-only tasks are exact (0 corruption), findings-writing produced U+2011 in 14 of 15 runs at
+  think false/low/medium alike, so the effort level is NOT the lever. Repair is evidence-based (snap to a fetched URL only on a unique letters-and-digits skeleton match, or a unique
+  prefix for an ellipsis); real en-dash URLs, ambiguous and hallucinated URLs are untouched. Offline replay of the 3 real rejected drafts: 2 now pass; the third has a looped
+  garbage URL (`e-e-e-e...`) and stays rejected. Lead, NOT established: that looped-hyphen degeneration is the same family as the Ollama repeat-guard abort. The writer's prose
+  typography (U+2011/U+202F) is deliberately not rewritten.
   Raw sweep (2026-09-30, deepdelve-gpt-oss / Ollama 0.34.4, `eval/thinking_effort/raw_sweep.py`, n=3 per cell, 30 calls, 0 errors), tokens median (min-max):
   250-word prose: false 3915 (2545-12000, 1 of 3 hit the 12000 cap), omitted 4695 (1279-5181), low 696 (688-886), medium 1530 (717-2053), high 8878 (4781-12000, 1 capped);
   wall median 62 / 75 / 11 / 24 / 144 s. Tool call (write_workspace_file, must name notes.md with >=40 words): false 224, omitted 1167, low 169, medium 1207, high 2514
