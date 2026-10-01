@@ -233,6 +233,16 @@ tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
   (guidelines A.7.1/A.8: "place of birth can only be one place", "Multiple citizenships can exist"), and its own contradictions (0.52%, n=5) are
   attributed to entity-resolution errors or inconsistent pages. Not addressed: nearest-figure pairing still has no ownership limit for
   non-year figures, no corroboration exemption, and the verdict surfaces only hits[0].
+  Why that smoke run took 51+ min (Ollama journal, 57 requests): 48.2 min generating vs 1.6 min prompt eval; 5 requests hit the 12000-token
+  `max_generation_tokens` cap (3.5-4 min each, 18.4 min) and 13 more made 3k-12k tokens for ~1.3k-token documents, i.e. mostly hidden
+  reasoning. Raw `/api/chat` probe on deepdelve-gpt-oss (n=1 per setting): `think:false` (what `orchestrator.py:766` sends for
+  `enable_thinking: false`) did NOT suppress reasoning (4481 chars, 1536 tokens for a 321-word answer); only `think:"low"` did (15 chars,
+  612 tokens, 2.7x faster). The one Builder `unexpected end of JSON input` failure ended at 19:14:37 with a 12000-token generation, 2 s before
+  attempt 3 was recorded: consistent with the cap cutting a long reasoning+tool-call generation mid-JSON (correlation, raw not captured).
+  Deadline: `run_completion_check` deliberately extends `budget_deadline` by max_run_minutes/max_attempts (~4.5 min) per NEW problem type, up to 4x, and
+  checks it only between dispatches, so a 45-min budget legitimately ran ~54+ min. Open decision (not changed): send `think:"low"` for gpt-oss.
+  Separately, the live config's `enable_thinking` kept flipping to true because test_routing_cache_and_misc.py's palette scenario ran the real
+  `/toggle_thinking` -> `config.save_config()`; fixed by stubbing save_config in that scenario (suite now leaves the file byte-identical).
 
 - **Completion-check escalation ladder is model-capability-agnostic, raised
   `RESEARCH_small_model_agentic_reliability.md` Finding B (2026-08-27) — CLOSED 2026-09-11.**

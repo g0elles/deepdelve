@@ -425,6 +425,10 @@ def main():
         from textual.command import CommandPalette as _CommandPalette
 
         async def _run():
+            # /toggle_thinking calls config.save_config(), which rewrites the user's REAL ~/.deepdelve/config.yaml; the in-memory restore
+            # below never undid that, so every full-suite run left enable_thinking flipped on disk (found 2026-09-30: a smoke run was
+            # launched with thinking on right after the suite). Stub the writer so this test cannot touch the user's file.
+            _saved_writer, _config.save_config = _config.save_config, (lambda: None)
             app = _tui_cp.BasicTuiAgent(builder=None)
             async with app.run_test(size=(100, 40)) as pilot:
                 await pilot.pause()
@@ -455,6 +459,7 @@ def main():
                     "an arg-taking command must fill, not auto-submit: " + repr(prompt.value)
                 )
                 assert app.focused is prompt
+            _config.save_config = _saved_writer
 
         _asyncio_cp.run(_run())
 
