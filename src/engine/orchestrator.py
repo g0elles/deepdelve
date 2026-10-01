@@ -763,7 +763,15 @@ def _get_default_options():
     # equivalent first-class option, which is exactly why RESEARCH.md §14e found it leaks
     # reasoning back in on tool-calling turns even with enable_thinking:false.
     if backend == "ollama":
-        options["think"] = config.get_setting("enable_thinking", False)
+        # settings.thinking_effort (2026-09-30, backend: ollama only, default unset = unchanged behavior): a NAMED level
+        # for models whose thinking control is level-based. gpt-oss has only low/medium/high and no off mode; boolean
+        # `false` makes Ollama's template emit no "Reasoning:" line at all (model card arXiv:2508.10925 s2.5.2, Ollama
+        # docs /capabilities/thinking, ollama#12589; ROADMAP 2026-09-30). When set it WINS over enable_thinking. An
+        # unrecognised value raises: silently falling back to the boolean would reproduce the exact bug this fixes.
+        effort = config.get_setting("thinking_effort", None)
+        if effort is not None and effort not in ("low", "medium", "high"):
+            raise ValueError(f"settings.thinking_effort must be low, medium, high or unset, got {effort!r}")
+        options["think"] = effort if effort else config.get_setting("enable_thinking", False)
         # OllamaChatOptions.max_tokens auto-translates to options.num_predict (confirmed at the
         # installed agent_framework_ollama source) -- this path was never affected by the
         # max_completion_tokens landmine above, only the OpenAI-compat shim path was.

@@ -599,6 +599,45 @@ def main():
 
     _max_generation_tokens_scenario()
 
+    # --- settings.thinking_effort (2026-09-30): gpt-oss has only low/medium/high and boolean think=false sends no reasoning instruction at
+    # all, so a named level must reach the native Ollama request as the string, win over enable_thinking, and a typo must raise (not fall
+    # back to the boolean, which is the bug). Unset keeps the previous boolean behavior byte for byte. ---
+    def _thinking_effort_scenario():
+        from engine.orchestrator import _get_default_options
+        _orig_backend = _config.cfg.get("api", {}).get("backend")
+        _orig_eff = _config.cfg.get("settings", {}).get("thinking_effort")
+        _orig_think = _config.cfg.get("settings", {}).get("enable_thinking")
+        try:
+            _config.cfg.setdefault("api", {})["backend"] = "ollama"
+            _config.cfg["settings"]["enable_thinking"] = False
+            _config.cfg["settings"].pop("thinking_effort", None)
+            assert _get_default_options()["think"] is False          # unset: unchanged
+            _config.cfg["settings"]["thinking_effort"] = None
+            assert _get_default_options()["think"] is False          # null: unchanged
+            for lvl in ("low", "medium", "high"):
+                _config.cfg["settings"]["thinking_effort"] = lvl
+                assert _get_default_options()["think"] == lvl, lvl   # level reaches the request as the string
+            _config.cfg["settings"]["enable_thinking"] = True
+            _config.cfg["settings"]["thinking_effort"] = "low"
+            assert _get_default_options()["think"] == "low"          # effort wins over the boolean
+            _config.cfg["settings"]["thinking_effort"] = "mediun"    # typo
+            try:
+                _get_default_options()
+                raise AssertionError("a typo'd thinking_effort must raise, not fall back to the boolean")
+            except ValueError as e:
+                assert "mediun" in str(e)
+            _config.cfg["api"]["backend"] = "openai"                 # only the native Ollama backend uses it
+            _config.cfg["settings"]["thinking_effort"] = "low"
+            assert _get_default_options().get("think") != "low"
+        finally:
+            for sec, key, orig in (("api", "backend", _orig_backend), ("settings", "thinking_effort", _orig_eff), ("settings", "enable_thinking", _orig_think)):
+                if orig is None:
+                    _config.cfg[sec].pop(key, None)
+                else:
+                    _config.cfg[sec][key] = orig
+
+    _thinking_effort_scenario()
+
     # --- _compaction_strategy_for_role (2026-07-24): FindingsWriter's whole evidence base is one
     # front-loaded first-turn message -- generic truncation has nothing else to evict once that
     # crosses threshold and deletes it outright (confirmed live: empty findings.md / false "no

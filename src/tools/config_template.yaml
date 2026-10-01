@@ -27,6 +27,12 @@ api:
   backend: openai
 settings:
   enable_thinking: false
+  # thinking_effort (backend: ollama only): low | medium | high, or null/unset to use enable_thinking's boolean.
+  # Level-based models such as gpt-oss have NO off mode and ignore boolean false (it just sends no reasoning
+  # instruction), so a named level is the only way to actually lower their reasoning. When set it overrides
+  # enable_thinking. Lower levels are faster but measurably less accurate at tool use (model card Table 3):
+  # measure on this project's own tasks before changing the default. See ROADMAP.md 2026-09-30.
+  thinking_effort: null
   # Set true ONLY when api.openai_model (or settings.specialist_model) points at a genuine
   # Mistral-family checkpoint served via vLLM's native Mistral tokenizer mode -- that tokenizer
   # unconditionally rejects any request containing chat_template_kwargs (confirmed at the vLLM

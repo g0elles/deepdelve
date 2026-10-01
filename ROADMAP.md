@@ -262,6 +262,13 @@ tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
   Untested lead: Harmony guidance (§2.5.1) says earlier turns' reasoning traces should be dropped from multi-turn history, and agent_framework_ollama
   appears to re-send `thinking` on assistant messages (_chat_client.py:493); whether that costs context/time here has not been measured.
   Recommended next step (not done, needs a decision): A/B `think:"low"` vs the default per role on the project's own eval, not a global flip.
+  Raw sweep (2026-09-30, deepdelve-gpt-oss / Ollama 0.34.4, `eval/thinking_effort/raw_sweep.py`, n=3 per cell, 30 calls, 0 errors), tokens median (min-max):
+  250-word prose: false 3915 (2545-12000, 1 of 3 hit the 12000 cap), omitted 4695 (1279-5181), low 696 (688-886), medium 1530 (717-2053), high 8878 (4781-12000, 1 capped);
+  wall median 62 / 75 / 11 / 24 / 144 s. Tool call (write_workspace_file, must name notes.md with >=40 words): false 224, omitted 1167, low 169, medium 1207, high 2514
+  tokens, 3/3 correct at EVERY setting. So `false` is not off and not stable on long-form turns (2.5k to 12k tokens, one cap hit), `low` is ~5x cheaper and steady
+  there, and short tool-call turns are cheap and correct under both `false` and `low`. This is a micro-benchmark, not a quality result; the system-level A/B
+  (same evidence through writer/builder/reviewer, `settings.thinking_effort: low` vs baseline) is the test that decides. New lever `settings.thinking_effort`
+  (orchestrator.py, native Ollama only, unset = unchanged, typo raises; test in test_grounding_gates_and_quotas.py).
   Separately, the live config's `enable_thinking` kept flipping to true because test_routing_cache_and_misc.py's palette scenario ran the real
   `/toggle_thinking` -> `config.save_config()`; fixed by stubbing save_config in that scenario (suite now leaves the file byte-identical).
 
