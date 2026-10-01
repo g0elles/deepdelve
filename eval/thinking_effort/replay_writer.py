@@ -1,7 +1,7 @@
 """Replay the CAPTURED real FindingsWriter request (eval/thinking_effort/proxy_capture.jsonl, request id 3) N times per think setting, streaming.
 Per run: the guard's own criterion (longest run of identical consecutive trimmed events over content OR thinking deltas, >100 aborts in Ollama 0.34.x),
 the repeated token + what preceded it on any run with a long run or an error, and typography damage in the written tool call."""
-import json, re, sys, time, urllib.request, collections
+import json, re, sys, time, urllib.request
 N = int(sys.argv[1]) if len(sys.argv) > 1 else 10
 OUT = "eval/thinking_effort/replay_writer.jsonl"
 rows = [json.loads(l) for l in open("eval/thinking_effort/proxy_capture.jsonl")]

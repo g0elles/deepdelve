@@ -229,3 +229,13 @@ def test_planner_entity_takes_precedence():
     assert entity_ok("f3", "In New Brunswick a committee is required.", "", ents)
     assert not entity_ok("f3", "In New Zealand a committee is required.", "", ents)
     assert entity_ok("f4", "Anything.", "", ents)
+
+
+if __name__ == "__main__":
+    # This file is pytest-style (module-level test_ functions) and pytest is not installed: without this block `python test_pipeline_quotes.py`
+    # ran NOTHING and exited 0. Run every test_ function, fail loudly on the first error.
+    _tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]
+    assert _tests, "no tests found"
+    for _n, _f in _tests:
+        _f()
+    print(f"test_pipeline_quotes OK ({len(_tests)} tests)")

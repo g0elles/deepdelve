@@ -122,6 +122,10 @@ def main():
         import tempfile as _tempfile
         import config as _config
         from utils import rag_cache as _rag_cache
+        from support_for_tests import skip_notice, rag_embedder_available
+        if not rag_embedder_available():
+            skip_notice("rag_cache semantic lookup scenario")
+            return
 
         with _tempfile.TemporaryDirectory() as tmp_dir:
             cache_path = os.path.join(tmp_dir, "rag_cache_test.json")

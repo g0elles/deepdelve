@@ -161,6 +161,7 @@ python src/app.py --prompt "..." --depth deep            # quota/search/retry pr
 python src/app.py --prompt "..." --style academic        # literature-review paper shape + (Author, Year) citations
 python src/app.py --prompt "..." --seed-url https://...  # pre-fetch known-good sources (repeatable)
 python src/app.py --prompt "..." --seed-doc ./notes.pdf  # load a local file (PDF/DOCX/XLSX/PPTX/txt/md) into the run (repeatable)
+python src/app.py --prompt "..." --pipeline-evidence <dir>  # use a stage-graph pipeline evidence.json instead of the agent's own research (research tools are locked for the run)
 python src/app.py --resume-run <run_folder>              # reattach an interrupted run, fresh budget
 python src/app.py --list-runs                            # workspace runs + report status
 ```
@@ -200,10 +201,26 @@ Three tabs: **Research** (submit, watch a per-agent timeline, cancel, view the r
 - `settings.human_in_the_loop`: require approval on the Planner's plan before research proceeds.
 - `settings.permissions`: per-tool approval gate, defaults to gating `remove_workspace_file`.
 - `settings.enable_conversational_memory` / `settings.enable_session_persistence`: follow-up context reuse and restart survival.
+- `settings.enable_thinking` / `settings.thinking_effort` (native Ollama backend): `enable_thinking` is a boolean. Level-based models such as gpt-oss have no off mode and ignore boolean `false` (it only removes the model's reasoning instruction, so it still reasons at its default); `thinking_effort: low|medium|high` sets a named level and wins over the boolean. Lower levels are faster but less accurate at tool use (OpenAI's gpt-oss model card, Table 3), so measure on your own tasks before changing it. See ROADMAP.md.
 - `settings.mcp_servers`: wire in external MCP tools, scoped per sub-agent.
 - `settings.pdf_engine`: off by default; `"weasyprint"` or a real LaTeX engine to also produce `final_report.pdf` (needs the `pandoc` system binary either way).
 - `settings.api_password`: only relevant if exposing `src/api.py` beyond localhost.
 - `settings.specialist_model`: optional second, smaller model for leaf specialist roles only. A live A/B on this project's own hardware found this 4.2x slower and lower-quality than a single model, kept as an option for different hardware where two models can coexist without reload thrashing. Full trial history in `ROADMAP.md`'s bake-off log.
+
+## Pipeline evidence runs
+
+`--pipeline-evidence <dir>` (CLI), `/pipeline-evidence <dir>` (TUI, queued for the next run) and the API field `pipeline_evidence_dir` load a stage-graph pipeline run's `evidence.json` (`python -m pipeline.run "<query>" --out <dir>`, from `src/`) in place of the Planner's own research. The run is then **evidence-only**: `delegate_tasks`, `web_search` and `fetch_url_to_workspace` are refused for the whole run (also after `--resume-run`), the research-remedy completion checks are skipped, and the writer roles work from the loaded evidence. Page titles come from the pipeline's own fetch.
+
+## Testing
+
+```bash
+python run_tests.py                 # every test_*.py (offline, no model needed); fails on a file that would run nothing or a test that rewrites ~/.deepdelve/config.yaml
+python run_tests.py --clean         # fresh HOME + offline model caches: what a clean clone sees
+python run_tests.py --strict        # a test skipped for a missing cached model counts as a failure
+python preflight.py                 # MUST pass before any live run: clean tree, enable_thinking false, GPU free, no stray processes, popup safety, tests green
+```
+
+Tests that need an embedding model (`rag_cache`, excluded-topic paraphrase) read it from the local Hugging Face cache; set `HF_HOME` to the cache directory, otherwise they print `SKIPPED` instead of failing. For any run that fetches pages launch with `export DEEPDELVE_FORCE_VIRTUAL_DISPLAY=1; unset DISPLAY WAYLAND_DISPLAY` so Chromium never opens a window on your desktop.
 
 ## Eval Harness
 

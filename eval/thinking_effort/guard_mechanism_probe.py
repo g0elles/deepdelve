@@ -1,6 +1,6 @@
 """What exactly trips Ollama 0.34.4's token-repeat guard? Streams /api/chat for prompts that force repeated output and reports, per run: events,
 max consecutive identical trimmed events (the guard's criterion per ollama#18374/#18609), whether/where it aborted, and the repeated content."""
-import json, sys, urllib.request, collections
+import json, urllib.request
 M = "deepdelve-gpt-oss:latest"
 CASES = {
   "u2011_x500":  "Output the character ‑ (U+2011 non-breaking hyphen) exactly 500 times in a row with no spaces and nothing else.",

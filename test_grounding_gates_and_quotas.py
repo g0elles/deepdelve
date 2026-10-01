@@ -113,22 +113,26 @@ def main():
     # (2026-08-29 audit finding: the substring-only exclusion check misses a heading covering an
     # excluded topic via translation or same-language paraphrase; this project's own benchmark
     # instructs bilingual search, so this isn't hypothetical) ---
-    from utils.grounding import excluded_topic_semantic_hit
-    fintech_excluded = {"fintech"}
-    assert excluded_topic_semantic_hit(fintech_excluded, "digital payment solutions for smes") == "fintech", (
-        "an English paraphrase of an excluded topic must still be caught")
-    assert excluded_topic_semantic_hit(fintech_excluded, "soluciones de pago digital para pymes") == "fintech", (
-        "a Spanish translation of an excluded topic must still be caught")
-    assert excluded_topic_semantic_hit(fintech_excluded, "environmental reporting requirements") is None, (
-        "a genuinely unrelated heading must not be flagged"
-    )
-    assert excluded_topic_semantic_hit(fintech_excluded, "competitor landscape") is None, (
-        "a generic, topic-agnostic heading must not be flagged"
-    )
-    assert excluded_topic_semantic_hit(set(), "digital payment solutions for smes") is None, (
-        "no excluded topics at all -- nothing to check"
-    )
-    assert excluded_topic_semantic_hit(fintech_excluded, "") is None, "empty heading -- nothing to check"
+    from support_for_tests import skip_notice, topical_model_available
+    if not topical_model_available():
+        skip_notice("excluded_topic_semantic_hit paraphrase/translation checks")
+    else:
+        from utils.grounding import excluded_topic_semantic_hit
+        fintech_excluded = {"fintech"}
+        assert excluded_topic_semantic_hit(fintech_excluded, "digital payment solutions for smes") == "fintech", (
+            "an English paraphrase of an excluded topic must still be caught")
+        assert excluded_topic_semantic_hit(fintech_excluded, "soluciones de pago digital para pymes") == "fintech", (
+            "a Spanish translation of an excluded topic must still be caught")
+        assert excluded_topic_semantic_hit(fintech_excluded, "environmental reporting requirements") is None, (
+            "a genuinely unrelated heading must not be flagged"
+        )
+        assert excluded_topic_semantic_hit(fintech_excluded, "competitor landscape") is None, (
+            "a generic, topic-agnostic heading must not be flagged"
+        )
+        assert excluded_topic_semantic_hit(set(), "digital payment solutions for smes") is None, (
+            "no excluded topics at all -- nothing to check"
+        )
+        assert excluded_topic_semantic_hit(fintech_excluded, "") is None, "empty heading -- nothing to check"
 
     # --- bare-origin fetch must not prefix-ground fabricated deep links ---
     # (live case 2026-07-11, qwen3.6: fetching mercadolibre.com's root waved a fully fabricated
