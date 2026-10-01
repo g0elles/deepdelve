@@ -122,20 +122,26 @@ def check_report_underuses_findings(ctx: Ctx) -> Optional[Verdict]:
     # here. Now explicit on BOTH branches, not just the escalated one, so the narrower ask is tried
     # from the first attempt rather than only after a full rewrite has already failed once.
     unused_list = ", ".join(unused[:5])
+    cited = len(findings_urls) - len(unused)
+    # Pass needs ratio > threshold, i.e. cited >= floor(threshold*N)+1. Naming the exact count stops the
+    # model from covering every neglected source (2026-09-30 A/B: ~40% of a passing report was padding).
+    need = max(1, int(threshold * len(findings_urls)) + 1 - cited)
+    how = (
+        f"Cite at least {need} more of them (not all) by weaving their facts into the EXISTING sections where "
+        f"they belong, using edit_workspace_file on those sections. Do NOT add a standalone section or list that "
+        f"summarizes sources one by one, and do not repeat what the report already says. If findings.md covers "
+        f"multiple distinct angles, the report must reflect all of them."
+    )
     if prior_same == 0:
         directive = (
-            f"'{ctx.req_artifact}' only cites {len(findings_urls) - len(unused)} of "
-            f"{len(findings_urls)} real sources actually present in findings.md — the rest "
-            f"({unused_list}) are real, fetched, and available but never appear anywhere in the "
-            f"report. Use edit_workspace_file to insert a new section covering ONLY these neglected "
-            f"sources — do not rewrite or touch any other part of the report. If findings.md covers "
-            f"multiple distinct angles, the report must reflect all of them, not just one."
+            f"'{ctx.req_artifact}' only cites {cited} of {len(findings_urls)} real sources actually present "
+            f"in findings.md — the rest ({unused_list}) are real, fetched, and available but never appear in "
+            f"the report. {how}"
         )
     else:
         directive = (
-            f"'{ctx.req_artifact}' STILL neglects real sources from findings.md after a prior "
-            f"warning ({unused_list}). Use edit_workspace_file to insert a new section covering "
-            f"ONLY these neglected sources — do not rewrite or touch any other part of the report."
+            f"'{ctx.req_artifact}' STILL neglects real sources from findings.md after a prior warning "
+            f"({unused_list}). {how}"
         )
     return Verdict(
         "report_underuses_findings",

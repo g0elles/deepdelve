@@ -491,6 +491,11 @@ def main():
                 v2 = check_report_underuses_findings(ctx_escalated)
                 assert v2 is not None and "edit_workspace_file" in v2.inject, (
                     "escalated directive must name edit_workspace_file", v2)
+                # 5 sources, 2 cited, threshold 0.5: exactly 1 more is needed, and the directive must say so
+                # and forbid a standalone source-summary section (2026-09-30 A/B padding incentive).
+                for d in (v.inject, v2.inject):
+                    assert "at least 1 more" in d and "standalone section" in d, ("needed count / anti-dump wording missing", d)
+                    assert "insert a new section" not in d, ("old padding directive still present", d)
 
                 # --- check_report_underuses_evidence ---
                 heur_urls = ["https://a.example.co/heur1", "https://a.example.co/heur2"]
