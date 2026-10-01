@@ -127,6 +127,25 @@ COMPLETION_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
     check_untracked_delegation,
 ]
 
+# Checks whose ONLY remedy is more research (delegate_tasks / a fresh Searcher round). In an evidence-only run
+# (RunState.data["evidence_only"], set by --pipeline-evidence / /pipeline-evidence / API pipeline_evidence_dir) the research
+# tools are refused for the whole run (tools.core.check_quota), so these verdicts could never be satisfied and would only loop
+# the Planner; whether the fixed evidence is sufficient is the pipeline's own job (its coverage metrics and entity re-plan).
+# Writer-fixable and grounding checks are unaffected. See ARCHITECTURE.md section 2, "Evidence-only runs".
+_EVIDENCE_ONLY_SKIPPED_CHECKS = frozenset({
+    check_requested_count_shortfall, check_missing_query_facet, check_thin_coverage,
+    check_task_verification_flagged, check_uneven_task_investment,
+})
+
+
+def _active_completion_checks(run_state) -> list:
+    """COMPLETION_CHECKS for this run: all of them, minus the research-remedy checks when the run is evidence-only. Every place
+    that iterates the list (verdict detection, the other-problems addendum, the final-verdict summary) goes through here."""
+    if run_state is not None and run_state.data.get("evidence_only"):
+        return [c for c in COMPLETION_CHECKS if c not in _EVIDENCE_ONLY_SKIPPED_CHECKS]
+    return COMPLETION_CHECKS
+
+
 # The problem names COMPLETION_CHECKS' own members can produce, one-to-one with the list above --
 # used by the cross-tier starvation yield below to detect "COMPLETION_CHECKS as a WHOLE TIER kept
 # winning" as distinct from "the SAME problem kept winning" (_consecutive_occurrences' narrower
@@ -394,7 +413,7 @@ async def _detect_verdict(req_artifact: str, attempt: int, max_attempts: int,
     # Detecting the problem (or lack of one) never consumes the retry budget —
     # only actually retrying does. Otherwise a success on the final allowed
     # attempt is never recognized as a success (it just falls through silently).
-    verdict = next((v for check in COMPLETION_CHECKS if (v := check(ctx)) is not None), None)
+    verdict = next((v for check in _active_completion_checks(run_state) if (v := check(ctx)) is not None), None)
     verdict = _yield_to_starved_check(verdict, ctx, check_untracked_delegation, never_final_blocker=True)
     # Cross-TIER starvation, not just within-list (2026-08-01, RESEARCH.md Sec.17f):
     # GROUNDING_CHECKS is only ever evaluated at all when COMPLETION_CHECKS returns None
@@ -426,7 +445,7 @@ async def _detect_verdict(req_artifact: str, attempt: int, max_attempts: int,
         verdict = _yield_to_starved_check(verdict, ctx, check_report_underuses_evidence,
                                            tier_problems=_COMPLETION_TIER_PROBLEMS)
     if verdict is not None:
-        verdict = _with_other_problems_addendum(verdict, ctx, COMPLETION_CHECKS)
+        verdict = _with_other_problems_addendum(verdict, ctx, _active_completion_checks(run_state))
     # grounding_check.enabled is the section's master switch — before this guard it was a
     # documented no-op (config_template.yaml shipped it, nothing read it; 2026-07-12 audit,
     # G2). The pre-grounding checks above are structural, not grounding, and still run.
@@ -585,7 +604,7 @@ def _notify_final_verdict(ctx: "Ctx", problem: Optional[str], req_artifact: str,
         # is cheap and honest about everything actually still wrong, not just whichever
         # problem won last.
         others_final = (
-            [o.problem for o in _collect_other_active_problems(ctx, COMPLETION_CHECKS, problem)]
+            [o.problem for o in _collect_other_active_problems(ctx, _active_completion_checks(ctx.run_state), problem)]
             + _other_grounding_problems(ctx, problem)
         )[:_OTHER_ACTIVE_PROBLEMS_CAP]
         others_note = (

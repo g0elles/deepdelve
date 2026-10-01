@@ -497,10 +497,18 @@ searches on a run that was supposed to use fixed evidence. Two independent root 
    whole run, Planner and sub-agents alike. It lives in `check_quota`, not the quota pool, so the per-attempt `topup_quota_pool`
    cannot re-grant it and it does not depend on when each surface builds its pool. Writers and reviewers keep their tools.
 
+3. Completion checks whose ONLY remedy is more research (`check_requested_count_shortfall`, `check_missing_query_facet`,
+   `check_thin_coverage`, `check_task_verification_flagged`, `check_uneven_task_investment`; `_EVIDENCE_ONLY_SKIPPED_CHECKS` in
+   `completion.py`) are skipped for an evidence-only run, because their verdicts could never be satisfied once research is refused and
+   would only loop the Planner. Every iteration over the check list goes through `_active_completion_checks(run_state)` (verdict
+   detection, the other-problems addendum, the final-verdict summary); a new iteration site must use it too. `_redelegate_directive`
+   (the "your ONLY next tool call must be delegate_tasks" text shared by ~11 grounding verdicts) returns "" for such a run. Sufficiency of
+   fixed evidence is the stage-graph pipeline's job (its coverage metrics, entity re-plan), not these checks'.
+
 **Checklist for anything new that is supposed to restrict what a run may do**: enforce it in `check_quota` (every tool call passes
-through it) keyed on a `run_state.data` flag, add the flag to `_RESUME_CARRYOVER_KEYS`, and set it in the ONE shared loader, not per
-surface. A prompt sentence is not enforcement. Known residual: the engine-driven deepening round (`thin_coverage`) can still dispatch
-sub-agents in an evidence-only run; their research calls are refused, so it only wastes dispatches.
+through it) keyed on a `run_state.data` flag, add the flag to `_RESUME_CARRYOVER_KEYS`, set it in the ONE shared loader (not per
+surface), then grep the completion checks and directives for anything that demands the restricted action and make it
+flag-aware, since a verdict the run can no longer satisfy just loops. A prompt sentence is not enforcement.
 
 ## 3. `RunState.data`: the persisted-state surface, and the carryover-allowlist trap
 

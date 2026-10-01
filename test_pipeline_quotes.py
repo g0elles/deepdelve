@@ -119,6 +119,33 @@ def test_pipeline_evidence_load_locks_research():
         run_state_ctx.reset(tok)
 
 
+def test_evidence_only_skips_research_remedy_checks():
+    """In an evidence-only run the checks whose only remedy is more research must not run (the research tools are refused, so the verdict
+    could never be satisfied), the writer-fixable checks must stay, and the Planner's "your ONLY next call must be delegate_tasks" text
+    must go quiet. A normal run is unchanged. The skipped check is shown to genuinely fire on a normal run, so the skip is not vacuous."""
+    import tempfile
+    from engine import completion as C
+    from engine.completion_checks_grounding import _redelegate_directive
+    from utils.run_state import RunState
+    rs = RunState(tempfile.mkdtemp())
+    rs.data["query"] = "Identify 4 to 6 real, distinct B2B niches with evidence for each."
+    rs.data["findings"] = [
+        {"task_name": "niche_healthcare", "source_url": "https://gov.example.co/health", "summary": "real content, no warning marker.", "depth": 1},
+        {"task_name": "niche_manufacturing", "source_url": "https://gov.example.co/mfg", "summary": "real content, no warning marker.", "depth": 1}]
+    ctx = C.Ctx(req_artifact="final_report.md", attempt=0, max_attempts=10, delegated=True, files=[], content=None, quotas=None,
+                run_state=rs, report_style="standard")
+    assert C.check_requested_count_shortfall(ctx) is not None               # it really fires on a normal run
+    assert C._active_completion_checks(rs) is C.COMPLETION_CHECKS
+    rs.data["completion_check_attempts"] = [{"fetched_url_count": 0}]
+    assert "delegate_tasks" in _redelegate_directive(ctx)                    # normal run: unchanged
+    rs.data["evidence_only"] = True
+    active = C._active_completion_checks(rs)
+    assert len(active) == len(C.COMPLETION_CHECKS) - len(C._EVIDENCE_ONLY_SKIPPED_CHECKS) and len(C._EVIDENCE_ONLY_SKIPPED_CHECKS) == 5
+    assert not any(c in active for c in C._EVIDENCE_ONLY_SKIPPED_CHECKS)
+    assert C.check_missing_findings in active and C.check_missing_artifact in active and C.check_findings_ungrounded in active
+    assert _redelegate_directive(ctx) == ""
+
+
 def test_jurisdiction_and_recency():
     from pipeline.run import countries, jurisdiction_ok, year_score
     q = countries("¿Cómo se regula la protección de datos en México?")

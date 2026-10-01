@@ -677,6 +677,8 @@ def _redelegate_directive(ctx: Ctx) -> str:
     deterministically (no new fetches since the last completion check) rather than
     guessed from wording, and used by the grounding checks to make the redelegation
     instruction explicit instead of implicit."""
+    if ctx.run_state.data.get("evidence_only"):
+        return ""  # research is closed for an evidence-only run (tools.core.check_quota refuses it); fixing the text is the only move
     prior_attempts = ctx.run_state.data.get("completion_check_attempts", [])
     no_new_fetches = bool(prior_attempts) and prior_attempts[-1].get("fetched_url_count") == len(get_fetched_urls())
     if not no_new_fetches:
