@@ -291,6 +291,28 @@ def _dedupe_findings(findings: list) -> list:
     return deduped
 
 
+def _merge_same_url_findings(citable: list) -> list:
+    """One finding per distinct source URL. The writer's rule is "one entry per DISTINCT source URL", but
+    _dedupe_findings only drops exact (url, summary) repeats, so a URL fetched by several tasks reached the
+    writer as several headings (2026-10-01, evidence-only runs: 47 headings for 27 URLs, one URL up to 5x).
+    Told to emit each URL once, gpt-oss wrote "(duplicate of src_X - omitted)" stub entries with truncated
+    "https://..." URLs and then looped on them until the grounding check rejected the draft. Merges the
+    repeats here, summaries joined in first-seen order. Rendering-time only: run_state.data["findings"] is untouched."""
+    by_url: dict = {}
+    order = []
+    for f in citable:
+        key = (f.get("source_url") or "").strip().rstrip("/") or id(f)
+        if key not in by_url:
+            by_url[key] = dict(f)
+            order.append(key)
+            continue
+        base = by_url[key]
+        extra = (f.get("summary") or "").strip()
+        if extra and extra not in (base.get("summary") or ""):
+            base["summary"] = ((base.get("summary") or "").rstrip() + "\n" + extra).strip()
+    return [by_url[k] for k in order]
+
+
 def _collapse_multi_url_task_findings(citable: list) -> list:
     """A Searcher task that fetches N URLs in one turn (orchestrator.py's `_run_single_task`) calls
     `add_finding` once per URL, but attaches the SAME task-level synthesis text to every one --
@@ -468,7 +490,7 @@ def _build_findings_source_material(run_state: "RunState", task_names: Optional[
         heading = f"### [{title}]({src})" if title else f"### Source: {src}"
         return heading + (f" (saved as {fn})" if fn else "")
 
-    citable = [f for f in deduped if _is_citable_finding(f)]
+    citable = _merge_same_url_findings([f for f in deduped if _is_citable_finding(f)])
     entries = []
     for group in _collapse_multi_url_task_findings(citable):
         group_urls = [g.get("source_url") or "" for g in group["findings"]]

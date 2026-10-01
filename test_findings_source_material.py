@@ -86,6 +86,23 @@ def main():
 
     contextvars.copy_context().run(_findings_multi_url_collapse_scenario)
 
+    # --- same URL found by several tasks (2026-10-01): the writer's rule is one entry per DISTINCT URL, so the
+    # source material must carry each URL under ONE heading with every task's summary, never one heading per
+    # task. Repeated headings made gpt-oss write "(duplicate ... omitted)" stubs with truncated URLs and loop. ---
+    def _findings_same_url_merge_scenario():
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rs = RunState(tmpdir)
+            rs.add_finding("https://example.com/x", "fact from facet one about fines", task_name="facet_1", depth=1)
+            rs.add_finding("https://example.com/x", "fact from facet two about deadlines", task_name="facet_2", depth=1)
+            rs.add_finding("https://example.com/y", "a different source entirely", task_name="facet_2", depth=1)
+            material = _build_findings_source_material(rs)
+            assert material.count("https://example.com/x") == 1, ("one heading per distinct URL", material)
+            assert "fact from facet one" in material and "fact from facet two" in material, (
+                "both tasks' summaries must survive the merge", material)
+            assert len(rs.data["findings"]) == 3, "merge is rendering-only, raw findings untouched"
+
+    contextvars.copy_context().run(_findings_same_url_merge_scenario)
+
     # --- _build_findings_source_material must show each finding's REAL saved filename alongside
     # its URL (2026-07-19, user-proposed extension of the same-day delegate_tasks filename fix) —
     # FINDINGS_WRITER_INSTRUCTIONS' own Workflow step 2 already claimed "path is given alongside
