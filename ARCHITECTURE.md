@@ -481,6 +481,27 @@ heuristic making a PERMANENT decision about a task without enough context to kno
      `coverage()`-dependent check in `run_completion_check`'s own per-attempt loop, so the ledger is
      guaranteed fresh for any new consumer that reads it the same way.
 
+### Evidence-only runs and transient Ollama aborts (2026-09-30, found live in a thinking-effort A/B)
+
+**Landmine**: `--pipeline-evidence` (also `/pipeline-evidence` and the API `pipeline_evidence_dir`) skipped the Planner's research
+only through one prompt sentence ("Do NOT call delegate_tasks"). The first FindingsWriter call died ~7 s in with Ollama's
+"prediction aborted, token repeat limit reached" (a repeat guard that RAISES since 0.34.1, ollama#18374), the dispatch exception fell
+through to the classic Planner nudge, and the Planner, whose whole job is delegating research, ran 5 `delegate_tasks` and 11 web
+searches on a run that was supposed to use fixed evidence. Two independent root causes, both fixed:
+
+1. `artifact_salvage._is_transient_ollama_json_error` only knew the unescaped-newline bug, so every other transient generation failure
+   skipped the one bounded retry in `_dispatch_task_retrying_transient_json_error`. It now also matches the repeat-guard abort and the
+   mid-tool-call "unexpected end of JSON input" truncation. Still ONE retry, then it propagates.
+2. The evidence-only rule is now structural: `RunState.data["evidence_only"]` (set by the shared `engine.tui._load_pipeline_evidence`,
+   in `_RESUME_CARRYOVER_KEYS`) makes `tools.core.check_quota` refuse `delegate_tasks`, `web_search` and `fetch_url_to_workspace` for the
+   whole run, Planner and sub-agents alike. It lives in `check_quota`, not the quota pool, so the per-attempt `topup_quota_pool`
+   cannot re-grant it and it does not depend on when each surface builds its pool. Writers and reviewers keep their tools.
+
+**Checklist for anything new that is supposed to restrict what a run may do**: enforce it in `check_quota` (every tool call passes
+through it) keyed on a `run_state.data` flag, add the flag to `_RESUME_CARRYOVER_KEYS`, and set it in the ONE shared loader, not per
+surface. A prompt sentence is not enforcement. Known residual: the engine-driven deepening round (`thin_coverage`) can still dispatch
+sub-agents in an evidence-only run; their research calls are refused, so it only wastes dispatches.
+
 ## 3. `RunState.data`: the persisted-state surface, and the carryover-allowlist trap
 
 **Where**: `src/utils/run_state.py`'s `RunState.__init__` (the full key inventory) and

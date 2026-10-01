@@ -203,15 +203,29 @@ def _is_transient_ollama_json_error(exc: Exception) -> bool:
     ("invalid character '\\n' in string literal", HTTP 500), regardless of endpoint, temperature,
     or context settings. Content-dependent, not deterministic: a fresh generation attempt has a
     real chance of not reproducing the exact same invalid byte sequence, unlike a genuine,
-    reproducible failure -- this narrow string match deliberately does NOT swallow those."""
+    reproducible failure -- this narrow string match deliberately does NOT swallow those.
+
+    Widened 2026-09-30 to the other two content-dependent Ollama generation failures seen live, each
+    a different message but the same shape (sampling-dependent, a fresh generation can avoid it):
+    (a) "prediction aborted, token repeat limit reached": Ollama's repeat guard, which since 0.34.1
+    returns an error instead of silently truncating (ollama#18374/#18609; it counts identical
+    consecutive stream events and has false-positived before, #17360/#17563). It killed the first
+    FindingsWriter call of a live run ~7 s in, and the old code let that exception fall through to
+    the Planner. (b) "error parsing tool call ... unexpected end of JSON input": the generation was
+    cut off mid tool-call (seen on a Builder call that hit the max_generation_tokens cap). Matched
+    on those exact signatures only; any other error still propagates."""
     msg = str(exc)
-    return "invalid character" in msg and "string literal" in msg
+    if "invalid character" in msg and "string literal" in msg:
+        return True
+    if "token repeat limit reached" in msg:
+        return True
+    return "error parsing tool call" in msg and "unexpected end of JSON input" in msg
 
 
 async def _dispatch_task_retrying_transient_json_error(dispatch_task, *args, **kwargs):
-    """Thin wrapper around dispatch_task: retries ONCE, unchanged, if the call raises the known
-    transient Ollama JSON-serialization bug (see _is_transient_ollama_json_error) -- every other
-    exception, and a second occurrence of this same one, propagates immediately so this can never
+    """Thin wrapper around dispatch_task: retries ONCE, unchanged, if the call raises one of the known
+    transient Ollama generation failures (see _is_transient_ollama_json_error) -- every other
+    exception, and a second occurrence of the same one, propagates immediately so this can never
     mask a real, reproducible failure or loop unboundedly."""
     try:
         return await dispatch_task(*args, **kwargs)

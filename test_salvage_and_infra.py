@@ -394,6 +394,54 @@ def main():
         agent, session, dispatch_task = result
         assert callable(dispatch_task), "3rd element (dispatch_task) must be callable"
 
+    # --- transient Ollama generation failures are retried ONCE before any fallback (2026-09-30): the first FindingsWriter call of a live
+    # --pipeline-evidence run died ~7 s in with "prediction aborted, token repeat limit reached" (Ollama >= 0.34.1's repeat guard now
+    # RAISES, ollama#18374), the old narrow classifier only knew the unescaped-newline bug, so the exception fell through to the Planner. ---
+    def _transient_ollama_error_retry_scenario():
+        import asyncio as _aio
+        from engine.artifact_salvage import _is_transient_ollama_json_error as _is_t, _dispatch_task_retrying_transient_json_error as _wrap
+
+        class _E(Exception):
+            pass
+
+        assert _is_t(_E("prediction aborted, token repeat limit reached (status code: -1)"))
+        assert _is_t(_E("error parsing tool call: raw='{\"filename\":\"final_report.md\",\"content\":\"# EU', err=unexpected end of JSON input (status code: -1)"))
+        assert _is_t(_E("invalid character '\\n' in string literal"))                      # the original signature still matches
+        assert not _is_t(_E("connection refused"))
+        assert not _is_t(_E("unexpected end of JSON input"))                               # needs the tool-call context, not a bare match
+
+        calls = []
+        async def _flaky(*a, **k):
+            calls.append(1)
+            if len(calls) == 1:
+                raise _E("prediction aborted, token repeat limit reached")
+            return "ok"
+        assert _aio.run(_wrap(_flaky, "task")) == "ok" and len(calls) == 2
+
+        twice = []
+        async def _always(*a, **k):
+            twice.append(1)
+            raise _E("prediction aborted, token repeat limit reached")
+        try:
+            _aio.run(_wrap(_always, "task"))
+            raise AssertionError("a second occurrence must propagate (bounded retry)")
+        except _E:
+            pass
+        assert len(twice) == 2
+
+        once = []
+        async def _other(*a, **k):
+            once.append(1)
+            raise _E("boom")
+        try:
+            _aio.run(_wrap(_other, "task"))
+            raise AssertionError("an unrelated error must propagate untouched")
+        except _E:
+            pass
+        assert len(once) == 1
+
+    contextvars.copy_context().run(_transient_ollama_error_retry_scenario)
+
     contextvars.copy_context().run(_create_local_agent_shape_scenario)
 
 

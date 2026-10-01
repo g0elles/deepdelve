@@ -303,6 +303,14 @@ class RunState:
             # _RESUME_CARRYOVER_KEYS below, same precedent deepening_round already sets: a resumed
             # run gets a fresh round budget, not a continuation of the interrupted run's count.
             "planner_delegate_rounds": 0,
+            # evidence_only (2026-09-30): set by engine.tui._load_pipeline_evidence (--pipeline-evidence,
+            # /pipeline-evidence, API pipeline_evidence_dir) when a stage-graph pipeline's evidence table was
+            # loaded INSTEAD of the Planner's own research. tools.core.check_quota refuses the research tools
+            # (delegate_tasks, web_search, fetch_url_to_workspace) for the whole run, because the "do not
+            # delegate" sentence in the first input was only a prompt: a writer-dispatch failure fell back to
+            # the Planner, whose whole job is delegating research, and it started its own (live, baseline_1).
+            # In _RESUME_CARRYOVER_KEYS: a resumed evidence run must stay evidence-only.
+            "evidence_only": False,
         }
 
     def set_query(self, query: str) -> None:
@@ -519,6 +527,9 @@ _RESUME_CARRYOVER_KEYS = (
     # fresh and only this key's carryover restores it -- same trap this data dict's own comments
     # already document for fetched_urls/etc.
     "verified_cache_urls",
+    # evidence_only (2026-09-30): see RunState.__init__; a resumed pipeline-evidence run must keep its
+    # research tools locked.
+    "evidence_only",
 )
 
 

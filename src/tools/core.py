@@ -3,7 +3,7 @@ import functools
 import asyncio
 
 import config
-from utils.run_state import task_id_ctx
+from utils.run_state import task_id_ctx, run_state_ctx
 
 # Shared tool-error sentinel, added 2026-07-29. Every tool in this project returns a formatted
 # error STRING instead of raising (see engine/tui.py's _looks_like_tool_error) — but before this,
@@ -67,6 +67,12 @@ _NO_PROGRESS_ERROR_STREAK_LIMIT = 2
 # incident's first call was a real success (the streak only starts counting after it).
 _TOOL_FAILURE_STREAK_LIMIT = 3
 
+# Research tools refused for the whole run once RunState.data["evidence_only"] is set (a pre-gathered
+# pipeline evidence table was loaded instead of researching). Structural, not a prompt sentence: see the
+# comment in check_quota and RunState.__init__'s evidence_only key.
+_EVIDENCE_ONLY_BLOCKED_TOOLS = frozenset({"delegate_tasks", "web_search", "fetch_url_to_workspace"})
+
+
 def check_quota(tool_name: str, call_key: tuple | None = None) -> str | None:
     """Check if the specific tool has exceeded its per-invocation quota.
 
@@ -82,6 +88,18 @@ def check_quota(tool_name: str, call_key: tuple | None = None) -> str | None:
     while the wrapped function still runs normally and returns real (possibly updated) content.
     `_last_call_key` is stored on the tool's own pool entry, the same established pattern
     `_rescued_task_ids` below already uses for per-tool private bookkeeping."""
+    # Evidence-only runs (2026-09-30): every tool call, from the Planner AND any sub-agent, passes through here, and
+    # the flag is in run_state.data (survives quota top-ups and --resume-run), so a writer-dispatch failure that falls
+    # back to the Planner can no longer turn a fixed-evidence run into free research. Worded as a quota error on
+    # purpose: the Planner's own instructions already say to stop immediately on one and let the writers work.
+    if tool_name in _EVIDENCE_ONLY_BLOCKED_TOOLS:
+        _rs = run_state_ctx.get()
+        if _rs is not None and _rs.data.get("evidence_only"):
+            return (
+                f"{TOOL_ERROR_PREFIX}you have reached your quota for '{tool_name}': this run's research evidence was "
+                f"already gathered and verified by an automated pipeline, so no further research is allowed. Stop "
+                f"delegating; the writer roles will work from the evidence that is already loaded."
+            )
     ctx = tool_quotas_ctx.get()
     # DEEPDELVE_QUOTA_DEBUG=1: one line per quota check to stderr, with the pool's object id —
     # the 'shared cumulative pool' design silently degrades to 'unlimited' for any tool call the

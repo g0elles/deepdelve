@@ -269,6 +269,13 @@ def main():
         "shared resume-carryover allowlist must include findings_written_citable_count")
     assert "task_verification" in _resume_keys, (
         "shared resume-carryover allowlist must include task_verification")
+    assert "evidence_only" in _resume_keys, (
+        "shared resume-carryover allowlist must include evidence_only (a resumed pipeline-evidence run must stay research-locked)")
+    from utils.run_state import RunState as _RS_eo, merge_resumed_state as _merge_eo
+    import tempfile as _tf_eo
+    _rs_eo = _RS_eo(_tf_eo.mkdtemp())
+    _merge_eo(_rs_eo, {"query": "q", "evidence_only": True})
+    assert _rs_eo.data["evidence_only"] is True
     _run_cli_src = _inspect.getsource(_tui_mod_check.run_cli)
     assert "merge_resumed_state(" in _run_cli_src, (
         "run_cli must call the shared merge_resumed_state, not reintroduce its own inline copy "

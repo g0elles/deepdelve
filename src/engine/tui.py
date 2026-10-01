@@ -2037,7 +2037,10 @@ def _load_pipeline_evidence(run_state, evidence_dir: str) -> int:
     from pipeline.bridge import seed_run_state_from_evidence
     eb_dir = Path(evidence_dir).expanduser()
     ev = json.loads((eb_dir / "evidence.json").read_text())
-    return seed_run_state_from_evidence(run_state, ev["facets"], ev["evidence"], eb_dir, ev.get("titles"))
+    added = seed_run_state_from_evidence(run_state, ev["facets"], ev["evidence"], eb_dir, ev.get("titles"))
+    run_state.data["evidence_only"] = True  # tools.core.check_quota now refuses research tools for this run
+    run_state.save()
+    return added
 
 
 def _ingest_local_doc(path: str) -> tuple[bool, str]:

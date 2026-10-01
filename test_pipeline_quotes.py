@@ -98,6 +98,27 @@ def test_entity_filter_runs_before_pool_truncation():
     assert quotes and all(q.startswith("Asia") for q in quotes), quotes
 
 
+def test_pipeline_evidence_load_locks_research():
+    """_load_pipeline_evidence is shared by run_cli, the TUI /pipeline-evidence command and the API field: loading evidence must flip
+    run_state.data["evidence_only"] (tools.core.check_quota then refuses research tools), exactly once for all three surfaces."""
+    import json, tempfile, pathlib
+    from utils.run_state import RunState, run_state_ctx
+    from engine.tui import _load_pipeline_evidence
+    d = pathlib.Path(tempfile.mkdtemp())
+    (d / "evidence.json").write_text(json.dumps({
+        "facets": [{"id": "f1", "name": "Timeline", "entity": "", "questions": ["q"]}],
+        "evidence": {"f1": {"https://a.example/p": ["The Act entered into force on 1 August 2024 after publication."]}},
+        "titles": {"https://a.example/p": "A real page title"}}))
+    rs = RunState(tempfile.mkdtemp())
+    tok = run_state_ctx.set(rs)
+    try:
+        assert rs.data["evidence_only"] is False
+        assert _load_pipeline_evidence(rs, str(d)) == 1
+        assert rs.data["evidence_only"] is True
+    finally:
+        run_state_ctx.reset(tok)
+
+
 def test_jurisdiction_and_recency():
     from pipeline.run import countries, jurisdiction_ok, year_score
     q = countries("¿Cómo se regula la protección de datos en México?")

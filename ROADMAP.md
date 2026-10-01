@@ -262,6 +262,10 @@ tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
   Untested lead: Harmony guidance (§2.5.1) says earlier turns' reasoning traces should be dropped from multi-turn history, and agent_framework_ollama
   appears to re-send `thinking` on assistant messages (_chat_client.py:493); whether that costs context/time here has not been measured.
   Recommended next step (not done, needs a decision): A/B `think:"low"` vs the default per role on the project's own eval, not a global flip.
+  A/B on the same fixed evidence (h24, `eval/thinking_effort/run_ab.sh`) found two harness defects before any verdict: baseline_1 aborted at ~7 s (Ollama repeat guard),
+  the writer dispatch exception fell through to the Planner, which then did free research (5 delegate_tasks, 11 searches, no report after 31 min, stopped by hand);
+  low_1 finished in 7.4 min and passed the project's own checks (n=1 each, NOT a verdict). Both fixed 2026-09-30 (see ARCHITECTURE.md section 2, "Evidence-only runs and
+  transient Ollama aborts"): transient-abort retry classification, and a structural evidence_only lock in check_quota. The A/B is being rerun on the fixed code.
   Raw sweep (2026-09-30, deepdelve-gpt-oss / Ollama 0.34.4, `eval/thinking_effort/raw_sweep.py`, n=3 per cell, 30 calls, 0 errors), tokens median (min-max):
   250-word prose: false 3915 (2545-12000, 1 of 3 hit the 12000 cap), omitted 4695 (1279-5181), low 696 (688-886), medium 1530 (717-2053), high 8878 (4781-12000, 1 capped);
   wall median 62 / 75 / 11 / 24 / 144 s. Tool call (write_workspace_file, must name notes.md with >=40 words): false 224, omitted 1167, low 169, medium 1207, high 2514

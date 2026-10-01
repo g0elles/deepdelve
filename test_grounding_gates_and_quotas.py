@@ -638,6 +638,38 @@ def main():
 
     _thinking_effort_scenario()
 
+    # --- evidence_only structural lock (2026-09-30): a --pipeline-evidence run's "do not delegate" was only a prompt sentence, so a writer-
+    # dispatch failure that fell back to the Planner turned it into free research (5 delegate_tasks, 11 web searches, live). check_quota is
+    # the one function every tool call passes through; the flag lives in run_state.data so it survives quota top-ups and resume. ---
+    def _evidence_only_lock_scenario():
+        import tempfile
+        from tools.core import check_quota, tool_quotas_ctx
+        from utils.run_state import RunState, run_state_ctx
+        from engine.orchestrator import topup_quota_pool
+        rs = RunState(tempfile.mkdtemp())
+        tok = run_state_ctx.set(rs)
+        try:
+            assert rs.data["evidence_only"] is False
+            for t in ("delegate_tasks", "web_search", "fetch_url_to_workspace"):
+                assert check_quota(t) is None, t                       # a normal run is untouched
+            rs.data["evidence_only"] = True
+            for t in ("delegate_tasks", "web_search", "fetch_url_to_workspace"):
+                msg = check_quota(t)
+                assert msg and msg.startswith("Error: ") and "reached your quota" in msg and t in msg, (t, msg)
+            for t in ("write_workspace_file", "edit_workspace_file", "read_workspace_file", "grep_workspace_file", "think_tool"):
+                assert check_quota(t) is None, t                       # writers and reviewers keep their tools
+            pool = {"delegate_tasks": {"used": 0, "limit": 6}, "web_search": {"used": 0, "limit": 15}}
+            pt = tool_quotas_ctx.set(pool)
+            try:
+                topup_quota_pool(pool)                                  # the per-attempt top-up used to hand the Planner more calls
+                assert check_quota("delegate_tasks") and check_quota("web_search")
+            finally:
+                tool_quotas_ctx.reset(pt)
+        finally:
+            run_state_ctx.reset(tok)
+
+    _evidence_only_lock_scenario()
+
     # --- _compaction_strategy_for_role (2026-07-24): FindingsWriter's whole evidence base is one
     # front-loaded first-turn message -- generic truncation has nothing else to evict once that
     # crosses threshold and deletes it outright (confirmed live: empty findings.md / false "no
