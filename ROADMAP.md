@@ -274,6 +274,14 @@ tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
   prefix for an ellipsis); real en-dash URLs, ambiguous and hallucinated URLs are untouched. Offline replay of the 3 real rejected drafts: 2 now pass; the third has a looped
   garbage URL (`e-e-e-e...`) and stays rejected. Lead, NOT established: that looped-hyphen degeneration is the same family as the Ollama repeat-guard abort. The writer's prose
   typography (U+2011/U+202F) is deliberately not rewritten.
+  Lead tested (2026-09-30; scripts `eval/thinking_effort/{guard_mechanism_probe,logging_proxy,replay_writer}.py`, results `replay_writer.jsonl`). (1) On our server (Ollama 0.34.4) the repeat guard
+  aborts at exactly 101 identical consecutive trimmed stream events (repeated '-', 'a', blank lines; asking for 500 U+2011 made the model drift into soft-hyphen/U+2051 runs and abort 2 of 3);
+  an ALTERNATING loop ("e-e-e-", the garbled-URL shape) never trips it and runs to the token cap. So the lead as first stated is refuted for the garbled URL. (2) Replay of the REAL captured
+  FindingsWriter request (proxy capture, 9.4k-token prompt, temperature 0.2, num_ctx 65536), n=10 per setting: think=false: 0 guard aborts, 5/10 hit the 12000-token cap and never wrote the file
+  (median 11.6k tokens, 213 s; longest visible identical run 43, an ellipsis token); think=low: 1 guard abort (rep 4, after 44 s and only 18 client-visible events), 0 cap hits, wrote the file 9/10
+  (median 3.4k tokens, 59 s). The abort is real, reproducible from the real request, rare, and NOT specific to false; it fired while the tool-call arguments (the file content) were being
+  generated, which Ollama does not stream, so the repeated token is NOT identified (needs the raw llama-server stream). (3) 9/9 low files contained U+2011 and 20 URLs had odd characters
+  across them, so the URL repair is needed with low.
   Raw sweep (2026-09-30, deepdelve-gpt-oss / Ollama 0.34.4, `eval/thinking_effort/raw_sweep.py`, n=3 per cell, 30 calls, 0 errors), tokens median (min-max):
   250-word prose: false 3915 (2545-12000, 1 of 3 hit the 12000 cap), omitted 4695 (1279-5181), low 696 (688-886), medium 1530 (717-2053), high 8878 (4781-12000, 1 capped);
   wall median 62 / 75 / 11 / 24 / 144 s. Tool call (write_workspace_file, must name notes.md with >=40 words): false 224, omitted 1167, low 169, medium 1207, high 2514
