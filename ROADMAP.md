@@ -223,6 +223,16 @@ tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
   Africa 13 -> 15 of 25 targets reach the BM25 pool; arXiv:2402.11757 read in full, English doc-retrieval evidence only) and neither does
   raising the per-source BM25 cap. Facet-completeness verification is supported in principle by arXiv:2609.35774 (read in full; different
   stage, closed corpus) but not built.
+  Evidence-path smoke test (CLI, h24 evidence, 2026-09-30): loaded 47 findings and wrote a draft with real page titles for all 27 sources,
+  but never converged: `find_cross_source_contradictions` (src/utils/grounding.py) returned 13 hits on the run's own workspace, 12 of them
+  years (e.g. "EU AI Act" 2024 in force vs 2021 proposed / 2023 from ISO/IEC 42001:2023 text near the name) and one `7\u202f%` vs `7%`,
+  and its directive forces the Builder to state the other figure. Fixed: year-kind figures are never compared, and figures are compared
+  with whitespace removed; the designed percentage case still fires (verdict-matrix row and a new scenario in test_grounding_checks_core.py).
+  FEVER (Thorne et al., arXiv:1803.05355, read in full, 20 pp) is a claim-verification dataset, NOT a cross-source-disagreement method, so the
+  "FEVER-style" label on this check is loose; the paper supports only the principle used here: refutation requires a single-valued attribute
+  (guidelines A.7.1/A.8: "place of birth can only be one place", "Multiple citizenships can exist"), and its own contradictions (0.52%, n=5) are
+  attributed to entity-resolution errors or inconsistent pages. Not addressed: nearest-figure pairing still has no ownership limit for
+  non-year figures, no corroboration exemption, and the verdict surfaces only hits[0].
 
 - **Completion-check escalation ladder is model-capability-agnostic, raised
   `RESEARCH_small_model_agentic_reliability.md` Finding B (2026-08-27) — CLOSED 2026-09-11.**

@@ -1241,11 +1241,18 @@ def find_cross_source_contradictions(report: str) -> list[str]:
             if not cited_files:
                 continue
             for subject, figure in _extract_figure_claims(segment):
+                if _figure_kind(figure) == "year":
+                    # A year beside a named subject is the date of ONE of its many events (proposed 2021, in force 2024, applies
+                    # 2026), not a single-valued attribute two sources can disagree on, and nearest-figure pairing also attaches
+                    # years from adjacent text (ISO/IEC 42001:2023 near "EU AI Act"). Live 2026-09-30: 12 of 13 hits, never
+                    # converging. FEVER (arXiv:1803.05355) refutes only single-valued attributes ("Multiple citizenships can exist").
+                    continue
                 for other_fn, other_claims in per_file_claims.items():
                     if other_fn in cited_files:
                         continue  # comparing a source against itself proves nothing
                     for other_subject, other_figure in other_claims:
-                        if other_subject != subject or other_figure == figure:
+                        # "".join(split()) drops every Unicode space: "7\u202f%" (narrow no-break) is the figure "7%"
+                        if other_subject != subject or "".join(other_figure.split()) == "".join(figure.split()):
                             continue
                         if _figure_kind(other_figure) != _figure_kind(figure):
                             continue  # never compare a year against a percentage, etc.

@@ -108,6 +108,55 @@ def main():
 
     _cross_source_citation_line_scenario()
 
+    # --- find_cross_source_contradictions: a YEAR on a named subject is not a measurement two sources can disagree on, and a
+    # figure spelled with a narrow no-break space is the same figure. Live (2026-09-30, `--pipeline-evidence` smoke run on 27
+    # fetched EU-AI-Act pages): 13 hits, 12 of them years ("EU AI Act": 2024 in force vs 2021 proposed / 2023 NIST+ISO text near
+    # the name), one "7\u202f%" vs "7%"; the verdict surfaces hits[0] and its directive forces the other year into the report, so
+    # the Builder never converged. A percentage disagreement (the check's designed case, matrix row 12% vs 18%) must still fire.
+    # Grounded in FEVER (Thorne et al. 2018, arXiv:1803.05355, read in full): its guidelines refute only a single-valued
+    # attribute ("place of birth can only be one place") and note others are multi-valued ("Multiple citizenships can exist"). ---
+    def _cross_source_year_and_spacing_scenario():
+        from utils.grounding import find_cross_source_contradictions
+
+        def _run(report, sources):
+            saved_fs = dict(_IN_MEMORY_FS)
+            try:
+                _IN_MEMORY_FS.clear()
+                reset_fetched_urls()
+                for url, body in sources:
+                    fn = "sources/" + url.rsplit("/", 1)[-1] + ".md"
+                    record_fetched_url(url, filename=fn)
+                    # the check ignores source bodies under 50 chars, so pad short fixtures
+                    _IN_MEMORY_FS[fn] = f"Source-URL: {url}\n\n{body} This page is a short fixture used only by this test."
+                return find_cross_source_contradictions(report)
+            finally:
+                _IN_MEMORY_FS.clear()
+                _IN_MEMORY_FS.update(saved_fs)
+                reset_fetched_urls()
+
+        a, b = "https://a.example/act", "https://b.example/timeline"
+        # years: the Act has many dated events; a different year on another source is not a contradiction
+        assert _run("- The EU AI Act entered into force in 2024 [a](%s)" % a,
+                    [(a, "The EU AI Act entered into force in 2024 as Regulation 2024/1689."),
+                     (b, "The EU AI Act was first proposed in 2021 and reached political agreement in 2023.")]) == []
+        # percentages: a real disagreement on the same subject still fires
+        hits = _run("- Sector Fintech grew 12%% in total [a](%s)" % a,
+                    [(a, "Sector Fintech grew 12% in total."), (b, "Sector Fintech grew 18% in total.")])
+        assert len(hits) == 1 and "'18%'" in hits[0], hits
+        # spacing: "7<narrow nbsp>%" and "7%" are one figure
+        assert _run("- Sector Fintech grew 7\u202f%% in total [a](%s)" % a,
+                    [(a, "Sector Fintech grew 7\u202f% in total."), (b, "Sector Fintech grew 7% in total.")]) == []
+
+    _orig_ws_ys = _config.cfg.get("settings", {}).get("workspace")
+    _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
+    try:
+        contextvars.copy_context().run(_cross_source_year_and_spacing_scenario)
+    finally:
+        if _orig_ws_ys is None:
+            _config.cfg["settings"].pop("workspace", None)
+        else:
+            _config.cfg["settings"]["workspace"] = _orig_ws_ys
+
     # --- NLI grounding verification (live case 2026-07-12, NVIDIA NIM gpt-oss-20b benchmark run):
     # a citation to a real, fetched source whose claim shares terms with it (passes
     # content_level_check) but is actually contradicted by the source's real content (a paper
