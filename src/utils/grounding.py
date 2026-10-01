@@ -42,6 +42,47 @@ def _normalize_url(url: str) -> str:
     return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path, parts.query, parts.fragment))
 
 
+_URL_IN_TEXT_RE = re.compile(r"https?://[^\s)\]>\"'`]+")
+
+
+def _url_skeleton(url: str) -> str:
+    """Letters and digits only, lowercased: invariant to every punctuation/typography variant (non-breaking hyphen, zero-width space,
+    stray inserted hyphens, ...)."""
+    return re.sub(r"[^0-9a-z]", "", url.lower())
+
+
+def snap_urls_to_fetched(text: str) -> str:
+    """Repair URLs the MODEL re-typed with typographic damage. gpt-oss writes non-breaking hyphens (U+2011), narrow no-break spaces and zero-width
+    characters in its prose, and (found 2026-09-30: 4 live runs + a raw probe) it also damages URLs when writing findings: a swapped hyphen
+    ("sentinel\u2011nexus.com/blog/eu\u2011ai\u2011act"), a spliced one ("e\u2011u\u2011ai\u2011act" for eu-ai-act, with a zero-width space), or a
+    truncated one ("https://policy\u2011insider\u2026?\u2026?"). The copy is no longer the fetched URL, so check_findings_ungrounded rejected the
+    whole first findings.md draft and cost a full writer+reviewer cycle on every run (raw copy tasks are exact: this appears only while writing).
+    A URL is repaired ONLY when it is not itself a fetched URL and its letters-and-digits skeleton equals that of exactly ONE fetched URL (or, if it
+    contains an ellipsis, the skeleton before the ellipsis, at least 12 characters, is a prefix of exactly ONE fetched URL's). A URL that really
+    contains an en dash (Wikipedia's Cretaceous-Paleogene) is in the fetched set and is left alone; an ambiguous or hallucinated URL matches nothing
+    unique and is left for the grounding checks to flag, as is a degenerate one (a looped "e-e-e-e..." URL)."""
+    fetched = {e.get("url") for e in get_fetched_urls() if e.get("url")}
+    if not fetched or not text:
+        return text
+    by_skeleton: dict[str, set[str]] = {}
+    for u in fetched:
+        by_skeleton.setdefault(_url_skeleton(u), set()).add(u)
+
+    def _repl(m):
+        raw = m.group(0)
+        core = raw.rstrip(".,;:!?")
+        if core in fetched:
+            return raw
+        if "\u2026" in core:
+            pre = _url_skeleton(core.split("\u2026", 1)[0])
+            cand = {u for k, us in by_skeleton.items() if len(pre) >= 12 and k.startswith(pre) for u in us}
+            # everything after an ellipsis is junk ("...?\u2026?"), including trailing punctuation: do not re-append it
+            return next(iter(cand)) if len(cand) == 1 else raw
+        cand = by_skeleton.get(_url_skeleton(core))
+        return (next(iter(cand)) + raw[len(core):]) if cand and len(cand) == 1 else raw
+    return _URL_IN_TEXT_RE.sub(_repl, text)
+
+
 def _url_is_grounded(key: str, fetched: set[str]) -> bool:
     """True if a normalized cited URL matches a normalized fetched URL: exact match first, then
     the existing path-boundary prefix-match (redirect/query-string variants), then — as a narrow,

@@ -219,6 +219,8 @@ def read_workspace_file(filename: str, start_line: int = 1, end_line: int = -1) 
 def write_workspace_file(filename: str, content: str) -> str:
     """Save content to your workspace."""
     try:
+        from utils.grounding import snap_urls_to_fetched  # local import: grounding imports this module
+        content = snap_urls_to_fetched(content)  # undo model-typed non-breaking hyphens / zero-width chars inside fetched URLs
         path = _get_safe_path(filename)
         if not path: return f"Error: Invalid filename '{filename}'."
         if _get_workspace_type() == "disk":
@@ -252,6 +254,8 @@ def edit_workspace_file(filename: str, old_string: str, new_string: str, replace
                 return f"Error: '{filename}' not found."
             filename = resolved
 
+        from utils.grounding import snap_urls_to_fetched  # local import: grounding imports this module
+        new_string = snap_urls_to_fetched(new_string)
         count = content.count(old_string)
         if count == 0:
             return f"Error: old_string not found in '{filename}' -- it must match the file's exact existing text (no paraphrasing)."

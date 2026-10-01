@@ -146,6 +146,46 @@ def test_evidence_only_skips_research_remedy_checks():
     assert _redelegate_directive(ctx) == ""
 
 
+def test_snap_urls_to_fetched_repairs_model_typography():
+    """gpt-oss re-types fetched URLs with non-breaking hyphens, spliced hyphens + zero-width spaces, or an ellipsis truncation while writing, which made
+    check_findings_ungrounded reject the first findings.md draft of every live run. Repair is evidence-based (unique match to a FETCHED url only)."""
+    import config as _config
+    from tools.fs import _IN_MEMORY_FS, write_workspace_file, edit_workspace_file, get_workspace_file_content
+    from utils.grounding import snap_urls_to_fetched
+    from utils.run_state import fetched_urls_ctx
+    NB = "\u2011"
+    F = ["https://sentinel-nexus.com/blog/eu-ai-act-compliance-guide",
+         "https://aimagicpunch.com/eu-ai-act-summary-key-provisions-2026-timeline/",
+         "https://policy-insider.ai/latest-eu-ai-act-updates-tracking-delegated-acts-and-ai-office-guidanc/",
+         "https://en.wikipedia.org/wiki/Cretaceous\u2013Paleogene_extinction_event",
+         "https://amb.example/a-b", "https://amb.example/ab"]
+    tok = fetched_urls_ctx.set([{"url": u} for u in F])
+    saved_ws = _config.cfg["settings"].get("workspace")
+    _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
+    saved_fs = dict(_IN_MEMORY_FS)
+    try:
+        sw = f"[T](https://sentinel{NB}nexus.com/blog/eu{NB}ai{NB}act{NB}compliance{NB}guide)"
+        assert snap_urls_to_fetched(sw) == f"[T]({F[0]})"                                   # swapped hyphens, markdown parens kept
+        assert snap_urls_to_fetched(f"https://aimagicpunch.com/\u200be{NB}u{NB}ai{NB}act{NB}summary{NB}key{NB}provisions{NB}2026{NB}timeline/") == F[1]  # spliced + zero-width
+        assert snap_urls_to_fetched(f"https://policy{NB}insider\u2026?\u2026?") == F[2]    # ellipsis-truncated, unique prefix
+        assert snap_urls_to_fetched(f"see https://sentinel{NB}nexus.com/blog/eu{NB}ai{NB}act{NB}compliance{NB}guide.") == f"see {F[0]}."  # trailing punctuation kept
+        for untouched in (F[3],                                                              # a URL that really has an en dash is fetched: left alone
+                          "https://nowhere.example/made-up-page",                            # hallucinated: left for the grounding checks
+                          f"https://amb.example/a{NB}b",                                     # skeleton matches TWO fetched urls: ambiguous
+                          "https://alicelabs.ai/\u200bre" + (NB + "e") * 3 + "\u2026",       # looped garbage: matches nothing
+                          f"https://policy{NB}x\u2026"):                                     # truncation prefix too short to be trusted
+            assert snap_urls_to_fetched(untouched) == untouched, untouched
+        assert snap_urls_to_fetched(f"a high{NB}risk system") == f"a high{NB}risk system"    # prose outside URLs is not rewritten
+        write_workspace_file.func("findings.md", f"### [T]({sw[4:-1]})\nok")                 # the real write tool applies it
+        assert F[0] in get_workspace_file_content("findings.md") and NB not in get_workspace_file_content("findings.md")
+        edit_workspace_file.func("findings.md", "ok", f"see https://sentinel{NB}nexus.com/blog/eu{NB}ai{NB}act{NB}compliance{NB}guide")
+        assert get_workspace_file_content("findings.md").endswith(F[0])                       # and the edit tool
+    finally:
+        fetched_urls_ctx.reset(tok); _IN_MEMORY_FS.clear(); _IN_MEMORY_FS.update(saved_fs)
+        if saved_ws is None: _config.cfg["settings"].pop("workspace", None)
+        else: _config.cfg["settings"]["workspace"] = saved_ws
+
+
 def test_jurisdiction_and_recency():
     from pipeline.run import countries, jurisdiction_ok, year_score
     q = countries("¿Cómo se regula la protección de datos en México?")
