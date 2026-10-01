@@ -146,6 +146,15 @@ def main():
         # spacing: "7<narrow nbsp>%" and "7%" are one figure
         assert _run("- Sector Fintech grew 7\u202f%% in total [a](%s)" % a,
                     [(a, "Sector Fintech grew 7\u202f% in total."), (b, "Sector Fintech grew 7% in total.")]) == []
+        # attribute: the same subject with a same-kind but DIFFERENT quantity is not a contradiction (live 2026-09-30: 'eu ai act' 7% fine vs
+        # 13% something else, and 'ai office' 7.5 vs 1,000, each false-alarmed in a real run); the same attribute still is one
+        assert _run("- The EU AI Act sets fines of up to 7%% of worldwide turnover [a](%s)" % a,
+                    [(a, "The EU AI Act sets fines of up to 7% of worldwide turnover."),
+                     (b, "The EU AI Act already covers 13% of European enterprises.")]) == []
+        hits2 = _run("- The EU AI Act sets fines of up to 7%% of worldwide turnover [a](%s)" % a,
+                     [(a, "The EU AI Act sets fines of up to 7% of worldwide turnover."),
+                      (b, "The EU AI Act sets fines of up to 3% of worldwide turnover for lesser breaches.")])
+        assert len(hits2) == 1 and "'3%'" in hits2[0], hits2
 
     _orig_ws_ys = _config.cfg.get("settings", {}).get("workspace")
     _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}

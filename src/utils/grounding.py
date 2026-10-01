@@ -1212,8 +1212,26 @@ def _is_citation_only_line(line: str) -> bool:
     return len(remaining_letters) < 8
 
 
-def _extract_figure_claims(text: str) -> list[tuple[str, str]]:
-    """Per-line (subject_phrase, figure) pairs: every real 2+-word proper-noun subject phrase on
+_CLAIM_CONTEXT_STOP = frozenset(
+    "that this with from were been have will their there which about into over under more than also such only when what while "
+    "where being each other these those they them then onto upon according between during after before since least most both "
+    "many much some very would could should".split())
+
+
+def _claim_context_words(line: str, fig_start: int, fig_end: int, subj_start: int, subj_end: int, radius: int = 60) -> frozenset:
+    """The attribute words around one figure: lowercase alphabetic words of 4+ letters within `radius` characters of it on its own line (URLs
+    removed), minus stopwords and the subject phrase's own words, cut to their first 5 letters as a crude stem. Two claims about the same subject
+    are only about the SAME quantity if these sets overlap ("grew 12%" vs "grew 18%"); "fines up to 7% of turnover" vs "covers 13% of enterprises"
+    share nothing, so they are different quantities, not a contradiction (live 2026-09-30: this check false-alarmed in BOTH A/B runs, 'ai office'
+    7.5 vs 1,000 and 'eu ai act' 7% vs 13%, each costing a corrective cycle)."""
+    window = line[max(0, fig_start - radius):fig_start] + " " + line[fig_end:fig_end + radius]
+    window = re.sub(r"https?://\S+", " ", window)
+    subj = set(re.findall(r"[a-z]{4,}", line[subj_start:subj_end].lower()))
+    return frozenset(w[:5] for w in re.findall(r"[a-z]{4,}", window.lower()) if w not in _CLAIM_CONTEXT_STOP and w not in subj)
+
+
+def _extract_figure_claims_ctx(text: str) -> list[tuple[str, str, frozenset]]:
+    """Per-line (subject_phrase, figure, context_words) triples: every real 2+-word proper-noun subject phrase on
     a line, paired with its NEAREST checkable number on that SAME line (by character distance,
     not a full cross-product) — the minimal "a claim about subject X states figure Y" unit
     find_cross_source_contradictions clusters on. Nearest-pairing, not every-pairing, because a
@@ -1224,8 +1242,8 @@ def _extract_figure_claims(text: str) -> list[tuple[str, str]]:
     clustering (case rarely carries meaning for whether two mentions are "the same subject").
     Citation-only lines (_is_citation_only_line) are skipped entirely — a bibliographic
     attribution or reference-list entry is not a claim, and treating one as such is exactly the
-    live-confirmed false-positive class this guard exists to close."""
-    pairs = []
+    live-confirmed false-positive class this guard exists to close. context_words: see _claim_context_words."""
+    out = []
     for line in (text or "").splitlines():
         if _is_citation_only_line(line):
             continue
@@ -1238,12 +1256,17 @@ def _extract_figure_claims(text: str) -> list[tuple[str, str]]:
         if not subject_matches or not figure_matches:
             continue
         for subject, s_start, s_end in subject_matches:
-            figure, _, _ = min(
+            figure, f_start, f_end = min(
                 figure_matches,
                 key=lambda f: min(abs(f[1] - s_end), abs(s_start - f[2])),
             )
-            pairs.append((subject, figure))
-    return pairs
+            out.append((subject, figure, _claim_context_words(line, f_start, f_end, s_start, s_end)))
+    return out
+
+
+def _extract_figure_claims(text: str) -> list[tuple[str, str]]:
+    """(subject_phrase, figure) pairs; see _extract_figure_claims_ctx."""
+    return [(s, f) for s, f, _ in _extract_figure_claims_ctx(text)]
 
 
 def find_cross_source_contradictions(report: str) -> list[str]:
@@ -1267,12 +1290,12 @@ def find_cross_source_contradictions(report: str) -> list[str]:
     prose = split_prose_from_sources(report)
     ref_map = _resolve_citation_map(report)
 
-    per_file_claims: dict[str, list[tuple[str, str]]] = {}
+    per_file_claims: dict[str, list[tuple[str, str, frozenset]]] = {}
     for fn in set(fetched.values()):
         content = _source_body(get_workspace_file_content(fn) or "")
         if len(content.strip()) < 50:
             continue
-        per_file_claims[fn] = _extract_figure_claims(content)
+        per_file_claims[fn] = _extract_figure_claims_ctx(content)
 
     hits = []
     seen = set()
@@ -1281,7 +1304,7 @@ def find_cross_source_contradictions(report: str) -> list[str]:
             cited_files = _line_cited_files(segment, fetched, ref_map)
             if not cited_files:
                 continue
-            for subject, figure in _extract_figure_claims(segment):
+            for subject, figure, ctx_words in _extract_figure_claims_ctx(segment):
                 if _figure_kind(figure) == "year":
                     # A year beside a named subject is the date of ONE of its many events (proposed 2021, in force 2024, applies
                     # 2026), not a single-valued attribute two sources can disagree on, and nearest-figure pairing also attaches
@@ -1291,12 +1314,14 @@ def find_cross_source_contradictions(report: str) -> list[str]:
                 for other_fn, other_claims in per_file_claims.items():
                     if other_fn in cited_files:
                         continue  # comparing a source against itself proves nothing
-                    for other_subject, other_figure in other_claims:
+                    for other_subject, other_figure, other_ctx in other_claims:
                         # "".join(split()) drops every Unicode space: "7\u202f%" (narrow no-break) is the figure "7%"
                         if other_subject != subject or "".join(other_figure.split()) == "".join(figure.split()):
                             continue
                         if _figure_kind(other_figure) != _figure_kind(figure):
                             continue  # never compare a year against a percentage, etc.
+                        if not (ctx_words & other_ctx):
+                            continue  # same subject and kind, but about a different quantity (no shared attribute word)
                         if other_figure in report:
                             continue  # already surfaced elsewhere -- not silent
                         key = (subject, figure, other_figure)
