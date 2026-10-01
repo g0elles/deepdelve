@@ -241,6 +241,27 @@ tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
   attempt 3 was recorded: consistent with the cap cutting a long reasoning+tool-call generation mid-JSON (correlation, raw not captured).
   Deadline: `run_completion_check` deliberately extends `budget_deadline` by max_run_minutes/max_attempts (~4.5 min) per NEW problem type, up to 4x, and
   checks it only between dispatches, so a 45-min budget legitimately ran ~54+ min. Open decision (not changed): send `think:"low"` for gpt-oss.
+  Primary-source research on gpt-oss thinking control (2026-09-30, all read in full): OpenAI gpt-oss model card (arXiv:2508.10925, 35 pp; papers/):
+  the model is trained for exactly three effort levels set by a "Reasoning: low|medium|high" system line (§2.5.2), there is NO off mode, and accuracy
+  scales log-linearly with CoT length (§2.6.1, Fig 3). Table 3 for gpt-oss-20b (our model) low/medium/high: Tau-Bench Retail (function calling)
+  35.0/47.3/54.8, Tau-Bench Airline 32.0/42.6/38.0, SWE-bench Verified 37.4/53.2/60.7, GPQA 56.8/66.0/71.5, AIME25+tools 57.5/90.4/98.7 => `low` is
+  NOT free for tool use (about -12 pts vs medium on Tau-Retail); benchmark numbers, not this project's task. Ollama thinking docs
+  (docs.ollama.com/capabilities/thinking, whole page): /api/show lists a model's valid values (gpt-oss: ['low','medium','high'], default 'medium';
+  confirmed on deepdelve-gpt-oss, Ollama 0.34.4); `false` = "request no thinking output, if the model permits it". ollama/ollama#12589 (whole issue):
+  the gpt-oss template emits `Reasoning: <level>` only when think is a level or unset; with think=false NEITHER branch fires, so no Reasoning line is
+  sent at all (identical in our model's template). So `false` is an untrained configuration, not "off". `agent_framework_ollama` forwards a string
+  level unchanged (verified via `_prepare_options`; its `think: bool` annotation is typing only).
+  Why the main path sends the boolean (traced, not guessed): bool written 2026-07-28 (5cbbb04) for the Ornith bake-off from the framework's annotation;
+  the 2026-07-21 note judged gpt-oss's un-disableable reasoning harmless because it lands in a separate field (a content-pollution criterion, token
+  cost not considered); the 2026-07-26 vLLM smoke test only showed `enable_thinking` is "harmlessly ignored"; on 2026-09-25 the stage-graph pipeline
+  found "think=False does NOT help on gpt-oss" and moved to "low" at ONE call site (src/pipeline/run.py), recorded only in gitignored session notes,
+  never propagated to src/engine/orchestrator.py (the sibling-surface failure this project's CLAUDE.md warns about); all 8 pages of the wiki literature
+  review (RESEARCH.md's target) contain thinking-control research only for Qwen3 suppression and Ornith, none for gpt-oss effort levels. The baseline
+  model was never put through the Model Evaluation Standard's point 1 (raw API test that the operating mode reaches the model), since that point is
+  scoped to candidates. The orchestrator's 12000-token cap comment attributes runaway generations to quantization EOS degradation; effort level is not mentioned.
+  Untested lead: Harmony guidance (§2.5.1) says earlier turns' reasoning traces should be dropped from multi-turn history, and agent_framework_ollama
+  appears to re-send `thinking` on assistant messages (_chat_client.py:493); whether that costs context/time here has not been measured.
+  Recommended next step (not done, needs a decision): A/B `think:"low"` vs the default per role on the project's own eval, not a global flip.
   Separately, the live config's `enable_thinking` kept flipping to true because test_routing_cache_and_misc.py's palette scenario ran the real
   `/toggle_thinking` -> `config.save_config()`; fixed by stubbing save_config in that scenario (suite now leaves the file byte-identical).
 
