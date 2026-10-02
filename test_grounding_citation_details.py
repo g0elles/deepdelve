@@ -99,6 +99,18 @@ def main():
             )
             assert find_unsupported_specific_figures(
                 "- Utilities cost $1,200/month. [budget](https://budget.example.com/mexico-city)") == []
+            # Space/NBSP thousands groups (2026-10-01 A/B: "up to \u20ac400\u202f000" was cut to "\u20ac400" and flagged against
+            # a source that says "\u20ac400,000", exhausting the retry budget on a correct figure). Both spellings must match
+            # either source spelling; a genuinely absent spaced figure is still flagged.
+            record_fetched_url("https://cost.example.com/sme", filename="sources/cost.md")
+            _IN_MEMORY_FS["sources/cost.md"] = (
+                "Source-URL: https://cost.example.com/sme\n\n"
+                "A small firm may pay up to \u20ac400,000 for one system, or \u20ac250 000 in a lighter case.")
+            for fig in ("\u20ac400 000", "\u20ac400\u202f000", "\u20ac400,000", "\u20ac250\u202f000"):
+                assert find_unsupported_specific_figures(
+                    f"- SMEs pay up to {fig}. [cost](https://cost.example.com/sme)") == [], fig
+            bad = find_unsupported_specific_figures("- SMEs pay up to \u20ac900\u202f000. [cost](https://cost.example.com/sme)")
+            assert bad and "900" in bad[0], bad
             # Named-entity TOKEN generalization (the residual gap from the same live incident:
             # "MiConsulado" was misattributed alongside its numeric figures) -- a mixed-case
             # portal/program name absent from the cited source's content is flagged the same way.
@@ -430,6 +442,29 @@ def main():
                 "sections carrying only et al./and/& citations must be exempted, same as http")
             assert _asyncio.run(_rgp(multi_author_forms)) is None, _asyncio.run(_rgp(multi_author_forms))
 
+            # Currency swap (2026-10-01 A/B): digits present, but only in another currency -> flagged; right currency, a
+            # different spelling of it, or an unmarked occurrence of the digits -> silent.
+            record_fetched_url("https://usd.example.com/costs", filename="sources/usd.md")
+            _IN_MEMORY_FS["sources/usd.md"] = (
+                "Source-URL: https://usd.example.com/costs\n\nLarge firms face $8 million\u2013$15 million in costs, "
+                "and the fine is 35 million euros. Staff of 40 attended.")
+            cur = "[u](https://usd.example.com/costs)"
+            assert find_unsupported_specific_figures(f"- Large firms face \u20ac15 million. {cur}") == ["\u20ac15"]
+            assert find_unsupported_specific_figures(f"- Large firms face $15 million. {cur}") == []
+            assert find_unsupported_specific_figures(f"- Fine up to \u20ac35 million. {cur}") == []
+            assert find_unsupported_specific_figures(f"- Fine up to $35 million. {cur}") == ["$35"]
+            # Standard-style `[N]` citations (2026-10-01 A/B: four cited lines flagged uncited). A resolved [N] is a
+            # citation on the line; an unresolved [N] and a bare figure line still are not.
+            numbered_report = (
+                "## Costs\n\n"
+                "- High-risk systems cost the EU between 1.6 billion and 3.3 billion in compliance [1].\n"
+                "- Only 5% to 15% of AI applications are expected to fall in the high-risk category [1][2].\n"
+                "- Minor violations can attract fines of 7.5 million or 1.5% of turnover [1].\n"
+                "- Other infringements may incur fines of 15 million or 3% of worldwide turnover [9].\n"
+                "- Bare line with 40% of something and no citation at all on it whatsoever.\n\n"
+                "## Sources\n1. **[A](https://example.com/a)**\n2. **[B](https://example.com/b)**\n")
+            got = find_uncited_claim_lines(numbered_report)
+            assert len(got) == 2 and "[9]" in got[0] + numbered_report and "7.5" not in " ".join(got), got
             # A fabricated multi-author citation with no matching References entry must still be
             # caught now that the detector actually sees "et al." citations at all.
             fabricated_multi_author = (

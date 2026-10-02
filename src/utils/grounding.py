@@ -824,8 +824,8 @@ def find_acronym_regulation_matches(text: str) -> list:
 # term-overlap gate can pass on nothing but that shared year even when every SPECIFIC figure in the
 # claim is entirely absent from its cited source.
 _SPECIFIC_FIGURE_RE = re.compile(
-    r'[$€£]\s?\d[\d,]*(?:\.\d+)?'
-    r'|\b\d[\d,]*(?:\.\d+)?\s?(?:USD|EUR|GBP|COP)\b'
+    r'[$€£]\s?\d[\d,]*(?:[ \u00a0\u202f]\d{3}(?!\d))*(?:\.\d+)?'  # space/NBSP thousands group: "€400 000" (was cut to "€400")
+    r'|\b\d[\d,]*(?:[ \u00a0\u202f]\d{3}(?!\d))*(?:\.\d+)?\s?(?:USD|EUR|GBP|COP)\b'
     r'|\b\d{2,4}\s?(?:days?|months?)\b',
     re.IGNORECASE,
 )
@@ -839,6 +839,30 @@ _SPECIFIC_FIGURE_RE = re.compile(
 # figure or regulation ID is. Length >=5 and requires the case transition specifically to avoid
 # firing on common capitalized words (proper nouns like "Mexico" have no internal case switch).
 _NAMED_TOKEN_RE = re.compile(r'\b[A-Za-z]*[a-z][A-Z][A-Za-z]*\b')
+
+
+_CURRENCY_MARKS = {"$": "usd", "usd": "usd", "dollar": "usd", "dollars": "usd", "us$": "usd",
+                   "\u20ac": "eur", "eur": "eur", "euro": "eur", "euros": "eur",
+                   "\u00a3": "gbp", "gbp": "gbp", "pound": "gbp", "pounds": "gbp"}
+_CURRENCY_TOKEN_RE = re.compile(r"us\$|[$\u20ac\u00a3]|\b(?:usd|eur|gbp|dollars?|euros?|pounds?)\b", re.IGNORECASE)
+
+
+def _currency_swapped(figure: str, digits: str, content_digits: str) -> bool:
+    """A claim's "\u20ac8" whose digits the source states ONLY in another currency ("$8 million"): the number matches, the money
+    does not (2026-10-01 A/B: report wrote EUR for figures the source gave in USD; the digits-only match passed). Conservative:
+    fires only when the claim names a currency, every occurrence of the digits carries a currency marker within a few chars,
+    and none of them is the claim's."""
+    mine = _CURRENCY_MARKS.get(_CURRENCY_TOKEN_RE.search(figure).group(0).lower()) if _CURRENCY_TOKEN_RE.search(figure) else None
+    if not mine:
+        return False
+    seen = set()
+    for om in re.finditer(rf'\b{re.escape(digits)}\b', content_digits):
+        near = content_digits[max(0, om.start() - 4):om.start()] + " " + content_digits[om.end():om.end() + 22]
+        marks = {_CURRENCY_MARKS[t.lower()] for t in _CURRENCY_TOKEN_RE.findall(near)}
+        if not marks:
+            return False  # an occurrence with no currency marker could be the claim's: stay silent
+        seen |= marks
+    return bool(seen) and mine not in seen
 
 
 def find_unsupported_specific_figures(text: str) -> list[str]:
@@ -884,11 +908,15 @@ def find_unsupported_specific_figures(text: str) -> list[str]:
         # figure like "$1,200" in the claim never matches the source's own "$1,200" formatting,
         # since the digits-only search below strips the claim's comma but not the source's.
         content_digits = re.sub(r'(?<=\d),(?=\d)', '', content)
+        # Spaced thousands groups collapsed in a SECOND copy only: doing it on the first would fuse "2024 100" into one number.
+        content_spaced = re.sub(r'(?<=\d)[ \u00a0\u202f](?=\d{3}(?!\d))', '', content_digits)
         for m in figures:
             digits = re.sub(r'[^\d.]', '', m.group(0))
             if len(digits.replace('.', '')) < 2:
                 continue  # single-digit figures are too generic a signal on their own
-            if not re.search(rf'\b{re.escape(digits)}\b', content_digits):
+            if not (re.search(rf'\b{re.escape(digits)}\b', content_digits) or re.search(rf'\b{re.escape(digits)}\b', content_spaced)):
+                hits.append(m.group(0).strip())
+            elif _currency_swapped(m.group(0), digits, content_digits):
                 hits.append(m.group(0).strip())
         for m in tokens:
             token = m.group(0)
@@ -1048,6 +1076,7 @@ def find_uncited_claim_lines(report: str) -> list[str]:
     the live incident (a real report's narrative-style and bare-table-cell citations, both
     legitimate academic styles, don't wrap the whole citation in parens)."""
     sections = split_into_heading_sections(split_prose_from_sources(report or ""))
+    numbered = parse_numbered_sources(report or "")
     hits = []
     for section in sections:
         if any("http" in l or _ACADEMIC_CITATION_ANYWHERE_RE.search(l) for l in section):
@@ -1056,6 +1085,8 @@ def find_uncited_claim_lines(report: str) -> list[str]:
             line = raw.strip()
             if len(line) < 30 or line.startswith(("#", ">", "[SYSTEM")):
                 continue
+            if any(n in numbered for n in _NUMBERED_CITATION_RE.findall(line)):
+                continue  # standard-style `[N]` that resolves to a Sources entry with a URL IS a citation on the line (2026-10-01 A/B: 4 cited lines flagged)
             if re.fullmatch(r'[|\s:\-]+', line):  # markdown table separator row
                 continue
             if _NUMERIC_CLAIM_RE.search(line):
