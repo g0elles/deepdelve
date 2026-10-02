@@ -129,6 +129,25 @@ here got moved out, most already live in the wiki's [Completed](https://github.c
 or [Changelog](https://github.com/g0elles/deepdelve/wiki/Changelog); anything not yet migrated is
 tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
 
+- **Claim-support judge for standard-style `[N]` reports (opened 2026-10-01).** The default `[N]` + numbered-Sources style
+  had NO claim-level check: a fabricated claim cited `[11]` passed `claim_unsupported` (fixed, 2a1d951: segment checks now see
+  `[N]`). NLI and topical relevance still skip `[N]` segments on purpose: the deberta-v3-small NLI called a correct claim a 0.93
+  contradiction and is at chance on a 61-pair labelled set (AUROC 0.62-0.66; `eval/claim_support/`). MiniCheck (deberta-v3-large,
+  already installed, opt-in `editorializing_problem`) scores AUROC 1.00 on wrong-source negatives but 0.65 on hand-labelled bad
+  pairs and is too strict on multi-fact claims (a cutoff of 0.1 flags 4/23 correct claims). Open: atomic-fact split before
+  MiniCheck, per-source max for grouped citations (`[7][8][9]` are checked against the union today), more labelled reports and a
+  second labeller before any threshold goes live (n=2 reports, single labeler so far). Currency swaps (EUR vs USD) are covered
+  deterministically by `_currency_swapped`. Papers read in full for this (not yet in the wiki Literature Review; none validates a
+  claim-support threshold): arXiv 2605.06635, 2605.27700 (reference existence only), 2602.13855 (position paper, no experiments),
+  2609.35774 (completeness, not support), 2510.17853 (citation retrieval), 2602.15871 (reference existence only).
+- **Verification of the 2026-10-01 low-effort A/B (done): the writer now converges** (ec688b7), both runs ended "unverified" on
+  two checker false positives (spaced thousands `EUR 400 000`, resolved `[N]` not counted as a citation), fixed in 3ccd679 and
+  re-verified offline only. Still open: a live rerun to confirm a clean verified run, the baseline arm of the A/B on current code,
+  the `settings.thinking_effort` decision for `orchestrator.py:766`, and the `cross_source_contradiction` "5 %" vs "3%" flag.
+- **Pipeline planner facet cap (d5d338b):** when entities x measures exceed 6 facets the planner prompt now asks for one facet per
+  entity covering every measure (h25 dropped fertility rate for all three countries). Prompt-only, replayed 5x on h25 (4/5), NOT
+  re-run end to end on h19-h27.
+
 - **Stage-graph pipeline prototype (branch `stage-graph-prototype`, `src/pipeline/`) — evaluate,
   then decide how it merges with the agent loop. NOT started as a task; the prototype itself is
   mid-build across 16 commits (d741b61 latest), fully additive so far (no file in `src/engine/`,
