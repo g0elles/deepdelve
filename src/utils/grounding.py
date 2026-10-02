@@ -1340,6 +1340,7 @@ def find_cross_source_contradictions(report: str) -> list[str]:
 
     hits = []
     seen = set()
+    report_nospace = "".join(report.split())
     for line in prose.splitlines():
         for segment in decompose_claim_segments(line):
             cited_files = _line_cited_files(segment, fetched, ref_map)
@@ -1363,8 +1364,8 @@ def find_cross_source_contradictions(report: str) -> list[str]:
                             continue  # never compare a year against a percentage, etc.
                         if not (ctx_words & other_ctx):
                             continue  # same subject and kind, but about a different quantity (no shared attribute word)
-                        if other_figure in report:
-                            continue  # already surfaced elsewhere -- not silent
+                        if "".join(other_figure.split()) in report_nospace:
+                            continue  # already surfaced elsewhere ("3 %" in the report is the source's "3%") -- not silent
                         key = (subject, figure, other_figure)
                         if key in seen:
                             continue

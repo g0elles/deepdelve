@@ -155,6 +155,12 @@ def main():
                      [(a, "The EU AI Act sets fines of up to 7% of worldwide turnover."),
                       (b, "The EU AI Act sets fines of up to 3% of worldwide turnover for lesser breaches.")])
         assert len(hits2) == 1 and "'3%'" in hits2[0], hits2
+        # already surfaced, spaced: the report states the other source's 3% as "3 %" (the writer's spacing). Live 2026-10-01 (A/B low_1): the
+        # report said "7 % ... lower fines of EUR 15 million or 3 %" and the check still demanded the 3% be surfaced, because the "already in the
+        # report" test was a raw substring match while the figure comparison ignores whitespace.
+        assert _run("- The EU AI Act sets fines of up to 7%% of worldwide turnover, lower fines of 3\u202f%% of turnover for lesser breaches [a](%s)" % a,
+                    [(a, "The EU AI Act sets fines of up to 7% of worldwide turnover."),
+                     (b, "The EU AI Act sets fines of up to 3% of worldwide turnover for lesser breaches.")]) == []
 
     _orig_ws_ys = _config.cfg.get("settings", {}).get("workspace")
     _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
