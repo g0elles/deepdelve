@@ -1096,9 +1096,19 @@ def find_uncited_claim_lines(report: str) -> list[str]:
 
 _CLAIM_CITATION_TOKEN_RE = re.compile(
     r'\[[^\]]*\]\(https?://[^\s\)]+\)'    # markdown [title](url) — the common case
+    r'|(?:\[\d+\](?!\())+'                # standard-style [N] / [N][M] group, one token
     r'|https?://[^\s\]\}"\'>【】]+'         # a bare, non-markdown URL
     r'|' + _PARENTHETICAL_CITATION_RE.pattern  # (Author, Year) academic-style
 )
+
+
+def _segment_citations(segment: str, ref_map: dict) -> list[str]:
+    """Display citations of one claim segment: inline URLs, `(Author, Year)`, and standard-style `[N]` that resolves in ref_map (shown as
+    its URL). Every segment-scoped claim check used to build this from the first two only, so a report in the default `[N]` +
+    numbered-Sources format had NO segment checked (2026-10-01: a fabricated "[11]" claim passed claim_unsupported; NLI and the span
+    classifier saw 0 pairs on both A/B reports)."""
+    return (extract_cited_urls(segment) + [m.group(0) for m in _PARENTHETICAL_CITATION_RE.finditer(segment)]
+            + [ref_map[n] for n in _NUMBERED_CITATION_RE.findall(segment) if n in ref_map])
 
 
 def decompose_claim_segments(line: str) -> list[str]:
@@ -1172,7 +1182,7 @@ def claim_grounding_problem(report: str) -> str | None:
             # false-positive class in cross-source-contradiction detection.
             if _is_citation_only_line(segment):
                 continue
-            display = (extract_cited_urls(segment) + [m.group(0) for m in _PARENTHETICAL_CITATION_RE.finditer(segment)])
+            display = _segment_citations(segment, ref_map)
             if not display:
                 continue
             seg_terms = extract_salient_terms(re.sub(r'https?://[^\s\)\]\}"\'>【】]+', '', segment))
@@ -1469,7 +1479,7 @@ def _grounded_claim_pairs(report: str) -> list[tuple[str, str, str]]:
             # Tower" from "[Official Eiffel Tower website](url)") is not a checkable fact.
             if _is_citation_only_line(segment):
                 continue
-            display = (extract_cited_urls(segment) + [m.group(0) for m in _PARENTHETICAL_CITATION_RE.finditer(segment)])
+            display = (extract_cited_urls(segment) + [m.group(0) for m in _PARENTHETICAL_CITATION_RE.finditer(segment)])  # NOT _segment_citations: [N] segments stay out of NLI/topical (measured 2026-10-01: NLI called an accurate report's correct EUR 1.6-3.3bn claim a 0.93 contradiction; enable only after a calibration run)
             if not display:
                 continue
             stripped_segment = re.sub(r'https?://[^\s\)\]\}"\'>【】]+', '', segment)
@@ -1653,7 +1663,7 @@ def _all_citation_claim_pairs(report: str) -> list[tuple[str, str, str]]:
         for segment in decompose_claim_segments(line):
             if _is_citation_only_line(segment):
                 continue
-            display = (extract_cited_urls(segment) + [m.group(0) for m in _PARENTHETICAL_CITATION_RE.finditer(segment)])
+            display = _segment_citations(segment, ref_map)
             if not display:
                 continue
             # Strip the FULL markdown link construct ("[Title](url)"), not just the bare URL --

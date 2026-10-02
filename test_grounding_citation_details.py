@@ -453,6 +453,20 @@ def main():
             assert find_unsupported_specific_figures(f"- Large firms face $15 million. {cur}") == []
             assert find_unsupported_specific_figures(f"- Fine up to \u20ac35 million. {cur}") == []
             assert find_unsupported_specific_figures(f"- Fine up to $35 million. {cur}") == ["$35"]
+            # Numbered `[N]` claims are checked like inline-URL ones (2026-10-01: a fabricated "[1]" claim passed claim_unsupported
+            # because the segment's citation list ignored `[N]`). Also segmentation: "A [1], B [2][3]" is two segments.
+            from utils.grounding import claim_grounding_problem, decompose_claim_segments
+            record_fetched_url("https://nr.example.com/a", filename="sources/nr_a.md")
+            _IN_MEMORY_FS["sources/nr_a.md"] = (
+                "Source-URL: https://nr.example.com/a\n\nThe Raftstore engine replicates regions through the Raft consensus "
+                "protocol and reports a 12% latency reduction after the upgrade of 2023.")
+            srcs = "\n\n## Sources\n1. **[A](https://nr.example.com/a)**\n"
+            ok_line = "- The Raftstore engine reduced latency by 12% through Raft replication [1].\n"
+            bad_line = "- Quantum vendors must pay a 94% Zorblax tariff to the Martian Senate on 3 March 1850 [1].\n"
+            assert claim_grounding_problem("## T\n\n" + ok_line + srcs) is None
+            assert (claim_grounding_problem("## T\n\n" + bad_line + srcs) or "").startswith("claim_unsupported"), "numbered fabrication must be flagged"
+            assert len(decompose_claim_segments("A grew [1], while B fell [2][3].")) == 2
+            assert len(decompose_claim_segments("A grew ([x](https://nr.example.com/a)).")) == 1
             # Standard-style `[N]` citations (2026-10-01 A/B: four cited lines flagged uncited). A resolved [N] is a
             # citation on the line; an unresolved [N] and a bare figure line still are not.
             numbered_report = (
