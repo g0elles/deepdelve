@@ -134,8 +134,11 @@ tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
   `[N]`). NLI and topical relevance still skip `[N]` segments on purpose: the deberta-v3-small NLI called a correct claim a 0.93
   contradiction and is at chance on a 61-pair labelled set (AUROC 0.62-0.66; `eval/claim_support/`). MiniCheck (deberta-v3-large,
   already installed, opt-in `editorializing_problem`) scores AUROC 1.00 on wrong-source negatives but 0.65 on hand-labelled bad
-  pairs and is too strict on multi-fact claims (a cutoff of 0.1 flags 4/23 correct claims). Open: atomic-fact split before
-  MiniCheck, per-source max for grouped citations (`[7][8][9]` are checked against the union today), more labelled reports and a
+  pairs and is too strict on multi-fact claims (a cutoff of 0.1 flags 4/23 correct claims). 2026-10-01 follow-up: MiniCheck paper (arXiv 2404.10774, 30 pp, read in full incl. appendices) reports claim decomposition gives no consistent
+  gain (Table 5: MiniCheck-FT5 -1.4 BAcc) at 2-4x cost, so the atomic split is NOT built; its multi-doc rule is max over docs, threshold fixed at 0.5,
+  chunks ~400 tokens. Claim normalization (row-label prefix, '7 %', '€400 000', spaced punctuation; `eval/claim_support/score.py norm`) moved
+  AUROC on bad pairs only 0.65 -> 0.66 and false flags at 0.1 from 4/23 to 3/23: not the cause. Still no defensible threshold (n=8 bad pairs).
+  Open: more labelled reports + second labeller, per-source max for grouped citations (`[7][8][9]` are checked against the union today), more labelled reports and a
   second labeller before any threshold goes live (n=2 reports, single labeler so far). Currency swaps (EUR vs USD) are covered
   deterministically by `_currency_swapped`. Papers read in full for this (not yet in the wiki Literature Review; none validates a
   claim-support threshold): arXiv 2605.06635, 2605.27700 (reference existence only), 2602.13855 (position paper, no experiments),
