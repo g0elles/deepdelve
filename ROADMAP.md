@@ -143,6 +143,19 @@ tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
   deterministically by `_currency_swapped`. Papers read in full for this (not yet in the wiki Literature Review; none validates a
   claim-support threshold): arXiv 2605.06635, 2605.27700 (reference existence only), 2602.13855 (position paper, no experiments),
   2609.35774 (completeness, not support), 2510.17853 (citation retrieval), 2602.15871 (reference existence only).
+  **2026-10-02 update (n=109 pairs, 57 supported / 22 natural-bad / 30 cross; `eval/claim_support/{extract_new,label_new,score,report}.py`):**
+  added 3 reports (Raft/Paxos 224216, AI Act 220924 + 214601), 48 new pairs hand-labelled by one labeller (Claude; each checked by grepping
+  the cited source; 10 ambiguous generalising claims skipped). MiniCheck (CPU, no normalisation) AUROC vs natural-bad 0.81 (was 0.65 at n=8),
+  vs cross 0.99. Cutoff 0.1 catches 15/22 bad but flags 8/57 supported (14%); 0.5 catches 19/22, flags 22/57 (39%). Still too noisy to
+  block a run; at most advisory. New bad pairs are mostly "true elsewhere, absent from the cited source" (EU fine tiers, an AI Office date, a
+  Paxos Commit detail), which is the case the check exists for. Open: a second, independent labeller; per-source max is implicit (pairs are
+  per [N]) but the live check has no grouped-citation scoring yet.
+- **Dated-status vs own-timeline check: prototyped offline, NOT built (2026-10-02).** Target: baseline_1's "high-risk fully applicable 2 Aug
+  2026" vs its own "stand-alone high-risk 2 Dec 2027". Sentence pairs with different single dates and content-word Jaccard >= 0.3, run over every
+  report in `research_output/`: it fires on every calendar/version table (Colombia holidays 153 pairs, Rust release dates, Iceland
+  population) and on legitimate staged deadlines (Annex III 2027 vs Annex I 2028, Jaccard 0.43-0.71, higher than the real contradiction's 0.38).
+  No deterministic discriminator separates them with one positive example; any rule tuned to it overfits. Would need an LLM/NLI pairwise
+  judge plus a labelled set of self-contradicting reports first.
 - **Verification of the 2026-10-01 low-effort A/B (done): the writer now converges** (ec688b7), both runs ended "unverified" on
   two checker false positives (spaced thousands `EUR 400 000`, resolved `[N]` not counted as a citation), fixed in 3ccd679 and
   re-verified offline only. Still open: a live rerun to confirm a clean verified run, the baseline arm of the A/B on current code,

@@ -1,4 +1,4 @@
-"""Scores eval/claim_support/pairs.jsonl with candidate claim-support judges; writes scores_<judge>.json. Usage: score.py minicheck|nli"""
+"""Scores eval/claim_support/pairs_all.jsonl with candidate claim-support judges; writes scores_<judge>.json. Usage: score.py minicheck|nli"""
 import sys, json, os, re, time
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
 sys.path.insert(0, "src")
@@ -9,7 +9,7 @@ def norm(c):
     c = re.sub(r"(?<=\d)[\s\u202f\u00a0](?=\d{3}\b)", "", c)
     c = re.sub(r"(?<=\d)\s+%", "%", c)
     return re.sub(r"\s+([.,;:])", r"\1", c).strip()
-rows = [json.loads(l) for l in open("eval/claim_support/pairs.jsonl")]
+rows = [json.loads(l) for l in open("eval/claim_support/pairs_all.jsonl")]
 t0 = time.time()
 if judge in ("minicheck", "minicheck_norm"):
     if judge == "minicheck_norm":
@@ -30,5 +30,5 @@ elif judge == "nli":
         w = G._select_relevant_window(terms, r["text"]) if terms else None
         if w is None: out.append(0.0); continue   # no window: current code skips the pair; counted as 'not supported' here
         s = m.predict([(w, r["claim"])])[0]; e = np.exp(s - s.max()); out.append(float((e / e.sum())[1]))
-json.dump(out, open(f"eval/claim_support/scores_{judge}.json", "w"))
+json.dump(out, open(f"eval/claim_support/scores_all_{judge}.json", "w"))
 print("done", round(time.time()-t0))
