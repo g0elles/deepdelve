@@ -304,6 +304,7 @@ def _merge_same_url_findings(citable: list) -> list:
         key = (f.get("source_url") or "").strip().rstrip("/") or id(f)
         if key not in by_url:
             by_url[key] = dict(f)
+            by_url[key]["_task_summary"] = f.get("summary")  # pre-merge text: _collapse_multi_url_task_findings groups on it, not the joined one
             order.append(key)
             continue
         base = by_url[key]
@@ -331,7 +332,7 @@ def _collapse_multi_url_task_findings(citable: list) -> list:
     grouped: dict = {}
     order = []
     for f in citable:
-        key = (f.get("task_name"), f.get("summary"))
+        key = (f.get("task_name"), f.get("_task_summary", f.get("summary")))
         group = grouped.get(key)
         if group is None:
             group = {"task_name": f.get("task_name"), "summary": f.get("summary"), "findings": []}

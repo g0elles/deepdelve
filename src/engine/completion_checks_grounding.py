@@ -46,7 +46,7 @@ def _gp(ctx: Ctx, prefix: str) -> Optional[str]:
 
 _SOURCE_DUMP_HEADING_RE = re.compile(
     r'#{1,6}\s*(?:\d+[.)]\s*)?(?:(?:additional|other|further|remaining|neglected|unused|more|supplementary)\s+'
-    r'(?:\w+\s+)?sources?|sources?\s+(?:summary|overview|digest|not\s+\w+)|summary\s+of\s+(?:the\s+)?sources?|'
+    r'sources?(?=\s*(?:\(.*\))?:?\s*$|\s+not\s+\w+)|sources?\s+(?:summary|overview|digest|not\s+\w+)|summary\s+of\s+(?:the\s+)?sources?|'
     r'(?:annotated|source)\s+(?:summaries|notes))\b', re.I)
 
 
@@ -55,11 +55,12 @@ def _strip_source_dump_sections(report: str) -> str:
     only there does not count as the report using it. Without this, the cheapest way to clear
     report_underuses_findings is to append such a section (2026-09-30 A/B: ~40% of a passing report was padding).
     Plain "Sources"/"References" headings are untouched: those are the required citation list, not a dump."""
-    out, skip = [], False
+    out, skip, skip_level = [], False, 0
     for raw in (report or "").splitlines():
         m = re.match(r'(#{1,6})\s', raw)
-        if m:
+        if m and (not skip or len(m.group(1)) <= skip_level):  # a sub-heading inside a dump section stays part of it
             skip = bool(_SOURCE_DUMP_HEADING_RE.match(raw))
+            skip_level = len(m.group(1))
         if not skip:
             out.append(raw)
     return "\n".join(out)

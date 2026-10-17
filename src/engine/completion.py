@@ -135,6 +135,8 @@ COMPLETION_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
 _EVIDENCE_ONLY_SKIPPED_CHECKS = frozenset({
     check_requested_count_shortfall, check_missing_query_facet, check_thin_coverage,
     check_task_verification_flagged, check_uneven_task_investment,
+    # its only remedy is delegate_tasks; an evidence dir with zero kept quotes (searches throttled) never records a fetched URL
+    check_not_delegated,
 })
 
 

@@ -140,7 +140,8 @@ def test_evidence_only_skips_research_remedy_checks():
     assert "delegate_tasks" in _redelegate_directive(ctx)                    # normal run: unchanged
     rs.data["evidence_only"] = True
     active = C._active_completion_checks(rs)
-    assert len(active) == len(C.COMPLETION_CHECKS) - len(C._EVIDENCE_ONLY_SKIPPED_CHECKS) and len(C._EVIDENCE_ONLY_SKIPPED_CHECKS) == 5
+    assert len(active) == len(C.COMPLETION_CHECKS) - len(C._EVIDENCE_ONLY_SKIPPED_CHECKS) and len(C._EVIDENCE_ONLY_SKIPPED_CHECKS) == 6
+    assert C.check_not_delegated not in active                                # zero-evidence run: its delegate_tasks remedy is refused
     assert not any(c in active for c in C._EVIDENCE_ONLY_SKIPPED_CHECKS)
     assert C.check_missing_findings in active and C.check_missing_artifact in active and C.check_findings_ungrounded in active
     assert _redelegate_directive(ctx) == ""
@@ -158,7 +159,7 @@ def test_snap_urls_to_fetched_repairs_model_typography():
          "https://aimagicpunch.com/eu-ai-act-summary-key-provisions-2026-timeline/",
          "https://policy-insider.ai/latest-eu-ai-act-updates-tracking-delegated-acts-and-ai-office-guidanc/",
          "https://en.wikipedia.org/wiki/Cretaceous\u2013Paleogene_extinction_event",
-         "https://amb.example/a-b", "https://amb.example/ab"]
+         "https://amb.example/a-b", "https://amb.example/ab", "https://en.wikipedia.org/wiki/Mercury_(planet)"]
     tok = fetched_urls_ctx.set([{"url": u} for u in F])
     saved_ws = _config.cfg["settings"].get("workspace")
     _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
@@ -175,11 +176,16 @@ def test_snap_urls_to_fetched_repairs_model_typography():
                           "https://alicelabs.ai/\u200bre" + (NB + "e") * 3 + "\u2026",       # looped garbage: matches nothing
                           f"https://policy{NB}x\u2026"):                                     # truncation prefix too short to be trusted
             assert snap_urls_to_fetched(untouched) == untouched, untouched
+        paren = f"[Mercury]({F[6]})"
+        assert snap_urls_to_fetched(paren) == paren and snap_urls_to_fetched(F[6]) == F[6]  # a correct URL with its own ')' is not doubled
         assert snap_urls_to_fetched(f"a high{NB}risk system") == f"a high{NB}risk system"    # prose outside URLs is not rewritten
         write_workspace_file.func("findings.md", f"### [T]({sw[4:-1]})\nok")                 # the real write tool applies it
         assert F[0] in get_workspace_file_content("findings.md") and NB not in get_workspace_file_content("findings.md")
         edit_workspace_file.func("findings.md", "ok", f"see https://sentinel{NB}nexus.com/blog/eu{NB}ai{NB}act{NB}compliance{NB}guide")
         assert get_workspace_file_content("findings.md").endswith(F[0])                       # and the edit tool
+        old = f"https://sentinel{NB}nexus.com/blog/eu{NB}ai{NB}act{NB}compliance{NB}guide"  # the model's own earlier damaged copy still matches
+        edit_workspace_file.func("findings.md", old, "REPLACED", True)
+        assert get_workspace_file_content("findings.md").endswith("see REPLACED")
     finally:
         fetched_urls_ctx.reset(tok); _IN_MEMORY_FS.clear(); _IN_MEMORY_FS.update(saved_fs)
         if saved_ws is None: _config.cfg["settings"].pop("workspace", None)
@@ -229,6 +235,83 @@ def test_planner_entity_takes_precedence():
     assert entity_ok("f3", "In New Brunswick a committee is required.", "", ents)
     assert not entity_ok("f3", "In New Zealand a committee is required.", "", ents)
     assert entity_ok("f4", "Anything.", "", ents)
+
+
+def test_judge_separates_empty_verdict_from_error():
+    """judge() -> [] is a real "nothing relevant" verdict (select_ce must keep nothing), None is a failed call (select_ce keeps the CE ranking)."""
+    import pipeline.run as R
+    facet = {"name": "f", "questions": ["q"]}
+    real = R.call_json
+    def boom(*a, **k): raise RuntimeError("ollama down")
+    try:
+        R.call_json = lambda *a, **k: {"keep": []}
+        assert R.judge("m", facet, [("u", "t")]) == []
+        R.call_json = lambda *a, **k: {"keep": [0, 7]}
+        assert R.judge("m", facet, [("u", "t")]) == [0]
+        R.call_json = boom
+        assert R.judge("m", facet, [("u", "t")]) is None
+    finally:
+        R.call_json = real
+
+
+def test_seed_evidence_reaches_memory_workspace():
+    """In a memory workspace _get_safe_path returns a bare key, so the pipeline source copy must go to _IN_MEMORY_FS, not the cwd."""
+    import json, tempfile, pathlib, hashlib, os
+    import config as _config
+    from tools.fs import _IN_MEMORY_FS, get_workspace_file_content
+    from pipeline.bridge import seed_run_state_from_evidence
+    from utils.run_state import RunState, run_state_ctx
+    url = "https://a.example/p"
+    fname = f"src_{hashlib.sha1(url.encode()).hexdigest()[:8]}.md"
+    d = pathlib.Path(tempfile.mkdtemp()); (d / fname).write_text("SOURCE BODY")
+    rs = RunState(tempfile.mkdtemp())
+    saved_ws, saved_fs = _config.cfg["settings"].get("workspace"), dict(_IN_MEMORY_FS)
+    _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
+    tok = run_state_ctx.set(rs)
+    try:
+        assert seed_run_state_from_evidence(rs, [{"id": "f1", "name": "T", "questions": ["q"]}], {"f1": {url: ["A quote."]}}, d) == 1
+        assert get_workspace_file_content(fname) == "SOURCE BODY" and not os.path.exists(fname)
+    finally:
+        run_state_ctx.reset(tok); _IN_MEMORY_FS.clear(); _IN_MEMORY_FS.update(saved_fs)
+        if saved_ws is None: _config.cfg["settings"].pop("workspace", None)
+        else: _config.cfg["settings"]["workspace"] = saved_ws
+
+
+def test_evidence_only_refusals_are_capped():
+    """check_quota's evidence-only refusal returns before quota accounting, so it needs its own loop hard stop."""
+    import tempfile
+    from tools.core import check_quota, QuotaAbortException, _EVIDENCE_ONLY_REFUSAL_LIMIT
+    from utils.run_state import RunState, run_state_ctx
+    rs = RunState(tempfile.mkdtemp()); rs.data["evidence_only"] = True
+    tok = run_state_ctx.set(rs)
+    try:
+        for _ in range(_EVIDENCE_ONLY_REFUSAL_LIMIT):
+            assert check_quota("delegate_tasks")
+        try:
+            check_quota("delegate_tasks")
+            raise AssertionError("no QuotaAbortException past the refusal cap")
+        except QuotaAbortException:
+            pass
+    finally:
+        run_state_ctx.reset(tok)
+
+
+def test_source_dump_strip_keeps_topical_headings_and_subsections():
+    from engine.completion_checks_grounding import _strip_source_dump_sections as S
+    keep = "## Other Energy Sources\ncite [a](https://a.example)\n## 3. Additional Funding Sources\ncite [b](https://b.example)"
+    assert S(keep) == keep                                                   # topical headings ending in "sources" are content
+    assert "https://" not in S("## Neglected Sources\n[x](https://x.example)\n### Sub\n[y](https://y.example)\n## Next\nbody")  # sub-heading stays in the dump
+    assert "body" in S("## Additional Sources Not Cited\n[x](https://x.example)\n## Next\nbody")
+
+
+def test_merge_same_url_keeps_task_groups_whole():
+    """A URL shared by two tasks must not split either task's multi-URL group (S1:{A,B}, S2:{A,C}) once the merge joins A's summaries."""
+    from engine.findings_evidence import _merge_same_url_findings, _collapse_multi_url_task_findings
+    f = lambda t, u, s: {"task_name": t, "source_url": u, "summary": s}
+    merged = _merge_same_url_findings([f("T1", "https://a.example", "S1"), f("T1", "https://b.example", "S1"),
+                                       f("T2", "https://a.example", "S2"), f("T2", "https://c.example", "S2")])
+    groups = _collapse_multi_url_task_findings(merged)
+    assert [[x["source_url"] for x in g["findings"]] for g in groups] == [["https://a.example", "https://b.example"], ["https://c.example"]]
 
 
 if __name__ == "__main__":

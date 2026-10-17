@@ -79,7 +79,12 @@ def snap_urls_to_fetched(text: str) -> str:
             # everything after an ellipsis is junk ("...?\u2026?"), including trailing punctuation: do not re-append it
             return next(iter(cand)) if len(cand) == 1 else raw
         cand = by_skeleton.get(_url_skeleton(core))
-        return (next(iter(cand)) + raw[len(core):]) if cand and len(cand) == 1 else raw
+        if not cand or len(cand) != 1:
+            return raw
+        fixed = next(iter(cand))
+        # _URL_IN_TEXT_RE stops at ")", so a correctly typed "...Mercury_(planet)" matches as "...Mercury_(planet": a strict prefix of the
+        # fetched URL, not typography damage. Replacing it would leave the URL's own ")" doubled after the substitution.
+        return raw if fixed.startswith(core) else fixed + raw[len(core):]
     return _URL_IN_TEXT_RE.sub(_repl, text)
 
 

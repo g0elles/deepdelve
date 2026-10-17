@@ -71,6 +71,8 @@ _TOOL_FAILURE_STREAK_LIMIT = 3
 # pipeline evidence table was loaded instead of researching). Structural, not a prompt sentence: see the
 # comment in check_quota and RunState.__init__'s evidence_only key.
 _EVIDENCE_ONLY_BLOCKED_TOOLS = frozenset({"delegate_tasks", "web_search", "fetch_url_to_workspace"})
+# Refusals tolerated per run before the loop hard stop (the normal quota path aborts at limit + 3; this path never reaches it).
+_EVIDENCE_ONLY_REFUSAL_LIMIT = 10
 
 
 def check_quota(tool_name: str, call_key: tuple | None = None) -> str | None:
@@ -95,6 +97,9 @@ def check_quota(tool_name: str, call_key: tuple | None = None) -> str | None:
     if tool_name in _EVIDENCE_ONLY_BLOCKED_TOOLS:
         _rs = run_state_ctx.get()
         if _rs is not None and _rs.data.get("evidence_only"):
+            _rs.data["evidence_only_refusals"] = _rs.data.get("evidence_only_refusals", 0) + 1
+            if _rs.data["evidence_only_refusals"] > _EVIDENCE_ONLY_REFUSAL_LIMIT:
+                raise QuotaAbortException(f"Agent trapped in loop. Research tool '{tool_name}' refused repeatedly in an evidence-only run.")
             return (
                 f"{TOOL_ERROR_PREFIX}you have reached your quota for '{tool_name}': this run's research evidence was "
                 f"already gathered and verified by an automated pipeline, so no further research is allowed. Stop "

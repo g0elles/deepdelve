@@ -256,6 +256,8 @@ def edit_workspace_file(filename: str, old_string: str, new_string: str, replace
 
         from utils.grounding import snap_urls_to_fetched  # local import: grounding imports this module
         new_string = snap_urls_to_fetched(new_string)
+        if old_string not in content:  # write_workspace_file saves snapped URLs, so the model's own damaged copy may no longer match
+            old_string = snap_urls_to_fetched(old_string)
         count = content.count(old_string)
         if count == 0:
             return f"Error: old_string not found in '{filename}' -- it must match the file's exact existing text (no paraphrasing)."

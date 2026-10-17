@@ -2538,10 +2538,12 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
         from tools.web import probe_search_health, _run_with_daemon_timeout
         from utils.run_state import record_search_health
         probe_timeout_s = config.get_setting("web_search", {}).get("timeout_seconds", 20)
-        try:
-            probe_err = await asyncio.to_thread(_run_with_daemon_timeout, probe_search_health, probe_timeout_s)
-        except TimeoutError:
-            probe_err = f"search probe timed out after {probe_timeout_s}s with no response — the search layer appears to be hanging"
+        probe_err = None
+        if not pipeline_evidence_dir:  # an evidence-only run never searches (check_quota refuses it), so a sick search layer is irrelevant
+            try:
+                probe_err = await asyncio.to_thread(_run_with_daemon_timeout, probe_search_health, probe_timeout_s)
+            except TimeoutError:
+                probe_err = f"search probe timed out after {probe_timeout_s}s with no response — the search layer appears to be hanging"
         if probe_err:
             record_search_health(ok=False)
             sys.stdout.write(

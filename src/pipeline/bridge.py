@@ -18,7 +18,7 @@ def seed_run_state_from_evidence(run_state, facets: list[dict], evidence: dict, 
     `titles` (url -> real page title, evidence.json's "titles"; absent in pre-2026-09-30 runs) is what
     Sources entries show: never the facet name, which names the research topic, not the page.
     Returns the number of findings added."""
-    from tools.fs import _get_safe_path
+    from tools.fs import _get_safe_path, _get_workspace_type, _IN_MEMORY_FS
 
     added = 0
     seen_urls = set()
@@ -33,9 +33,11 @@ def seed_run_state_from_evidence(run_state, facets: list[dict], evidence: dict, 
                 src_path = sources_dir / fname
                 if src_path.exists():
                     dst = _get_safe_path(fname)
-                    if dst:
+                    if dst and _get_workspace_type() == "disk":
                         Path(dst).parent.mkdir(parents=True, exist_ok=True)
                         Path(dst).write_text(src_path.read_text())
+                    elif dst:  # memory workspace: dst is a bare key, not a disk path
+                        _IN_MEMORY_FS[dst] = src_path.read_text()
                 record_fetched_url(url, fname, title=(titles or {}).get(url))
             run_state.add_finding(source_url=url, summary=" ".join(quotes), task_name=name, depth=1)
             added += 1

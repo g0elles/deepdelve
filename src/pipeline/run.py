@@ -114,7 +114,8 @@ def bm25_top(sents: list[str], query: str, k: int, k1: float = 1.5, b: float = 0
     return sorted(scored, key=lambda z: -z[0])[:k]
 
 
-def judge(model: str, facet: dict, cands: list[tuple[str, str]]) -> list[int]:
+def judge(model: str, facet: dict, cands: list[tuple[str, str]]) -> list[int] | None:
+    """Kept indexes; [] is a real "nothing relevant" verdict, None means the call failed."""
     lst = "\n".join(f"{i}. {t}" for i, (_, t) in enumerate(cands))
     p = (f"Facet: {facet['name']}\nQuestions: {'; '.join(facet['questions'])}\n\nCandidate sentences:\n{lst}\n\n"
          f"Return the numbers of candidates that state a specific fact (a date, number, named law, "
@@ -124,7 +125,7 @@ def judge(model: str, facet: dict, cands: list[tuple[str, str]]) -> list[int]:
     try:
         return [i for i in call_json(model, p, JUDGE_SCHEMA, think="low", timeout=120)["keep"] if 0 <= i < len(cands)]
     except Exception:
-        return []
+        return None
 
 
 CE_POOL = 40
@@ -425,9 +426,9 @@ def select_ce(query, facets, seen, urls, evidence, owner, funnel, cfg=None):
             ranked = own + [z for z in ranked if z not in own][:max(0, MIN_OWN - len(own))]
         ranked = ranked[:JUDGE_N if cfg.get("judge") else PER_JUDGE]
         if cfg.get("judge") and ranked:
-            # LLM judge: precision 0.67 / recall 0.68 vs CE-only 0.36 / 1.0 on the hand-labeled Spanish sheet. [] on error -> keep all.
+            # LLM judge: precision 0.67 / recall 0.68 vs CE-only 0.36 / 1.0 on the hand-labeled Spanish sheet. None on error -> keep all; [] is a real "nothing relevant" verdict.
             keep = judge(cfg["judge"], f, [(u, t) for _, u, t in ranked])
-            ranked = [ranked[i] for i in keep] if keep else ranked
+            ranked = [ranked[i] for i in keep] if keep is not None else ranked
         for sc, u, t in ranked[:PER_JUDGE]:
             owner.setdefault(t, f["id"])
             kept += 1
@@ -476,7 +477,7 @@ def run(query: str, model: str, out: Path, topk: int, extractor: str = "ce", jud
             cands = sorted(cands, key=lambda z: -z[0])[:PER_JUDGE]
             if not cands:
                 continue
-            keep = judge(model, f, [(u, t) for _, u, t in cands])
+            keep = judge(model, f, [(u, t) for _, u, t in cands]) or []  # llm extractor: a failed judge call keeps nothing
             calls += 1
             emitted_total += len(cands)
             kept_total += len(keep)
