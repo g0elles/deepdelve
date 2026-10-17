@@ -20,6 +20,12 @@ from tools.fs import get_workspace_file_content
 _PROPER_NOUN_STOPWORDS = {
     "The", "A", "An", "This", "That", "These", "Those", "It", "In", "On", "At", "For", "With",
     "Source", "Sources", "Reference", "References", "Final", "Report", "Summary", "Note", "System",
+    # Sentence-initial function words and verbs, capitalised only because they open a sentence/list item; _PROPER_NOUN_PHRASE_RE glued them onto
+    # the next name ("Both Finland", "While Bitcoin", "Provided Colombian"), and the phrase then matched no source (2026-10-17 replay audit: 27+ claim_unsupported hits).
+    "Both", "While", "Although", "Though", "Each", "Every", "Another", "Some", "Many", "Most", "Several", "Such", "Their", "They", "Its", "Our",
+    "We", "However", "Moreover", "Additionally", "Finally", "First", "Second", "Third", "Overall", "Meanwhile", "Also", "Between", "Across",
+    "Within", "During", "Since", "After", "Before", "If", "When", "Where", "Because", "Using", "Based", "According", "Following", "As", "By",
+    "Compare", "Check", "Cross", "Provided", "Described", "Combined", "Provides", "Describes", "Includes", "Listed", "Noted", "Shows", "Both",
 }
 
 
@@ -297,7 +303,9 @@ def _normalize_proper_noun_phrase(raw: str) -> Optional[str]:
     words = raw.split()
     while words and words[0] in _PROPER_NOUN_STOPWORDS:
         words.pop(0)
-    return " ".join(words) if words else None
+    # The regex only yields 2+ word phrases, so a single word left over is a stopword-led phrase ("The Act", "Both Finland", "The PDF") whose remainder is
+    # no longer a multi-word proper noun: not a hard-to-coincidentally-reproduce term, and a bare country name flagged a whole paragraph (2026-10-17 audit).
+    return " ".join(words) if len(words) >= 2 else None
 
 
 def extract_salient_terms(text: str) -> set:
@@ -912,6 +920,9 @@ def find_unsupported_specific_figures(text: str) -> list[str]:
         # ordinary prose comma like "5, 200" is untouched) -- otherwise a genuinely-supported
         # figure like "$1,200" in the claim never matches the source's own "$1,200" formatting,
         # since the digits-only search below strips the claim's comma but not the source's.
+        # A source NAME ("FinStatGlobe", from the page title; "RegData", from the URL path) is not a claim: it lives in the cited source's title/URL, which
+        # _source_body strips from the body (2026-10-17: this false positive burned 76% of a run, 4 Builder cycles).
+        cited_names = " ".join(f"{e.get('url', '')} {e.get('title', '')}" for e in get_fetched_urls() if e.get("filename") in files)
         content_digits = re.sub(r'(?<=\d),(?=\d)', '', content)
         # Spaced thousands groups collapsed in a SECOND copy only: doing it on the first would fuse "2024 100" into one number.
         content_spaced = re.sub(r'(?<=\d)[ \u00a0\u202f](?=\d{3}(?!\d))', '', content_digits)
@@ -940,7 +951,7 @@ def find_unsupported_specific_figures(text: str) -> list[str]:
             # directly against the real failing case. Every other exact-text-match check in this
             # module already normalizes case/typography before comparing (see
             # find_paraphrased_quotes' _normalize_for_quote_match) -- this was the one gap.
-            if re.search(rf'\b{re.escape(token)}\b', content, re.IGNORECASE):
+            if re.search(rf'\b{re.escape(token)}\b', content, re.IGNORECASE) or re.search(rf'\b{re.escape(token)}\b', cited_names, re.IGNORECASE):
                 continue
             # Second false positive, found the same day while verifying the fix above: a line
             # legitimately NAMING multiple papers while citing only ONE of them for the specific
@@ -986,6 +997,7 @@ def _normalize_for_quote_match(text: str) -> str:
     source's raw HTML renders punctuation and how the model retyped it."""
     text = text.replace("’", "'").replace("‘", "'")
     text = text.replace("“", '"').replace("”", '"')
+    text = re.sub(r'[*\[\]]', '', text)  # **bold** and [SQuAD]-style bracketed edits inside a quote (2026-10-17 audit: 5 Eiffel/SQuAD quotes flagged over these)
     return re.sub(r'\s+', ' ', text.strip().lower())
 
 
@@ -1090,7 +1102,7 @@ def find_uncited_claim_lines(report: str) -> list[str]:
             line = raw.strip()
             if len(line) < 30 or line.startswith(("#", ">", "[SYSTEM")):
                 continue
-            if any(n in numbered for n in _NUMBERED_CITATION_RE.findall(line)):
+            if any(n in numbered for n in _NUMBERED_CITATION_RE.findall(line) + re.findall(r'【(\d+)】', line)):
                 continue  # standard-style `[N]` that resolves to a Sources entry with a URL IS a citation on the line (2026-10-01 A/B: 4 cited lines flagged)
             if re.fullmatch(r'[|\s:\-]+', line):  # markdown table separator row
                 continue
@@ -1190,7 +1202,7 @@ def claim_grounding_problem(report: str) -> str | None:
             display = _segment_citations(segment, ref_map)
             if not display:
                 continue
-            seg_terms = extract_salient_terms(re.sub(r'https?://[^\s\)\]\}"\'>【】]+', '', segment))
+            seg_terms = extract_salient_terms(re.sub(r'https?://[^\s\)\]\}"\'>【】]+', '', _strip_citation_apparatus(segment)))
             if not seg_terms:
                 continue
             files = _line_cited_files(segment, fetched, ref_map)
@@ -1231,7 +1243,20 @@ def _figure_kind(figure: str) -> str:
 
 
 _MARKDOWN_LINK_RE = re.compile(r'\[[^\]]*\]\([^)]*\)')
-_CITATION_LINE_PREFIX_RE = re.compile(r'^\s*(?:[-*]|\d+[.)]|\[[↑\d]+\])\s*(?:source|retrieved)?\s*:?\s*', re.IGNORECASE)
+_CITATION_LINE_PREFIX_RE = re.compile(r'^\s*(?:[-*]|\d+[.)]|\[[↑\d]+\])?\s*(?:source(?:\s+url)?|retrieved)?\s*:?\s*', re.IGNORECASE)
+_BARE_URL_RE = re.compile(r'<?https?://\S+>?')
+# A reference-list entry ("5. Shaw, P., ... (2018). Title. https://...") or a table row that only pairs a title with a bare URL ("| Title | https://... | File not
+# processed |"): bibliography, not a claim. Their title text was being extracted as "claims" (2026-10-17 replay audit).
+_BIBLIOGRAPHY_LINE_RE = re.compile(
+    r'^\s*(?:[-*]\s+|\d+[.)]\s+)[^\n]{0,120}?\((?:19|20)\d{2}[a-z]?\)\.?\s[^\n]*https?://\S+\s*>?\s*$'
+    r'|^\s*\|[^|\n]*\|\s*<?https?://\S+>?\s*\|')
+# Link anchors ("[Rust Stable Releases](url)") and bold labels ("**Regional Variations**:") name WHERE something is or what a bullet is about; their
+# capitalised words are not claims and were flagged as unsupported terms (101 of 201 claim_unsupported segments, 2026-10-17 replay audit).
+_LABEL_BOLD_RE = re.compile(r'\*\*[^*\d]{2,80}?:\*\*|\*\*[^*\d]{2,80}?\*\*\s*[:\u2013\u2014-]')
+
+
+def _strip_citation_apparatus(segment: str) -> str:
+    return _LABEL_BOLD_RE.sub(' ', _MARKDOWN_LINK_RE.sub(' ', segment))
 
 
 def _is_citation_only_line(line: str) -> bool:
@@ -1249,7 +1274,9 @@ def _is_citation_only_line(line: str) -> bool:
     stripped = (line or "").strip()
     if not stripped:
         return True
-    without_links = _MARKDOWN_LINK_RE.sub("", stripped)
+    if _BIBLIOGRAPHY_LINE_RE.match(stripped):
+        return True
+    without_links = _BARE_URL_RE.sub("", _MARKDOWN_LINK_RE.sub("", stripped))
     without_prefix = _CITATION_LINE_PREFIX_RE.sub("", without_links).strip()
     # Whatever remains after stripping markdown links and a leading bullet/number/"Source:"
     # marker: if it's short and has no real alphabetic content (just punctuation, italics
@@ -1453,6 +1480,22 @@ def _select_relevant_window(claim_terms: set, source_text: str, window_size: int
     return window[:2500]  # hard cap regardless — a single huge paragraph must not blow past this
 
 
+def _is_prose_window(window: str) -> bool:
+    """A window of running prose, not page chrome (headings, nav, a reference list). 2026-10-17 replay audit: 76 of 85 NLI "contradictions" were claims scored
+    against a heading, markup or reference-list window, which no entailment model can judge."""
+    plain = _MARKDOWN_LINK_RE.sub(" ", window)
+    words = re.findall(r"[A-Za-z]{3,}", plain)
+    return (len(words) >= 20 and not window.lstrip().startswith("#") and "cite_ref" not in window
+            and len(words) / max(1, len(plain.split())) >= 0.6)
+
+
+def _figures_verbatim_in_window(claim: str, window: str) -> bool:
+    """Every non-year figure of the claim appears verbatim in its source window (7 of the 9 prose-vs-prose NLI "contradictions" in the 2026-10-17 audit were
+    "28.4 BLEU"-style claims whose numbers are in the abstract). Needs at least one figure, so a claim without numbers is still classified."""
+    figs = re.findall(r"\d+(?:\.\d+)+|\d{2,}", re.sub(r"\b(?:19|20)\d{2}\b", "", claim))
+    return bool(figs) and all(f in window for f in figs)
+
+
 def _grounded_claim_pairs(report: str) -> list[tuple[str, str, str]]:
     """Shared by nli_unsupported_problem and topical_relevance_problem (ROADMAP Phase 4): every
     report prose CLAIM SEGMENT whose citation resolves to a fetched source AND already passed
@@ -1492,7 +1535,7 @@ def _grounded_claim_pairs(report: str) -> list[tuple[str, str, str]]:
             # Strip the citation's own `(Author, Year)` attribution before term extraction: its
             # bare year is metadata about WHEN the source was published, not a fact under test.
             stripped_segment = _PARENTHETICAL_CITATION_RE.sub('', stripped_segment)
-            segment_terms = extract_salient_terms(stripped_segment)
+            segment_terms = extract_salient_terms(_strip_citation_apparatus(stripped_segment))
             # A claim anchored ONLY by a bare 19xx/20xx year -- whether that year came from the
             # (now-stripped) citation, or from the claim's own prose ("released in 2019...") --
             # must not drive window selection below (2026-08-25 live incident, a real --style
@@ -1556,7 +1599,8 @@ def nli_unsupported_problem(report: str) -> str | None:
     loaded (or, when mocked/unavailable, checked) only AFTER pairs is confirmed non-empty below —
     a report with no NLI-checkable line (e.g. every citation's claim already had no checkable term
     at all, claim_grounding_problem's own job) must not pay the model-load cost for nothing."""
-    pairs = _grounded_claim_pairs(report)
+    # Page chrome/reference-list windows, and claims whose every figure is in the window verbatim, are noise to the small NLI model (2026-10-17 audit).
+    pairs = [p for p in _grounded_claim_pairs(report) if _is_prose_window(p[0]) and not _figures_verbatim_in_window(p[1], p[0])]
     if not pairs:
         return None
 

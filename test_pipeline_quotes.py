@@ -314,6 +314,71 @@ def test_merge_same_url_keeps_task_groups_whole():
     assert [[x["source_url"] for x in g["findings"]] for g in groups] == [["https://a.example", "https://b.example"], ["https://c.example"]]
 
 
+def test_check_artifacts_from_2026_10_17_audit():
+    """The replay audit over 335 saved reports found checks firing on text artifacts, not unsupported facts. One assert group per artifact class."""
+    sys.path.insert(0, "src")
+    from utils import grounding as G
+    # sentence-initial words are not part of a name ("Both Finland" matched no source)
+    terms = G.extract_salient_terms("Both Finland and Estonia lead. While Bitcoin uses proof-of-work. Provided Colombian payroll data.")
+    assert not any(t.split()[0] in ("Both", "While", "Provided") for t in terms), terms
+    # link anchors and bold labels are apparatus, not claims
+    assert "Rust Releases" not in G.extract_salient_terms(G._strip_citation_apparatus("See [Rust Releases](https://releases.rs/) now. **Regional Variations**: Fiestas Patrias"))
+    assert "Fiestas Patrias" in G.extract_salient_terms(G._strip_citation_apparatus("**Regional Variations**: Fiestas Patrias"))
+    # bibliography entries / bare-URL rows / "Source URL:" lines are citation lines
+    for l in ("5. Shaw, P., Uszkoreit, J., & Vaswani, A. (2018). Self-Attention with Relative Position Representations. https://arxiv.org/pdf/1803.02155",
+              "4. Medium. (2020). *Baidu ERNIE 2.0 beats BERT*. https://medium.com/x", "| ACE eWaPub - Cultural Events | https://ace.ewapub.com/a.pdf | File not processed |",
+              "Source URL: https://arxiv.org/abs/1811.07745"):
+        assert G._is_citation_only_line(l), l
+    assert not G._is_citation_only_line("Estonia launched e-Residency in 2014 [4].")
+    # quote normalizer folds markdown emphasis and bracketed edits
+    assert G._normalize_for_quote_match("completed in **1889**, on [SQuAD]") == G._normalize_for_quote_match("completed in 1889, on SQuAD")
+    # NLI: chrome windows and numerically-verbatim claims are not handed to the classifier
+    prose = " ".join(["The dominant sequence transduction models are based on complex recurrent networks and we propose a new architecture."] * 3)
+    assert not G._is_prose_window("# About FIT\n\n## The Introduction of Japan FIT") and G._is_prose_window(prose)
+    assert G._figures_verbatim_in_window("BLEU of 28.4 on WMT 2014", "reaching 28.4 BLEU on the WMT 2014 task") and not G._figures_verbatim_in_window("BLEU of 28.4", "BLEU of 25.0")
+    assert not G._figures_verbatim_in_window("a claim with no figures", "any window")
+    # uncited claims: fullwidth markers that resolve to a numbered source are citations
+    ok = "## Body\nThe law sets a target of 80 % electricity from renewables by 2030\u30101\u3011 and more.\n\n## Sources\n1. [Law](https://a.example/law)\n"
+    assert G.find_uncited_claim_lines(ok) == [] and G.find_uncited_claim_lines(ok.replace("\u30101\u3011", "\u30109\u3011"))
+
+
+def test_figure_check_accepts_source_names_from_title_and_url():
+    import config as _config
+    from tools.fs import _IN_MEMORY_FS
+    from utils import grounding as G
+    from utils.run_state import fetched_urls_ctx
+    url = "https://data.finstatglobe.com/finland/internet-adoption-statistics"
+    entry = {"url": url, "filename": "src_a.md", "title": "Internet Adoption Statistics in Finland (2026) - FinStatGlobe"}
+    saved_ws, saved_fs = _config.cfg["settings"].get("workspace"), dict(_IN_MEMORY_FS)
+    _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
+    _IN_MEMORY_FS["src_a.md"] = "93.7% of the population in Finland used the internet in 2024, per World Bank data. " * 3
+    tok = fetched_urls_ctx.set([entry])
+    try:
+        assert G.find_unsupported_specific_figures(f"FinStatGlobe records 93.7 % for 2024 ([x]({url}))") == []   # name is in the cited source's title
+        assert G.find_unsupported_specific_figures(f"ZorbloxData records 93.7 % for 2024 ([x]({url}))") == ["ZorbloxData"]  # a name nowhere is still flagged
+    finally:
+        fetched_urls_ctx.reset(tok); _IN_MEMORY_FS.clear(); _IN_MEMORY_FS.update(saved_fs)
+        if saved_ws is None: _config.cfg["settings"].pop("workspace", None)
+        else: _config.cfg["settings"]["workspace"] = saved_ws
+
+
+def test_stub_only_findings_are_not_citable_and_titleless_sources_get_a_readable_heading():
+    from engine.findings_evidence import _is_citable_finding
+    from pipeline.bridge import _fallback_title
+    from utils.run_state import fetched_urls_ctx
+    u = "https://www.researchgate.net/publication/1"
+    f = {"source_url": u, "summary": "A real looking synthesis sentence about the topic."}
+    tok = fetched_urls_ctx.set([{"url": u, "filename": "a.md", "stub": "empty page"}])
+    try:
+        assert not _is_citable_finding(f)
+        fetched_urls_ctx.get().append({"url": u, "filename": "b.md"})   # later fetched cleanly: citable again
+        assert _is_citable_finding(f)
+    finally:
+        fetched_urls_ctx.reset(tok)
+    t = _fallback_title("https://www.europarl.europa.eu/RegData/etudes/BRIE/2022/739271/EPRS_BRI(2022)739271_EN.pdf?trk=x")
+    assert t.startswith("europarl.europa.eu: ") and "RegData" not in t
+
+
 if __name__ == "__main__":
     # This file is pytest-style (module-level test_ functions) and pytest is not installed: without this block `python test_pipeline_quotes.py`
     # ran NOTHING and exited 0. Run every test_ function, fail loudly on the first error.

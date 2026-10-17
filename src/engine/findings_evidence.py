@@ -8,6 +8,7 @@ import time
 from typing import Optional
 
 from utils.grounding import _is_null_finding_summary
+from utils.run_state import get_fetched_urls
 from engine.orchestrator import _looks_like_renamed_task, _content_word_overlap, get_context_budget
 
 # Matches orchestrator.py's task_deadline cutoff marker text exactly (both variants: mid-turn
@@ -95,6 +96,11 @@ def _is_citable_finding(f: dict) -> bool:
     if not (src.startswith("http") and not _CUTOFF_ONLY_SUMMARY_RE.match(summary)):
         return False
     if _is_null_finding_summary(summary):
+        return False
+    # A source that only ever fetched as a stub (empty page, paywall/soft-404 shell): citing it is the stub_source check's whole job, so keep it out of
+    # the writer's evidence in the first place (2026-10-17 replay audit: 25 runs cited stub pages).
+    _entries = [e for e in get_fetched_urls() if e.get("url") == src]
+    if _entries and all(e.get("stub") for e in _entries):
         return False
     if "[SYSTEM RELEVANCE WARNING" in summary:
         return False

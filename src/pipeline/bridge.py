@@ -4,9 +4,19 @@ free-form delegate_tasks research loop ever running. See ROADMAP.md's stage-grap
 entry for why this exists and what it replaces (the evidence-gathering phase only, not the writer).
 """
 import hashlib
+import re
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from utils.run_state import record_fetched_url
+
+
+def _fallback_title(url: str) -> str:
+    """Readable heading for a source the pipeline extracted no <title> for (a PDF): "host: last path segment" instead of a raw URL heading, whose path
+    fragments (".../RegData/...") the writer then copied into prose as if they were names."""
+    p = urlsplit(url)
+    last = re.sub(r"\.\w{2,4}$", "", p.path.rstrip("/").rsplit("/", 1)[-1])
+    return f"{p.netloc.removeprefix('www.')}: {re.sub(r'[-_]+', ' ', last)}".strip(": ")
 
 
 def seed_run_state_from_evidence(run_state, facets: list[dict], evidence: dict, sources_dir: Path, titles: dict | None = None) -> int:
@@ -38,7 +48,7 @@ def seed_run_state_from_evidence(run_state, facets: list[dict], evidence: dict, 
                         Path(dst).write_text(src_path.read_text())
                     elif dst:  # memory workspace: dst is a bare key, not a disk path
                         _IN_MEMORY_FS[dst] = src_path.read_text()
-                record_fetched_url(url, fname, title=(titles or {}).get(url))
+                record_fetched_url(url, fname, title=(titles or {}).get(url) or _fallback_title(url))
             run_state.add_finding(source_url=url, summary=" ".join(quotes), task_name=name, depth=1)
             added += 1
     return added
