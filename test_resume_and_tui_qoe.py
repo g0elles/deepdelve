@@ -276,6 +276,11 @@ def main():
     _rs_eo = _RS_eo(_tf_eo.mkdtemp())
     _merge_eo(_rs_eo, {"query": "q", "evidence_only": True})
     assert _rs_eo.data["evidence_only"] is True
+    assert "evidence_gaps" in _resume_keys, (
+        "shared resume-carryover allowlist must include evidence_gaps (a resumed evidence-only run must keep its disclosed gaps)")
+    _rs_eg = _RS_eo(_tf_eo.mkdtemp())
+    _merge_eo(_rs_eg, {"query": "q", "evidence_gaps": [{"facet": "X", "questions": ["Y"]}]})
+    assert _rs_eg.data["evidence_gaps"] == [{"facet": "X", "questions": ["Y"]}]
     _run_cli_src = _inspect.getsource(_tui_mod_check.run_cli)
     assert "merge_resumed_state(" in _run_cli_src, (
         "run_cli must call the shared merge_resumed_state, not reintroduce its own inline copy "

@@ -2039,6 +2039,16 @@ def _load_pipeline_evidence(run_state, evidence_dir: str) -> int:
     ev = json.loads((eb_dir / "evidence.json").read_text())
     added = seed_run_state_from_evidence(run_state, ev["facets"], ev["evidence"], eb_dir, ev.get("titles"))
     run_state.data["evidence_only"] = True  # tools.core.check_quota now refuses research tools for this run
+    # evidence_gaps (2026-10-17): pipeline.run's own answer-gap round (ONE re-search attempt per unanswered question) already tried
+    # to fill these before evidence.json was written -- what's left here is what a dedicated re-search still couldn't find, carried
+    # to the writers (findings_evidence._build_findings_source_material) so the report states the gap instead of silently
+    # substituting a related-but-different figure (confirmed live, h19: "citizen adoption rate" answered with internet-penetration %).
+    gaps = ev.get("unanswered_facets") or {}
+    if gaps:
+        names = {f["id"]: f["name"] for f in ev["facets"]}
+        run_state.data["evidence_gaps"] = [
+            {"facet": names.get(fid, fid), "questions": qs} for fid, qs in gaps.items() if qs
+        ]
     run_state.save()
     return added
 

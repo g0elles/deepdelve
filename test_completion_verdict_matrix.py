@@ -436,6 +436,19 @@ def main():
           "final_report.md": f"- dato uno [gov]({_SRC})"},
          "report_style_violation", "silently reverted to standard-style URL links",
          "", [], [], {}, "academic"),
+        # check_undisclosed_evidence_gap (2026-10-17, h19 live incident): a --pipeline-evidence run's dedicated re-search round
+        # couldn't find a direct answer for "citizen adoption rate", and the report cites a real, grounded figure (internet
+        # penetration) without ever saying the adoption-rate question itself went unanswered -- fires on run_state.data["evidence_gaps"].
+        ("undisclosed_evidence_gap", True, {"findings.md": _FINDINGS_OK,
+          "final_report.md": f"- el pais avanza de forma sostenida segun cifras oficiales [gov]({_SRC})"},
+         "undisclosed_evidence_gap", "doesn't disclose that specific evidence", "", [], [],
+         {"evidence_gaps": [{"facet": "Finland citizen adoption of digital services", "questions": ["Finland e-government usage rate"]}]}),
+        # Same gap, but the report DOES disclose it ("could not be found") near the facet's own topic words -> clean pass.
+        ("undisclosed_evidence_gap_disclosed", True, {"findings.md": _FINDINGS_OK,
+          "final_report.md": (f"- el pais avanza de forma sostenida segun cifras oficiales [gov]({_SRC})\n"
+                               "- Finland's citizen adoption rate for digital services could not be found in available sources.")},
+         None, None, "", [], [],
+         {"evidence_gaps": [{"facet": "Finland citizen adoption of digital services", "questions": ["Finland e-government usage rate"]}]}),
     ]
 
     with tempfile.TemporaryDirectory() as tmpdir:

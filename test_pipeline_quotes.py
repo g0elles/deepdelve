@@ -379,6 +379,34 @@ def test_stub_only_findings_are_not_citable_and_titleless_sources_get_a_readable
     assert t.startswith("europarl.europa.eu: ") and "RegData" not in t
 
 
+def test_facet_unanswered_distinguishes_a_real_answer_from_a_related_but_different_figure():
+    """facet_unanswered: the h19 live incident -- "citizen adoption rate" has to come back unanswered even though a quote about a
+    DIFFERENT quantity (internet penetration) for the SAME entity is present; a quote that really answers a question must clear it."""
+    import pipeline.run as R
+    facet = {"name": "Finland digital adoption", "questions": ["Finland e-government usage rate 2024", "Finland digital ID adoption rate"]}
+    real = R.call_json
+    try:
+        assert R.facet_unanswered("m", "q", facet, []) == [0, 1]  # no quotes at all: every question unanswered, no model call needed
+        R.call_json = lambda *a, **k: {"answers": [{"q": 0, "quote": -1}, {"q": 1, "quote": 0}]}
+        assert R.facet_unanswered("m", "q", facet, ["91% of residents have a digital ID."]) == [0]
+        R.call_json = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down"))
+        assert R.facet_unanswered("m", "q", facet, ["some quote"]) == []  # fails open: advisory, never blocks a run
+    finally:
+        R.call_json = real
+
+
+def test_reformulate_question_falls_back_to_the_original_on_error():
+    import pipeline.run as R
+    real = R.call_json
+    try:
+        R.call_json = lambda *a, **k: {"queries": ["alt phrasing one", "alt phrasing two", ""]}
+        assert R.reformulate_question("m", "Finland", "q") == ["alt phrasing one", "alt phrasing two"]
+        R.call_json = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down"))
+        assert R.reformulate_question("m", "Finland", "q") == []
+    finally:
+        R.call_json = real
+
+
 if __name__ == "__main__":
     # This file is pytest-style (module-level test_ functions) and pytest is not installed: without this block `python test_pipeline_quotes.py`
     # ran NOTHING and exited 0. Run every test_ function, fail loudly on the first error.

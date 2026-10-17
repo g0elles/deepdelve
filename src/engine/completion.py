@@ -49,6 +49,7 @@ from engine.completion_checks_structural import (  # noqa: F401 — re-exported 
     check_thin_coverage, check_task_verification_flagged,
     check_findings_ungrounded, check_missing_findings, check_stale_findings,
     check_findings_underuses_evidence, check_missing_artifact,
+    check_undisclosed_evidence_gap,
     check_academic_citation_style_abandoned, check_uneven_task_investment,
     check_untracked_delegation, _findings_facet_coverage,
 )
@@ -110,6 +111,10 @@ COMPLETION_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
     check_stale_findings,
     check_findings_underuses_evidence,
     check_missing_artifact,
+    # Needs only ctx.content and run_state.data["evidence_gaps"] -- placed right after
+    # check_missing_artifact (needs ctx.content to exist) and before the academic-style check,
+    # same "content-dependent structural check" bucket. See its own docstring (2026-10-17).
+    check_undisclosed_evidence_gap,
     # Structural, not grounding -- needs only ctx.content/report_style, so it belongs here
     # (COMPLETION_CHECKS) rather than GROUNDING_CHECKS despite being citation-related; placed
     # right after check_missing_artifact (needs ctx.content to exist, same requirement as this
@@ -157,6 +162,7 @@ _COMPLETION_TIER_PROBLEMS = frozenset({
     "not_delegated", "requested_count_shortfall", "missing_query_facet", "thin_coverage", "task_verification_flagged",
     "findings_ungrounded", "missing_findings", "stale_findings", "findings_underuses_evidence",
     "missing_artifact", "report_style_violation", "uneven_task_investment", "untracked_delegation",
+    "undisclosed_evidence_gap",
 })
 
 GROUNDING_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
@@ -254,6 +260,9 @@ _BUILDER_FIXABLE_PROBLEMS = ("missing_artifact", "not_grounded", "claim_unsuppor
                              "nli_unsupported", "topical_mismatch", "editorializing", "uncited_claims",
                              "excluded_topic_present", "cross_source_contradiction",
                              "report_underuses_findings", "report_style_violation",
+                             # Added 2026-10-17: the fix is always available -- add one disclosure sentence per gap -- see
+                             # check_undisclosed_evidence_gap's own docstring.
+                             "undisclosed_evidence_gap",
                              # Added 2026-08-29, live incident: previously had no fix path at all
                              # (nagged the Planner's own conversation, no writer dispatch) --
                              # exhausted a run's retry budget 5+ times before falling back to a

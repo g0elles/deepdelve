@@ -23,6 +23,11 @@ EXTRACT_SCHEMA = {"type": "object", "required": ["spans"], "properties": {"spans
             "facet_id": {"type": "string"}, "quote": {"type": "string"}}}}}}
 JUDGE_SCHEMA = {"type": "object", "required": ["keep"], "properties": {"keep": {
     "type": "array", "items": {"type": "integer"}}}}
+ANSWER_SCHEMA = {"type": "object", "required": ["answers"], "properties": {"answers": {
+    "type": "array", "items": {"type": "object", "required": ["q", "quote"],
+    "properties": {"q": {"type": "integer"}, "quote": {"type": "integer"}}}}}}
+REFORMULATE_SCHEMA = {"type": "object", "required": ["queries"], "properties": {"queries": {
+    "type": "array", "maxItems": 2, "items": {"type": "string"}}}}
 CHUNK_CHARS, MAX_CHUNKS = 6000, 4
 PER_SOURCE, PER_JUDGE, POOL = 4, 15, 30
 CE_EN = "cross-encoder/ms-marco-MiniLM-L-6-v2"
@@ -126,6 +131,42 @@ def judge(model: str, facet: dict, cands: list[tuple[str, str]]) -> list[int] | 
         return [i for i in call_json(model, p, JUDGE_SCHEMA, think="low", timeout=120)["keep"] if 0 <= i < len(cands)]
     except Exception:
         return None
+
+
+def facet_unanswered(model: str, query: str, facet: dict, quotes: list[str]) -> list[int]:
+    """Question indexes `facet["questions"]` that NONE of the kept quotes actually answer — measured 2026-10-17: the pipeline's own
+    `facets_covered_2src` metric only counts sources, not answers, and scored 1.0 on a run whose two "citizen adoption" questions had
+    nothing but internet-PENETRATION figures kept for them (a related but different quantity). Fails open ([] -- "assume answered") on
+    a judge error or no quotes at all is handled by the caller treating every question as unanswered up front, same precedent as
+    judge()'s own None-on-error convention: advisory, not a gate, so a model hiccup must never block a run over this."""
+    if not quotes:
+        return list(range(len(facet["questions"])))
+    ql = "\n".join(f"{i}. {q[:220]}" for i, q in enumerate(quotes))
+    qs = "\n".join(f"{i}. {q}" for i, q in enumerate(facet["questions"]))
+    p = (f"Facet: {facet['name']}\n\nQuestions:\n{qs}\n\nPassages:\n{ql}\n\n"
+         f"For each question, give the number of ONE passage that directly answers it, or -1 if none does. A passage answers a "
+         f"question only if it states the SAME quantity or attribute the question names, about the SAME entity -- a related but "
+         f"different quantity, a general background statement, or a passage that only shares keywords does NOT answer it.")
+    try:
+        ans = call_json(model, p, ANSWER_SCHEMA, think="low", timeout=180)["answers"]
+        answered = {a["q"] for a in ans if isinstance(a.get("quote"), int) and a["quote"] >= 0}
+        return [i for i in range(len(facet["questions"])) if i not in answered]
+    except Exception:
+        return []
+
+
+def reformulate_question(model: str, facet_name: str, question: str) -> list[str]:
+    """1-2 alternate search phrasings for a question the first search round didn't answer -- re-running the SAME query text tends to
+    re-fetch the same pages (confirmed on the h19 "citizen adoption" facets: re-searching "Finland digital service adoption rate 2024"
+    keeps surfacing the same internet-penetration pages). Fails open ([] -- caller falls back to the original question) on error."""
+    p = (f"Topic: {facet_name}\nQuestion that could not be answered by the first search round: {question}\n\n"
+         f"Give 1-2 DIFFERENT search queries, using different terms/angle (not just a reword), likely to find a page that directly "
+         f"answers this question when the first phrasing did not.")
+    try:
+        qs = call_json(model, p, REFORMULATE_SCHEMA, think="low", timeout=60)["queries"]
+        return [q for q in qs if isinstance(q, str) and q.strip()][:2]
+    except Exception:
+        return []
 
 
 CE_POOL = 40
@@ -513,6 +554,35 @@ def run(query: str, model: str, out: Path, topk: int, extractor: str = "ce", jud
             break
         process(gather_round([(f["id"], f"{q} {f['name']}") for f in gaps for q in f["questions"][1:] or f["questions"]]))
 
+    def compute_unanswered() -> dict[str, list[str]]:
+        """fid -> still-unanswered question texts, per facet_unanswered. A fresh judge call every time it's needed (not cached): the
+        evidence a facet holds changes across the gap-rounds loop and the one re-search round below, so a stale cached verdict would
+        under/over-report exactly the thing a re-search round just changed."""
+        out = {}
+        for f in facets:
+            quotes = [t for ts in evidence[f["id"]].values() for t in ts]
+            idxs = facet_unanswered(model, query, f, quotes)
+            if idxs:
+                out[f["id"]] = [f["questions"][i] for i in idxs]
+        return out
+
+    # Answer-gap round (2026-10-17): the gap rounds above only ensure >=2 SOURCES per facet, not that any of them answers the
+    # facet's own questions -- confirmed live (h19): facets_covered_2src scored 1.0 while the "citizen adoption" facets held only
+    # internet-penetration figures for an "adoption rate" question. ONE extra round, re-searching with reformulated queries (re-running
+    # the same query text tends to re-fetch the same pages, see reformulate_question), same "exactly one extra attempt, never
+    # unbounded" shape as engine/completion.py's own force_whole_rebuild escalation -- this is pipeline-side evidence gathering, not a
+    # completion-check retry loop, but the same budget discipline applies for the same reason.
+    unanswered = compute_unanswered()
+    if unanswered:
+        resq = []
+        for f in facets:
+            for q in unanswered.get(f["id"], []):
+                for alt in (reformulate_question(model, f["name"], q) or [q]):
+                    resq.append((f["id"], alt))
+        if resq:
+            process(gather_round(resq))
+            unanswered = compute_unanswered()  # final: what the re-search round still didn't fill, carried to the writer as a disclosed gap
+
     covered = sum(1 for f in facets if len(evidence[f["id"]]) >= 2)
     metrics = {
         "query": query, "model": model, "extractor": extractor, "facets": len(facets), "facets_covered_2src": covered,
@@ -520,9 +590,13 @@ def run(query: str, model: str, out: Path, topk: int, extractor: str = "ce", jud
         "quote_match_rate": kept_total / emitted_total if emitted_total else 0.0,
         "sources_fetched": sum(1 for v in seen.values() if v), "extract_calls": calls, "extract_failed": failed_total,
         "sources_per_facet": {f["id"]: len(evidence[f["id"]]) for f in facets},
+        # facets_answered/unanswered_facets (2026-10-17): facets_covered_2src/coverage above count SOURCES per facet, not whether any
+        # of them answers the facet's own questions -- kept unchanged (other code reads them), these are additive.
+        "facets_answered": len(facets) - len(unanswered), "unanswered_facets": unanswered,
         "wall_s": round(time.time() - t0, 1), "funnel": funnel, "gather": gstats,
     }
-    (out / "evidence.json").write_text(json.dumps({"facets": facets, "evidence": evidence, "titles": titles}, indent=1))
+    (out / "evidence.json").write_text(json.dumps(
+        {"facets": facets, "evidence": evidence, "titles": titles, "unanswered_facets": unanswered}, indent=1))
     (out / "metrics.json").write_text(json.dumps(metrics, indent=1))
     return metrics
 

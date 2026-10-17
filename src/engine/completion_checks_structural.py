@@ -908,6 +908,62 @@ def check_missing_artifact(ctx: Ctx) -> Optional[Verdict]:
     )
 
 
+_GAP_DISCLOSURE_RE = re.compile(
+    r'\b(?:not found|no (?:data|information|figures?|reliable (?:data|figures?))|unavailable|'
+    r'could not (?:find|be found)|was unable to find|not available in (?:the )?(?:available )?sources?|'
+    r'no .{0,30}(?:was|were) found)\b', re.I)
+
+
+def check_undisclosed_evidence_gap(ctx: Ctx) -> Optional[Verdict]:
+    """A `--pipeline-evidence` run's own answer-gap round (`pipeline/run.py`'s `facet_unanswered`/`reformulate_question`, 2026-10-17)
+    already made ONE dedicated re-search attempt per unanswered question before the evidence was seeded. `run_state.data["evidence_gaps"]`
+    (carried by `engine.tui._load_pipeline_evidence`, see its own comment) is what that re-search still couldn't fill. Confirmed live:
+    an `h19` smoke run asked for Finland/Estonia "citizen adoption rates" and both facets' evidence held nothing but internet-PENETRATION
+    figures -- no existing GROUNDING_CHECKS member catches this, since every cited figure really is grounded in a really-fetched source;
+    the problem is that the report never says "adoption rate" was not found and instead lets the penetration figure stand in for it.
+
+    Builder-fixable (self-resolving, bucket 1 of ARCHITECTURE.md's invariant): the fix is always available -- add one disclosure
+    sentence per gap -- so this needs no `_capped` escalation, same as `check_academic_citation_style_abandoned` right below it.
+    Deliberately NOT in `_QUARANTINE_PROBLEMS`: the existing content isn't wrong, it's just missing one sentence, so Builder should
+    AMEND it, not re-condition on a renamed-aside draft the way a genuinely poisoned `not_grounded`/`findings_ungrounded` artifact
+    needs to -- same reasoning as `report_style_violation`'s own absence from that tuple.
+    Deliberately simple/conservative detection (a disclosure-phrase regex found within ~400 chars of one of the facet's own name words),
+    not an LLM judge: this check only needs to ask "did the report say ANYTHING like 'not found' near this topic", not whether the
+    disclosure is well-written, and a model-based detector here would just be one more unreliable layer on top of an upstream judge
+    call that already ran once in `pipeline/run.py`."""
+    if not ctx.content:
+        return None
+    gaps = (ctx.run_state.data or {}).get("evidence_gaps")
+    if not gaps:
+        return None
+    content_lower = ctx.content.lower()
+    disclosed_spans = [m.start() for m in _GAP_DISCLOSURE_RE.finditer(ctx.content)]
+    if not disclosed_spans:
+        undisclosed = [g["facet"] for g in gaps]
+    else:
+        undisclosed = []
+        for g in gaps:
+            topic_words = [w for w in re.findall(r"[A-Za-z]{4,}", g["facet"].lower())]
+            near = any(
+                content_lower.find(w, max(0, s - 400), s + 400) != -1
+                for s in disclosed_spans for w in topic_words
+            )
+            if not near:
+                undisclosed.append(g["facet"])
+    if not undisclosed:
+        return None
+    named = ", ".join(undisclosed[:3])
+    return Verdict(
+        "undisclosed_evidence_gap",
+        f"`{ctx.req_artifact}` doesn't disclose that specific evidence could not be found for: {named}.",
+        f"SYSTEM WARNING: {ctx.last_chance_prefix}A dedicated re-search could not find a direct answer for one or more questions "
+        f"about: {named}. Rewrite '{ctx.req_artifact}' so each of these states PLAINLY that this specific figure/fact was not found "
+        f"in available sources -- do not silently omit the topic, and do not substitute a different, related figure (e.g. an "
+        f"internet-penetration percentage) and imply it answers a different question (e.g. a service-adoption rate). Keep every "
+        f"other real, grounded claim unchanged.",
+    )
+
+
 def check_academic_citation_style_abandoned(ctx: Ctx) -> Optional[Verdict]:
     """Structural check (COMPLETION_CHECKS tier — needs only ctx.content/report_style, not the
     expensive real_grounding_problem scan): catches a report that was instructed to write in

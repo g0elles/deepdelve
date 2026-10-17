@@ -530,6 +530,10 @@ _RESUME_CARRYOVER_KEYS = (
     # evidence_only (2026-09-30): see RunState.__init__; a resumed pipeline-evidence run must keep its
     # research tools locked.
     "evidence_only",
+    # evidence_gaps (2026-10-17): engine.tui._load_pipeline_evidence's disclosed-gap list (see its own
+    # comment) -- without this, a resumed evidence-only run loses track of which facets the pipeline's
+    # re-search round couldn't fill, and check_undisclosed_evidence_gap would have nothing to check.
+    "evidence_gaps",
 )
 
 

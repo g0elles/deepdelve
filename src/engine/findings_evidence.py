@@ -677,4 +677,18 @@ def _build_findings_source_material(run_state: "RunState", task_names: Optional[
             f"drop these — if they matter for the report, note that this research exists but its "
             f"detail wasn't available to you, rather than pretending it doesn't exist.)"
         )
-    return f"{_intro}{findings_block}{omitted_note}{uncited_note}{_outro_label}{fetched_block}"
+    gaps_note = ""
+    gaps = run_state.data.get("evidence_gaps")
+    if gaps:
+        # run_state.data["evidence_gaps"]: pipeline.run's own answer-gap round already made ONE dedicated re-search attempt per
+        # question before evidence.json was written (engine.tui._load_pipeline_evidence) -- what's left here is what that re-search
+        # still couldn't find. check_undisclosed_evidence_gap (engine/completion_checks_structural.py) enforces that the final
+        # report actually says so.
+        lines = "\n".join(f"- {g['facet']}: {', '.join(g['questions'])}" for g in gaps)
+        gaps_note = (
+            f"\n\n(EVIDENCE GAPS -- a dedicated re-search could not find a direct answer for these specific questions:\n{lines}\n"
+            f"For each one, state plainly in the report that it was not found in available sources. Do NOT substitute a "
+            f"different, related figure and imply it answers the question -- e.g. citing internet-penetration percentages "
+            f"for a 'service adoption rate' question misrepresents the evidence.)"
+        )
+    return f"{_intro}{findings_block}{omitted_note}{uncited_note}{gaps_note}{_outro_label}{fetched_block}"
