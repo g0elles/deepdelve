@@ -20,6 +20,7 @@
 # engine/tui.py re-exports _restore_quarantined_draft from engine.artifact_salvage via this module.
 import re
 import time
+from collections import namedtuple
 from typing import Callable, Optional
 
 import config
@@ -91,58 +92,137 @@ def _ablation_disabled(name: str) -> bool:
     candidate is a one-line call here, not a new plumbing pattern each time."""
     return bool(config.get_setting("ablation", {}).get(f"disable_{name}", False))
 
-# Ordered: first verdict wins. GROUNDING_CHECKS only run once every pre-grounding check passes
-# (delegation happened, findings.md exists and is grounded, the artifact exists) because
-# real_grounding_problem is the one expensive fact and needs the artifact's content to exist.
-# A new check is one function above + one entry here — and one row in the verdict matrix test.
-COMPLETION_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
-    check_not_delegated,
+# 2026-10-17 consolidation (god-function/metadata-collection decomposition, 2026-10-17 audit
+# finding): one conceptual fact per check ("what problem, which tier, does it quarantine, who
+# fixes it") used to be split across 8 independently-maintained collections below (COMPLETION_
+# CHECKS, GROUNDING_CHECKS, _EVIDENCE_ONLY_SKIPPED_CHECKS, _COMPLETION_TIER_PROBLEMS,
+# _GROUNDING_TIER_PROBLEMS, _QUARANTINE_PROBLEMS, _BUILDER_FIXABLE_PROBLEMS, _FINDINGS_WRITER_
+# FIXABLE_PROBLEMS) that nothing in the type system enforced agreement on -- only a runtime test
+# (test_structural_checks.py) did. This is the project's own documented, admitted root cause of
+# its repeat bugs (swallowed-elif shipped twice, 8 separate starvation incidents, see
+# ARCHITECTURE.md section 1). Now one row per check (`_CheckSpec`), declared ONCE in priority
+# order below; every one of the 8 collections is DERIVED from this single table, so a new check
+# is one row, not up to 6 separately-remembered updates. Verified byte-for-byte equivalent to the
+# prior hand-typed collections before this consolidation (same membership, same COMPLETION_CHECKS/
+# GROUNDING_CHECKS ORDER -- the 3 membership-only tuples' internal order changed since nothing
+# reads them positionally, confirmed by grep across the whole engine/ and every test file).
+_CheckSpec = namedtuple(
+    "_CheckSpec",
+    "func problem tier quarantine builder_fixable findings_writer_fixable evidence_only_skip tier_problem_member",
+)
+
+
+def _check_spec(func, problem, tier, *, quarantine=False, builder_fixable=False,
+                 findings_writer_fixable=False, evidence_only_skip=False, tier_problem_member=True):
+    return _CheckSpec(func, problem, tier, quarantine, builder_fixable, findings_writer_fixable,
+                       evidence_only_skip, tier_problem_member)
+
+
+# Ordered: first verdict wins within a tier. GROUNDING-tier specs only run once every
+# COMPLETION-tier check passes (delegation happened, findings.md exists and is grounded, the
+# artifact exists) because real_grounding_problem is the one expensive fact and needs the
+# artifact's content to exist. A new check is one function (in completion_checks_structural.py
+# or completion_checks_grounding.py) + one _check_spec row here — and one row in the verdict
+# matrix test.
+_CHECK_SPECS = [
+    _check_spec(check_not_delegated, "not_delegated", "completion", evidence_only_skip=True),
     # Upstream of check_thin_coverage (below): "did you plan ENOUGH" before "did what you planned
     # succeed" -- see its own docstring (2026-08-28) for the live incident this closes.
-    check_requested_count_shortfall,
+    _check_spec(check_requested_count_shortfall, "requested_count_shortfall", "completion", evidence_only_skip=True),
     # Same family, same "did the Planner scope this correctly" question, different axis (facet
     # IDENTITY rather than facet COUNT) -- see its own docstring for the live capability gap this
     # closes (2026-08-29).
-    check_missing_query_facet,
-    check_thin_coverage,
-    check_task_verification_flagged,
-    check_findings_ungrounded,
-    check_missing_findings,
-    check_stale_findings,
-    check_findings_underuses_evidence,
-    check_missing_artifact,
+    _check_spec(check_missing_query_facet, "missing_query_facet", "completion", evidence_only_skip=True),
+    _check_spec(check_thin_coverage, "thin_coverage", "completion", evidence_only_skip=True),
+    _check_spec(check_task_verification_flagged, "task_verification_flagged", "completion", evidence_only_skip=True),
+    _check_spec(check_findings_ungrounded, "findings_ungrounded", "completion",
+                quarantine=True, findings_writer_fixable=True),
+    _check_spec(check_missing_findings, "missing_findings", "completion", findings_writer_fixable=True),
+    _check_spec(check_stale_findings, "stale_findings", "completion", findings_writer_fixable=True),
+    _check_spec(check_findings_underuses_evidence, "findings_underuses_evidence", "completion"),
+    _check_spec(check_missing_artifact, "missing_artifact", "completion", builder_fixable=True),
     # Needs only ctx.content and run_state.data["evidence_gaps"] -- placed right after
     # check_missing_artifact (needs ctx.content to exist) and before the academic-style check,
     # same "content-dependent structural check" bucket. See its own docstring (2026-10-17).
-    check_undisclosed_evidence_gap,
+    _check_spec(check_undisclosed_evidence_gap, "undisclosed_evidence_gap", "completion",
+                # Added 2026-10-17: the fix is always available -- add one disclosure sentence per gap -- see
+                # check_undisclosed_evidence_gap's own docstring.
+                builder_fixable=True),
     # Structural, not grounding -- needs only ctx.content/report_style, so it belongs here
-    # (COMPLETION_CHECKS) rather than GROUNDING_CHECKS despite being citation-related; placed
-    # right after check_missing_artifact (needs ctx.content to exist, same requirement as this
-    # check) and before check_uneven_task_investment/check_untracked_delegation's hygiene checks,
-    # since a report that deleted its own required citation format is closer to a correctness
-    # problem than a hygiene one. See its own docstring for the live incident (2026-08-25) this
-    # closes -- a report abandoning its instructed academic citation format entirely, which every
+    # (tier="completion") rather than "grounding" despite being citation-related; placed right
+    # after check_missing_artifact (needs ctx.content to exist, same requirement as this check)
+    # and before check_uneven_task_investment/check_untracked_delegation's hygiene checks, since a
+    # report that deleted its own required citation format is closer to a correctness problem
+    # than a hygiene one. See its own docstring for the live incident (2026-08-25) this closes --
+    # a report abandoning its instructed academic citation format entirely, which every
     # URL-grounding check trivially passes.
-    check_academic_citation_style_abandoned,
+    _check_spec(check_academic_citation_style_abandoned, "report_style_violation", "completion", builder_fixable=True),
     # Both require findings.md AND the final artifact to already exist (own docstrings explain
     # why -- two live regressions, 2026-07-23) -- placed after both existence checks above so
     # the list's own ordering documents that requirement, even though each check's internal
     # gate already enforces it regardless of position.
-    check_uneven_task_investment,
-    check_untracked_delegation,
+    _check_spec(check_uneven_task_investment, "uneven_task_investment", "completion", evidence_only_skip=True),
+    _check_spec(check_untracked_delegation, "untracked_delegation", "completion"),
+
+    _check_spec(check_claim_unsupported, "claim_unsupported", "grounding", quarantine=True, builder_fixable=True),
+    _check_spec(check_no_urls, "not_grounded", "grounding", quarantine=True, builder_fixable=True),
+    _check_spec(check_stub_source, "stub_source", "grounding", quarantine=True, builder_fixable=True),
+    _check_spec(check_regulation_unsupported, "regulation_unsupported", "grounding", quarantine=True, builder_fixable=True),
+    _check_spec(check_specific_figure_unsupported, "specific_figure_unsupported", "grounding", quarantine=True, builder_fixable=True),
+    _check_spec(check_quote_paraphrased, "quote_paraphrased", "grounding", quarantine=True, builder_fixable=True),
+    _check_spec(check_non_url_citation, "non_url_citation", "grounding", quarantine=True, builder_fixable=True),
+    _check_spec(check_nli_unsupported, "nli_unsupported", "grounding", quarantine=True, builder_fixable=True),
+    _check_spec(check_topical_mismatch, "topical_mismatch", "grounding", quarantine=True, builder_fixable=True),
+    # Fifth grounding layer, same tier as its two siblings above (term-overlap passed, not
+    # contradicted, not topically unrelated) -- see its own docstring for the whack-a-mole
+    # root-cause this closes (2026-08-29). UNVALIDATED, opt-in (config default False).
+    _check_spec(check_editorializing_content, "editorializing", "grounding", builder_fixable=True),
+    _check_spec(check_uncited_claims, "uncited_claims", "grounding", builder_fixable=True),
+    _check_spec(check_excluded_topic, "excluded_topic_present", "grounding", builder_fixable=True),
+    _check_spec(check_cross_source_contradiction, "cross_source_contradiction", "grounding", builder_fixable=True),
+    # Added 2026-08-29, live incident: previously had no fix path at all (nagged the Planner's
+    # own conversation, no writer dispatch) -- exhausted a run's retry budget 5+ times before
+    # falling back to a stale, off-topic salvage. See check_propagated_ungrounded_content's own
+    # docstring for the fix reasoning.
+    _check_spec(check_propagated_ungrounded_content, "propagated_ungrounded", "grounding", builder_fixable=True),
+    # Breadth, not accuracy -- deliberately placed AFTER every citation-ACCURACY check above (no
+    # point demanding more citations while the ones that already exist are still wrong) but BEFORE
+    # the generic catch-all, so a report that both under-cites AND has one bad citation gets the
+    # bad-citation problem fixed first.
+    _check_spec(check_report_underuses_findings, "report_underuses_findings", "grounding", builder_fixable=True),
+    # Same breadth-not-accuracy category as its sibling above, one layer more specific (per-TASK
+    # zero-coverage, not a flat ratio) -- see its own docstring (2026-07-29, RESEARCH.md Sec.14h).
+    # Deliberately NOT builder_fixable (see ARCHITECTURE.md section 1: the single combined-
+    # instruction dispatch reproduced the exact evidence-crowding pattern this check exists to
+    # catch, live-confirmed -- dispatched instead by its own bespoke per-facet branch,
+    # _try_report_underuses_evidence_dispatch).
+    _check_spec(check_report_underuses_evidence, "report_underuses_evidence", "grounding"),
+    # Self-consistency, not citation accuracy or breadth -- placed after both since a report with a
+    # bad citation or a missing task should get those fixed first; still before the generic
+    # catch-all so a genuinely duplicate-only report gets a specific, actionable nudge.
+    _check_spec(check_duplicate_report_sections, "duplicate_report_sections", "grounding", quarantine=True, builder_fixable=True),
+    # Completeness of an EXPLICIT per-facet instruction, not citation accuracy or self-consistency
+    # -- placed after duplicate-section (a different completeness axis) but before the generic
+    # catch-all. See its own docstring for the live incident (2026-08-30) this closes.
+    # tier_problem_member=False: unlike every other grounding-tier check, this one does NOT key
+    # off the single shared ctx.grounding_problem -- it structurally never gets evaluated at all
+    # as long as ANY earlier entry keeps winning, so it must NOT be counted when detecting "the
+    # whole GROUNDING tier kept winning" (see _GROUNDING_TIER_PROBLEMS' derivation below and its
+    # own historical comment for the live incident this distinction exists to prevent).
+    _check_spec(check_missing_specific_item_per_facet, "missing_specific_item_per_facet", "grounding",
+                builder_fixable=True, tier_problem_member=False),
+    _check_spec(check_not_grounded, "not_grounded", "grounding", quarantine=True, builder_fixable=True),  # generic catch-all: fires on ANY grounding problem — keep it LAST
 ]
+
+COMPLETION_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [s.func for s in _CHECK_SPECS if s.tier == "completion"]
+GROUNDING_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [s.func for s in _CHECK_SPECS if s.tier == "grounding"]
 
 # Checks whose ONLY remedy is more research (delegate_tasks / a fresh Searcher round). In an evidence-only run
 # (RunState.data["evidence_only"], set by --pipeline-evidence / /pipeline-evidence / API pipeline_evidence_dir) the research
 # tools are refused for the whole run (tools.core.check_quota), so these verdicts could never be satisfied and would only loop
 # the Planner; whether the fixed evidence is sufficient is the pipeline's own job (its coverage metrics and entity re-plan).
 # Writer-fixable and grounding checks are unaffected. See ARCHITECTURE.md section 2, "Evidence-only runs".
-_EVIDENCE_ONLY_SKIPPED_CHECKS = frozenset({
-    check_requested_count_shortfall, check_missing_query_facet, check_thin_coverage,
-    check_task_verification_flagged, check_uneven_task_investment,
-    # its only remedy is delegate_tasks; an evidence dir with zero kept quotes (searches throttled) never records a fetched URL
-    check_not_delegated,
-})
+_EVIDENCE_ONLY_SKIPPED_CHECKS = frozenset(s.func for s in _CHECK_SPECS if s.evidence_only_skip)
 
 
 def _active_completion_checks(run_state) -> list:
@@ -153,83 +233,27 @@ def _active_completion_checks(run_state) -> list:
     return COMPLETION_CHECKS
 
 
-# The problem names COMPLETION_CHECKS' own members can produce, one-to-one with the list above --
-# used by the cross-tier starvation yield below to detect "COMPLETION_CHECKS as a WHOLE TIER kept
-# winning" as distinct from "the SAME problem kept winning" (_consecutive_occurrences' narrower
-# question). A new COMPLETION_CHECKS entry needs its problem name added here too (see that list's
-# own "one row in the verdict matrix test" reminder -- this is the same kind of paired update).
-_COMPLETION_TIER_PROBLEMS = frozenset({
-    "not_delegated", "requested_count_shortfall", "missing_query_facet", "thin_coverage", "task_verification_flagged",
-    "findings_ungrounded", "missing_findings", "stale_findings", "findings_underuses_evidence",
-    "missing_artifact", "report_style_violation", "uneven_task_investment", "untracked_delegation",
-    "undisclosed_evidence_gap",
-})
+# The problem names COMPLETION_CHECKS' own members can produce -- used by the cross-tier
+# starvation yield below to detect "COMPLETION_CHECKS as a WHOLE TIER kept winning" as distinct
+# from "the SAME problem kept winning" (_consecutive_occurrences' narrower question).
+_COMPLETION_TIER_PROBLEMS = frozenset(s.problem for s in _CHECK_SPECS if s.tier == "completion")
 
-GROUNDING_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [
-    check_claim_unsupported,
-    check_no_urls,
-    check_stub_source,
-    check_regulation_unsupported,
-    check_specific_figure_unsupported,
-    check_quote_paraphrased,
-    check_non_url_citation,
-    check_nli_unsupported,
-    check_topical_mismatch,
-    # Fifth grounding layer, same tier as its two siblings above (term-overlap passed, not
-    # contradicted, not topically unrelated) -- see its own docstring for the whack-a-mole
-    # root-cause this closes (2026-08-29). UNVALIDATED, opt-in (config default False).
-    check_editorializing_content,
-    check_uncited_claims,
-    check_excluded_topic,
-    check_cross_source_contradiction,
-    check_propagated_ungrounded_content,
-    # Breadth, not accuracy -- deliberately placed AFTER every citation-ACCURACY check above (no
-    # point demanding more citations while the ones that already exist are still wrong) but BEFORE
-    # the generic catch-all, so a report that both under-cites AND has one bad citation gets the
-    # bad-citation problem fixed first.
-    check_report_underuses_findings,
-    # Same breadth-not-accuracy category as its sibling above, one layer more specific (per-TASK
-    # zero-coverage, not a flat ratio) -- see its own docstring (2026-07-29, RESEARCH.md Sec.14h).
-    check_report_underuses_evidence,
-    # Self-consistency, not citation accuracy or breadth -- placed after both since a report with a
-    # bad citation or a missing task should get those fixed first; still before the generic
-    # catch-all so a genuinely duplicate-only report gets a specific, actionable nudge.
-    check_duplicate_report_sections,
-    # Completeness of an EXPLICIT per-facet instruction, not citation accuracy or self-consistency
-    # -- placed after duplicate-section (a different completeness axis) but before the generic
-    # catch-all. See its own docstring for the live incident (2026-08-30) this closes.
-    check_missing_specific_item_per_facet,
-    check_not_grounded,  # generic catch-all: fires on ANY grounding problem — keep it LAST
-]
-
-# Every problem name a GROUNDING_CHECKS member OTHER than check_missing_specific_item_per_facet
-# can produce -- one-to-one with the list above, minus that one check's own problem, same
-# "starving tier" convention as _COMPLETION_TIER_PROBLEMS. Exists because check_missing_specific_
-# item_per_facet sits deliberately late in the list (a first-match-wins scan) and, unlike its
-# siblings, does NOT key off the single shared ctx.grounding_problem -- so it structurally never
-# gets evaluated at all as long as ANY earlier entry keeps winning, even if the winning PROBLEM
-# changes every attempt (the same "tier keeps winning, specific problem doesn't repeat" shape
-# _consecutive_tier_wins was built for at the COMPLETION/GROUNDING boundary). Live-confirmed
-# 2026-08-30: across 4 separate live runs of the same query, this check never once fired inside
-# run_completion_check's real dispatch loop -- propagated_ungrounded/non_url_citation/
+# Every problem name a GROUNDING-tier spec with tier_problem_member=True can produce (i.e. every
+# one except check_missing_specific_item_per_facet -- see its own spec comment above), same
+# "starving tier" convention as _COMPLETION_TIER_PROBLEMS. Live-confirmed 2026-08-30: across 4
+# separate live runs of the same query, check_missing_specific_item_per_facet never once fired
+# inside run_completion_check's real dispatch loop -- propagated_ungrounded/non_url_citation/
 # uncited_claims/claim_unsupported kept winning first, in a different order each run, every one
 # of the check's real bugs was only ever found by replaying a delivered report through it by hand.
-_GROUNDING_TIER_PROBLEMS = frozenset({
-    "not_grounded", "claim_unsupported", "stub_source", "regulation_unsupported",
-    "specific_figure_unsupported", "quote_paraphrased", "non_url_citation", "nli_unsupported",
-    "topical_mismatch", "editorializing", "uncited_claims", "excluded_topic_present",
-    "cross_source_contradiction", "propagated_ungrounded", "report_underuses_findings",
-    "report_underuses_evidence", "duplicate_report_sections",
-})
+_GROUNDING_TIER_PROBLEMS = frozenset(
+    s.problem for s in _CHECK_SPECS if s.tier == "grounding" and s.tier_problem_member
+)
 
 # Problems whose bad draft gets quarantined (renamed aside) before the retry, and which count as
 # "the check the quarantined draft actually failed" when restoring it at the final verdict.
 # run_completion_check derives its quarantine branch from this tuple (findings_ungrounded
-# quarantines findings.md instead of the artifact) — one list, no second copy to forget.
-_QUARANTINE_PROBLEMS = ("not_grounded", "claim_unsupported", "non_url_citation",
-                        "regulation_unsupported", "specific_figure_unsupported",
-                        "quote_paraphrased", "stub_source", "duplicate_report_sections",
-                        "nli_unsupported", "topical_mismatch", "findings_ungrounded")
+# quarantines findings.md instead of the artifact).
+_QUARANTINE_PROBLEMS = tuple(dict.fromkeys(s.problem for s in _CHECK_SPECS if s.quarantine))
 
 # Problems fixable by rewriting `req_artifact` from the SAME findings.md, no new research needed —
 # dispatched to a fresh-context Builder (+ PeerReviewer check) by run_completion_check's
@@ -253,27 +277,7 @@ _QUARANTINE_PROBLEMS = ("not_grounded", "claim_unsupported", "non_url_citation",
 # fallback path... would be actively confusing to FindingsWriter, which has the opposite tool
 # set") -- Builder's branch never got the same treatment until this fix.
 # See _BUILDER_NO_DELEGATE_CLARIFICATION below for the fix.
-_BUILDER_FIXABLE_PROBLEMS = ("missing_artifact", "not_grounded", "claim_unsupported",
-                             "non_url_citation", "regulation_unsupported",
-                             "specific_figure_unsupported", "quote_paraphrased",
-                             "stub_source", "duplicate_report_sections",
-                             "nli_unsupported", "topical_mismatch", "editorializing", "uncited_claims",
-                             "excluded_topic_present", "cross_source_contradiction",
-                             "report_underuses_findings", "report_style_violation",
-                             # Added 2026-10-17: the fix is always available -- add one disclosure sentence per gap -- see
-                             # check_undisclosed_evidence_gap's own docstring.
-                             "undisclosed_evidence_gap",
-                             # Added 2026-08-29, live incident: previously had no fix path at all
-                             # (nagged the Planner's own conversation, no writer dispatch) --
-                             # exhausted a run's retry budget 5+ times before falling back to a
-                             # stale, off-topic salvage. See check_propagated_ungrounded_content's
-                             # own docstring for the fix reasoning.
-                             "propagated_ungrounded",
-                             # Added 2026-08-30, live incident: the fix is "cite an already-fetched
-                             # source you forgot to use," which Builder can do directly from
-                             # findings.md -- see check_missing_specific_item_per_facet's own
-                             # docstring.
-                             "missing_specific_item_per_facet")
+_BUILDER_FIXABLE_PROBLEMS = tuple(dict.fromkeys(s.problem for s in _CHECK_SPECS if s.builder_fixable))
 
 # Appended to every Builder-dispatch instruction (both the classic and force_whole_rebuild
 # branches) right after verdict.inject -- a single shared clarification rather than hand-rewriting
@@ -298,17 +302,17 @@ _BUILDER_NO_DELEGATE_CLARIFICATION = (
 # older/custom SubAgentConfig setup that hasn't added FindingsWriter doesn't just silently stop
 # working.
 #
-# "findings_underuses_evidence" is deliberately ABSENT — same reasoning as
-# "report_underuses_evidence"'s own absence from _BUILDER_FIXABLE_PROBLEMS one layer downstream
-# (see that tuple's comment). The single combined-instruction version (routed through here until
-# 2026-08-01) got a live-confirmed negative result: FindingsWriter given a complete, well-under-
-# budget (16.5K chars under a 50K settings.context_budget_chars) 4-facet evidence blob in ONE
-# dispatch wrote real content for only 1 of 4 facets — the identical evidence-crowding pattern
-# already diagnosed for Builder, one layer upstream. Dispatched instead by its own bespoke
-# per-facet branch in run_completion_check (_dispatch_per_facet_findings_writer_fix), each
-# dispatch scoped to only ITS OWN facet's findings via _build_findings_source_material's
-# task_names filter — see RESEARCH.md §16.
-_FINDINGS_WRITER_FIXABLE_PROBLEMS = ("missing_findings", "findings_ungrounded", "stale_findings")
+# "findings_underuses_evidence" is deliberately NOT findings_writer_fixable in its spec above —
+# same reasoning as "report_underuses_evidence"'s own non-builder_fixable spec one layer
+# downstream. The single combined-instruction version (routed through here until 2026-08-01) got
+# a live-confirmed negative result: FindingsWriter given a complete, well-under-budget (16.5K
+# chars under a 50K settings.context_budget_chars) 4-facet evidence blob in ONE dispatch wrote
+# real content for only 1 of 4 facets — the identical evidence-crowding pattern already diagnosed
+# for Builder, one layer upstream. Dispatched instead by its own bespoke per-facet branch in
+# run_completion_check (_dispatch_per_facet_findings_writer_fix), each dispatch scoped to only ITS
+# OWN facet's findings via _build_findings_source_material's task_names filter — see
+# RESEARCH.md §16.
+_FINDINGS_WRITER_FIXABLE_PROBLEMS = tuple(dict.fromkeys(s.problem for s in _CHECK_SPECS if s.findings_writer_fixable))
 
 # Dispatch orchestration (group C, 2026-08-24) -- see engine/completion_dispatch.py's own header.
 # Re-exported below the same way groups A/B's imports above are: run_completion_check (staying

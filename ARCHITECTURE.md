@@ -94,8 +94,10 @@ per-instance patch — see below for the invariant and the mechanism that now en
   names) + `_consecutive_tier_wins` (membership-based counting, sibling to `_consecutive_
   occurrences`'s equality-based counting) — the `check_report_underuses_evidence` call site now
   passes `tier_problems=_COMPLETION_TIER_PROBLEMS`, so the guard fires on EITHER the same problem
-  repeating OR the whole tier winning consecutively. **A new `COMPLETION_CHECKS` entry needs its
-  problem name added to `_COMPLETION_TIER_PROBLEMS` too** — see checklist item 6 below.
+  repeating OR the whole tier winning consecutively. **CLOSED 2026-10-17**: `_COMPLETION_TIER_
+  PROBLEMS` is now derived automatically from `_CHECK_SPECS`' `tier="completion"` rows (see the
+  "Verdict → downstream routing" section below) — a new completion-tier check's problem name is
+  included for free via its spec's `tier` field, nothing to separately remember.
 - **`_STARVATION_YIELD_TARGETS` + `_apply_starvation_yield(verdict, ctx)`** — for a SPECIFIC problem
   that should yield to a SPECIFIC sibling (`report_underuses_findings` → `report_underuses_
   evidence`), a declarative `{problem_name: target_check}` dict, always probed directly. Replaces a
@@ -125,19 +127,32 @@ after N attempts, fail over instead of hammering it forever); **Chain of Respons
 applying the same retry/circuit-breaker/fallback-chain shape specifically to production LLM agent
 systems, confirming this is a known-missing layer, not a codebase-specific quirk.
 
-### Verdict → downstream routing: four tuples that must all agree
+### Verdict → downstream routing: one row per check, not four/eight tuples to keep in sync by hand
 
-A new problem name isn't "done" when its check function returns a `Verdict`. It also needs an entry
-in as many of these as apply — **all four live in `completion.py`, none of them derive from the
-check list itself, so a missed one fails silently** (the check fires, gets the wrong treatment, and
-nothing errors):
+**CLOSED 2026-10-17** (2026-10-17 production-readiness audit, "8 independently-maintained
+string-keyed collections instead of one declaration per check" — this project's own documented,
+admitted root cause of its repeat bugs, swallowed-elif shipped twice, 8 separate starvation
+incidents). A new problem name used to need a manually-synced entry in up to 8 separate
+collections with nothing in the type system enforcing agreement; **now it needs one row** in
+`completion.py`'s `_CHECK_SPECS` list (an ordered list of `_check_spec(func, problem, tier,
+quarantine=, builder_fixable=, findings_writer_fixable=, evidence_only_skip=,
+tier_problem_member=)` entries), and every one of the following is DERIVED from that one table at
+module load, by a one-line filter/comprehension each:
 
-| Tuple/list | What it controls | Miss it and... |
+| Derived from `_CHECK_SPECS` | What it controls | The `_check_spec(...)` field that drives it |
 |---|---|---|
-| `COMPLETION_CHECKS` / `GROUNDING_CHECKS` | whether the check runs at all, and its priority | the check never fires |
-| `_QUARANTINE_PROBLEMS` | whether the bad artifact gets renamed aside (`.rejected_attempt_N`) before retry, vs. left in place for the model to "overwrite" | a small model re-conditions on its own wrong prior draft instead of truly restarting |
-| `_BUILDER_FIXABLE_PROBLEMS` | whether a fresh-context **Builder** dispatch fixes `final_report.md`, vs. falling back to injecting a nudge into the Planner's own (ever-growing) conversation | the fix works but grows the Planner's context the exact way this whole dispatch system exists to avoid |
-| `_FINDINGS_WRITER_FIXABLE_PROBLEMS` | same, for **FindingsWriter**/`findings.md` | same risk, one artifact earlier |
+| `COMPLETION_CHECKS` / `GROUNDING_CHECKS` | whether the check runs at all, its priority (= the row's position in `_CHECK_SPECS`) | `tier="completion"` / `"grounding"` |
+| `_QUARANTINE_PROBLEMS` | whether the bad artifact gets renamed aside (`.rejected_attempt_N`) before retry, vs. left in place for the model to "overwrite" | `quarantine=True` |
+| `_BUILDER_FIXABLE_PROBLEMS` | whether a fresh-context **Builder** dispatch fixes `final_report.md`, vs. falling back to injecting a nudge into the Planner's own (ever-growing) conversation | `builder_fixable=True` |
+| `_FINDINGS_WRITER_FIXABLE_PROBLEMS` | same, for **FindingsWriter**/`findings.md` | `findings_writer_fixable=True` |
+| `_EVIDENCE_ONLY_SKIPPED_CHECKS` | whether this check is skipped for an evidence-only run (§2's own "Evidence-only runs" section) | `evidence_only_skip=True` |
+| `_COMPLETION_TIER_PROBLEMS` | detecting "the whole COMPLETION tier kept winning" (see `_yield_to_starved_check`'s `tier_problems` param) | automatic for every `tier="completion"` row |
+| `_GROUNDING_TIER_PROBLEMS` | same, for the GROUNDING tier | automatic for every `tier="grounding"` row with `tier_problem_member=True` (default; only `check_missing_specific_item_per_facet` sets this `False` — see its own spec comment) |
+
+**A missed field still fails silently in principle** (nothing in the type system forces you to set
+`builder_fixable=True`) but there is only ONE place to get it right now, not up to 6 — and
+`test_structural_checks.py`'s own audit (below) still catches the "forgot `_capped`" class of
+mistake regardless.
 
 `findings_ungrounded` is the one problem name that additionally gets special-cased inline in
 `run_completion_check` (quarantines `findings.md` specifically, not `req_artifact`) — see the
@@ -145,49 +160,58 @@ nothing errors):
 problem that needs to quarantine something OTHER than `req_artifact` needs its own special case the
 same way; the tuple alone assumes `req_artifact`.
 
-**A problem can also skip the shared tuples entirely and get a bespoke `elif` branch** in
-`run_completion_check`'s dispatch chain instead, when a single generic-rebuild dispatch isn't the
-right shape for it. Two examples: `thin_coverage` (`_dispatch_deepening_round` — dispatches real
-follow-up tasks directly, bypassing the Planner) and `report_underuses_evidence`
-(`_dispatch_per_facet_builder_fix` — one Builder Write→Review→Fix cycle *per dropped facet*,
+**A problem can also skip `builder_fixable`/`findings_writer_fixable` entirely and get a bespoke
+dispatch-attempt function** instead (2026-10-17: these were `elif` branches inline in
+`run_completion_check` until that function's own god-function decomposition pulled every dispatch
+attempt, bespoke or shared-tuple, into its own named `_try_*_dispatch` function — see this
+document's own completion.py entry below for the full list), when a single generic-rebuild
+dispatch isn't the right shape for it. Two examples: `thin_coverage` (`_try_thin_coverage_
+dispatch` → `_dispatch_deepening_round` — dispatches real follow-up tasks directly, bypassing the
+Planner) and `report_underuses_evidence` (`_try_report_underuses_evidence_dispatch` →
+`_dispatch_per_facet_builder_fix` — one Builder Write→Review→Fix cycle *per dropped facet*,
 sequential, each scoped to only that facet's real URLs, instead of one Builder turn asked to fix
 every neglected facet at once). The latter exists specifically because the naive version —
-routing `report_underuses_evidence` through `_BUILDER_FIXABLE_PROBLEMS`' single combined-
+routing `report_underuses_evidence` through the shared `builder_fixable` single combined-
 instruction dispatch — got a clean **negative** live result (commit `1092add`, after `67e4b00`):
 asking Builder to restore multiple neglected facets in one turn reproduced the exact
 evidence-crowding pattern the check exists to catch in the first draft, dropping a report's
 coverage of the harder facet from ~1/3 to 0%. If you're hunting for `report_underuses_evidence` in
-`_BUILDER_FIXABLE_PROBLEMS` and not finding it, this is why — it's deliberately absent from all
-four tuples, dispatched by its own `elif` instead.
+`_BUILDER_FIXABLE_PROBLEMS` and not finding it, this is why — its `_check_spec` row deliberately
+leaves `builder_fixable` (and every other flag) `False`, dispatched by its own function instead,
+called from `run_completion_check` in the same sequence as every shared-tuple dispatch attempt.
 
 **Checklist for a new completion-check problem:**
 1. Write the check function (`Ctx -> Optional[Verdict]`), following an existing one's shape as a
-   template — `check_regulation_unsupported` (narrow, GROUNDING_CHECKS) or
-   `check_uneven_task_investment` (structural, COMPLETION_CHECKS) are the clearest examples.
-2. Add it to `COMPLETION_CHECKS` or `GROUNDING_CHECKS`, in the right priority position (accuracy
-   before breadth, correctness before hygiene — read the list's own ordering comments).
-3. Decide: does a bad artifact need quarantining? → `_QUARANTINE_PROBLEMS`.
+   template — `check_regulation_unsupported` (narrow, grounding tier) or
+   `check_uneven_task_investment` (structural, completion tier) are the clearest examples. Goes in
+   `engine/completion_checks_structural.py` (completion tier) or
+   `engine/completion_checks_grounding.py` (grounding tier).
+2. Add one `_check_spec(...)` row to `completion.py`'s `_CHECK_SPECS` list, in the right priority
+   position (accuracy before breadth, correctness before hygiene — read the list's own ordering
+   comments) within its tier's block. Set `tier="completion"` or `"grounding"` — this alone
+   determines `COMPLETION_CHECKS`/`GROUNDING_CHECKS` membership AND `_COMPLETION_TIER_PROBLEMS`/
+   `_GROUNDING_TIER_PROBLEMS` membership, derived automatically; no separate update needed for
+   those two sets any more (closed 2026-10-17, see this section's own table above).
+3. Decide: does a bad artifact need quarantining? → `quarantine=True` on the spec.
 4. Decide: is this Builder-fixable, FindingsWriter-fixable, both, or neither (Planner-only, like
-   `not_delegated`)? → the matching tuple. If the fix needs per-item/per-facet handling a single
-   generic dispatch can't express, write a bespoke `elif` branch instead (see `thin_coverage` /
-   `report_underuses_evidence` above) — but still make the "why not the shared tuple" reasoning
-   explicit in a comment, the same way those two do, so a future reader doesn't read the absence
-   as an oversight.
-5. **Add a row to `test_structural_checks.py`'s verdict matrix** (`matrix = [...]`, search for
+   `not_delegated`)? → `builder_fixable=True`/`findings_writer_fixable=True` on the spec. If the
+   fix needs per-item/per-facet handling a single generic dispatch can't express, write a bespoke
+   dispatch-attempt function instead (see `_try_thin_coverage_dispatch` /
+   `_try_report_underuses_evidence_dispatch`, called from `run_completion_check`) and leave both
+   flags `False` on the spec — but still make the "why not builder_fixable/findings_writer_
+   fixable" reasoning explicit in a comment on the spec row, the same way those two do, so a
+   future reader doesn't read the absence as an oversight.
+5. Does this run's own remedy require research (delegate_tasks/web_search/fetch_url_to_workspace)
+   that an evidence-only run (§2's "Evidence-only runs") structurally cannot satisfy? →
+   `evidence_only_skip=True` on the spec.
+6. **Add a row to `test_structural_checks.py`'s verdict matrix** (`matrix = [...]`, search for
    `_row_name, _delegated, _files, _expected, _phrase`) — this is a project rule (see `CLAUDE.md`),
    not optional. It exists specifically because two identical-looking `elif` bugs (bd307f4, run 13)
-   silently merged branches before this file existed. A new bespoke dispatch `elif` (not just a new
-   problem name) also needs its own dedicated scenario exercising the dispatch path itself, the way
-   `_per_facet_builder_dispatch_scenario` does for `report_underuses_evidence` — the verdict matrix
-   alone only proves the check fires with the right problem name, not that the dispatch branch
-   handles it correctly.
-6. **If it's a new `COMPLETION_CHECKS` entry** (not `GROUNDING_CHECKS`), add its problem name to
-   `_COMPLETION_TIER_PROBLEMS` too (2026-08-16) — this is what lets `_yield_to_starved_check`'s
-   `tier_problems` param detect "the whole `COMPLETION_CHECKS` tier keeps winning" even when the
-   SPECIFIC problem changes every attempt; miss this and a real, permanent `GROUNDING_CHECKS`
-   starvation (see this section's own `tier_problems` landmine writeup above) can recur without the
-   standing audit test catching it, since that test only checks `_capped` usage, not tier-set
-   membership.
+   silently merged branches before this file existed. A new bespoke dispatch function (not just a
+   new problem name) also needs its own dedicated scenario exercising the dispatch path itself,
+   the way `_per_facet_builder_dispatch_scenario` does for `report_underuses_evidence` — the
+   verdict matrix alone only proves the check fires with the right problem name, not that the
+   dispatch function handles it correctly.
 
 ## 2. The writer-dispatch system (FindingsWriter / Builder)
 
@@ -691,7 +715,7 @@ it.
 | A new tool result shape or error format | `CLAUDE.md`'s own blast-radius rule: the TUI's `ToolCallWidget` rendering, `log_stream_content`'s persisted event log, `utils/grounding.py`'s citation/error detection |
 | A new tool for Builder or FindingsWriter | §2's tool-set checklist: `app.py`'s `SubAgentConfig.tools`, a quota entry (`config_template.yaml` + live config), a mention in that role's `prompts.py` instructions, and — if the tool changes what "delegate" could mean — check every `_BUILDER_FIXABLE_PROBLEMS`/`_FINDINGS_WRITER_FIXABLE_PROBLEMS` check's `inject` text still makes sense for a recipient with this exact tool set |
 | A completion check whose `inject` text can tell the reader to delegate/search/fetch | §2: confirm the Builder/FindingsWriter dispatch path (if applicable) doesn't hand a delegation instruction to a role with no `delegate_tasks` tool — see `_BUILDER_NO_DELEGATE_CLARIFICATION` |
-| A per-item/per-facet dispatch loop (multiple sequential sub-agent dispatches for one completion-check problem) | §1: a bespoke `elif` branch, not the shared tuples (see `thin_coverage`/`report_underuses_evidence`/`findings_underuses_evidence`). Sequential (`await` in a loop), never `asyncio.gather` — concurrent writes to the same workspace file race. Cap the loop (see `_MAX_FACET_DISPATCHES`) — never unbounded. Scale any quota headroom calls by item count, not the single-dispatch default. Check any dispatch-name regex elsewhere in the codebase (e.g. `finetune/extract_dataset.py`'s `_WRITER_DISPATCH_RE`) before adding a new suffix to disambiguate loop iterations in logs — an anchored regex with no slot for it will silently misclassify the dispatch. **If the check now moves from the shared `_BUILDER_FIXABLE_PROBLEMS`/`_FINDINGS_WRITER_FIXABLE_PROBLEMS` tuple into its own bespoke branch, it stops being "self-resolving" by tuple membership — it now MUST call `_capped()` in its own return, or it can starve every check below it (§1's invariant); the standing audit test catches a missed one, but don't rely on the test to notice for you.** If the writer role is **FindingsWriter** specifically: do NOT pass `deterministic_fallback` to `_dispatch_writer_review_fix` for a per-facet dispatch, even though scoped evidence text is a natural-looking candidate for it — that fallback is a FULL-FILE-OVERWRITE path, only meant for a from-scratch write when the file doesn't exist yet at all; on an existing multi-facet `findings.md` (which per-facet dispatches only ever run against), a single facet's scoped fallback becoming the whole file would destroy every other facet's already-correct entries. Confirmed 2026-08-01 while building `_dispatch_per_facet_findings_writer_fix`. |
+| A per-item/per-facet dispatch loop (multiple sequential sub-agent dispatches for one completion-check problem) | §1: its own bespoke `_try_*_dispatch` function (called from `run_completion_check` in sequence with every other dispatch attempt, 2026-10-17), `builder_fixable`/`findings_writer_fixable` left `False` on its `_check_spec` row (see `thin_coverage`/`report_underuses_evidence`/`findings_underuses_evidence`). Sequential (`await` in a loop), never `asyncio.gather` — concurrent writes to the same workspace file race. Cap the loop (see `_MAX_FACET_DISPATCHES`) — never unbounded. Scale any quota headroom calls by item count, not the single-dispatch default. Check any dispatch-name regex elsewhere in the codebase (e.g. `finetune/extract_dataset.py`'s `_WRITER_DISPATCH_RE`) before adding a new suffix to disambiguate loop iterations in logs — an anchored regex with no slot for it will silently misclassify the dispatch. **If the check now moves from `builder_fixable=True`/`findings_writer_fixable=True` into its own bespoke dispatch function, it stops being "self-resolving" by spec-flag membership — it now MUST call `_capped()` in its own return, or it can starve every check below it (§1's invariant); the standing audit test catches a missed one, but don't rely on the test to notice for you.** If the writer role is **FindingsWriter** specifically: do NOT pass `deterministic_fallback` to `_dispatch_writer_review_fix` for a per-facet dispatch, even though scoped evidence text is a natural-looking candidate for it — that fallback is a FULL-FILE-OVERWRITE path, only meant for a from-scratch write when the file doesn't exist yet at all; on an existing multi-facet `findings.md` (which per-facet dispatches only ever run against), a single facet's scoped fallback becoming the whole file would destroy every other facet's already-correct entries. Confirmed 2026-08-01 while building `_dispatch_per_facet_findings_writer_fix`. |
 
 | A new `settings.report_style` (beyond standard/academic/answer) | Grep `completion_checks.py` (`_citation_format_reminder`, `Ctx.report_style`) and `completion_checks_grounding.py` (`[Title](URL)`) — `check_no_urls`/`check_non_url_citation`/`check_uncited_claims` (2026-09-07: moved to `completion_checks_grounding.py`, split out of the former single `completion_checks.py`) all give citation-FORMAT guidance in their `inject` text, and it must match the new style's own `*_CITATION_FORMAT_INSTRUCTIONS` (`prompts.py`), not just standard's. Confirmed live 2026-08-24: these three hardcoded standard's `[Title](URL)` format regardless of the active style (`Ctx` had no `report_style` field at all) — a real `--style academic` run oscillated between `non_url_citation`/`claim_unsupported` for ~18 completion-check attempts across two live runs (~93 min combined) because every retry told the model to switch to inline markdown links, directly contradicting `ACADEMIC_CITATION_FORMAT_INSTRUCTIONS`'s `(Author, Year)` + References requirement. The underlying DETECTION logic in `utils/grounding.py` (`find_non_url_citations`/`find_uncited_claim_lines`) was already style-aware — only the corrective `inject` wording was stuck on one style. |
 | A new citation dialect, or any new claim-level grounding check in `utils/grounding.py` | Every segment-scoped check builds its citation list per segment. Use `_segment_citations(segment, ref_map)` (URLs + `(Author, Year)` + resolved `[N]`), never a hand-built `extract_cited_urls(...) + ...`, and teach `_CLAIM_CITATION_TOKEN_RE` the new token. Found live 2026-10-01: since the default standard style moved to `[N]` + numbered Sources (da4e185), `claim_grounding_problem` and `_all_citation_claim_pairs` silently skipped EVERY segment (a fabricated claim cited `[11]` passed; the same claim with an inline URL was caught), and `_grounded_claim_pairs` (NLI + topical) still does, deliberately: enabling NLI on `[N]` reports flagged a fully accurate report's correct EUR 1.6-3.3bn claim as a 0.93 contradiction (the source sentence also says "not EUR 30 billion"), so it stays off for `[N]` until calibrated. Test the new dialect with a fabricated claim, not only a supported one: a vacuous check passes every supported-claim test. |
