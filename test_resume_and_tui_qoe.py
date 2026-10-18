@@ -366,7 +366,6 @@ def main():
     assert 'run_state.data.get("fetched_urls")' in _detect_verdict_src, (
         "_detect_verdict's Ctx.delegated construction must also check "
         "run_state.data['fetched_urls'] (resume-safe), not just the live quota pool")
-    _run_completion_check_src = _inspect.getsource(_tui_mod_check.run_completion_check)
 
     # check_not_delegated itself must NOT fire once ctx.delegated is True, regardless of why --
     # confirms the consumer side still behaves correctly given the corrected Ctx construction.
@@ -393,14 +392,18 @@ def main():
     # the file, because that's literally what its (wrong-audience) instructions told it to do.
     # Pins that both Builder-dispatch branches (classic + force_whole_rebuild) now append the
     # shared clarification after verdict.inject -- source-inspection, same "run_cli isn't easily
-    # unit-testable in isolation" precedent as the resume-carryover assertions above, since the
-    # instructions are built inline inside run_completion_check, not a separately-callable unit.
-    from engine.completion import _BUILDER_NO_DELEGATE_CLARIFICATION
+    # unit-testable in isolation" precedent as the resume-carryover assertions above. This logic
+    # was moved 2026-10-17 (god-function decomposition) out of run_completion_check's own inline
+    # body into the separately-callable _try_builder_fixable_dispatch -- inspect THAT function's
+    # source now, not run_completion_check's (which no longer contains this text at all, by
+    # design: it's the extraction's whole point).
+    from engine.completion import _BUILDER_NO_DELEGATE_CLARIFICATION, _try_builder_fixable_dispatch
+    _try_builder_fixable_dispatch_src = _inspect.getsource(_try_builder_fixable_dispatch)
     assert "delegate_tasks tool" in _BUILDER_NO_DELEGATE_CLARIFICATION, (
         "_BUILDER_NO_DELEGATE_CLARIFICATION must explicitly tell Builder it cannot delegate")
-    assert _run_completion_check_src.count("_BUILDER_NO_DELEGATE_CLARIFICATION") == 2, (
-        "both Builder-dispatch branches (classic and force_whole_rebuild) in run_completion_check "
-        "must append _BUILDER_NO_DELEGATE_CLARIFICATION after verdict.inject")
+    assert _try_builder_fixable_dispatch_src.count("_BUILDER_NO_DELEGATE_CLARIFICATION") == 2, (
+        "both Builder-dispatch branches (classic and force_whole_rebuild) in "
+        "_try_builder_fixable_dispatch must append _BUILDER_NO_DELEGATE_CLARIFICATION after verdict.inject")
 
     # --- TUI QoE: widget maximize (2026-07-24) — ROADMAP.md flagged this as "likely already
     # works via Textual's default focus/ALLOW_MAXIMIZE mechanism (same category as the already-

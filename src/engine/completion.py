@@ -661,6 +661,270 @@ def _notify_final_verdict(ctx: "Ctx", problem: Optional[str], req_artifact: str,
                    f"not silently accepted as a success.")
 
 
+async def _try_builder_fixable_dispatch(dispatch_task, problem, verdict, req_artifact, attempt, max_attempts,
+                                         notify, pool, run_state, force_whole_rebuild,
+                                         caller_sub_agents, has_peer_reviewer) -> bool:
+    """run_completion_check's _BUILDER_FIXABLE_PROBLEMS dispatch attempt, pulled out of its own
+    inline elif branch 2026-10-17 (god-function decomposition, 2026-10-17 audit finding) -- pure
+    cut, no behavior change. Returns True only on a successful dispatch (caller should `continue`
+    its loop, same as the original inline `continue`); False in every other case (condition
+    didn't match, no Builder+PeerReviewer pair registered, or the dispatch itself raised) --
+    those all fell through to the SAME classic inject-into-Planner path in the original code,
+    which the caller still runs unchanged when every one of these 5 dispatch attempts returns
+    False in sequence."""
+    if not (dispatch_task is not None and problem in _BUILDER_FIXABLE_PROBLEMS):
+        return False
+    has_builder_pair = has_peer_reviewer and any(c.name == "Builder" for c in caller_sub_agents)
+    if not has_builder_pair:
+        return False
+    notify(f"**System ({attempt + 1}/{max_attempts}):** {verdict.warning} (dispatching Builder to rewrite, not the Planner)")
+    if pool is not None:
+        _ensure_writer_quota_headroom(pool)
+        # needed=3: PeerReviewer must read BOTH final_report.md and
+        # findings.md when reviewing the report (PEER_REVIEWER_INSTRUCTIONS),
+        # plus one possible Fix-pass re-read -- see docstring above, found live
+        # 2026-07-27 that the old needed=2 default was undersized for this path.
+        _ensure_reader_quota_headroom(pool, needed=3)
+    try:
+        if force_whole_rebuild:
+            # Deliberately strips any "ALSO currently true" secondary-problem
+            # addendum (2026-08-25, ReflexGrad finding): this is the ONE
+            # expensive, full-rewrite attempt a provably-stuck run gets --
+            # diluting it with a lower-priority competing problem is exactly
+            # the "incoherent guidance from merged signals" shape their own
+            # ablation found harmful. The Wait prefix (_with_wait_prefix) is
+            # NOT stripped -- it's a general self-reflection cue, not a
+            # competing correction, and is exactly this attempt's situation
+            # (a problem that already fired before).
+            clean_inject = _strip_other_problems_addendum(verdict.inject)
+            builder_instructions = (
+                f"Multiple attempts to fix '{req_artifact}' the same way have not "
+                f"worked -- do NOT just patch the specific issue again. Rewrite "
+                f"'{req_artifact}' completely from scratch using findings.md, as if "
+                f"writing it for the first time, reconsidering your whole approach "
+                f"to this task rather than repeating the same local fix. The "
+                f"specific problem previously flagged was:\n{clean_inject}\n\n"
+                f"{_BUILDER_NO_DELEGATE_CLARIFICATION}"
+                f"Write the corrected file now via write_workspace_file."
+            )
+        else:
+            builder_instructions = (
+                f"Rewrite '{req_artifact}' from findings.md, fixing this specific problem:\n"
+                f"{verdict.inject}\n\n{_BUILDER_NO_DELEGATE_CLARIFICATION}"
+                f"Write the corrected file now via write_workspace_file."
+            )
+        await _dispatch_writer_review_fix(dispatch_task, "Builder", req_artifact, builder_instructions, attempt, notify)
+        run_state.save()
+        return True
+    except Exception as e:
+        notify(f"**System ({attempt + 1}/{max_attempts}):** Builder dispatch failed ({type(e).__name__}: {e}) — falling back to asking the Planner directly.")
+        return False
+
+
+async def _try_findings_writer_fixable_dispatch(dispatch_task, problem, verdict, attempt, max_attempts,
+                                                  notify, pool, run_state, force_whole_rebuild,
+                                                  caller_sub_agents, has_peer_reviewer) -> bool:
+    """run_completion_check's _FINDINGS_WRITER_FIXABLE_PROBLEMS dispatch attempt, pulled out of
+    its own inline elif branch 2026-10-17 (god-function decomposition) -- pure cut, no behavior
+    change. Same True/False contract as _try_builder_fixable_dispatch above."""
+    if not (dispatch_task is not None and problem in _FINDINGS_WRITER_FIXABLE_PROBLEMS):
+        return False
+    has_findings_writer_pair = has_peer_reviewer and any(c.name == "FindingsWriter" for c in caller_sub_agents)
+    if not has_findings_writer_pair:
+        return False
+    notify(f"**System ({attempt + 1}/{max_attempts}):** {verdict.warning} (dispatching FindingsWriter to rewrite, not the Planner)")
+    if pool is not None:
+        _ensure_writer_quota_headroom(pool)
+        # needed=2 (the default): PeerReviewer reads only findings.md (the
+        # single target artifact here, no second file) + one possible Fix
+        # re-read.
+        _ensure_reader_quota_headroom(pool)
+    try:
+        # Deliberately NOT verdict.inject — that text is worded for the PLANNER
+        # fallback path (mentions delegate_tasks, "you have no write_workspace_file
+        # tool") and would be actively confusing to FindingsWriter, which has the
+        # opposite tool set (can write, can't delegate). FindingsWriter gets its
+        # own problem-appropriate directive plus its real evidence base instead.
+        if force_whole_rebuild:
+            write_directive = (
+                "Multiple attempts to fix findings.md the same way have not "
+                "worked -- do NOT just patch the specific issue again. "
+                "Reconsider your whole approach and rebuild findings.md "
+                "completely from scratch below, as if writing it for the "
+                "first time, using strictly the real research results — never "
+                "your own prior knowledge."
+            )
+        elif problem == "findings_ungrounded":
+            # Name the SPECIFIC bad URL(s), not just "it was ungrounded"
+            # (2026-08-18, live incident: findings.md.rejected_attempt_3 and
+            # _4 were byte-identical, 11 minutes apart -- FindingsWriter kept
+            # re-citing the exact same already-rejected URL because this
+            # directive never told it WHICH source failed verification, only
+            # that something did, and it got the same source material both
+            # times. verdict.warning (not verdict.inject, which is worded for
+            # the Planner-fallback path) carries the raw partially_ungrounded
+            # detail, e.g. "unverified_entry_sources:https://...,https://...".
+            bad_urls_note = ""
+            if verdict is not None:
+                m = re.search(r"unverified_entry_sources:([^)]*)", verdict.warning)
+                if m:
+                    bad_urls_note = (
+                        f" The source(s) that failed verification last time: "
+                        f"{m.group(1).strip()} — do not attribute any finding "
+                        f"to these again; use only a URL that actually appears "
+                        f"in the real research results below."
+                    )
+            write_directive = (
+                "The previous findings.md draft was fabricated or wholesale "
+                f"ungrounded and has been moved aside.{bad_urls_note} Rebuild it "
+                "now, strictly from the real research results below — never "
+                "from your own prior knowledge."
+            )
+        elif problem == "stale_findings":
+            write_directive = (
+                "More real research has been delegated since findings.md was "
+                "last written -- it is now out of date. Rebuild it completely "
+                "from ALL of the current real research results below (this "
+                "includes everything from before, plus what's new), not just "
+                "the newest additions."
+            )
+        else:
+            write_directive = "findings.md has never been written yet. Write it now from the real research results below."
+        findings_source_material = _build_findings_source_material(run_state)
+        findings_writer_instructions = (
+            f"{write_directive}\n\n{findings_source_material}\n\n"
+            f"Write the file now via write_workspace_file."
+        )
+        await _dispatch_writer_review_fix(
+            dispatch_task, "FindingsWriter", "findings.md", findings_writer_instructions,
+            attempt, notify, deterministic_fallback=findings_source_material,
+        )
+        # Staleness marker (check_stale_findings): record how many real,
+        # distinct, citable findings existed AT THIS WRITE, so a LATER
+        # completion check can tell whether more have been delegated since --
+        # see that check's own docstring for why a count comparison, not a
+        # findings.md-vs-report URL diff, is the right shape here.
+        run_state.data["findings_written_citable_count"] = len(_dedupe_findings(
+            [f for f in run_state.data.get("findings", []) if _is_citable_finding(f)]
+        ))
+        run_state.save()
+        return True
+    except Exception as e:
+        notify(f"**System ({attempt + 1}/{max_attempts}):** FindingsWriter dispatch failed ({type(e).__name__}: {e}) — falling back to asking the Planner directly.")
+        return False
+
+
+async def _try_thin_coverage_dispatch(dispatch_task, problem, attempt, max_attempts, notify, run_state) -> bool:
+    """run_completion_check's bespoke thin_coverage dispatch attempt (engine-driven iterative
+    deepening, ROADMAP item 10, dzhng/deep-research pattern), pulled out of its own inline elif
+    branch 2026-10-17 (god-function decomposition) -- pure cut, no behavior change. thin_coverage
+    is the one existing signal that means "the plan's own breadth came back thin" — the exact
+    shape iterative deepening targets. Deliberately NOT applied to every retrying problem
+    (missing_findings/missing_artifact fire on nearly every run's first attempt by design; a
+    deepening round there would contradict the Planner's own "STOP EARLY" instruction and this
+    project's anti-over-research stance). A clean/sufficient run never reaches a completion-check
+    retry at all, so this never fires on one. Same True/False contract as the Builder/
+    FindingsWriter dispatch attempts above -- False here (round budget exhausted, nothing
+    dispatched, or dispatch failed) falls through to the unchanged classic thin_coverage Planner
+    nudge, zero behavior change from before this extraction."""
+    if not (dispatch_task is not None and problem == "thin_coverage"):
+        return False
+    max_deepening_rounds = config.get_setting("max_deepening_rounds", 1)
+    if run_state.data.get("deepening_round", 0) < max_deepening_rounds:
+        try:
+            dispatched = await _dispatch_deepening_round(dispatch_task, run_state, notify)
+            if dispatched:
+                run_state.save()
+                return True
+        except Exception as e:
+            notify(f"**System ({attempt + 1}/{max_attempts}):** Deepening round dispatch failed ({type(e).__name__}: {e}) — falling back to the classic nudge.")
+    return False
+
+
+async def _try_report_underuses_evidence_dispatch(dispatch_task, problem, verdict, req_artifact, attempt,
+                                                    max_attempts, notify, pool, run_state, force_whole_rebuild,
+                                                    caller_sub_agents, has_peer_reviewer, ctx) -> bool:
+    """run_completion_check's bespoke report_underuses_evidence dispatch attempt, pulled out of
+    its own inline elif branch 2026-10-17 (god-function decomposition) -- pure cut, no behavior
+    change. Not a membership check against _BUILDER_FIXABLE_PROBLEMS, because this problem needs
+    facet-scoped handling that tuple's single generic-rebuild dispatch doesn't support (see
+    _dispatch_per_facet_builder_fix's own docstring for why one combined instruction already
+    failed live). force_whole_rebuild is checked defensively but is effectively unreachable for
+    this problem: _capped (used by check_report_underuses_evidence) silences the verdict at the
+    SAME CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD force_whole_rebuild triggers on, so
+    problem becomes None first in practice. Same True/False contract as the dispatch attempts
+    above -- False (no Builder pair registered, no dropped facets, or dispatch failed) falls
+    through to the unchanged classic inject-into-Planner nudge."""
+    if not (dispatch_task is not None and problem == "report_underuses_evidence" and not force_whole_rebuild):
+        return False
+    has_builder_pair = has_peer_reviewer and any(c.name == "Builder" for c in caller_sub_agents)
+    if not has_builder_pair:
+        return False
+    by_task, dropped = _facet_coverage(ctx)
+    if not dropped:
+        return False
+    notify(f"**System ({attempt + 1}/{max_attempts}):** {verdict.warning} "
+           f"(dispatching Builder once per neglected facet, not the Planner)")
+    if pool is not None:
+        _ensure_writer_quota_headroom(pool)
+        # Scaled by facet count -- needed=3 alone (the _BUILDER_FIXABLE_
+        # PROBLEMS sizing) was calibrated for ONE Write->Review->Fix cycle;
+        # this branch runs up to _MAX_FACET_DISPATCHES of them, and an
+        # undersized quota makes PeerReviewer's later reviews look
+        # quota-starved (see _dispatch_writer_review_fix's own
+        # reads_before/reads_after fabricated-CLEAN guard).
+        _ensure_reader_quota_headroom(pool, needed=3 * max(1, min(len(dropped), _MAX_FACET_DISPATCHES)))
+    try:
+        await _dispatch_per_facet_builder_fix(dispatch_task, dropped, by_task, req_artifact, attempt, notify)
+        run_state.save()
+        return True
+    except Exception as e:
+        notify(f"**System ({attempt + 1}/{max_attempts}):** Per-facet Builder dispatch failed ({type(e).__name__}: {e}) — falling back to asking the Planner directly.")
+        return False
+
+
+async def _try_findings_underuses_evidence_dispatch(dispatch_task, problem, verdict, attempt, max_attempts,
+                                                      notify, pool, run_state, force_whole_rebuild,
+                                                      caller_sub_agents, has_peer_reviewer, ctx) -> bool:
+    """run_completion_check's bespoke findings_underuses_evidence dispatch attempt, pulled out of
+    its own inline elif branch 2026-10-17 (god-function decomposition) -- pure cut, no behavior
+    change. The same shape as report_underuses_evidence's own dispatch attempt above (one layer
+    downstream) — not a membership check against _FINDINGS_WRITER_FIXABLE_PROBLEMS, because this
+    problem needs facet-scoped handling that tuple's single generic-rebuild dispatch doesn't
+    support (see _dispatch_per_facet_findings_writer_fix's own docstring for why one combined
+    instruction already failed live, live-confirmed 2026-08-01). Same True/False contract as
+    every dispatch attempt above."""
+    if not (dispatch_task is not None and problem == "findings_underuses_evidence" and not force_whole_rebuild):
+        return False
+    has_findings_writer_pair = has_peer_reviewer and any(c.name == "FindingsWriter" for c in caller_sub_agents)
+    if not has_findings_writer_pair:
+        return False
+    _, dropped = _findings_facet_coverage(ctx)
+    if not dropped:
+        return False
+    notify(f"**System ({attempt + 1}/{max_attempts}):** {verdict.warning} "
+           f"(dispatching FindingsWriter once per neglected facet, not the Planner)")
+    if pool is not None:
+        _ensure_writer_quota_headroom(pool)
+        # needed=2 (the _FINDINGS_WRITER_FIXABLE_PROBLEMS default): PeerReviewer
+        # reads only findings.md (one target artifact, not two like Builder's
+        # report+findings.md pair) — scaled by facet count for the same reason
+        # report_underuses_evidence's own branch scales its needed=3.
+        _ensure_reader_quota_headroom(pool, needed=2 * max(1, min(len(dropped), _MAX_FACET_DISPATCHES)))
+    try:
+        await _dispatch_per_facet_findings_writer_fix(dispatch_task, dropped, run_state, attempt, notify)
+        # Staleness marker, same as the generic FindingsWriter branch above —
+        # per-facet dispatch is still a real write to findings.md.
+        run_state.data["findings_written_citable_count"] = len(_dedupe_findings(
+            [f for f in run_state.data.get("findings", []) if _is_citable_finding(f)]
+        ))
+        run_state.save()
+        return True
+    except Exception as e:
+        notify(f"**System ({attempt + 1}/{max_attempts}):** Per-facet FindingsWriter dispatch failed ({type(e).__name__}: {e}) — falling back to asking the Planner directly.")
+        return False
+
+
 async def run_completion_check(query: str, current_input, run_state: "RunState", notify, last_assistant_text: str = "", dispatch_task=None, budget_deadline: float | None = None, find_substantial_text: Optional[Callable[[], str]] = None):  # noqa: F821 — utils.run_state.RunState, annotation only
     """Runs the 3-tier completion check (delegated? artifact exists? really grounded?) plus the
     structural fixes: per-attempt quota top-up, artifact quarantine, run-state persistence, and
@@ -845,237 +1109,39 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                 caller_sub_agents = available_sub_agents_ctx.get()
                 has_peer_reviewer = caller_sub_agents and any(c.name == "PeerReviewer" for c in caller_sub_agents)
 
-                if dispatch_task is not None and problem in _BUILDER_FIXABLE_PROBLEMS:
-                    has_builder_pair = has_peer_reviewer and any(c.name == "Builder" for c in caller_sub_agents)
-                    if has_builder_pair:
-                        notify(f"**System ({attempt + 1}/{max_attempts}):** {verdict.warning} (dispatching Builder to rewrite, not the Planner)")
-                        if pool is not None:
-                            _ensure_writer_quota_headroom(pool)
-                            # needed=3: PeerReviewer must read BOTH final_report.md and
-                            # findings.md when reviewing the report (PEER_REVIEWER_INSTRUCTIONS),
-                            # plus one possible Fix-pass re-read -- see docstring above, found live
-                            # 2026-07-27 that the old needed=2 default was undersized for this path.
-                            _ensure_reader_quota_headroom(pool, needed=3)
-                        try:
-                            if force_whole_rebuild:
-                                # Deliberately strips any "ALSO currently true" secondary-problem
-                                # addendum (2026-08-25, ReflexGrad finding): this is the ONE
-                                # expensive, full-rewrite attempt a provably-stuck run gets --
-                                # diluting it with a lower-priority competing problem is exactly
-                                # the "incoherent guidance from merged signals" shape their own
-                                # ablation found harmful. The Wait prefix (_with_wait_prefix) is
-                                # NOT stripped -- it's a general self-reflection cue, not a
-                                # competing correction, and is exactly this attempt's situation
-                                # (a problem that already fired before).
-                                clean_inject = _strip_other_problems_addendum(verdict.inject)
-                                builder_instructions = (
-                                    f"Multiple attempts to fix '{req_artifact}' the same way have not "
-                                    f"worked -- do NOT just patch the specific issue again. Rewrite "
-                                    f"'{req_artifact}' completely from scratch using findings.md, as if "
-                                    f"writing it for the first time, reconsidering your whole approach "
-                                    f"to this task rather than repeating the same local fix. The "
-                                    f"specific problem previously flagged was:\n{clean_inject}\n\n"
-                                    f"{_BUILDER_NO_DELEGATE_CLARIFICATION}"
-                                    f"Write the corrected file now via write_workspace_file."
-                                )
-                            else:
-                                builder_instructions = (
-                                    f"Rewrite '{req_artifact}' from findings.md, fixing this specific problem:\n"
-                                    f"{verdict.inject}\n\n{_BUILDER_NO_DELEGATE_CLARIFICATION}"
-                                    f"Write the corrected file now via write_workspace_file."
-                                )
-                            await _dispatch_writer_review_fix(dispatch_task, "Builder", req_artifact, builder_instructions, attempt, notify)
-                            run_state.save()
-                            # Chained, not returned — see docstring. Loops straight into the next
-                            # completion-check iteration instead of handing a turn back to the Planner.
-                            continue
-                        except Exception as e:
-                            notify(f"**System ({attempt + 1}/{max_attempts}):** Builder dispatch failed ({type(e).__name__}: {e}) — falling back to asking the Planner directly.")
-
-                elif dispatch_task is not None and problem in _FINDINGS_WRITER_FIXABLE_PROBLEMS:
-                    has_findings_writer_pair = has_peer_reviewer and any(c.name == "FindingsWriter" for c in caller_sub_agents)
-                    if has_findings_writer_pair:
-                        notify(f"**System ({attempt + 1}/{max_attempts}):** {verdict.warning} (dispatching FindingsWriter to rewrite, not the Planner)")
-                        if pool is not None:
-                            _ensure_writer_quota_headroom(pool)
-                            # needed=2 (the default): PeerReviewer reads only findings.md (the
-                            # single target artifact here, no second file) + one possible Fix
-                            # re-read.
-                            _ensure_reader_quota_headroom(pool)
-                        try:
-                            # Deliberately NOT verdict.inject — that text is worded for the PLANNER
-                            # fallback path (mentions delegate_tasks, "you have no write_workspace_file
-                            # tool") and would be actively confusing to FindingsWriter, which has the
-                            # opposite tool set (can write, can't delegate). FindingsWriter gets its
-                            # own problem-appropriate directive plus its real evidence base instead.
-                            if force_whole_rebuild:
-                                write_directive = (
-                                    "Multiple attempts to fix findings.md the same way have not "
-                                    "worked -- do NOT just patch the specific issue again. "
-                                    "Reconsider your whole approach and rebuild findings.md "
-                                    "completely from scratch below, as if writing it for the "
-                                    "first time, using strictly the real research results — never "
-                                    "your own prior knowledge."
-                                )
-                            elif problem == "findings_ungrounded":
-                                # Name the SPECIFIC bad URL(s), not just "it was ungrounded"
-                                # (2026-08-18, live incident: findings.md.rejected_attempt_3 and
-                                # _4 were byte-identical, 11 minutes apart -- FindingsWriter kept
-                                # re-citing the exact same already-rejected URL because this
-                                # directive never told it WHICH source failed verification, only
-                                # that something did, and it got the same source material both
-                                # times. verdict.warning (not verdict.inject, which is worded for
-                                # the Planner-fallback path) carries the raw partially_ungrounded
-                                # detail, e.g. "unverified_entry_sources:https://...,https://...".
-                                bad_urls_note = ""
-                                if verdict is not None:
-                                    m = re.search(r"unverified_entry_sources:([^)]*)", verdict.warning)
-                                    if m:
-                                        bad_urls_note = (
-                                            f" The source(s) that failed verification last time: "
-                                            f"{m.group(1).strip()} — do not attribute any finding "
-                                            f"to these again; use only a URL that actually appears "
-                                            f"in the real research results below."
-                                        )
-                                write_directive = (
-                                    "The previous findings.md draft was fabricated or wholesale "
-                                    f"ungrounded and has been moved aside.{bad_urls_note} Rebuild it "
-                                    "now, strictly from the real research results below — never "
-                                    "from your own prior knowledge."
-                                )
-                            elif problem == "stale_findings":
-                                write_directive = (
-                                    "More real research has been delegated since findings.md was "
-                                    "last written -- it is now out of date. Rebuild it completely "
-                                    "from ALL of the current real research results below (this "
-                                    "includes everything from before, plus what's new), not just "
-                                    "the newest additions."
-                                )
-                            else:
-                                write_directive = "findings.md has never been written yet. Write it now from the real research results below."
-                            findings_source_material = _build_findings_source_material(run_state)
-                            findings_writer_instructions = (
-                                f"{write_directive}\n\n{findings_source_material}\n\n"
-                                f"Write the file now via write_workspace_file."
-                            )
-                            await _dispatch_writer_review_fix(
-                                dispatch_task, "FindingsWriter", "findings.md", findings_writer_instructions,
-                                attempt, notify, deterministic_fallback=findings_source_material,
-                            )
-                            # Staleness marker (check_stale_findings): record how many real,
-                            # distinct, citable findings existed AT THIS WRITE, so a LATER
-                            # completion check can tell whether more have been delegated since --
-                            # see that check's own docstring for why a count comparison, not a
-                            # findings.md-vs-report URL diff, is the right shape here.
-                            run_state.data["findings_written_citable_count"] = len(_dedupe_findings(
-                                [f for f in run_state.data.get("findings", []) if _is_citable_finding(f)]
-                            ))
-                            run_state.save()
-                            # Chained, not returned — see docstring. Loops straight into the next
-                            # completion-check iteration instead of handing a turn back to the Planner.
-                            continue
-                        except Exception as e:
-                            notify(f"**System ({attempt + 1}/{max_attempts}):** FindingsWriter dispatch failed ({type(e).__name__}: {e}) — falling back to asking the Planner directly.")
-
-                elif dispatch_task is not None and problem == "thin_coverage":
-                    # Engine-driven iterative deepening (ROADMAP item 10, dzhng/deep-research
-                    # pattern): thin_coverage is the one existing signal that means "the plan's own
-                    # breadth came back thin" — the exact shape iterative deepening targets.
-                    # Deliberately NOT applied to every retrying problem (missing_findings/
-                    # missing_artifact fire on nearly every run's first attempt by design; a
-                    # deepening round there would contradict the Planner's own "STOP EARLY"
-                    # instruction and this project's anti-over-research stance). A clean/sufficient
-                    # run never reaches a completion-check retry at all, so this never fires on one.
-                    max_deepening_rounds = config.get_setting("max_deepening_rounds", 1)
-                    if run_state.data.get("deepening_round", 0) < max_deepening_rounds:
-                        try:
-                            dispatched = await _dispatch_deepening_round(dispatch_task, run_state, notify)
-                            if dispatched:
-                                run_state.save()
-                                # Chained, not returned — same pattern as Builder/FindingsWriter
-                                # above. Loops straight into the next completion-check iteration so
-                                # coverage() is re-evaluated against the new findings before the
-                                # next verdict is decided.
-                                continue
-                        except Exception as e:
-                            notify(f"**System ({attempt + 1}/{max_attempts}):** Deepening round dispatch failed ({type(e).__name__}: {e}) — falling back to the classic nudge.")
-                    # No real directions to act on, or round budget exhausted: fall through to the
-                    # unchanged classic thin_coverage Planner nudge below — zero behavior change.
-
-                elif dispatch_task is not None and problem == "report_underuses_evidence" and not force_whole_rebuild:
-                    # Bespoke per-item dispatch, same shape as thin_coverage's deepening round
-                    # above -- not a membership check against _BUILDER_FIXABLE_PROBLEMS, because
-                    # this problem needs facet-scoped handling that tuple's single generic-rebuild
-                    # dispatch doesn't support (see _dispatch_per_facet_builder_fix's own docstring
-                    # for why one combined instruction already failed live). force_whole_rebuild is
-                    # checked defensively but is effectively unreachable for this problem: _capped
-                    # (used by check_report_underuses_evidence) silences the verdict at the SAME
-                    # CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD force_whole_rebuild triggers on,
-                    # so problem becomes None first in practice.
-                    has_builder_pair = has_peer_reviewer and any(c.name == "Builder" for c in caller_sub_agents)
-                    if has_builder_pair:
-                        by_task, dropped = _facet_coverage(ctx)
-                        if dropped:
-                            notify(f"**System ({attempt + 1}/{max_attempts}):** {verdict.warning} "
-                                   f"(dispatching Builder once per neglected facet, not the Planner)")
-                            if pool is not None:
-                                _ensure_writer_quota_headroom(pool)
-                                # Scaled by facet count -- needed=3 alone (the _BUILDER_FIXABLE_
-                                # PROBLEMS sizing) was calibrated for ONE Write->Review->Fix cycle;
-                                # this branch runs up to _MAX_FACET_DISPATCHES of them, and an
-                                # undersized quota makes PeerReviewer's later reviews look
-                                # quota-starved (see _dispatch_writer_review_fix's own
-                                # reads_before/reads_after fabricated-CLEAN guard).
-                                _ensure_reader_quota_headroom(pool, needed=3 * max(1, min(len(dropped), _MAX_FACET_DISPATCHES)))
-                            try:
-                                await _dispatch_per_facet_builder_fix(dispatch_task, dropped, by_task, req_artifact, attempt, notify)
-                                run_state.save()
-                                # Chained, not returned — same pattern as Builder/FindingsWriter/
-                                # thin_coverage above. Loops straight into the next completion-check
-                                # iteration.
-                                continue
-                            except Exception as e:
-                                notify(f"**System ({attempt + 1}/{max_attempts}):** Per-facet Builder dispatch failed ({type(e).__name__}: {e}) — falling back to asking the Planner directly.")
-                    # No Builder pair registered, no dropped facets (shouldn't happen — verdict
-                    # already required dropped to fire), or dispatch failed: fall through to the
-                    # unchanged classic inject-into-Planner nudge below.
-
-                elif dispatch_task is not None and problem == "findings_underuses_evidence" and not force_whole_rebuild:
-                    # Bespoke per-item dispatch, the same shape as report_underuses_evidence's own
-                    # branch immediately above (one layer downstream) — not a membership check
-                    # against _FINDINGS_WRITER_FIXABLE_PROBLEMS, because this problem needs
-                    # facet-scoped handling that tuple's single generic-rebuild dispatch doesn't
-                    # support (see _dispatch_per_facet_findings_writer_fix's own docstring for why
-                    # one combined instruction already failed live, live-confirmed 2026-08-01).
-                    has_findings_writer_pair = has_peer_reviewer and any(c.name == "FindingsWriter" for c in caller_sub_agents)
-                    if has_findings_writer_pair:
-                        _, dropped = _findings_facet_coverage(ctx)
-                        if dropped:
-                            notify(f"**System ({attempt + 1}/{max_attempts}):** {verdict.warning} "
-                                   f"(dispatching FindingsWriter once per neglected facet, not the Planner)")
-                            if pool is not None:
-                                _ensure_writer_quota_headroom(pool)
-                                # needed=2 (the _FINDINGS_WRITER_FIXABLE_PROBLEMS default): PeerReviewer
-                                # reads only findings.md (one target artifact, not two like Builder's
-                                # report+findings.md pair) — scaled by facet count for the same reason
-                                # report_underuses_evidence's own branch scales its needed=3.
-                                _ensure_reader_quota_headroom(pool, needed=2 * max(1, min(len(dropped), _MAX_FACET_DISPATCHES)))
-                            try:
-                                await _dispatch_per_facet_findings_writer_fix(dispatch_task, dropped, run_state, attempt, notify)
-                                # Staleness marker, same as the generic FindingsWriter branch above —
-                                # per-facet dispatch is still a real write to findings.md.
-                                run_state.data["findings_written_citable_count"] = len(_dedupe_findings(
-                                    [f for f in run_state.data.get("findings", []) if _is_citable_finding(f)]
-                                ))
-                                run_state.save()
-                                # Chained, not returned — same pattern as every other bespoke branch
-                                # above. Loops straight into the next completion-check iteration.
-                                continue
-                            except Exception as e:
-                                notify(f"**System ({attempt + 1}/{max_attempts}):** Per-facet FindingsWriter dispatch failed ({type(e).__name__}: {e}) — falling back to asking the Planner directly.")
-                    # No FindingsWriter pair registered, no dropped facets (shouldn't happen —
-                    # verdict already required dropped to fire), or dispatch failed: fall through
-                    # to the unchanged classic inject-into-Planner nudge below.
+                # 2026-10-17 god-function decomposition (2026-10-17 audit finding): the 5
+                # dispatch attempts below used to be one long if/elif chain inline here. Each is
+                # now its own function, called in the SAME order, each returning True only when
+                # it fully handled this attempt (dispatched successfully, caller should loop
+                # straight into the next completion-check iteration same as the original inline
+                # `continue` did) and False otherwise (condition didn't match, pair not
+                # registered, no dropped facets, or the dispatch itself failed) -- in every False
+                # case the original code fell through to the SAME classic inject-into-Planner
+                # path below, so a plain sequence of independent calls is behavior-identical to
+                # the original elif chain (the conditions are mutually exclusive by construction,
+                # see ARCHITECTURE.md section 1's "four tuples that must all agree").
+                if await _try_builder_fixable_dispatch(
+                    dispatch_task, problem, verdict, req_artifact, attempt, max_attempts, notify,
+                    pool, run_state, force_whole_rebuild, caller_sub_agents, has_peer_reviewer,
+                ):
+                    continue
+                if await _try_findings_writer_fixable_dispatch(
+                    dispatch_task, problem, verdict, attempt, max_attempts, notify, pool,
+                    run_state, force_whole_rebuild, caller_sub_agents, has_peer_reviewer,
+                ):
+                    continue
+                if await _try_thin_coverage_dispatch(dispatch_task, problem, attempt, max_attempts, notify, run_state):
+                    continue
+                if await _try_report_underuses_evidence_dispatch(
+                    dispatch_task, problem, verdict, req_artifact, attempt, max_attempts, notify,
+                    pool, run_state, force_whole_rebuild, caller_sub_agents, has_peer_reviewer, ctx,
+                ):
+                    continue
+                if await _try_findings_underuses_evidence_dispatch(
+                    dispatch_task, problem, verdict, attempt, max_attempts, notify, pool,
+                    run_state, force_whole_rebuild, caller_sub_agents, has_peer_reviewer, ctx,
+                ):
+                    continue
 
                 notify(f"**System ({attempt + 1}/{max_attempts}):** {verdict.warning}")
                 new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
