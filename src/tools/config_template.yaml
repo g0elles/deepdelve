@@ -365,7 +365,16 @@ settings:
   # the keyboard can /stop). Not a hard kill: on expiry the current turn is cut short and the
   # completion check jumps straight to its final verdict, so labeling and report salvage still
   # run and the run ends with an explicit outcome. A qwen3.6 run once ran 64 minutes unbounded.
-  max_run_minutes: 45
+  # Raised 45 -> 60 (2026-10-17): a live run's completion-check chain hit 6+ GENUINELY
+  # sequential, dependent problems (missing_findings -> missing_artifact ->
+  # report_underuses_evidence -> undisclosed_evidence_gap x2 -> uncited_claims — each only
+  # became checkable once the previous one was fixed, see ARCHITECTURE.md §1's two-tier gate)
+  # and ran out of wall clock at 6/14 completion-check attempts used, before 2 more real
+  # citation-misattribution defects were ever reached. The existing distinct-problem-bonus
+  # mechanism (completion.py's DISTINCT_PROBLEM_BONUS_CAP) already grants extra attempts +
+  # proportional extra wall-clock for a chain like this; this raises the BASE budget it scales
+  # from, not a new mechanism.
+  max_run_minutes: 60
   # Wall-clock budget in minutes for EACH sub-agent dispatch (Searcher/Analyzer/Builder/
   # FindingsWriter/PeerReviewer) — independent of max_run_minutes above, deliberately: that's a
   # whole-RUN ceiling shared by every turn, so a single runaway sub-agent call racing against it
