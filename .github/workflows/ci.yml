@@ -18,15 +18,29 @@ jobs:
 
       # Exercises the packaging fix from 5dcc4d7 (pyproject.toml's package-dir/py-modules layout)
       # as a side effect — a broken install here is exactly the bug that shipped silently before
-      # CI existed, caught by hand instead of automatically.
-      - name: Install project (editable, with dev extras)
-        run: pip install -e ".[dev]"
+      # CI existed, caught by hand instead of automatically. `api` extra (fastapi/uvicorn/
+      # python-multipart) is needed because test_api.py hard-imports `api` -- `browser`/`pdf`
+      # aren't (playwright/weasyprint are both soft-imported, fail-open at runtime, and no test
+      # exercises the real binary) so they stay out of CI's install.
+      - name: Install project (editable, with dev+api extras)
+        run: pip install -e ".[dev,api]"
 
       - name: ruff check
         run: ruff check .
 
-      - name: Structural test suite
-        run: python test_structural_checks.py
+      # 2026-10-17 audit finding: CI previously ran only 2 of 27 test files (structural + tools),
+      # never run_tests.py itself -- 25 files including the project's own highest-risk-density
+      # suites only ran when a human remembered to run them manually. --clean --strict: a fresh
+      # HOME with no cached models (what a clean clone actually sees) and a SKIPPED line counts as
+      # a failure, not a silently-passing gap -- confirmed both pass clean in this exact shape
+      # before wiring it in here.
+      - name: Full test suite (run_tests.py)
+        run: python run_tests.py --clean --strict
 
-      - name: Tool-layer test suite
-        run: python test_tools.py
+      # Non-blocking (|| true): this codebase makes heavy, deliberate use of function-local
+      # imports (lazy loading / breaking circular imports -- see pyproject.toml's own ruff-scope
+      # comment) and a from-scratch strict pass would be mostly noise to sort through, not a
+      # real gate yet. Surfaced in CI output so real type errors are visible without blocking
+      # merges on a tool that was never tuned for this codebase's style.
+      - name: Type check (advisory, non-blocking)
+        run: pip install mypy && mypy --ignore-missing-imports --follow-imports=silent src || true
