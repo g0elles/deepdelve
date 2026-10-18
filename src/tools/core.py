@@ -75,6 +75,89 @@ _EVIDENCE_ONLY_BLOCKED_TOOLS = frozenset({"delegate_tasks", "web_search", "fetch
 _EVIDENCE_ONLY_REFUSAL_LIMIT = 10
 
 
+def _check_evidence_only_quota(tool_name: str) -> str | None:
+    """check_quota's first concern, pulled out 2026-10-17 (god-function decomposition, 2026-10-17
+    audit finding) -- pure cut, no behavior change. Evidence-only runs (2026-09-30): every tool
+    call, from the Planner AND any sub-agent, passes through here, and the flag is in
+    run_state.data (survives quota top-ups and --resume-run), so a writer-dispatch failure that
+    falls back to the Planner can no longer turn a fixed-evidence run into free research. Worded
+    as a quota error on purpose: the Planner's own instructions already say to stop immediately
+    on one and let the writers work."""
+    if tool_name in _EVIDENCE_ONLY_BLOCKED_TOOLS:
+        _rs = run_state_ctx.get()
+        if _rs is not None and _rs.data.get("evidence_only"):
+            _rs.data["evidence_only_refusals"] = _rs.data.get("evidence_only_refusals", 0) + 1
+            if _rs.data["evidence_only_refusals"] > _EVIDENCE_ONLY_REFUSAL_LIMIT:
+                raise QuotaAbortException(f"Agent trapped in loop. Research tool '{tool_name}' refused repeatedly in an evidence-only run.")
+            return (
+                f"{TOOL_ERROR_PREFIX}you have reached your quota for '{tool_name}': this run's research evidence was "
+                f"already gathered and verified by an automated pipeline, so no further research is allowed. Stop "
+                f"delegating; the writer roles will work from the evidence that is already loaded."
+            )
+    return None
+
+
+def _log_quota_debug(tool_name: str, ctx) -> None:
+    """DEEPDELVE_QUOTA_DEBUG=1: one line per quota check to stderr, with the pool's object id —
+    the 'shared cumulative pool' design silently degrades to 'unlimited' for any tool call the
+    framework happens to execute outside the run's context (ctx=None), and that is invisible
+    without this. Found via run 12: 36 executed web_searches against a hard cap of 21."""
+    import os as _os
+    if _os.environ.get("DEEPDELVE_QUOTA_DEBUG"):
+        import sys as _sys
+        state = f"pool_id={id(ctx)} used={ctx.get(tool_name, {}).get('used')}/{ctx.get(tool_name, {}).get('limit')}" if ctx else "ctx=None (UNLIMITED)"
+        print(f"[quota_debug] {tool_name}: {state}", file=_sys.stderr)
+
+
+def _check_no_progress_guard(entry: dict, tool_name: str, call_key: tuple | None) -> str | None:
+    """No-progress guard (see _NO_PROGRESS_ERROR_STREAK_LIMIT's own docstring), pulled out 2026-
+    10-17 (god-function decomposition) -- pure cut, no behavior change. This exact (tool, args)
+    pair has already failed with the same error this many times in a row. Does NOT consume a
+    quota unit: the model isn't over quota, it's stuck, a different problem with a different fix
+    (change the arguments / a different tool / move on).
+
+    Controlled-ablation switch (2026-08-17, RESEARCH.md §18f) -- settings.ablation.
+    disable_no_progress_guard (default False, current behavior unaffected) lets this ONE
+    mechanism be turned off for a with/without comparison, same rationale as completion.py's own
+    _ablation_disabled. Scoped to just this halt-on-repeated-failure guard, not the free-repeat
+    dedup check_quota still runs inline -- that's a narrower, already differently-evidenced
+    mechanism (real quota-exhaustion transcript data), not the one in question here."""
+    no_progress_guard_disabled = bool(
+        config.get_setting("ablation", {}).get("disable_no_progress_guard", False)
+    )
+    if (not no_progress_guard_disabled and call_key is not None
+            and entry.get("_error_streak_key") == call_key
+            and entry.get("_error_streak_count", 0) >= _NO_PROGRESS_ERROR_STREAK_LIMIT):
+        return (
+            f"Error: you have called '{tool_name}' with the exact same arguments and gotten "
+            f"the exact same error {entry['_error_streak_count']} times in a row. Repeating "
+            f"this identical call again will not produce a different result -- change your "
+            f"arguments, use a different tool, or move on to your next step."
+        )
+    return None
+
+
+def _check_tool_failure_streak(entry: dict, tool_name: str) -> str | None:
+    """Tool-failure streak guard (see _TOOL_FAILURE_STREAK_LIMIT's own docstring), pulled out
+    2026-10-17 (god-function decomposition) -- pure cut, no behavior change. N consecutive
+    FAILURES to this tool regardless of differing arguments (a hallucination spiral, not a
+    repeated identical mistake). Same ablation-switch convention as the no-progress guard, own
+    flag."""
+    tool_failure_streak_guard_disabled = bool(
+        config.get_setting("ablation", {}).get("disable_tool_failure_streak_guard", False)
+    )
+    if (not tool_failure_streak_guard_disabled
+            and entry.get("_tool_error_streak_count", 0) >= _TOOL_FAILURE_STREAK_LIMIT):
+        return (
+            f"Error: your last {entry['_tool_error_streak_count']} calls to '{tool_name}' have "
+            f"all failed (with different arguments each time). Guessing another set of "
+            f"arguments is unlikely to help -- if you already successfully read or found real "
+            f"content earlier, use THAT content now instead of continuing to search for more; "
+            f"otherwise use a different tool or move on to your next step."
+        )
+    return None
+
+
 def check_quota(tool_name: str, call_key: tuple | None = None) -> str | None:
     """Check if the specific tool has exceeded its per-invocation quota.
 
@@ -90,71 +173,29 @@ def check_quota(tool_name: str, call_key: tuple | None = None) -> str | None:
     while the wrapped function still runs normally and returns real (possibly updated) content.
     `_last_call_key` is stored on the tool's own pool entry, the same established pattern
     `_rescued_task_ids` below already uses for per-tool private bookkeeping."""
-    # Evidence-only runs (2026-09-30): every tool call, from the Planner AND any sub-agent, passes through here, and
-    # the flag is in run_state.data (survives quota top-ups and --resume-run), so a writer-dispatch failure that falls
-    # back to the Planner can no longer turn a fixed-evidence run into free research. Worded as a quota error on
-    # purpose: the Planner's own instructions already say to stop immediately on one and let the writers work.
-    if tool_name in _EVIDENCE_ONLY_BLOCKED_TOOLS:
-        _rs = run_state_ctx.get()
-        if _rs is not None and _rs.data.get("evidence_only"):
-            _rs.data["evidence_only_refusals"] = _rs.data.get("evidence_only_refusals", 0) + 1
-            if _rs.data["evidence_only_refusals"] > _EVIDENCE_ONLY_REFUSAL_LIMIT:
-                raise QuotaAbortException(f"Agent trapped in loop. Research tool '{tool_name}' refused repeatedly in an evidence-only run.")
-            return (
-                f"{TOOL_ERROR_PREFIX}you have reached your quota for '{tool_name}': this run's research evidence was "
-                f"already gathered and verified by an automated pipeline, so no further research is allowed. Stop "
-                f"delegating; the writer roles will work from the evidence that is already loaded."
-            )
+    blocked = _check_evidence_only_quota(tool_name)
+    if blocked is not None:
+        return blocked
     ctx = tool_quotas_ctx.get()
-    # DEEPDELVE_QUOTA_DEBUG=1: one line per quota check to stderr, with the pool's object id —
-    # the 'shared cumulative pool' design silently degrades to 'unlimited' for any tool call the
-    # framework happens to execute outside the run's context (ctx=None), and that is invisible
-    # without this. Found via run 12: 36 executed web_searches against a hard cap of 21.
-    import os as _os
-    if _os.environ.get("DEEPDELVE_QUOTA_DEBUG"):
-        import sys as _sys
-        state = f"pool_id={id(ctx)} used={ctx.get(tool_name, {}).get('used')}/{ctx.get(tool_name, {}).get('limit')}" if ctx else "ctx=None (UNLIMITED)"
-        print(f"[quota_debug] {tool_name}: {state}", file=_sys.stderr)
+    _log_quota_debug(tool_name, ctx)
     if ctx and tool_name in ctx:
         entry = ctx[tool_name]
-        # Controlled-ablation switch (2026-08-17, RESEARCH.md §18f) -- settings.ablation.
-        # disable_no_progress_guard (default False, current behavior unaffected) lets this ONE
-        # mechanism be turned off for a with/without comparison, same rationale as
-        # completion.py's own _ablation_disabled. Scoped to just the halt-on-repeated-failure
-        # guard below, not the free-repeat dedup a few lines down -- that's a narrower, already
-        # differently-evidenced mechanism (real quota-exhaustion transcript data), not the one in
-        # question here.
-        no_progress_guard_disabled = bool(
-            config.get_setting("ablation", {}).get("disable_no_progress_guard", False)
-        )
-        if (not no_progress_guard_disabled and call_key is not None
-                and entry.get("_error_streak_key") == call_key
-                and entry.get("_error_streak_count", 0) >= _NO_PROGRESS_ERROR_STREAK_LIMIT):
-            # No-progress guard (see _NO_PROGRESS_ERROR_STREAK_LIMIT's own docstring) -- this exact
-            # (tool, args) pair has already failed with the same error this many times in a row.
-            # Does NOT consume a quota unit: the model isn't over quota, it's stuck, a different
-            # problem with a different fix (change the arguments / a different tool / move on).
-            return (
-                f"Error: you have called '{tool_name}' with the exact same arguments and gotten "
-                f"the exact same error {entry['_error_streak_count']} times in a row. Repeating "
-                f"this identical call again will not produce a different result -- change your "
-                f"arguments, use a different tool, or move on to your next step."
-            )
-        # Tool-failure streak guard (see _TOOL_FAILURE_STREAK_LIMIT's own docstring) -- N
-        # consecutive FAILURES to this tool regardless of differing arguments (a hallucination
-        # spiral, not a repeated identical mistake). Same ablation-switch convention, own flag.
-        tool_failure_streak_guard_disabled = bool(
-            config.get_setting("ablation", {}).get("disable_tool_failure_streak_guard", False)
-        )
-        if (not tool_failure_streak_guard_disabled
-                and entry.get("_tool_error_streak_count", 0) >= _TOOL_FAILURE_STREAK_LIMIT):
-            return (
-                f"Error: your last {entry['_tool_error_streak_count']} calls to '{tool_name}' have "
-                f"all failed (with different arguments each time). Guessing another set of "
-                f"arguments is unlikely to help -- if you already successfully read or found real "
-                f"content earlier, use THAT content now instead of continuing to search for more; "
-                f"otherwise use a different tool or move on to your next step."
-            )
+        no_progress_msg = _check_no_progress_guard(entry, tool_name, call_key)
+        if no_progress_msg is not None:
+            return no_progress_msg
+        failure_streak_msg = _check_tool_failure_streak(entry, tool_name)
+        if failure_streak_msg is not None:
+            return failure_streak_msg
+        # Dedup free-repeat + over-limit handling stay inline (not pulled into their own
+        # functions like the two checks above, 2026-10-17 god-function decomposition pass):
+        # the dedup branch's `return None` here is a genuine EARLY exit from check_quota itself
+        # (skips the over-limit check below entirely, no quota consumed) and the over-limit
+        # branch's rescue-top-up path shares `entry["used"]`'s increment with the unconditional
+        # one at this function's tail -- both are real sequential state threading, not
+        # independent return-or-continue checks the way the two above are. Splitting these out
+        # would need a second return channel just to carry "already incremented, don't increment
+        # again" / "skip the rest, don't charge a unit" -- not worth the risk of silently
+        # changing this project's actual tool-budget accounting for a name alone.
         if tool_name in _DEDUP_ELIGIBLE_TOOLS and call_key is not None:
             if entry["used"] < entry["limit"] and entry.get("_last_call_key") == call_key:
                 return None  # exact repeat of the immediately preceding call -- no new quota spent
