@@ -478,7 +478,38 @@ def select_ce(query, facets, seen, urls, evidence, owner, funnel, cfg=None):
     return emitted, kept
 
 
+def _compute_unanswered(model: str, query: str, facets: list[dict], evidence: dict) -> dict[str, list[str]]:
+    """fid -> still-unanswered question texts, per facet_unanswered. Pulled out of run()'s own
+    nested closure 2026-10-17 (god-function decomposition, 2026-10-17 audit finding) -- pure
+    cut, no behavior change: unlike run()'s other 4 nested closures, this one never mutates any
+    of run()'s shared state (no `nonlocal`), so it's safe to hoist with explicit params alone.
+    A fresh judge call every time it's needed (not cached): the evidence a facet holds changes
+    across the gap-rounds loop and the one re-search round in run(), so a stale cached verdict
+    would under/over-report exactly the thing a re-search round just changed."""
+    out = {}
+    for f in facets:
+        quotes = [t for ts in evidence[f["id"]].values() for t in ts]
+        idxs = facet_unanswered(model, query, f, quotes)
+        if idxs:
+            out[f["id"]] = [f["questions"][i] for i in idxs]
+    return out
+
+
 def run(query: str, model: str, out: Path, topk: int, extractor: str = "ce", judge_on: bool = True) -> dict:
+    # 2026-10-17 god-function decomposition pass (2026-10-17 audit finding: "5 nested closures
+    # mutating outer-scope dicts via nonlocal, least testable code in the whole audit"):
+    # _compute_unanswered above was hoisted out (it never mutates anything). The other 4 nested
+    # closures below (gather_round, process_bm25, process_ce, process_llm) were deliberately left
+    # as-is: each both READS and WRITES several of this function's locals via `nonlocal`
+    # (seen/titles/evidence/gstats/owner/funnel/emitted_total/kept_total/failed_total/calls), and
+    # this whole function has ZERO existing test coverage (confirmed: every test importing
+    # pipeline.run exercises only its smaller pure helpers -- sentences/bm25_top/entity checks/
+    # etc. -- never run() itself, which also makes real network/LLM calls via plan/search/fetch/
+    # judge/extract/select_ce/facet_unanswered/reformulate_question). Restructuring untested,
+    # heavily-mutated, I/O-driven state-threading code for a readability win alone risks a silent
+    # correctness regression in the evidence-gathering pipeline that feeds every report this
+    # project writes -- not worth it without a real test harness first (the same "test before you
+    # refactor" discipline tools/web.py's _fetch_raw extraction followed, 2026-10-17 session).
     t0, calls = time.time(), 0
     out.mkdir(parents=True, exist_ok=True)
     facets = plan(model, query)
@@ -554,25 +585,13 @@ def run(query: str, model: str, out: Path, topk: int, extractor: str = "ce", jud
             break
         process(gather_round([(f["id"], f"{q} {f['name']}") for f in gaps for q in f["questions"][1:] or f["questions"]]))
 
-    def compute_unanswered() -> dict[str, list[str]]:
-        """fid -> still-unanswered question texts, per facet_unanswered. A fresh judge call every time it's needed (not cached): the
-        evidence a facet holds changes across the gap-rounds loop and the one re-search round below, so a stale cached verdict would
-        under/over-report exactly the thing a re-search round just changed."""
-        out = {}
-        for f in facets:
-            quotes = [t for ts in evidence[f["id"]].values() for t in ts]
-            idxs = facet_unanswered(model, query, f, quotes)
-            if idxs:
-                out[f["id"]] = [f["questions"][i] for i in idxs]
-        return out
-
     # Answer-gap round (2026-10-17): the gap rounds above only ensure >=2 SOURCES per facet, not that any of them answers the
     # facet's own questions -- confirmed live (h19): facets_covered_2src scored 1.0 while the "citizen adoption" facets held only
     # internet-penetration figures for an "adoption rate" question. ONE extra round, re-searching with reformulated queries (re-running
     # the same query text tends to re-fetch the same pages, see reformulate_question), same "exactly one extra attempt, never
     # unbounded" shape as engine/completion.py's own force_whole_rebuild escalation -- this is pipeline-side evidence gathering, not a
     # completion-check retry loop, but the same budget discipline applies for the same reason.
-    unanswered = compute_unanswered()
+    unanswered = _compute_unanswered(model, query, facets, evidence)
     if unanswered:
         resq = []
         for f in facets:
@@ -581,7 +600,7 @@ def run(query: str, model: str, out: Path, topk: int, extractor: str = "ce", jud
                     resq.append((f["id"], alt))
         if resq:
             process(gather_round(resq))
-            unanswered = compute_unanswered()  # final: what the re-search round still didn't fill, carried to the writer as a disclosed gap
+            unanswered = _compute_unanswered(model, query, facets, evidence)  # final: what the re-search round still didn't fill, carried to the writer as a disclosed gap
 
     covered = sum(1 for f in facets if len(evidence[f["id"]]) >= 2)
     metrics = {
