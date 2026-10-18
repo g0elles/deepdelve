@@ -16,8 +16,65 @@ from utils.run_state import record_fetched_url, reset_fetched_urls
 import config as _config
 import contextvars
 
-from tools.web import fetch_url_to_workspace, _slugify_for_filename, _save_fetched, _fetched_filename
+from tools.web import fetch_url_to_workspace, _slugify_for_filename, _save_fetched, _fetched_filename, _fetch_raw
+import tools.web as _web
 from tools.fs import _IN_MEMORY_FS
+
+
+class _FakeHttpResp:
+    """Just enough of httpx.Response's streaming contract for _fetch_raw's own usage
+    (resp.headers, resp.iter_bytes(), resp.url, resp.charset_encoding) -- used to pin _fetch_raw's
+    HTML happy-path end to end (network fetch -> boilerplate strip -> markitdown/BeautifulSoup
+    parse -> metadata) without a real network call, since _fetch_raw itself had ZERO direct test
+    coverage before this (confirmed: every existing test here only reaches it through
+    fetch_url_to_workspace's dedup/cap checks, which short-circuit before the network call).
+    Written BEFORE the 2026-10-17 god-function decomposition split _fetch_raw into smaller pieces,
+    specifically so that split has a real behavioral pin instead of relying on code review alone."""
+    def __init__(self, body: bytes, url="https://gov.example.co/fetchtest", charset_encoding="utf-8"):
+        self._body = body
+        self.url = url
+        self.charset_encoding = charset_encoding
+        self.headers = {}
+
+    def iter_bytes(self):
+        yield self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+class _FakeHttpClient:
+    def __init__(self, resp):
+        self._resp = resp
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def stream(self, method, url, **kwargs):
+        return self._resp
+
+
+def _fetch_raw_html_happy_path_scenario():
+    html = (
+        b"<html><head><title>Test Article Title</title></head>"
+        b"<body><nav>skip this nav</nav><p>" + (b"Real article prose sentence. " * 30) + b"</p></body></html>"
+    )
+    orig_client = _web.httpx.Client
+    _web.httpx.Client = lambda **kw: _FakeHttpClient(_FakeHttpResp(html))
+    try:
+        data, urls_fetched, metadata = _fetch_raw("https://gov.example.co/fetchtest")
+        assert "Real article prose sentence." in data, data
+        assert "skip this nav" not in data, data
+        assert urls_fetched == ["https://gov.example.co/fetchtest"], urls_fetched
+        assert metadata.get("title") == "Test Article Title", metadata
+    finally:
+        _web.httpx.Client = orig_client
 
 # Literal test fixtures reused across many topic files below (constants, not code) --
 # hoisting these verbatim into every file's header is simpler than a separate shared-fixtures
@@ -378,6 +435,7 @@ def main():
     assert "fintech" in _terms and "sector" in _terms and "grew" in _terms, _terms
     assert "the" not in _terms and "with" not in _terms and "new" not in _terms, _terms
 
+    _fetch_raw_html_happy_path_scenario()
 
 
 if __name__ == "__main__":

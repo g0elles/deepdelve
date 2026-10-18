@@ -291,151 +291,171 @@ def _fetch_raw(url: str, convert_to_md: bool = True, _redirect_depth: int = 0):
     is_pdf = b"%PDF-" in content[:1024]
 
     if is_pdf:
-        # Save to temp file, then parse locally
-        import tempfile
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-            tmp.write(content)
-            tmp_path = tmp.name
-        try:
-            # Try liteparse first (better spatial accuracy for PDFs)
-            import shutil
-            if shutil.which("liteparse"):
-                import subprocess
-                result = subprocess.run(
-                    ["liteparse", tmp_path],
-                    capture_output=True, text=True, timeout=60
-                )
-                if result.returncode == 0 and result.stdout.strip():
-                    return result.stdout, [url], {}
+        return _parse_pdf_content(content, url)
+    return _parse_html_content(content, charset_encoding, resp_url, url, convert_to_md, _redirect_depth)
 
-            # Fallback to markitdown on local file
-            try:
-                from utils.parsers import convert_to_markdown
-                md_content = convert_to_markdown(tmp_path)
-                if md_content:
-                    return md_content, [url], {}
-            except ImportError:
-                pass
 
-            return f"[ERROR: PDF at {url} could not be parsed. Size: {len(content)} bytes. Try a different source.]", [url], {}
-        finally:
-            os.unlink(tmp_path)
-    else:
-        # HTML path: try markitdown on local temp file first, then BeautifulSoup fallback.
-        # Boilerplate (nav/footer/script/ads/cookie banners) is stripped from the HTML BEFORE
-        # either path runs, not after — see _strip_boilerplate_html. Bytes are decoded honoring
-        # the page's real charset first (C8 — see _decode_html_bytes), so cleaned_html is always
-        # well-formed UTF-8 whatever the server sent.
-        cleaned_html, metadata = _strip_boilerplate_html(_decode_html_bytes(content, charset_encoding))
-        md_content = None
+def _parse_pdf_content(content: bytes, url: str):
+    """The PDF branch of _fetch_raw, pulled out 2026-10-17 (god-function decomposition,
+    2026-10-17 audit finding) -- pure cut, no behavior change: liteparse first (better spatial
+    accuracy), markitdown fallback, else a reported parse failure. Returns the same (data,
+    urls_fetched, metadata) 3-tuple shape _fetch_raw's callers already expect."""
+    # Save to temp file, then parse locally
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+    try:
+        # Try liteparse first (better spatial accuracy for PDFs)
+        import shutil
+        if shutil.which("liteparse"):
+            import subprocess
+            result = subprocess.run(
+                ["liteparse", tmp_path],
+                capture_output=True, text=True, timeout=60
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout, [url], {}
+
+        # Fallback to markitdown on local file
         try:
             from utils.parsers import convert_to_markdown
-            import tempfile
-            with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="wb") as tmp:
-                tmp.write(cleaned_html)
-                tmp_path = tmp.name
-            try:
-                md_content = convert_to_markdown(tmp_path)
-            finally:
-                os.unlink(tmp_path)
+            md_content = convert_to_markdown(tmp_path)
+            if md_content:
+                return md_content, [url], {}
         except ImportError:
             pass
 
-        if not md_content:
-            # BeautifulSoup fallback for HTML
-            soup = BeautifulSoup(cleaned_html, "html.parser")
-            md_content = '\n'.join(line for line in (l.strip() for l in soup.get_text(separator='\n').splitlines()) if line)
+        return f"[ERROR: PDF at {url} could not be parsed. Size: {len(content)} bytes. Try a different source.]", [url], {}
+    finally:
+        os.unlink(tmp_path)
 
-        # Headless-browser retry for pages that bot-walled the plain httpx GET (Akamai/Cloudflare
-        # JS challenges, browser-version-sniffing blocks — confirmed live 2026-07-14 against
-        # Springer/ScienceDirect/MDPI, see ROADMAP.md). Only engages when the plain fetch already
-        # looks like a stub, so it never adds latency to the common case. Re-runs the SAME
-        # boilerplate-strip + markitdown/BeautifulSoup pipeline on the browser-rendered HTML rather
-        # than duplicating parsing logic; only replaces md_content/metadata if the retry actually
-        # produced real content, so a failed/unavailable/still-blocked retry leaves the original
-        # stub result (and its accurate stub flag) untouched.
-        if _stub_reason(md_content):
-            import config as app_config
-            headless_enabled = app_config.get_setting("fetch", {}).get("headless_fallback", True)
-            if headless_enabled:
-                rendered_html = fetch_via_headless_browser(str(resp_url))
-                if rendered_html:
-                    retry_cleaned_html, retry_metadata = _strip_boilerplate_html(rendered_html)
-                    retry_md_content = None
+
+def _parse_html_content(content: bytes, charset_encoding: str | None, resp_url, url: str,
+                         convert_to_md: bool, _redirect_depth: int):
+    """The HTML branch of _fetch_raw, pulled out 2026-10-17 (god-function decomposition,
+    2026-10-17 audit finding) -- pure cut, no behavior change: markitdown-or-BeautifulSoup parse,
+    then the 3-rung stub-recovery chain (headless-browser retry, Tavily /extract, client-side
+    redirect-stub follow), in that order. Returns the same (data, urls_fetched, metadata) 3-tuple
+    shape _fetch_raw's callers already expect. `url` is the ORIGINAL url _fetch_raw was called
+    with (used by the Tavily rung and as urls_fetched[0]); `resp_url` is httpx's resolved URL
+    after following real HTTP redirects (used by the headless-browser retry and the redirect-stub
+    follow's urljoin base)."""
+    # HTML path: try markitdown on local temp file first, then BeautifulSoup fallback.
+    # Boilerplate (nav/footer/script/ads/cookie banners) is stripped from the HTML BEFORE
+    # either path runs, not after — see _strip_boilerplate_html. Bytes are decoded honoring
+    # the page's real charset first (C8 — see _decode_html_bytes), so cleaned_html is always
+    # well-formed UTF-8 whatever the server sent.
+    cleaned_html, metadata = _strip_boilerplate_html(_decode_html_bytes(content, charset_encoding))
+    md_content = None
+    try:
+        from utils.parsers import convert_to_markdown
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="wb") as tmp:
+            tmp.write(cleaned_html)
+            tmp_path = tmp.name
+        try:
+            md_content = convert_to_markdown(tmp_path)
+        finally:
+            os.unlink(tmp_path)
+    except ImportError:
+        pass
+
+    if not md_content:
+        # BeautifulSoup fallback for HTML
+        soup = BeautifulSoup(cleaned_html, "html.parser")
+        md_content = '\n'.join(line for line in (l.strip() for l in soup.get_text(separator='\n').splitlines()) if line)
+
+    # Headless-browser retry for pages that bot-walled the plain httpx GET (Akamai/Cloudflare
+    # JS challenges, browser-version-sniffing blocks — confirmed live 2026-07-14 against
+    # Springer/ScienceDirect/MDPI, see ROADMAP.md). Only engages when the plain fetch already
+    # looks like a stub, so it never adds latency to the common case. Re-runs the SAME
+    # boilerplate-strip + markitdown/BeautifulSoup pipeline on the browser-rendered HTML rather
+    # than duplicating parsing logic; only replaces md_content/metadata if the retry actually
+    # produced real content, so a failed/unavailable/still-blocked retry leaves the original
+    # stub result (and its accurate stub flag) untouched.
+    if _stub_reason(md_content):
+        import config as app_config
+        headless_enabled = app_config.get_setting("fetch", {}).get("headless_fallback", True)
+        if headless_enabled:
+            rendered_html = fetch_via_headless_browser(str(resp_url))
+            if rendered_html:
+                retry_cleaned_html, retry_metadata = _strip_boilerplate_html(rendered_html)
+                retry_md_content = None
+                try:
+                    from utils.parsers import convert_to_markdown
+                    import tempfile
+                    with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="wb") as tmp:
+                        tmp.write(retry_cleaned_html)
+                        tmp_path = tmp.name
                     try:
-                        from utils.parsers import convert_to_markdown
-                        import tempfile
-                        with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="wb") as tmp:
-                            tmp.write(retry_cleaned_html)
-                            tmp_path = tmp.name
-                        try:
-                            retry_md_content = convert_to_markdown(tmp_path)
-                        finally:
-                            os.unlink(tmp_path)
-                    except ImportError:
-                        pass
-                    if not retry_md_content:
-                        retry_soup = BeautifulSoup(retry_cleaned_html, "html.parser")
-                        retry_md_content = '\n'.join(
-                            line for line in (l.strip() for l in retry_soup.get_text(separator='\n').splitlines()) if line
-                        )
-                    if not _stub_reason(retry_md_content):
-                        md_content, metadata = retry_md_content, retry_metadata
-
-        # Third rung: Tavily's /extract API, when the plain fetch AND the headless-browser retry
-        # both still look like a stub (or headless is disabled/Playwright isn't installed). Only
-        # engages if settings.tavily_api_key is set — opt-in, no new hard dependency. Added
-        # 2026-08-01 after a live incident (RESEARCH.md Sec.16/session_status): a bot-wall page
-        # (mexiconewsdaily.com, an "unusual traffic" captcha shell) and a page our own fetch
-        # returned completely empty (consulmex.sre.gob.mx) both beat the headless-browser retry
-        # too (Playwright IS installed; the retry ran and still came back stub/empty) — yet
-        # Tavily's own /extract, checked directly against these exact two URLs, returned full real
-        # article/page content for both. Those two silent fetch failures were the actual root
-        # cause of a run that could never converge: findings.md kept listing them as "real, fetched
-        # sources" with nothing behind them, and the completion-check pipeline kept pushing Builder
-        # to cite content that didn't exist, an unwinnable loop (see check_report_underuses_findings
-        # below). This engages only after both earlier rungs have already failed, so it never adds
-        # latency to the common case.
-        if _stub_reason(md_content):
-            import config as app_config
-            tavily_key = app_config.get_setting("tavily_api_key", "")
-            if tavily_key:
-                try:
-                    # The ORIGINAL url, not resp_url — a bot-walled page's plain-fetch redirect
-                    # chain often lands on the bot-CHALLENGE host itself (confirmed live,
-                    # consulmex.sre.gob.mx -> validate.perfdrive.com/?ssa=...), and Tavily fetching
-                    # THAT URL independently just gets the same challenge page again. Tavily needs
-                    # the real target to have a chance of succeeding where our own client didn't.
-                    extract_resp = httpx.post(
-                        "https://api.tavily.com/extract",
-                        json={"api_key": tavily_key, "urls": [url]},
-                        timeout=20,
+                        retry_md_content = convert_to_markdown(tmp_path)
+                    finally:
+                        os.unlink(tmp_path)
+                except ImportError:
+                    pass
+                if not retry_md_content:
+                    retry_soup = BeautifulSoup(retry_cleaned_html, "html.parser")
+                    retry_md_content = '\n'.join(
+                        line for line in (l.strip() for l in retry_soup.get_text(separator='\n').splitlines()) if line
                     )
-                    extract_resp.raise_for_status()
-                    extract_results = extract_resp.json().get("results", [])
-                    if extract_results:
-                        tavily_content = extract_results[0].get("raw_content", "") or ""
-                        if tavily_content and not _stub_reason(tavily_content):
-                            md_content = tavily_content
-                except Exception:
-                    pass  # Fall through and return the earlier (stub) result rather than losing
-                          # the fetch entirely — same philosophy as the redirect-follow below.
+                if not _stub_reason(retry_md_content):
+                    md_content, metadata = retry_md_content, retry_metadata
 
-        # Follow a client-side redirect stub one hop (real HTTP redirects are already handled by
-        # follow_redirects=True above — this catches the ones that aren't, see
-        # _looks_like_redirect_stub's docstring for the live case that motivated this).
-        if _redirect_depth < 1:
-            target = _looks_like_redirect_stub(md_content)
-            if target:
-                from urllib.parse import urljoin
-                resolved = urljoin(str(resp_url), target)
-                try:
-                    inner_data, inner_urls, inner_meta = _fetch_raw(resolved, convert_to_md, _redirect_depth=_redirect_depth + 1)
-                    return inner_data, [url] + inner_urls, inner_meta
-                except Exception:
-                    pass  # Fall through and return the stub rather than losing the fetch entirely.
+    # Third rung: Tavily's /extract API, when the plain fetch AND the headless-browser retry
+    # both still look like a stub (or headless is disabled/Playwright isn't installed). Only
+    # engages if settings.tavily_api_key is set — opt-in, no new hard dependency. Added
+    # 2026-08-01 after a live incident (RESEARCH.md Sec.16/session_status): a bot-wall page
+    # (mexiconewsdaily.com, an "unusual traffic" captcha shell) and a page our own fetch
+    # returned completely empty (consulmex.sre.gob.mx) both beat the headless-browser retry
+    # too (Playwright IS installed; the retry ran and still came back stub/empty) — yet
+    # Tavily's own /extract, checked directly against these exact two URLs, returned full real
+    # article/page content for both. Those two silent fetch failures were the actual root
+    # cause of a run that could never converge: findings.md kept listing them as "real, fetched
+    # sources" with nothing behind them, and the completion-check pipeline kept pushing Builder
+    # to cite content that didn't exist, an unwinnable loop (see check_report_underuses_findings
+    # below). This engages only after both earlier rungs have already failed, so it never adds
+    # latency to the common case.
+    if _stub_reason(md_content):
+        import config as app_config
+        tavily_key = app_config.get_setting("tavily_api_key", "")
+        if tavily_key:
+            try:
+                # The ORIGINAL url, not resp_url — a bot-walled page's plain-fetch redirect
+                # chain often lands on the bot-CHALLENGE host itself (confirmed live,
+                # consulmex.sre.gob.mx -> validate.perfdrive.com/?ssa=...), and Tavily fetching
+                # THAT URL independently just gets the same challenge page again. Tavily needs
+                # the real target to have a chance of succeeding where our own client didn't.
+                extract_resp = httpx.post(
+                    "https://api.tavily.com/extract",
+                    json={"api_key": tavily_key, "urls": [url]},
+                    timeout=20,
+                )
+                extract_resp.raise_for_status()
+                extract_results = extract_resp.json().get("results", [])
+                if extract_results:
+                    tavily_content = extract_results[0].get("raw_content", "") or ""
+                    if tavily_content and not _stub_reason(tavily_content):
+                        md_content = tavily_content
+            except Exception:
+                pass  # Fall through and return the earlier (stub) result rather than losing
+                      # the fetch entirely — same philosophy as the redirect-follow below.
 
-        return md_content, [url], metadata
+    # Follow a client-side redirect stub one hop (real HTTP redirects are already handled by
+    # follow_redirects=True above — this catches the ones that aren't, see
+    # _looks_like_redirect_stub's docstring for the live case that motivated this).
+    if _redirect_depth < 1:
+        target = _looks_like_redirect_stub(md_content)
+        if target:
+            from urllib.parse import urljoin
+            resolved = urljoin(str(resp_url), target)
+            try:
+                inner_data, inner_urls, inner_meta = _fetch_raw(resolved, convert_to_md, _redirect_depth=_redirect_depth + 1)
+                return inner_data, [url] + inner_urls, inner_meta
+            except Exception:
+                pass  # Fall through and return the stub rather than losing the fetch entirely.
+
+    return md_content, [url], metadata
 
 
 # Phrase-level soft-404/paywall markers (EN + ES — the flagship benchmark language), not single
@@ -888,217 +908,139 @@ def _diversity_rerank(results: list) -> list:
     return [r for _, r in ordered]
 
 
-@tool
-async def web_search(
-    query: str | list,
-    max_results: int = 5,
-    topic: str = "general",
-) -> str:
-    """Search the web for information on a given query. Takes ONE query per call.
-
-    Automatically fetches the FULL page content of the top result (not just its snippet) and
-    saves it to the workspace — you do not need to call fetch_url_to_workspace separately for
-    that result. Remaining results are returned as snippets only; fetch those explicitly with
-    fetch_url_to_workspace if you need their full content too.
-
-    Args:
-        query: Search query to execute
-        max_results: Maximum number of results to return (default: 5)
-        topic: Topic filter - 'general', 'news', or 'finance' (default: 'general')
-
-    Returns:
-        Formatted search results with titles, URLs, and snippets. The top result also includes
-        the workspace filename its full content was auto-saved to.
-    """
-    query, list_note = _first_of_list_arg(query, "query", "web_search")
-
-    from tools.core import check_quota
-    quota_error = check_quota("web_search")
-    if quota_error:
-        return quota_error
-
-    streak_note = _note_search_streak(query)
-
+def _run_web_search_provider(query: str, max_results: int, topic: str) -> list[dict]:
+    """The Tavily/Brave/ddgs provider-dispatch body of web_search, pulled out of its own nested
+    `_do_search` closure 2026-10-17 (god-function decomposition, 2026-10-17 audit finding) --
+    pure cut, no behavior change, just explicit params instead of closing over web_search's
+    locals. Synchronous (called via asyncio.to_thread + _run_with_daemon_timeout at web_search's
+    two call sites)."""
     import config as app_config
-    search_mode = app_config.get_setting("search_mode", "light")
-    if search_mode == "heavy":
-        # Test-time search scaling (inspired by Tongyi DeepResearch's "Heavy Mode"): search deeper
-        # and auto-fetch more of the top results per call, rather than fabricating fake
-        # query-variant strings via heuristics — that would likely just return near-duplicate
-        # results under a different label. A larger verified data pool per call is the real goal,
-        # achieved deterministically instead of with a fragile string-rewriting trick.
-        max_results = max(max_results, 8)
+    from ddgs import DDGS
 
-    def _do_search():
-        from ddgs import DDGS
+    def _sanitize_snippet(text: str) -> str:
+        """Strip CSS, SVG, and HTML artifacts from search snippets."""
+        text = re.sub(r'<svg[\s\S]*?</svg>', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'<style[\s\S]*?</style>', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'<[^>]+>', '', text)
+        text = re.sub(r"(?:[\w-]+=(?:'[^']*'|\"[^\"]*\")[\s]*){3,}", '', text)
+        text = re.sub(r'%3[CEce][^%\s]{10,}', '', text)
+        return re.sub(r'\s+', ' ', text).strip()
 
-        def _sanitize_snippet(text: str) -> str:
-            """Strip CSS, SVG, and HTML artifacts from search snippets."""
-            text = re.sub(r'<svg[\s\S]*?</svg>', '', text, flags=re.IGNORECASE)
-            text = re.sub(r'<style[\s\S]*?</style>', '', text, flags=re.IGNORECASE)
-            text = re.sub(r'<[^>]+>', '', text)
-            text = re.sub(r"(?:[\w-]+=(?:'[^']*'|\"[^\"]*\")[\s]*){3,}", '', text)
-            text = re.sub(r'%3[CEce][^%\s]{10,}', '', text)
-            return re.sub(r'\s+', ' ', text).strip()
+    results = []
 
-        results = []
+    # Provider selection lives entirely here, invisible to the model — web_search is ONE tool
+    # regardless of which real search API answers it. Confirmed live 2026-08-01: exposing a
+    # second/third search backend as its own MCP tool (brave_web_search, tavily_search) and
+    # telling the model to "prefer" it never worked — three separate live runs, including one
+    # with an explicit "prefer it over web_search" prompt instruction, and the model called the
+    # familiar web_search 100% of the time (0 calls to either alternate tool across all three
+    # runs; see RESEARCH.md §16 and session_status/CURRENT.md). Same lesson this project's
+    # whole design already leans on: prompted preference is unreliable on small local models,
+    # structural is not. "auto" picks the best configured provider without the model ever
+    # knowing a choice was made: Tavily (dedicated search API) > Brave (real search index) >
+    # ddgs (free, no key, metasearch scrape — the original zero-config fallback).
+    backend_choice = app_config.get_setting("web_search_backend", "auto")
+    tavily_key = app_config.get_setting("tavily_api_key", "")
+    brave_key = app_config.get_setting("brave_api_key", "")
+    provider = backend_choice
+    if provider == "auto":
+        provider = "tavily" if tavily_key else ("brave" if brave_key else "ddgs")
 
-        # Provider selection lives entirely here, invisible to the model — web_search is ONE tool
-        # regardless of which real search API answers it. Confirmed live 2026-08-01: exposing a
-        # second/third search backend as its own MCP tool (brave_web_search, tavily_search) and
-        # telling the model to "prefer" it never worked — three separate live runs, including one
-        # with an explicit "prefer it over web_search" prompt instruction, and the model called the
-        # familiar web_search 100% of the time (0 calls to either alternate tool across all three
-        # runs; see RESEARCH.md §16 and session_status/CURRENT.md). Same lesson this project's
-        # whole design already leans on: prompted preference is unreliable on small local models,
-        # structural is not. "auto" picks the best configured provider without the model ever
-        # knowing a choice was made: Tavily (dedicated search API) > Brave (real search index) >
-        # ddgs (free, no key, metasearch scrape — the original zero-config fallback).
-        backend_choice = app_config.get_setting("web_search_backend", "auto")
-        tavily_key = app_config.get_setting("tavily_api_key", "")
-        brave_key = app_config.get_setting("brave_api_key", "")
-        provider = backend_choice
-        if provider == "auto":
-            provider = "tavily" if tavily_key else ("brave" if brave_key else "ddgs")
+    if provider == "tavily" and tavily_key:
+        resp = httpx.post(
+            "https://api.tavily.com/search",
+            json={
+                "api_key": tavily_key,
+                "query": query,
+                "max_results": max_results,
+                "topic": "news" if topic == "news" else "general",
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        for r in resp.json().get("results", []):
+            results.append({
+                "url": r.get("url", ""),
+                "title": _sanitize_snippet(r.get("title", "")),
+                "snippet": _sanitize_snippet(r.get("content", "No snippet available")),
+            })
+    elif provider == "brave" and brave_key:
+        endpoint = (
+            "https://api.search.brave.com/res/v1/news/search" if topic == "news"
+            else "https://api.search.brave.com/res/v1/web/search"
+        )
+        resp = httpx.get(
+            endpoint,
+            params={"q": query, "count": max_results},
+            headers={"Accept": "application/json", "X-Subscription-Token": brave_key},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        raw_results = data.get("results", []) if topic == "news" else data.get("web", {}).get("results", [])
+        for r in raw_results[:max_results]:
+            results.append({
+                "url": r.get("url", ""),
+                "title": _sanitize_snippet(r.get("title", "")),
+                "snippet": _sanitize_snippet(r.get("description", "No snippet available")),
+            })
+    else:
+        # ddgs (free, no API key required) — the zero-config fallback when neither Tavily nor
+        # Brave has a key set. A fresh, short-lived client per call rather than a shared
+        # singleton — concurrent specialists search in parallel via asyncio.gather (see
+        # engine/orchestrator.py's delegate_tasks), and the duckduckgo_search/ddgs library is
+        # not documented as safe for concurrent calls on one shared client instance. DDGS()
+        # itself is lightweight to construct.
+        client = DDGS()
+        # ddgs 9.x is a metasearcher over 10+ engines (google, bing, brave, yahoo, startpage,
+        # mojeek, ...) — "auto" rotates/falls back across them instead of pinning every call
+        # to DuckDuckGo. Confirmed live (2026-07-11): DDG throttling after a search-heavy day
+        # made two models' runs fail in ways that looked like model fabrication. A comma list
+        # (e.g. "google,brave,duckduckgo") pins specific engines in order. Unrelated to, and
+        # not to be confused with, settings.web_search_backend above — this is ddgs's own
+        # internal engine-rotation knob, only consulted when ddgs is the active provider.
+        ddgs_engine = app_config.get_setting("search_backend", "auto")
 
-        if provider == "tavily" and tavily_key:
-            resp = httpx.post(
-                "https://api.tavily.com/search",
-                json={
-                    "api_key": tavily_key,
-                    "query": query,
-                    "max_results": max_results,
-                    "topic": "news" if topic == "news" else "general",
-                },
-                timeout=15,
-            )
-            resp.raise_for_status()
-            for r in resp.json().get("results", []):
+        if topic == "news":
+            search_results = client.news(query, max_results=max_results, backend=ddgs_engine)
+            for result in search_results:
                 results.append({
-                    "url": r.get("url", ""),
-                    "title": _sanitize_snippet(r.get("title", "")),
-                    "snippet": _sanitize_snippet(r.get("content", "No snippet available")),
-                })
-        elif provider == "brave" and brave_key:
-            endpoint = (
-                "https://api.search.brave.com/res/v1/news/search" if topic == "news"
-                else "https://api.search.brave.com/res/v1/web/search"
-            )
-            resp = httpx.get(
-                endpoint,
-                params={"q": query, "count": max_results},
-                headers={"Accept": "application/json", "X-Subscription-Token": brave_key},
-                timeout=15,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            raw_results = data.get("results", []) if topic == "news" else data.get("web", {}).get("results", [])
-            for r in raw_results[:max_results]:
-                results.append({
-                    "url": r.get("url", ""),
-                    "title": _sanitize_snippet(r.get("title", "")),
-                    "snippet": _sanitize_snippet(r.get("description", "No snippet available")),
+                    "url": result.get("url", ""),
+                    "title": result.get("title", ""),
+                    "snippet": _sanitize_snippet(result.get("body", "No snippet available")),
                 })
         else:
-            # ddgs (free, no API key required) — the zero-config fallback when neither Tavily nor
-            # Brave has a key set. A fresh, short-lived client per call rather than a shared
-            # singleton — concurrent specialists search in parallel via asyncio.gather (see
-            # engine/orchestrator.py's delegate_tasks), and the duckduckgo_search/ddgs library is
-            # not documented as safe for concurrent calls on one shared client instance. DDGS()
-            # itself is lightweight to construct.
-            client = DDGS()
-            # ddgs 9.x is a metasearcher over 10+ engines (google, bing, brave, yahoo, startpage,
-            # mojeek, ...) — "auto" rotates/falls back across them instead of pinning every call
-            # to DuckDuckGo. Confirmed live (2026-07-11): DDG throttling after a search-heavy day
-            # made two models' runs fail in ways that looked like model fabrication. A comma list
-            # (e.g. "google,brave,duckduckgo") pins specific engines in order. Unrelated to, and
-            # not to be confused with, settings.web_search_backend above — this is ddgs's own
-            # internal engine-rotation knob, only consulted when ddgs is the active provider.
-            ddgs_engine = app_config.get_setting("search_backend", "auto")
+            search_results = client.text(query, max_results=max_results, backend=ddgs_engine)
+            for result in search_results:
+                results.append({
+                    "url": result.get("href", ""),
+                    "title": result.get("title", ""),
+                    "snippet": _sanitize_snippet(result.get("body", "No snippet available")),
+                })
 
-            if topic == "news":
-                search_results = client.news(query, max_results=max_results, backend=ddgs_engine)
-                for result in search_results:
-                    results.append({
-                        "url": result.get("url", ""),
-                        "title": result.get("title", ""),
-                        "snippet": _sanitize_snippet(result.get("body", "No snippet available")),
-                    })
-            else:
-                search_results = client.text(query, max_results=max_results, backend=ddgs_engine)
-                for result in search_results:
-                    results.append({
-                        "url": result.get("href", ""),
-                        "title": result.get("title", ""),
-                        "snippet": _sanitize_snippet(result.get("body", "No snippet available")),
-                    })
+    return results
 
-        return results
 
-    from utils.run_state import record_search_health
-    from tools.core import refund_quota
-    # Outer timeout, not just a retry — confirmed live 2026-07-13 (a full run stalled indefinitely
-    # here) and root-caused against two real GitHub issues describing the identical failure
-    # (HKUDS/nanobot#2804, microsoft/amplifier#219): ddgs's underlying `primp` Rust HTTP client can
-    # block in a way a plain `asyncio.to_thread` background thread never returns from. Uses
-    # _run_with_daemon_timeout (not a bare asyncio.wait_for around asyncio.to_thread) specifically
-    # because a plain wait_for only unblocks the CALLING coroutine on time — the orphaned executor
-    # thread itself is not a daemon thread, so it silently blocks the whole process from exiting
-    # cleanly later (confirmed directly: a hung call wrapped in bare wait_for/to_thread times out
-    # the caller fine but then Python's interpreter-shutdown thread-join hangs forever). Full
-    # process-based isolation (spawn+kill a subprocess) was considered instead and rejected: it
-    # would require calling ddgs from a module-level, picklable worker function, which breaks this
-    # exact call site's existing in-process `ddgs.DDGS` monkeypatch test
-    # (test_structural_checks.py) since a subprocess re-imports fresh, unpatched modules — the
-    # daemon-thread approach solves the same user-visible symptom (including the exit-hang) without
-    # that test-compatibility cost.
-    timeout_s = app_config.get_setting("web_search", {}).get("timeout_seconds", 20)
-    results, err = [], None
-    try:
-        results = await asyncio.to_thread(_run_with_daemon_timeout, _do_search, timeout_s)
-    except Exception as e:
-        err = e
-    if not results:
-        # Throttling is transient — one short backoff retry before giving up. Confirmed live
-        # (2026-07-11): 13/30 searches failed in a single end-of-day run, each burning a quota
-        # unit and returning nothing.
-        await asyncio.sleep(3)
-        try:
-            results = await asyncio.to_thread(_run_with_daemon_timeout, _do_search, timeout_s)
-            err = None
-        except Exception as e:
-            err = e
-    if err is not None:
-        record_search_health(ok=False)
-        # An environmental failure must not burn the model's research budget on top of failing.
-        refund_quota("web_search")
-        if isinstance(err, TimeoutError):
-            return (f"{TOOL_ERROR_PREFIX}Search timed out after {timeout_s}s with no response — the search "
-                    f"layer appears to be hanging, not just slow. This is an environmental issue, "
-                    f"not a query problem; try a different query or search backend.")
-        return f"{TOOL_ERROR_PREFIX}Search failed: {type(err).__name__}: {err}"
-    # Zero results counts as a failure: under provider throttling ddgs often returns empty rather
-    # than raising, and an all-empty run is indistinguishable from a fabrication-prone one.
-    record_search_health(ok=bool(results))
-    if not results:
-        refund_quota("web_search")
-    else:
-        results = _diversity_rerank(results)
+async def _auto_fetch_top_results(results: list[dict], query: str, search_mode: str) -> str:
+    """Auto-fetch fusion, pulled out of web_search 2026-10-17 (god-function decomposition,
+    2026-10-17 audit finding) -- pure cut, no behavior change. Mutates `results`' dicts in place
+    (auto_fetched_filename/auto_fetch_status, same as before extraction) and returns the
+    auto_fetch_note string web_search's own return statement appends.
 
-    # -------------------------------------------------------------
-    # Auto-fetch fusion: search and fetch used to be two separate tools, which meant a model could
-    # (and, in extensive live testing, reliably did) stop after search and answer from snippets
-    # alone — snippets frequently don't contain the specific fact a query needs, so the model would
-    # fall back to fabricating from its own training knowledge instead. This was the single
-    # highest-confidence unresolved item after a full test battery (see ROADMAP.md).
-    # Independently confirmed as the right fix by three separate reference sources: DelveAgent's
-    # grounding requirement, llm_wiki's "full content extraction, no truncation" search design, and
-    # CYC2002tommy's explicit "FULL-TEXT READING IS MANDATORY — NO ABSTRACT-ONLY SHORTCUTS" rule
-    # (same principle, applied to papers instead of web pages).
-    # Structural, not prompt-level: eliminate the snippet-only path entirely instead of asking the
-    # model not to take it — the same category of fix as the delegate_tasks schema validation and
-    # the narrated-report salvage.
-    # -------------------------------------------------------------
+    Search and fetch used to be two separate tools, which meant a model could (and, in extensive
+    live testing, reliably did) stop after search and answer from snippets alone — snippets
+    frequently don't contain the specific fact a query needs, so the model would fall back to
+    fabricating from its own training knowledge instead. This was the single highest-confidence
+    unresolved item after a full test battery (see ROADMAP.md). Independently confirmed as the
+    right fix by three separate reference sources: DelveAgent's grounding requirement, llm_wiki's
+    "full content extraction, no truncation" search design, and CYC2002tommy's explicit "FULL-TEXT
+    READING IS MANDATORY — NO ABSTRACT-ONLY SHORTCUTS" rule (same principle, applied to papers
+    instead of web pages). Structural, not prompt-level: eliminate the snippet-only path entirely
+    instead of asking the model not to take it — the same category of fix as the delegate_tasks
+    schema validation and the narrated-report salvage."""
+    import config as app_config
+    from tools.core import check_quota
+
     auto_fetch_top = app_config.get_setting("web_search", {}).get("auto_fetch_top", 1)
     if search_mode == "heavy":
         auto_fetch_top = max(auto_fetch_top, 3)
@@ -1162,6 +1104,105 @@ async def web_search(
             refund_quota("fetch_url_to_workspace")
             r["auto_fetch_status"] = f"Auto-fetch failed ({e}) — snippet only for this result."
         _auto_fetched_count += 1
+
+    return auto_fetch_note
+
+
+@tool
+async def web_search(
+    query: str | list,
+    max_results: int = 5,
+    topic: str = "general",
+) -> str:
+    """Search the web for information on a given query. Takes ONE query per call.
+
+    Automatically fetches the FULL page content of the top result (not just its snippet) and
+    saves it to the workspace — you do not need to call fetch_url_to_workspace separately for
+    that result. Remaining results are returned as snippets only; fetch those explicitly with
+    fetch_url_to_workspace if you need their full content too.
+
+    Args:
+        query: Search query to execute
+        max_results: Maximum number of results to return (default: 5)
+        topic: Topic filter - 'general', 'news', or 'finance' (default: 'general')
+
+    Returns:
+        Formatted search results with titles, URLs, and snippets. The top result also includes
+        the workspace filename its full content was auto-saved to.
+    """
+    query, list_note = _first_of_list_arg(query, "query", "web_search")
+
+    from tools.core import check_quota
+    quota_error = check_quota("web_search")
+    if quota_error:
+        return quota_error
+
+    streak_note = _note_search_streak(query)
+
+    import config as app_config
+    search_mode = app_config.get_setting("search_mode", "light")
+    if search_mode == "heavy":
+        # Test-time search scaling (inspired by Tongyi DeepResearch's "Heavy Mode"): search deeper
+        # and auto-fetch more of the top results per call, rather than fabricating fake
+        # query-variant strings via heuristics — that would likely just return near-duplicate
+        # results under a different label. A larger verified data pool per call is the real goal,
+        # achieved deterministically instead of with a fragile string-rewriting trick.
+        max_results = max(max_results, 8)
+
+    def _do_search():
+        return _run_web_search_provider(query, max_results, topic)
+
+    from utils.run_state import record_search_health
+    from tools.core import refund_quota
+    # Outer timeout, not just a retry — confirmed live 2026-07-13 (a full run stalled indefinitely
+    # here) and root-caused against two real GitHub issues describing the identical failure
+    # (HKUDS/nanobot#2804, microsoft/amplifier#219): ddgs's underlying `primp` Rust HTTP client can
+    # block in a way a plain `asyncio.to_thread` background thread never returns from. Uses
+    # _run_with_daemon_timeout (not a bare asyncio.wait_for around asyncio.to_thread) specifically
+    # because a plain wait_for only unblocks the CALLING coroutine on time — the orphaned executor
+    # thread itself is not a daemon thread, so it silently blocks the whole process from exiting
+    # cleanly later (confirmed directly: a hung call wrapped in bare wait_for/to_thread times out
+    # the caller fine but then Python's interpreter-shutdown thread-join hangs forever). Full
+    # process-based isolation (spawn+kill a subprocess) was considered instead and rejected: it
+    # would require calling ddgs from a module-level, picklable worker function, which breaks this
+    # exact call site's existing in-process `ddgs.DDGS` monkeypatch test
+    # (test_structural_checks.py) since a subprocess re-imports fresh, unpatched modules — the
+    # daemon-thread approach solves the same user-visible symptom (including the exit-hang) without
+    # that test-compatibility cost.
+    timeout_s = app_config.get_setting("web_search", {}).get("timeout_seconds", 20)
+    results, err = [], None
+    try:
+        results = await asyncio.to_thread(_run_with_daemon_timeout, _do_search, timeout_s)
+    except Exception as e:
+        err = e
+    if not results:
+        # Throttling is transient — one short backoff retry before giving up. Confirmed live
+        # (2026-07-11): 13/30 searches failed in a single end-of-day run, each burning a quota
+        # unit and returning nothing.
+        await asyncio.sleep(3)
+        try:
+            results = await asyncio.to_thread(_run_with_daemon_timeout, _do_search, timeout_s)
+            err = None
+        except Exception as e:
+            err = e
+    if err is not None:
+        record_search_health(ok=False)
+        # An environmental failure must not burn the model's research budget on top of failing.
+        refund_quota("web_search")
+        if isinstance(err, TimeoutError):
+            return (f"{TOOL_ERROR_PREFIX}Search timed out after {timeout_s}s with no response — the search "
+                    f"layer appears to be hanging, not just slow. This is an environmental issue, "
+                    f"not a query problem; try a different query or search backend.")
+        return f"{TOOL_ERROR_PREFIX}Search failed: {type(err).__name__}: {err}"
+    # Zero results counts as a failure: under provider throttling ddgs often returns empty rather
+    # than raising, and an all-empty run is indistinguishable from a fabrication-prone one.
+    record_search_health(ok=bool(results))
+    if not results:
+        refund_quota("web_search")
+    else:
+        results = _diversity_rerank(results)
+
+    auto_fetch_note = await _auto_fetch_top_results(results, query, search_mode)
 
     result_texts = []
     for r in results:
