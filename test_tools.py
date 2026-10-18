@@ -6,16 +6,53 @@ tools/fs.py had zero direct test coverage before this file).
 """
 import os
 import sys
+import threading
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 
 import config
 config.cfg.setdefault("settings", {})["workspace"] = {"type": "disk", "dir": "/tmp/deepdelve_test_workspace"}
 
-from tools.fs import _get_safe_path
+from tools.fs import _get_safe_path, _lock_for_path
 from tools.web import (
     _is_unsafe_fetch_host, _looks_like_redirect_stub, _stub_reason, _slugify_for_filename,
 )
+
+
+def _check_lock_for_path_serializes_same_path_only():
+    """_lock_for_path (tools/fs.py, 2026-10-17 audit fix for edit_workspace_file's _IN_MEMORY_FS
+    TOCTOU -- tool calls run on real OS threads, so two concurrent edits to the SAME path could
+    otherwise both read stale content and the second write silently discards the first). Proves
+    the actual property that matters: same path -> mutual exclusion (max concurrent 1), different
+    path -> no exclusion at all (max concurrent 2) -- same "track concurrent entries with a sleep
+    inside the critical section" proof pattern as test_api.py's own _queue_serialization_scenario."""
+    def _max_concurrent(paths):
+        concurrent = [0]
+        max_concurrent = [0]
+        lock_guard = threading.Lock()
+
+        def worker(path):
+            with _lock_for_path(path):
+                with lock_guard:
+                    concurrent[0] += 1
+                    max_concurrent[0] = max(max_concurrent[0], concurrent[0])
+                time.sleep(0.05)
+                with lock_guard:
+                    concurrent[0] -= 1
+
+        threads = [threading.Thread(target=worker, args=(p,)) for p in paths]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        return max_concurrent[0]
+
+    same_path_max = _max_concurrent(("/ws/findings.md", "/ws/findings.md"))
+    assert same_path_max == 1, f"same-path concurrent edits must serialize, got max_concurrent={same_path_max}"
+
+    diff_path_max = _max_concurrent(("/ws/findings.md", "/ws/final_report.md"))
+    assert diff_path_max == 2, f"different-path edits must NOT block each other, got max_concurrent={diff_path_max}"
 
 
 def main():
@@ -61,6 +98,8 @@ def main():
     c = _slugify_for_filename("https://example.com/different-article", "seed")
     assert a == b, "same URL must always produce the same filename (idempotent, cache-friendly)"
     assert a != c, "different URLs must not collide onto the same filename"
+
+    _check_lock_for_path_serializes_same_path_only()
 
     print("All tool-layer assertions passed.")
 

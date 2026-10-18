@@ -17,6 +17,17 @@ APP_DESCRIPTION = "Multi-agent deep web research and document analysis assistant
 _DEFAULT_CONFIG_DIR = os.path.expanduser(f"~/.{APP_NAME}")
 _CONFIG_PATH = _get_config_path_from_args() or os.path.join(_DEFAULT_CONFIG_DIR, "config.yaml")
 
+# Single source of truth for "which config keys are secrets" -- previously duplicated between
+# this file's save_config() (which only ever stripped "openai_api_key", hardcoded inline) and
+# api.py's own separately-maintained _SECRET_PATHS/_mask_secrets (api/openai_api_key plus
+# settings/tavily_api_key, settings/brave_api_key) -- a classic two-copies-to-keep-in-sync drift
+# (2026-10-17 audit finding). api.py imports this instead of defining its own list now.
+SECRET_SETTINGS_PATHS = (
+    ("api", "openai_api_key"),
+    ("settings", "tavily_api_key"),
+    ("settings", "brave_api_key"),
+)
+
 _DEFAULTS = {
     "api": {
         "openai_base_url": "http://localhost:8080/v1",
@@ -164,8 +175,9 @@ def save_config() -> None:
             save_data["settings"][key] = live_settings[key]
 
     # Strip out sensitive API keys before writing if any are stored in keys
-    if "api" in save_data:
-        save_data["api"].pop("openai_api_key", None)
+    for section, key in SECRET_SETTINGS_PATHS:
+        if section in save_data:
+            save_data[section].pop(key, None)
 
     with open(_CONFIG_PATH, "w") as f:
         yaml.dump(save_data, f, default_flow_style=False, sort_keys=False)

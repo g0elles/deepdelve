@@ -4,20 +4,30 @@
 # install contract. Regenerate after any real dependency bump:
 #   python3 -m venv /tmp/lockenv && \
 #     /tmp/lockenv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu && \
-#     /tmp/lockenv/bin/pip install -e . && \
+#     /tmp/lockenv/bin/pip install -e ".[dev,api,browser,pdf]" && \
 #     /tmp/lockenv/bin/pip freeze | grep -v '^-e ' > requirements.lock
 # The CPU-torch step MUST run before `pip install -e .` (added 2026-07-12 alongside
 # sentence-transformers) — otherwise pip resolves the default CUDA-enabled torch build (~6GB vs.
 # ~200MB for CPU-only), even though grounding.py's NLI usage is explicitly device="cpu" and never
 # touches a GPU.
 #
+# Regenerated 2026-10-17 (was stale: missing minicheck/accelerate entirely, added 2026-08-29/30 --
+# 2026-10-17 audit finding) from the existing long-lived ~/.venvs/deepdelve dev venv, NOT a fresh
+# /tmp venv as the recipe above describes -- this environment has no `python3-venv`/ensurepip
+# package installed and installing one is a system-level change outside this change's scope.
+# ~/.venvs/deepdelve already carries every dependency this project uses (base + dev + api +
+# browser + pdf extras) at versions the full test suite (`run_tests.py --clean --strict`, 25/25)
+# passes against, which satisfies this file's actual purpose (a real, working combination) even
+# though it isn't byte-for-byte the documented regeneration path. Next regeneration should use the
+# documented /tmp venv recipe once that's available again, not perpetuate this shortcut.
+#
 # The large agent-framework-* provider list (a2a, azure, bedrock, foundry, ...) is NOT something
 # this project chose to depend on directly — it's agent-framework's own bundled transitive
 # dependency tree; only OpenAIChatCompletionClient (pointed at Ollama's OpenAI-compat endpoint) is
 # actually used (src/engine/orchestrator.py).
 a2a-sdk==1.1.0
+accelerate==1.14.0
 ag-ui-protocol==0.1.19
-agent-framework==1.11.0
 agent-framework-a2a==1.0.0b260709
 agent-framework-ag-ui==1.0.0rc8
 agent-framework-anthropic==1.0.0b260709
@@ -32,8 +42,8 @@ agent-framework-core==1.11.0
 agent-framework-declarative==1.0.0rc2
 agent-framework-devui==1.0.0b260709
 agent-framework-durabletask==1.0.0b260709
-agent-framework-foundry==1.10.1
 agent-framework-foundry-local==1.0.0b260521
+agent-framework-foundry==1.10.1
 agent-framework-github-copilot==1.0.0rc3
 agent-framework-hyperlight==1.0.0b260709
 agent-framework-lab==1.0.0b260709
@@ -43,53 +53,63 @@ agent-framework-openai==1.10.1
 agent-framework-orchestrations==1.0.0
 agent-framework-purview==1.0.0b260709
 agent-framework-redis==1.0.0b260521
+agent-framework==1.11.0
 aiohappyeyeballs==2.7.1
+aiohttp-jinja2==1.6
 aiohttp==3.14.1
 aiologic==0.17.1
 aiosignal==1.4.0
 annotated-doc==0.0.4
 annotated-types==0.7.0
 anthropic==0.116.0
-anyio==4.14.2
+anyio==4.14.1
+ast_serialize==0.13.1
 asyncio==4.0.0
 attrs==26.1.0
+azure-ai-contentunderstanding==1.2.0b2
+azure-ai-documentintelligence==1.0.2
 azure-ai-inference==1.0.0b9
 azure-ai-projects==2.3.0
 azure-core==1.41.0
 azure-cosmos==4.16.1
-azure-functions==1.24.0
 azure-functions-durable==1.6.0
+azure-functions==1.24.0
 azure-identity==1.25.3
 azure-search-documents==12.0.0
 azure-storage-blob==12.30.0
 backoff==2.2.1
 beautifulsoup4==4.15.0
-boto3==1.43.46
-botocore==1.43.46
+boto3==1.43.45
+botocore==1.43.45
 brotli==1.2.0
 certifi==2026.6.17
 cffi==2.0.0
 charset-normalizer==3.4.9
-claude-agent-sdk==0.2.116
+claude-agent-sdk==0.2.115
 click==8.4.2
 clr_loader==0.2.10
 cobble==0.1.4
 cryptography==49.0.0
+cssselect2==0.9.0
 culsans==0.11.0
+datasets==5.0.1
 ddgs==9.14.4
 defusedxml==0.7.1
+dill==0.4.1
 distro==1.9.0
 docstring_parser==0.18.0
-durabletask==1.7.2
 durabletask.azuremanaged==1.7.2
+durabletask==1.7.2
+easydict==1.13
 et_xmlfile==2.0.0
 fake-useragent==2.2.0
 fastapi==0.138.0
-filelock==3.29.0
+filelock==3.29.7
 flatbuffers==25.12.19
+fonttools==4.63.0
 foundry-local-sdk==0.5.1
 frozenlist==1.8.0
-fsspec==2026.4.0
+fsspec==2026.6.0
 furl==2.1.4
 github-copilot-sdk==1.0.2
 google-api-core==2.31.0
@@ -104,13 +124,13 @@ hf-xet==1.5.1
 hpack==4.2.0
 httpcore==1.0.9
 httptools==0.8.0
-httpx==0.28.1
 httpx-sse==0.4.3
+httpx==0.28.1
 huggingface_hub==1.23.0
 hyperframe==6.1.0
-hyperlight-sandbox==0.4.0
 hyperlight-sandbox-backend-wasm==0.4.0
 hyperlight-sandbox-python-guest==0.5.0
+hyperlight-sandbox==0.4.0
 idna==3.18
 isodate==0.7.2
 Jinja2==3.1.6
@@ -119,8 +139,10 @@ jmespath==1.1.0
 joblib==1.5.3
 json-rpc==1.15.0
 jsonpath-ng==1.8.0
-jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
+jsonschema==4.26.0
+lettucedetect==0.2.3
+librt==0.16.0
 linkify-it-py==2.1.0
 lxml==6.1.1
 magika==0.6.3
@@ -136,19 +158,23 @@ mem0ai==2.0.11
 microsoft-agents-activity==0.3.1
 microsoft-agents-copilotstudio-client==0.3.1
 microsoft-agents-hosting-core==0.3.1
+minicheck @ git+https://github.com/Liyan06/MiniCheck.git@b58b9fa69acbd1015ec970fa65dd752413a053d2
 ml_dtypes==0.5.4
 mpmath==1.3.0
-msal==1.37.0
 msal-extensions==1.3.1
+msal==1.37.0
 multidict==6.7.1
+multiprocess==0.70.19
 narwhals==2.23.0
 networkx==3.6.1
+nltk==3.10.3
 numpy==2.5.1
+olefile==0.47
 ollama==0.5.3
 onnxruntime==1.27.0
-openai==2.45.0
-openai-agents==0.18.2
+openai-agents==0.18.1
 openai-chatkit==1.6.5
+openai==2.45.0
 openpyxl==3.1.5
 opentelemetry-api==1.43.0
 opentelemetry-sdk==1.43.0
@@ -156,10 +182,12 @@ opentelemetry-semantic-conventions==0.64b0
 orderedmultidict==1.0.2
 packaging==26.2
 pandas==3.0.3
+pathspec==1.1.1
 pdfminer.six==20260107
 pdfplumber==0.11.10
 pillow==12.3.0
 platformdirs==4.10.0
+playwright==1.61.0
 portalocker==3.2.0
 posthog==7.22.1
 powerfx==0.0.34
@@ -167,24 +195,33 @@ primp==1.3.1
 propcache==0.5.2
 proto-plus==1.28.1
 protobuf==6.33.6
+psutil==7.2.2
+pyarrow==25.0.1
 pyasn1==0.6.4
 pyasn1_modules==0.4.2
 pycparser==3.0
-pydantic==2.13.4
 pydantic-settings==2.14.2
+pydantic==2.13.4
 pydantic_core==2.46.4
+pydub==0.25.1
+pydyf==0.12.1
+pyee==13.0.1
+pyfiglet==1.0.4
 Pygments==2.20.0
 PyJWT==2.13.0
 pypdfium2==5.11.0
+pyphen==0.17.2
 python-dateutil==2.9.0.post0
-python-dotenv==1.2.2
+python-dotenv==1.0.1
 python-multipart==0.0.32
 python-pptx==1.0.2
 python-ulid==3.1.0
 pythonnet==3.0.5
 pytz==2026.2
+PyVirtualDisplay==3.0
 PyYAML==6.0.3
 qdrant-client==1.18.0
+rag_fact_checker==0.1.5
 redis==7.1.1
 redisvl==0.15.0
 referencing==0.37.0
@@ -192,38 +229,49 @@ regex==2026.7.10
 requests==2.34.2
 rich==15.0.0
 rpds-py==2026.6.3
-s3transfer==0.19.1
+ruff==0.15.21
+s3transfer==0.19.0
 safetensors==0.8.0
 scikit-learn==1.9.0
 scipy==1.18.0
 sentence-transformers==5.6.0
-setuptools==78.1.0
+setuptools==83.0.0
 shellingham==1.5.4
 six==1.17.0
 sniffio==1.3.1
 socksio==1.0.0
 soupsieve==2.8.4
+SpeechRecognition==3.17.0
 SQLAlchemy==2.0.51
 sse-starlette==3.4.5
 starlette==1.3.1
 sympy==1.14.0
 tenacity==9.1.4
+textual-serve==1.1.3
 textual==8.2.8
 threadpoolctl==3.6.0
+tinycss2==1.5.1
+tinyhtml5==2.1.0
 tokenizers==0.22.2
 torch==2.13.0+cpu
 tqdm==4.68.4
 transformers==5.13.1
 typer==0.26.8
 typing-inspection==0.4.2
-typing_extensions==4.15.0
+typing_extensions==4.16.0
 uc-micro-py==2.0.0
 urllib3==2.7.0
 uvicorn==0.51.0
 uvloop==0.22.1
 watchfiles==1.2.0
+weasyprint==69.0
+webencodings==0.5.1
 websockets==16.1
 Werkzeug==3.1.8
 wrapt==2.2.2
+xlrd==2.0.2
 xlsxwriter==3.2.9
+xxhash==4.0.1
 yarl==1.24.2
+youtube-transcript-api==1.0.3
+zopfli==0.4.3

@@ -2,12 +2,34 @@ from typing import Dict, List
 import os
 import re
 import contextvars
+import threading
 from agent_framework import tool
 from tools.core import with_quota, _get_tool_rule, TOOL_ERROR_PREFIX
 
 # --- WORKSPACE FILE SYSTEM ---
 _IN_MEMORY_FS: Dict[str, str] = {}
 session_dir_ctx = contextvars.ContextVar('session_dir', default="")
+
+# Per-path locks guarding edit_workspace_file's read-modify-write against _IN_MEMORY_FS (2026-10-17
+# audit finding: tool calls run on REAL OS threads via agent_framework's asyncio.to_thread, not
+# just cooperative coroutines -- confirmed in utils/browser_fetch.py's own threading.Thread usage
+# -- so two concurrent edits to the SAME in-memory file can genuinely interleave: both read the
+# same stale content, both compute a diff against it, and whichever writes second silently
+# discards the other's change with no error anywhere). _locks_guard protects creating a NEW
+# per-path lock (a dict insert is not itself atomic under GIL-released C-extension calls); the
+# per-path lock itself then serializes the actual read+write for that one path, letting unrelated
+# paths still edit fully in parallel.
+_in_memory_fs_locks: Dict[str, threading.Lock] = {}
+_locks_guard = threading.Lock()
+
+
+def _lock_for_path(path: str) -> threading.Lock:
+    with _locks_guard:
+        lock = _in_memory_fs_locks.get(path)
+        if lock is None:
+            lock = threading.Lock()
+            _in_memory_fs_locks[path] = lock
+        return lock
 
 def _get_workspace_type() -> str:
     import config
@@ -254,25 +276,41 @@ def edit_workspace_file(filename: str, old_string: str, new_string: str, replace
                 return f"Error: '{filename}' not found."
             filename = resolved
 
-        from utils.grounding import snap_urls_to_fetched  # local import: grounding imports this module
-        new_string = snap_urls_to_fetched(new_string)
-        if old_string not in content:  # write_workspace_file saves snapped URLs, so the model's own damaged copy may no longer match
-            old_string = snap_urls_to_fetched(old_string)
-        count = content.count(old_string)
-        if count == 0:
-            return f"Error: old_string not found in '{filename}' -- it must match the file's exact existing text (no paraphrasing)."
-        if count > 1 and not replace_all:
-            return f"Error: old_string appears {count} times in '{filename}' -- make it more specific (include surrounding context) or pass replace_all=true if you really mean to replace all of them."
-
-        new_content = content.replace(old_string, new_string) if replace_all else content.replace(old_string, new_string, 1)
         path = _get_safe_path(filename)
         if not path:
             return f"Error: Invalid filename '{filename}'."
-        if _get_workspace_type() == "disk":
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(new_content)
-        else:
-            _IN_MEMORY_FS[path] = new_content
+
+        # Lock scoped to this one path only (2026-10-17 audit finding): tool calls run on real OS
+        # threads, so two concurrent edit_workspace_file calls against the SAME path could
+        # otherwise both read the content fetched above, both compute a diff against it, and
+        # whichever writes second would silently discard the other's change. Re-reads content
+        # fresh INSIDE the lock (not the copy fetched above, which may already be stale by the
+        # time this thread gets the lock) and fails loudly instead of clobbering if old_string no
+        # longer matches that fresh read -- the memory-workspace case this was found for; the
+        # disk case re-reads from disk the same way, which is a strict improvement there too.
+        with _lock_for_path(path):
+            if _get_workspace_type() == "disk":
+                with open(path, "r", encoding="utf-8") as f:
+                    content = f.read()
+            else:
+                content = _IN_MEMORY_FS.get(path, content)
+
+            from utils.grounding import snap_urls_to_fetched  # local import: grounding imports this module
+            new_string = snap_urls_to_fetched(new_string)
+            if old_string not in content:  # write_workspace_file saves snapped URLs, so the model's own damaged copy may no longer match
+                old_string = snap_urls_to_fetched(old_string)
+            count = content.count(old_string)
+            if count == 0:
+                return f"Error: old_string not found in '{filename}' -- it must match the file's exact existing text (no paraphrasing)."
+            if count > 1 and not replace_all:
+                return f"Error: old_string appears {count} times in '{filename}' -- make it more specific (include surrounding context) or pass replace_all=true if you really mean to replace all of them."
+
+            new_content = content.replace(old_string, new_string) if replace_all else content.replace(old_string, new_string, 1)
+            if _get_workspace_type() == "disk":
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(new_content)
+            else:
+                _IN_MEMORY_FS[path] = new_content
         return f"Edited '{filename}' ({count} replacement{'s' if count != 1 else ''})."
     except Exception as e:
         return f"Error: {type(e).__name__}: {e}"

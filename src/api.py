@@ -467,13 +467,12 @@ async def list_runs():
     return results
 
 
-_SECRET_PATHS = [("api", "openai_api_key"), ("settings", "tavily_api_key"), ("settings", "brave_api_key")]
 _SECRET_SENTINEL = "***set***"
 
 
 def _mask_secrets(cfg_dict: dict) -> dict:
     masked = copy.deepcopy(cfg_dict)
-    for section, key in _SECRET_PATHS:
+    for section, key in config.SECRET_SETTINGS_PATHS:
         if masked.get(section, {}).get(key):
             masked[section][key] = _SECRET_SENTINEL
     return masked
@@ -484,13 +483,26 @@ async def get_settings():
     return _mask_secrets(config.cfg)
 
 
+_SETTINGS_SECTIONS = ("api", "settings")
+
+
 @app.post("/settings")
 async def post_settings(overrides: dict):
+    # Trust-boundary check (2026-10-17 audit finding): this is the one real unvalidated HTTP
+    # input in this file -- an untyped dict merged straight into the live, persisted config with
+    # no schema at all. Not a full schema (config_template.yaml's real settings tree is large and
+    # grows independently of this file) -- just reject anything outside the two sections that
+    # actually exist, so a client typo/garbage top-level key doesn't silently create and persist
+    # a new permanent junk key forever. Every existing/new key WITHIN "api"/"settings" is still
+    # allowed, same as before -- this isn't a key-by-key allowlist, just the section boundary.
+    if not isinstance(overrides, dict) or not set(overrides).issubset(_SETTINGS_SECTIONS):
+        bad = sorted(set(overrides) - set(_SETTINGS_SECTIONS)) if isinstance(overrides, dict) else overrides
+        raise HTTPException(400, f"Unknown top-level settings section(s): {bad} -- expected only {_SETTINGS_SECTIONS}")
     # A masked sentinel round-tripped back unchanged must never overwrite the real secret with
     # the literal string "***set***" -- strip it out of the incoming payload so save_full_config
     # leaves that key alone (same "no key = keep whatever's already on disk" semantics
     # save_full_config's own deep-merge already gives every other setting).
-    for section, key in _SECRET_PATHS:
+    for section, key in config.SECRET_SETTINGS_PATHS:
         if overrides.get(section, {}).get(key) == _SECRET_SENTINEL:
             del overrides[section][key]
     config.save_full_config(overrides)

@@ -70,7 +70,11 @@ dependencies = [
     # `device_map` ValueError at model load). Fails open at runtime if unavailable, same
     # philosophy as sentence-transformers above. UNVALIDATED AT SCALE as of introduction —
     # calibrated against exactly ONE real incident — see session_status/CURRENT.md.
-    "minicheck @ git+https://github.com/Liyan06/MiniCheck.git@main",
+    # Pinned to the commit verified working (2026-10-17 audit finding: a floating @main ref means
+    # `pip install -e .` isn't actually reproducible even with requirements.lock present, since the
+    # lock is informational-only, not installed from directly -- see this file's own header
+    # comment). Bump deliberately, re-verify, re-pin -- never let this silently drift back to @main.
+    "minicheck @ git+https://github.com/Liyan06/MiniCheck.git@b58b9fa69acbd1015ec970fa65dd752413a053d2",
     "accelerate>=1.0.0,<2.0.0"
 ]
 

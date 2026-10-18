@@ -2134,9 +2134,17 @@ def _export_pdf(run_dir_name: str | None) -> tuple[str | None, str | None]:
 
 
 def _current_run_dir(run_dir_name: str | None) -> str:
+    """`run_dir_name` reaches here from several untrusted-input paths -- api.py's `{run_id}` HTTP
+    path params (`/research/{run_id}/status` etc.), the TUI's `/resume-run` picker input, CLI
+    `--resume-run` -- none of which were previously confined to the workspace dir here (2026-10-17
+    audit finding: `tools/fs.py`'s `_get_safe_path` has this exact containment check, applied
+    everywhere a workspace FILE path is built, but run-DIRECTORY paths built from `run_dir_name`
+    had no equivalent). `os.path.basename` collapses any `../`/absolute-path component down to
+    its final segment -- the same defense `load_resume_state` below already applied by hand for
+    its own one caller; doing it HERE instead makes every caller safe, not just that one."""
     base = config.get_workspace_dir()
     if run_dir_name:
-        return os.path.join(base, run_dir_name)
+        return os.path.join(base, os.path.basename(os.path.normpath(run_dir_name)))
     return base
 
 

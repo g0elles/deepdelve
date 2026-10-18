@@ -233,6 +233,30 @@ async def _queue_serialization_scenario():
         api._worker_started = orig_worker_started
 
 
+async def _settings_validation_scenario():
+    """POST /settings trust-boundary check (2026-10-17 audit finding, fixed same day): a top-level
+    key outside {"api", "settings"} must be rejected with a 400, not silently merged into the
+    persisted config forever. A legitimate nested update under either real section must still go
+    through unchanged -- this guards the section boundary only, not a full schema."""
+    import api
+    from fastapi import HTTPException
+
+    orig_save = api.config.save_full_config
+    saved = []
+    api.config.save_full_config = lambda overrides: saved.append(overrides)
+    try:
+        try:
+            await api.post_settings({"not_a_real_section": {"x": 1}})
+            raise AssertionError("an unknown top-level section must be rejected")
+        except HTTPException as e:
+            assert e.status_code == 400, e.status_code
+
+        await api.post_settings({"settings": {"enable_thinking": True}})
+        assert saved == [{"settings": {"enable_thinking": True}}], saved
+    finally:
+        api.config.save_full_config = orig_save
+
+
 def main():
     # --- Malformed tool call: must retry once (via classify_malformed_retry), not crash the job.
     # Before this fix, this exact exception propagated straight out of _run_research uncaught. ---
@@ -284,6 +308,7 @@ def main():
     assert save_calls, "run_state.save() must be called on a generic exception before it propagates"
 
     asyncio.run(_queue_serialization_scenario())
+    asyncio.run(_settings_validation_scenario())
 
     print("All api.py assertions passed.")
 

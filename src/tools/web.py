@@ -815,7 +815,18 @@ async def fetch_url_to_workspace(url: str | list, filename: str = "", convert_to
     if not filename:
         filename = _slugify_for_filename(url, "")
     try:
-        data, urls_fetched, metadata = await asyncio.to_thread(_fetch_raw, url, convert_to_md)
+        # Daemon-thread backstop (2026-10-17 audit finding), same reasoning as _do_search's own
+        # _run_with_daemon_timeout call above: a plain asyncio.to_thread(_fetch_raw, ...) leaves a
+        # non-daemon executor thread running past _dispatch_single_task's own asyncio.wait_for
+        # deadline if _fetch_raw itself never returns (the headless-Chromium retry chain -- launch
+        # + up to 30s page.goto + 2s settle, possibly twice for the headed-then-headless retry --
+        # is the realistic worst case here, not httpx's own already-bounded 30s GET). 180s is a
+        # generous ceiling meant to fire only on a genuinely hung call, mirroring _do_search's
+        # ddgs/primp incident (HKUDS/nanobot#2804, microsoft/amplifier#219) -- not a new behavior
+        # for the common case, which returns in a few seconds either way.
+        data, urls_fetched, metadata = await asyncio.to_thread(
+            _run_with_daemon_timeout, lambda: _fetch_raw(url, convert_to_md), 180,
+        )
         return _save_fetched(urls_fetched, filename, data, convert_to_md, metadata=metadata) + list_note
     except Exception as e:
         return f"{TOOL_ERROR_PREFIX}Fetch failed: {type(e).__name__}: {e}"
@@ -1133,7 +1144,12 @@ async def web_search(
             break
         filename = _slugify_for_filename(r["url"], query)
         try:
-            data, urls_fetched, metadata = await asyncio.to_thread(_fetch_raw, r["url"], True)
+            # Same daemon-thread backstop as fetch_url_to_workspace's own direct-call dispatch
+            # above (see that call site's comment) -- web_search's auto-fetch runs the identical
+            # _fetch_raw path and is exposed to the identical hung-headless-browser risk.
+            data, urls_fetched, metadata = await asyncio.to_thread(
+                _run_with_daemon_timeout, lambda: _fetch_raw(r["url"], True), 180,
+            )
             save_msg = await asyncio.to_thread(_save_fetched, urls_fetched, filename, data, True, metadata)
             r["auto_fetched_filename"] = _fetched_filename(filename)
             r["auto_fetch_status"] = save_msg
