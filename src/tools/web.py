@@ -1,8 +1,6 @@
 import httpx
-import ipaddress
 import os
 import re
-import socket
 import asyncio
 import threading
 from typing import Optional
@@ -12,35 +10,7 @@ from tools.core import with_quota, tool_quotas_ctx, TOOL_ERROR_PREFIX
 from tools.fs import _get_safe_path, _get_workspace_type, _IN_MEMORY_FS
 from utils.run_state import record_fetched_url, task_id_ctx
 from utils.browser_fetch import fetch_via_headless_browser
-
-# SSRF guard (2026-08-02 audit): every URL this module fetches is attacker-influenced -- either
-# a raw web_search/fetch_url_to_workspace argument the model produced from (possibly
-# prompt-injected) page content, or a link resolved out of a page's own content
-# (_looks_like_redirect_stub below). Without this, a malicious page's redirect could point a
-# fetch at a cloud metadata endpoint (169.254.169.254) or an internal host, fully automatically,
-# no LLM tool call required to trigger it.
-def _is_unsafe_fetch_host(hostname: str) -> bool:
-    """True if `hostname` IS, or resolves to, a loopback/link-local/private/reserved/multicast
-    address. Resolves the hostname first (via socket.getaddrinfo) rather than pattern-matching
-    the string, so a DNS name that merely POINTS at an internal address (not just a bare IP
-    literal like 169.254.169.254) is caught the same way -- a bare string check alone would miss
-    that. A DNS failure is not an SSRF risk (nothing to reach) -- let the fetch itself surface
-    that error normally instead of blocking it here."""
-    if not hostname:
-        return True
-    try:
-        ipaddress.ip_address(hostname)
-        addrs = {hostname}
-    except ValueError:
-        try:
-            addrs = {info[4][0] for info in socket.getaddrinfo(hostname, None)}
-        except socket.gaierror:
-            return False
-    for addr in addrs:
-        ip = ipaddress.ip_address(addr)
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
-            return True
-    return False
+from utils.ssrf_guard import is_unsafe_fetch_host as _is_unsafe_fetch_host  # noqa: F401 -- re-export, kept for existing callers in this module
 
 
 def _block_unsafe_request(request: httpx.Request) -> None:

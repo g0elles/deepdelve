@@ -3,6 +3,8 @@ import logging
 import os
 import sys
 
+from utils.ssrf_guard import is_unsafe_fetch_host
+
 try:
     from playwright.sync_api import sync_playwright, Error as PlaywrightError
     _PLAYWRIGHT_AVAILABLE = True
@@ -89,6 +91,19 @@ def _launch_env(display_override: str | None) -> dict[str, str] | None:
     return env
 
 
+def _block_unsafe_route(route) -> None:
+    """Playwright request interceptor, fired for the initial navigation AND every subsequent
+    request it makes (subresources, and -- the actual gap this closes -- client-side JS/meta-
+    refresh redirects during a bot-wall challenge, which httpx's own event-hook SSRF guard in
+    tools/web.py never sees since Chromium's navigation is a separate network stack)."""
+    from urllib.parse import urlsplit
+    host = urlsplit(route.request.url).hostname
+    if is_unsafe_fetch_host(host):
+        route.abort()
+    else:
+        route.continue_()
+
+
 def fetch_via_headless_browser(url: str, timeout_ms: int = 30000) -> str | None:
     """Best-effort fallback fetch for pages that bot-wall a plain httpx GET (Akamai/Cloudflare JS
     challenges, browser-version-sniffing blocks, or a headless-specific fingerprint block — see
@@ -101,6 +116,9 @@ def fetch_via_headless_browser(url: str, timeout_ms: int = 30000) -> str | None:
     global _launch_failed
     if not _PLAYWRIGHT_AVAILABLE or _launch_failed:
         return None
+    from urllib.parse import urlsplit
+    if is_unsafe_fetch_host(urlsplit(url).hostname):
+        return None
 
     headed, display_override = _display_env()
     try:
@@ -112,6 +130,7 @@ def fetch_via_headless_browser(url: str, timeout_ms: int = 30000) -> str | None:
             browser = p.chromium.launch(**launch_kwargs)
             try:
                 page = browser.new_page()
+                page.route("**/*", _block_unsafe_route)
                 page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
                 # Give client-side bot challenges (Akamai's meta-refresh/JS-verify interstitials,
                 # etc.) a moment to resolve and redirect before reading the DOM.
@@ -135,6 +154,7 @@ def fetch_via_headless_browser(url: str, timeout_ms: int = 30000) -> str | None:
                     browser = p.chromium.launch(headless=True)
                     try:
                         page = browser.new_page()
+                        page.route("**/*", _block_unsafe_route)
                         page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
                         page.wait_for_timeout(2000)
                         return page.content()

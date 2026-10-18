@@ -16,11 +16,14 @@ available runs unaffected — `delegate_tasks` falls back to its existing pre-cl
 behavior entirely, same philosophy as every other soft-dependency check in this codebase.
 """
 
+import logging
 import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))  # for `import config`
 import config  # noqa: E402
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_ARTIFACT_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "..", "finetune", "artifacts",
@@ -66,6 +69,7 @@ def _load():
         _embedder = SentenceTransformer(artifact["embedding_model_name"], device="cpu")
         _classifier = artifact["classifier"]
     except Exception:
+        logger.warning("Agent-routing classifier failed to load -- hallucinated agent_id values will no longer be caught", exc_info=True)
         _load_failed = True
 
 

@@ -36,12 +36,15 @@ runs unaffected — Searcher roles fall back to plain `web_search`, same philoso
 soft-dependency check in this codebase.
 """
 import json
+import logging
 import os
 import sys
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))  # for `import config`
 import config  # noqa: E402
+
+logger = logging.getLogger(__name__)
 
 _EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 
@@ -70,6 +73,7 @@ def _load_embedder():
 
         _embedder = SentenceTransformer(_EMBEDDING_MODEL_NAME, device="cpu")
     except Exception:
+        logger.warning("RAG cache embedder failed to load -- cache lookups will no-op for the rest of this process", exc_info=True)
         _load_failed = True
 
 
@@ -201,7 +205,7 @@ def save(task_context: str, source_url: str, summary: str, model: str) -> None:
         _entries = None
         _matrix = None
     except Exception:
-        pass
+        logger.warning("Failed to persist verified finding to the RAG cache", exc_info=True)
 
 
 if __name__ == "__main__":

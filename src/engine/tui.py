@@ -25,6 +25,7 @@ import json
 import config
 from textual import events
 import hashlib
+import logging
 import os
 import re
 import time
@@ -39,6 +40,7 @@ from utils.run_state import (
 
 AGENT_NAME = config.APP_TITLE
 AGENT_DESCRIPTION = config.APP_DESCRIPTION
+logger = logging.getLogger(__name__)
 
 # ponytail: pyfiglet rendered this once (font="doom"); regenerate and re-paste if APP_TITLE changes.
 BANNER_ASCII = r"""
@@ -95,13 +97,13 @@ def _write_log(force: bool = False):
         try:
             payload["agent_session"] = orchestrator_module._session.to_dict()
         except Exception:
-            pass
+            logger.warning("Failed to serialize agent session for %s", log_file, exc_info=True)
 
     try:
         with open(log_file, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)
     except Exception:
-        pass
+        logger.warning("Failed to write session log %s", log_file, exc_info=True)
 
 def log_prompt(prompt: str):
     global _session_events, _current_call_by_source, _current_text_by_source
@@ -320,7 +322,7 @@ class PromptInput(Input):
                         self.cursor_position = len(cmd)
                     # allow enter to propagate
         except Exception:
-            pass
+            logger.debug("Autocomplete keybinding handler failed", exc_info=True)
 
         if event.key == "up":
             if self._history and self._history_index > 0:
@@ -1295,7 +1297,7 @@ class BasicTuiAgent(App):
                                 d.get("text", "") for d in details if isinstance(d, dict)
                             )
                     except Exception:
-                        pass
+                        logger.debug("Failed to parse protected_data reasoning payload", exc_info=True)
                 if reasoning_text:
                     if state.get("thinking_widget") is None:
                         tw = ThinkingWidget()
@@ -1803,7 +1805,7 @@ class BasicTuiAgent(App):
                     sid = j.get("session_id", f.stem.replace("session_", ""))
                     self._filtered_cmds.append((sid, f"Date: {ts}"))
             except Exception:
-                pass
+                logger.debug("Skipping unreadable session file %s", f, exc_info=True)
 
         self._render_cmd_list()
 
@@ -2754,6 +2756,8 @@ def cli_main(builder):
     args, _ = parser.parse_known_args()
 
     import config
+    from utils.logging_setup import configure_logging
+    configure_logging()
     config.AUTO_APPROVE = args.auto_approve
 
     if args.depth:

@@ -7,8 +7,11 @@
 # engine/completion.py imports these back at module level, so every existing external import path
 # (e.g. engine/tui.py's `from engine.completion import _restore_quarantined_draft` re-export,
 # consumed by test_structural_checks.py) keeps working unchanged.
+import logging
 import os
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 def _quarantine_artifact(req_artifact: str, attempt: int) -> None:
@@ -21,7 +24,9 @@ def _quarantine_artifact(req_artifact: str, attempt: int) -> None:
         if path and os.path.exists(path):
             os.rename(path, path + f".rejected_attempt_{attempt}")
     except Exception:
-        pass
+        # Not purely cosmetic: a failed quarantine leaves the bad draft visible to the model,
+        # which tends to re-condition on it instead of restarting clean (see docstring above).
+        logger.warning("Failed to quarantine artifact %s (attempt %s)", req_artifact, attempt, exc_info=True)
 
 
 def _content_unchanged_since_last_quarantine(req_artifact: str, current_content: Optional[str]) -> bool:

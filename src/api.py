@@ -23,6 +23,7 @@ never does across run_cli's own one-shot-per-process headless invocations.
 """
 import asyncio
 import copy
+import logging
 import os
 import tempfile
 import time
@@ -49,6 +50,7 @@ from tools.fs import session_dir_ctx
 from utils.run_state import RunState, reset_fetched_urls, merge_resumed_state
 
 app = FastAPI(title="DeepDelve API")
+logger = logging.getLogger(__name__)
 
 
 @app.middleware("http")
@@ -97,6 +99,7 @@ async def _worker():
             job["status"] = "cancelled"
             await job["queue"].put({"type": "system", "text": "Run cancelled."})
         except Exception as e:
+            logger.exception("Research job %s failed", run_id)
             job["status"] = "failed"
             job["error"] = f"{type(e).__name__}: {e}"
             await job["queue"].put({"type": "system", "text": f"Run failed: {job['error']}"})
@@ -303,7 +306,7 @@ async def _run_research(run_id: str, query: str, opts: dict, events: asyncio.Que
                 with open(_agent_session_path(run_id), "w", encoding="utf-8") as f:
                     json.dump(session.to_dict(), f)
             except Exception:
-                pass
+                logger.warning("Failed to persist conversational session for run %s", run_id, exc_info=True)
     except asyncio.CancelledError:
         # /cancel relies on this propagating -- must not be swallowed. Still save whatever
         # forensics exist first, same contract run_agent's own crash handling already follows
@@ -327,8 +330,23 @@ async def start_research(
     pipeline_evidence_dir: Optional[str] = Form(None),
     files: list[UploadFile] = File(default=[]),
 ):
-    if pipeline_evidence_dir and not os.path.isfile(os.path.join(os.path.expanduser(pipeline_evidence_dir), "evidence.json")):
-        raise HTTPException(400, f"No evidence.json in pipeline_evidence_dir: {pipeline_evidence_dir}")
+    if pipeline_evidence_dir:
+        # This field is a server-local filesystem read (evidence.json plus the src_*.md files
+        # beside it, see engine/tui.py::_load_pipeline_evidence / pipeline/bridge.py), confined to
+        # nothing -- the caller names ANY directory the server process can read. Fine for the
+        # CLI/TUI (the person giving the path IS the person running the process), but over this
+        # HTTP surface it's a read primitive reachable by any OTHER local account that can also
+        # reach the port, which is a materially bigger risk than the rest of this API's already-
+        # documented "no auth layer" caveat (module docstring). Require a real password before
+        # allowing it, rather than silently inheriting the weaker default.
+        if not config.get_setting("api_password"):
+            raise HTTPException(
+                403,
+                "pipeline_evidence_dir requires settings.api_password to be set first -- it lets "
+                "the caller point this server at an arbitrary local directory to read.",
+            )
+        if not os.path.isfile(os.path.join(os.path.expanduser(pipeline_evidence_dir), "evidence.json")):
+            raise HTTPException(400, f"No evidence.json in pipeline_evidence_dir: {pipeline_evidence_dir}")
     await _ensure_worker()
     run_id = _slugify_run_dir_name(query)
     if run_id in _jobs and _jobs[run_id]["status"] in ("queued", "running"):
@@ -437,6 +455,7 @@ async def list_runs():
             with open(d / "_run_state.json", encoding="utf-8") as f:
                 query = json.load(f).get("query")
         except Exception:
+            logger.debug("Skipping unreadable run_state at %s", d, exc_info=True)
             pass
         results.append({
             "run_id": d.name,
@@ -557,6 +576,8 @@ def main():
     # passed around everywhere else as a `builder` parameter, e.g. create_local_agent(builder=...)
     # -- NOT the same thing as this module's `app` FastAPI instance above).
     from app import app as builder
+    from utils.logging_setup import configure_logging
+    configure_logging()
 
     parser = argparse.ArgumentParser(description="DeepDelve API server")
     parser.add_argument("--host", default="127.0.0.1")

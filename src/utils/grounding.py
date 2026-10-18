@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import re
 import time
@@ -7,6 +8,8 @@ from typing import Optional
 import config
 from utils.run_state import get_fetched_urls, get_verified_cache_urls
 from tools.fs import get_workspace_file_content
+
+logger = logging.getLogger(__name__)
 
 # -------------------------------------------------------------
 # Shared grounding-check logic, used by:
@@ -1429,6 +1432,7 @@ def _get_nli_model():
         from sentence_transformers import CrossEncoder
         _nli_model = CrossEncoder("cross-encoder/nli-deberta-v3-small", device="cpu")
     except Exception:
+        logger.warning("NLI model failed to load -- nli_unsupported_problem will no-op for the rest of this process", exc_info=True)
         _nli_load_failed = True
     return _nli_model
 
@@ -1639,6 +1643,7 @@ def _get_topical_relevance_model():
         _topical_relevance_model = CrossEncoder(
             "BAAI/bge-reranker-v2-m3", device="cpu", activation_fn=torch.nn.Sigmoid())
     except Exception:
+        logger.warning("Topical-relevance model failed to load -- the relevance check will no-op for the rest of this process", exc_info=True)
         _topical_relevance_load_failed = True
     return _topical_relevance_model
 
@@ -1784,6 +1789,7 @@ def _get_editorial_detector():
         from minicheck.minicheck import MiniCheck
         _editorial_detector = MiniCheck(model_name="deberta-v3-large")
     except Exception:
+        logger.warning("Editorial/MiniCheck detector failed to load -- that check will no-op for the rest of this process", exc_info=True)
         _editorial_load_failed = True
     return _editorial_detector
 
