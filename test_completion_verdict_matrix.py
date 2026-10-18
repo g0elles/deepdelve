@@ -449,6 +449,26 @@ def main():
                                "- Finland's citizen adoption rate for digital services could not be found in available sources.")},
          None, None, "", [], [],
          {"evidence_gaps": [{"facet": "Finland citizen adoption of digital services", "questions": ["Finland e-government usage rate"]}]}),
+        # Live-confirmed regression (2026-10-17, h19 full-agent rerun, 3 Builder attempts, never resolved before
+        # max_run_minutes): a vague directive let the Builder hedge a DIFFERENT nearby number ("overall index score
+        # is not provided in the sources") while still confidently restating the actually-missing figure as if
+        # answered -- that hedge's own words (e.g. "service adoption rates" right next to it) are coincidentally
+        # close to the real gap's topic words, so this is NOT a disclosure and must still fire. The real fix is the
+        # literal per-gap sentence template in the inject text, not a looser regex (tried and reverted -- a looser
+        # regex made exactly this case a false clean pass, since the off-topic hedge sits textually close to
+        # "adoption").
+        ("undisclosed_evidence_gap_wrong_topic_hedge", True, {"findings.md": _FINDINGS_OK,
+          "final_report.md": (f"- Spain's overall index score is not provided in the sources, but its high internet "
+                               f"penetration and service adoption rates suggest strong digital engagement [gov]({_SRC})")},
+         "undisclosed_evidence_gap", "doesn't disclose that specific evidence", "", [], [],
+         {"evidence_gaps": [{"facet": "Finland citizen adoption of digital services", "questions": ["Finland e-government usage rate"]}]}),
+        # The new literal template's own phrase ("could not be confirmed in the available sources") is recognized.
+        ("undisclosed_evidence_gap_disclosed_template_phrase", True, {"findings.md": _FINDINGS_OK,
+          "final_report.md": (f"- el pais avanza de forma sostenida segun cifras oficiales [gov]({_SRC})\n"
+                               "- A specific figure for Finland citizen adoption of digital services could not be "
+                               "confirmed in the available sources.")},
+         None, None, "", [], [],
+         {"evidence_gaps": [{"facet": "Finland citizen adoption of digital services", "questions": ["Finland e-government usage rate"]}]}),
     ]
 
     with tempfile.TemporaryDirectory() as tmpdir:

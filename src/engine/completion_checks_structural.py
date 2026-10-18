@@ -910,7 +910,7 @@ def check_missing_artifact(ctx: Ctx) -> Optional[Verdict]:
 
 _GAP_DISCLOSURE_RE = re.compile(
     r'\b(?:not found|no (?:data|information|figures?|reliable (?:data|figures?))|unavailable|'
-    r'could not (?:find|be found)|was unable to find|not available in (?:the )?(?:available )?sources?|'
+    r'could not (?:find|be found|be confirmed)|was unable to find|not available in (?:the )?(?:available )?sources?|'
     r'no .{0,30}(?:was|were) found)\b', re.I)
 
 
@@ -953,14 +953,27 @@ def check_undisclosed_evidence_gap(ctx: Ctx) -> Optional[Verdict]:
     if not undisclosed:
         return None
     named = ", ".join(undisclosed[:3])
+    # Literal, copy-pasteable sentences rather than abstract guidance ("state plainly that X
+    # wasn't found") -- live-confirmed 2026-10-17 that abstract guidance under-compiles: across
+    # 3 Builder attempts the model kept hedging OTHER nearby numbers ("Estonia's overall index
+    # score is not provided in the sources") while still confidently restating the exact
+    # forbidden substitution for the actually-missing metric ("its ... service adoption rates
+    # suggest strong digital engagement"). Same lesson as check_missing_artifact naming the bad
+    # URL instead of saying "something failed" -- a literal sentence to insert removes the
+    # chance the model satisfies the letter of a vague instruction while missing its point.
+    template_sentences = "\n".join(
+        f'- "A specific figure for {g} could not be confirmed in the available sources."'
+        for g in undisclosed[:3]
+    )
     return Verdict(
         "undisclosed_evidence_gap",
         f"`{ctx.req_artifact}` doesn't disclose that specific evidence could not be found for: {named}.",
         f"SYSTEM WARNING: {ctx.last_chance_prefix}A dedicated re-search could not find a direct answer for one or more questions "
-        f"about: {named}. Rewrite '{ctx.req_artifact}' so each of these states PLAINLY that this specific figure/fact was not found "
-        f"in available sources -- do not silently omit the topic, and do not substitute a different, related figure (e.g. an "
-        f"internet-penetration percentage) and imply it answers a different question (e.g. a service-adoption rate). Keep every "
-        f"other real, grounded claim unchanged.",
+        f"about: {named}. Insert one sentence like this per topic, near where that topic is discussed (wording can be adjusted, "
+        f"but keep the plain 'could not be confirmed in the available sources' meaning):\n{template_sentences}\n"
+        f"Do NOT instead hedge a DIFFERENT, nearby number (e.g. an overall index score) while still stating the actually-missing "
+        f"figure (e.g. a service-adoption rate) as if an internet-penetration or general-digitalization percentage already answers "
+        f"it -- that is the exact failure this check exists to catch. Keep every other real, grounded claim unchanged.",
     )
 
 
