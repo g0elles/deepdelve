@@ -534,6 +534,35 @@ through it) keyed on a `run_state.data` flag, add the flag to `_RESUME_CARRYOVER
 surface), then grep the completion checks and directives for anything that demands the restricted action and make it
 flag-aware, since a verdict the run can no longer satisfy just loops. A prompt sentence is not enforcement.
 
+### Builder fixes do not stick: `undisclosed_evidence_gap` re-fires (root cause found 2026-10-22, NOT yet fixed)
+
+Symptom: run `..._214936` (evidence-only, h19 gated evidence) hit `undisclosed_evidence_gap` four attempts in a row, exhausted its
+retry budget and shipped a 377-word report flagged UNVERIFIED. Three `--resume-run` replays of it (attempts truncated to the first
+two, `replay_gap_{1,2,3}`) reproduced the re-firing in two of three, so it is structural, not noise. Three independent causes:
+
+1. **A Builder pass that never writes is invisible.** `_dispatch_writer_review_fix` (`engine/completion_dispatch.py`) only detects a
+   failed write when the artifact is MISSING (`if not (path and os.path.exists(path))`, then narration salvage / empty-retry loop).
+   For a rewrite of an existing `final_report.md`, a Builder that only calls `read_workspace_file` and finishes leaves the old file
+   byte-identical; no retry, no notice, the same check fires on the same text next attempt. Counted from the replay logs: the first
+   Builder dispatch for the gap problem was read-only in 3/3 replays; replay 2's checks 3 and 4 had read-only passes in BOTH the
+   Builder and its reviewed pass. This also fits the original run (377 words, zero disclosure phrases after four gap attempts).
+2. **A fix for problem A is lost when the Builder rewrites for problem B.** `_try_builder_fixable_dispatch` builds its instructions
+   from `verdict.inject` of the CURRENT problem only ("Rewrite ... fixing this specific problem"). Nothing carries earlier
+   fixes forward. Replay 2: gap cleared, then the `duplicate_report_sections` rewrite dropped every disclosure (gap fired again).
+   Replay 3: a draft with 6 disclosure phrases passed the gap check, was rejected for `quote_paraphrased`, and the next rewrite
+   had 0 phrases. A gap that is `builder_fixable` and not quarantined is therefore only as durable as the last rewrite.
+3. **The check can pass without real disclosure.** `check_undisclosed_evidence_gap` accepts a gap as disclosed if ANY
+   `_GAP_DISCLOSURE_RE` phrase sits within 400 chars of ANY 4+ letter word of the facet name. Facet words like "digital",
+   "services", "Finland", "Estonia" are everywhere, so one phrase cleared all three gaps in replay 1, whose report never says the
+   Estonia adoption rate is missing (it discloses a different gap). Replay 2's clean report also leaks Builder working-file
+   language ("the evidence gaps section in the findings file lists ...") into the body.
+
+Not yet fixed (documentation only, per the user's instruction). Candidate fixes, each needing this section's checklist
+(`_CHECK_SPECS` row, verdict matrix in `test_structural_checks.py`): detect a no-write Builder pass by comparing the artifact
+content/mtime before and after the dispatch and re-dispatching with a "you did not call write_workspace_file" directive; append the
+standing evidence-gap requirement to every Builder directive, not only the gap verdict; require each gap to be disclosed by its own
+distinctive facet words (not shared entity words) and reject meta-references to "findings file"/"evidence gaps section".
+
 ## 3. `RunState.data`: the persisted-state surface, and the carryover-allowlist trap
 
 **Where**: `src/utils/run_state.py`'s `RunState.__init__` (the full key inventory) and
