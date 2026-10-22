@@ -12,6 +12,7 @@ import glob
 import json
 import os
 import re
+import time
 
 STUB_WORDS = 150  # a "source" shorter than this is a stub or an interstitial, not evidence
 WALL_MARKERS = ("just a moment", "performing security verification", "checking your browser", "access denied", "enable javascript")
@@ -97,6 +98,10 @@ def main():
     ap.add_argument("--no-siblings", action="store_true")
     a = ap.parse_args()
     r = score(a.run_dir)
+    try:  # silences scripts/run_eval_reminder.py for this run
+        open(os.path.join(a.run_dir, ".evaluated"), "w").write(time.strftime("%F %T"))
+    except OSError:
+        pass
     print(f"# Run scorecard: {r['dir']}\nquery: {r['query']}\n")
     print(f"path: {'evidence-only (pipeline)' if r['evidence_only'] else 'free-form agent'} | wall {r['wall_min']} min | "
           f"{r['attempts']} completion attempts: {' -> '.join(r['chain'])}")
