@@ -688,6 +688,38 @@ def main():
     contextvars.copy_context().run(_missing_findings_escalation_scenario)
 
 
+    # --- unchanged-artifact guard (2026-10-23, ARCHITECTURE.md §2 "Builder fixes do not stick"):
+    # a Builder pass that leaves the artifact byte-identical gets exactly one write-first
+    # re-dispatch; a changed artifact, a non-Builder role, or a missing baseline gets none. ---
+    def _unchanged_guard_scenario():
+        import engine.completion_dispatch as _cd
+        store = {"final_report.md": "draft"}
+        calls = []
+
+        async def fake_dispatch(_task, label, instr, role):
+            calls.append((label, instr))
+            return "ok"
+
+        orig_get, orig_disp = _cd.get_workspace_file_content, _cd._dispatch_task_retrying_transient_json_error
+        _cd.get_workspace_file_content = lambda f: store.get(f)
+        _cd._dispatch_task_retrying_transient_json_error = fake_dispatch
+        msgs = []
+        try:
+            run = lambda role, before: _asyncio.run(_cd._redispatch_if_unchanged(
+                None, role, "final_report.md", before, "INSTR", 0, "unchanged", msgs.append))
+            run("Builder", "draft")
+            assert len(calls) == 1 and "UNCHANGED" in calls[0][1] and "INSTR" in calls[0][1], calls
+            run("Builder", "older draft")
+            assert len(calls) == 1, "a changed artifact must not be re-dispatched"
+            run("FindingsWriter", "draft")
+            assert len(calls) == 1, "guard is Builder-only"
+            run("Builder", None)
+            assert len(calls) == 1, "no baseline (artifact did not exist) must not re-dispatch"
+        finally:
+            _cd.get_workspace_file_content, _cd._dispatch_task_retrying_transient_json_error = orig_get, orig_disp
+
+    _unchanged_guard_scenario()
+
 
 if __name__ == "__main__":
     main()

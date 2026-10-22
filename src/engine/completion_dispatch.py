@@ -21,6 +21,23 @@ from engine.findings_evidence import _build_findings_source_material
 _WRITER_EMPTY_RETRY_ATTEMPTS = 2
 
 
+async def _redispatch_if_unchanged(dispatch_task, writer_role: str, req_artifact: str, before: Optional[str],
+                                   instructions: str, attempt: int, label: str, notify) -> None:
+    """Builder only. A pass that finishes without changing the artifact is invisible to the
+    existence check (ARCHITECTURE.md §2 "Builder fixes do not stick": the first gap-fix pass was
+    read-only in 3/3 replays). One re-dispatch that states the file was unchanged and demands the
+    write as the first tool call; bounded at one so a model that never writes costs one extra pass."""
+    if writer_role != "Builder" or before is None or get_workspace_file_content(req_artifact) != before:
+        return
+    notify(f"**System ({attempt + 1}):** {writer_role} finished without changing `{req_artifact}` — "
+           f"re-dispatching once with a write-first directive.")
+    await _dispatch_task_retrying_transient_json_error(
+        dispatch_task, f"{writer_role}Fix_attempt{attempt + 1}_{label}",
+        f"CRITICAL: your previous pass at this task ended with `{req_artifact}` UNCHANGED. Reading "
+        f"is not fixing. After at most one read, your next tool call MUST be `write_workspace_file` "
+        f"with the complete corrected file.\n\n{instructions}", writer_role)
+
+
 async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artifact: str,
                                        write_instructions: str, attempt: int, notify,
                                        deterministic_fallback: Optional[str] = None,
@@ -79,6 +96,7 @@ async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artif
     gate_token = writer_gate_ctx.set(
         {"write_done": False, "recommended_tool": recommended_tool, "target_file": req_artifact}
     ) if writer_role == "FindingsWriter" else None
+    artifact_before = get_workspace_file_content(req_artifact)
     try:
         write_result = await _dispatch_task_retrying_transient_json_error(dispatch_task, f"{writer_role}Fix_attempt{attempt + 1}", write_instructions, writer_role)
     finally:
@@ -232,6 +250,9 @@ async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artif
                         f"any attempt"
                     )
 
+    await _redispatch_if_unchanged(dispatch_task, writer_role, req_artifact, artifact_before,
+                                   write_instructions, attempt, "unchanged", notify)
+
     # Snapshot read_workspace_file's usage count BEFORE dispatching PeerReviewer, so a fabricated
     # "REVIEW: CLEAN" that never actually opened the file can be caught below (see is_clean gate).
     # None (not 0) when the quota isn't tracked at all -- distinguishes "can't verify" from "verified
@@ -316,11 +337,14 @@ async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artif
     gate_token = writer_gate_ctx.set(
         {"write_done": False, "recommended_tool": recommended_tool, "target_file": req_artifact}
     ) if writer_role == "FindingsWriter" else None
+    artifact_before_fix = get_workspace_file_content(req_artifact)
     try:
         await _dispatch_task_retrying_transient_json_error(dispatch_task, f"{writer_role}Fix_attempt{attempt + 1}_reviewed", fix_instructions, writer_role)
     finally:
         if gate_token is not None:
             writer_gate_ctx.reset(gate_token)
+    await _redispatch_if_unchanged(dispatch_task, writer_role, req_artifact, artifact_before_fix,
+                                   fix_instructions, attempt, "reviewed_unchanged", notify)
 
 
 # Capped total, matching this project's "never unbounded" convention already used by
