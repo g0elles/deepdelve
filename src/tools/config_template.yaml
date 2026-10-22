@@ -155,6 +155,11 @@ settings:
     # tools/web.py::_fetch_raw and ROADMAP.md. No-op with zero latency cost if Playwright isn't
     # installed (`pip install deepdelve[browser] && playwright install chromium`).
     headless_fallback: true
+    # User-Agent for plain-HTTP fetches. Empty = the built-in honest one ("Mozilla/5.0 (compatible;
+    # DeepDelve-Research/1.0; +repo URL; non-commercial research, low volume)"), which says what this
+    # is instead of posing as Chrome. Set a browser string here only if a site you are allowed to
+    # read refuses the honest one. (The headless-browser fallback is a real Chromium and is unaffected.)
+    user_agent: ""
   quotas:
     # Quotas are GLOBAL — shared cumulatively across the Planner and every dispatched specialist
     # (WebSearcher, AcademicSearcher, DocumentAnalyzer, DataAnalyzer). Each key becomes a prompt

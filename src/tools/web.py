@@ -233,6 +233,19 @@ def _strip_boilerplate_html(html_text: str) -> tuple[bytes, dict]:
 _MAX_FETCH_BYTES = 25_000_000
 
 
+# Honest identification: a plain-HTTP fetch says what it is (a low-volume, non-commercial research tool)
+# instead of posing as Chrome on Windows. The "Mozilla/5.0 (compatible; ...)" frame is the conventional
+# crawler shape, so servers that reject non-browser strings still parse it. Override with
+# settings.fetch.user_agent (e.g. the old Chrome string) if a site you are allowed to read refuses this.
+DEFAULT_USER_AGENT = ("Mozilla/5.0 (compatible; DeepDelve-Research/1.0; +https://github.com/g0elles/deepdelve; "
+                      "non-commercial research, low volume)")
+
+
+def _user_agent() -> str:
+    import config as app_config
+    return (app_config.get_setting("fetch", {}) or {}).get("user_agent") or DEFAULT_USER_AGENT
+
+
 def _fetch_raw(url: str, convert_to_md: bool = True, _redirect_depth: int = 0):
     """Blocking fetch + parse (PDF/HTML -> Markdown, or raw bytes). Shared by
     fetch_url_to_workspace and web_search's auto-fetch — pulled out of the former so both paths
@@ -258,7 +271,7 @@ def _fetch_raw(url: str, convert_to_md: bool = True, _redirect_depth: int = 0):
     # outdated" version-sniffing blocks (confirmed live 2026-07-14 against ScienceDirect, which
     # returns an HTTP 400 block page for it) even though the request itself was otherwise fine —
     # bumped to a current build.
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"}
+    headers = {"User-Agent": _user_agent()}
     # httpx.Client (not the bare httpx.stream shortcut) is required here specifically to plug in
     # event_hooks -- the SSRF guard above needs to see every redirect hop, not just the URL this
     # function was originally called with.
@@ -1227,7 +1240,7 @@ async def verify_url_live(url: str, timeout: float = 5.0) -> bool:
         try:
             if _is_unsafe_fetch_host(httpx.URL(url).host):
                 return False
-            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"}
+            headers = {"User-Agent": _user_agent()}
             # httpx.Client (not the bare httpx.head/get shortcuts, neither accepts event_hooks)
             # so a redirect hop mid-chain is checked too, same as _fetch_raw above.
             with httpx.Client(event_hooks={"request": [_block_unsafe_request]}) as client:

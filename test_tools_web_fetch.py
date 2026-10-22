@@ -257,6 +257,27 @@ def main():
             _config.cfg["settings"]["workspace"] = _orig_ws14
         reset_fetched_urls()
 
+    # --- 2026-10-21: plain-HTTP fetches identify themselves honestly by default; settings.fetch.user_agent overrides. ---
+    def _user_agent_scenario():
+        from tools.web import _user_agent, DEFAULT_USER_AGENT
+        fs = _config.cfg.setdefault("settings", {}).setdefault("fetch", {})
+        saved = fs.get("user_agent")
+        try:
+            fs.pop("user_agent", None)
+            assert _user_agent() == DEFAULT_USER_AGENT and "DeepDelve-Research" in DEFAULT_USER_AGENT and "research" in DEFAULT_USER_AGENT
+            assert "Chrome" not in DEFAULT_USER_AGENT, "must not pose as a browser"
+            fs["user_agent"] = ""
+            assert _user_agent() == DEFAULT_USER_AGENT, "empty means the built-in"
+            fs["user_agent"] = "Custom/1.0"
+            assert _user_agent() == "Custom/1.0"
+        finally:
+            if saved is None:
+                fs.pop("user_agent", None)
+            else:
+                fs["user_agent"] = saved
+
+    _user_agent_scenario()
+
     # --- 2026-10-21: a fetch whose page declared no <title> (a PDF) is recorded with a readable fallback title
     # ("host: last path segment"), so findings.md headings are never a raw "Source: <url>" string. ---
     def _fallback_title_scenario():
