@@ -1234,6 +1234,247 @@ def topup_quota_pool(pool: dict) -> dict:
     return pool
 
 
+async def _finalize_dispatch(
+    *, task_name: str, instructions: str, agent_id: str | None, agent_name: str, final_text: str,
+    target_config, target_children, subagent_callback,
+) -> str:
+    """Everything a delegated task does AFTER its stream loop ends: signal done, run the upstream
+    grounding/relevance checks on the specialist's summary, record the structured finding(s) in
+    RunState, optionally cache it, and build the result string handed back to the caller.
+    Extracted verbatim from _dispatch_single_task (2026-10-21, pure move, no behavior change); the
+    contextvars it reads (task_fetched_urls_ctx, run_state_ctx, delegation_depth_ctx,
+    top_level_task_name_ctx) are still the ones _dispatch_single_task set for this dispatch, and it
+    runs after the MCP AsyncExitStack has closed, same as before. Pinned by
+    test_create_local_agent_characterization.py's post-loop scenarios."""
+    if subagent_callback:
+        await subagent_callback(None, is_subagent=True, agent_name=agent_name, is_done=True)
+
+    new_urls = task_fetched_urls_ctx.get() or []
+
+    # Computed unconditionally (NOT gated behind grounding_check.enabled below) --
+    # the add_finding fallback further down needs this as the real source when an
+    # Analyzer fetched nothing itself, regardless of whether the reconstructed-URL
+    # warning check that also reads it is turned on.
+    from utils.grounding import extract_cited_urls
+    reference_urls = {u.rstrip("/") for u in extract_cited_urls(instructions)}
+
+    # Upstream verification (Tier-2 Searcher output only, detected generically via
+    # target_children rather than hardcoded agent names — Analyzers are leaf nodes with
+    # no children). Catches a hallucinated citation in a specialist's summary before it
+    # ever reaches the Planner's context, instead of only at final-report time — error
+    # propagation into findings.md was previously undetectable until the very end of
+    # the run, by which point the retry budget was already partly spent.
+    # Collected separately from final_text (rather than appended in place) so the
+    # add_finding call below can guarantee these warnings survive its 1500-char
+    # truncation. Confirmed live (2026-07-18 fine-tune benchmark): a Searcher's own
+    # final_text hallucinated citations to URLs never fetched, this exact
+    # verification warning correctly fired, but it was appended to the END of a
+    # final_text already >1500 chars — `final_text[:1500]` then silently sliced the
+    # warning off before it ever reached FindingsWriter, and the fabricated citations
+    # went in ungrounded. A warning that gets silently truncated away is worse than no
+    # check at all — it looks like defense-in-depth while doing nothing.
+    verification_warnings = ""
+
+    gc_cfg = config.get_setting("grounding_check", {})
+    # enabled is the grounding_check section's master switch (2026-07-12 audit, G2)
+    if target_children and gc_cfg.get("enabled", True) and gc_cfg.get("verify_specialist_output", True):
+        from utils.grounding import real_grounding_problem
+        problem = await real_grounding_problem(_strip_follow_up_directions(final_text))
+        if problem and problem != "no_urls":
+            verification_warnings += (
+                f"\n\n[SYSTEM VERIFICATION WARNING: this summary attributes a claim to "
+                f"a source that does not match anything actually fetched this run, or to "
+                f"something that isn't a real URL at all ({problem}). Do not treat the "
+                f"associated claim as sourced when writing findings.md.]"
+            )
+
+        # Topical-relevance check: an instruction requiring "Colombia" is not the same
+        # as a fetched source actually BEING about Colombia — confirmed live, forcing
+        # the scope entity into every sub-task's instructions still let a US article, a
+        # Mexico-specific paper, and a generic global page through, because search
+        # result ranking and blind top-1 auto-fetch don't check relevance either. This
+        # is a cheap, deterministic substitute: does anything actually fetched for THIS
+        # task even mention the entity the instructions said it must be about?
+        if gc_cfg.get("verify_scope_relevance", True):
+            scope_entities = _extract_scope_entities(instructions)
+            if scope_entities and new_urls:
+                from tools.fs import get_workspace_file_content
+                # Case-insensitive on both sides (C8 companion fix): "Colombia"
+                # must match a page's lowercase "colombia" — the entity comes from
+                # instruction casing, the page from editorial casing.
+                lowered = [t.lower() for t in scope_entities]
+                matched = any(
+                    any(term in (get_workspace_file_content(u["filename"]) or "").lower() for term in lowered)
+                    for u in new_urls
+                )
+                if not matched:
+                    entities_str = "/".join(sorted(scope_entities))
+                    verification_warnings += (
+                        f"\n\n[SYSTEM RELEVANCE WARNING: none of the sources fetched for "
+                        f"this task actually mention {entities_str}, despite the task "
+                        f"instructions requiring it. This may be an off-topic or "
+                        f"wrong-country source — verify before presenting these findings "
+                        f"as being about {entities_str}.]"
+                    )
+
+    # Downstream half of the SAME real bug class as the delegate_tasks filename/URL
+    # checks above (2026-07-19 audit) — that fix stops a Searcher handing an Analyzer a
+    # GUESSED reference; this catches the mirror direction, an Analyzer reporting a
+    # GUESSED/reconstructed URL back UP in its own summary instead of the real one it
+    # was told to analyze. Both WEB_SEARCHER_INSTRUCTIONS and DATA_ANALYZER_INSTRUCTIONS
+    # already warn against this in prompt text ("NEVER guess or reconstruct a URL from a
+    # filename") but had no structural backstop — unlike the Searcher-tier check above
+    # (gated on target_children, since Analyzers are leaf nodes with none), which is why
+    # this needs its own branch with a different reference set: an Analyzer never fetches
+    # anything itself (no fetch_url_to_workspace tool), so `get_fetched_urls()` is the
+    # wrong ground truth here — the correct one is the URL(s) actually present in THIS
+    # task's own `instructions`, which the delegate_tasks fix above now guarantees are
+    # real. No live-observed occurrence of this direction yet (unlike the other, which
+    # was caught live) — added proactively since it's the same mechanism, same fix shape.
+    elif (not target_children and target_config and target_config.name in ("DocumentAnalyzer", "DataAnalyzer")
+          and gc_cfg.get("enabled", True) and gc_cfg.get("verify_specialist_output", True)):
+        from utils.grounding import _urls_prefix_match
+        if reference_urls:
+            reconstructed = [
+                u for u in extract_cited_urls(_strip_follow_up_directions(final_text))
+                if u.rstrip("/") not in reference_urls
+                and not any(_urls_prefix_match(u.rstrip("/"), r) for r in reference_urls)
+            ]
+            if reconstructed:
+                verification_warnings += (
+                    f"\n\n[SYSTEM VERIFICATION WARNING: this summary cites "
+                    f"{reconstructed[0]!r}, which does not match the source URL you were "
+                    f"actually given to analyze ({', '.join(sorted(reference_urls))}) — "
+                    f"this looks like a reconstructed or guessed URL, not the real one. "
+                    f"Do not treat the associated claim as sourced when writing "
+                    f"findings.md.]"
+                )
+
+        # A correct citation URL doesn't mean the CLAIM is right -- an Analyzer reads
+        # one document and can still misreport a figure, misattribute a stat, or
+        # otherwise contradict what its own source actually says. Check A above already
+        # runs the full real_grounding_problem pipeline (stub detection, quote-fidelity,
+        # content-level term-overlap, and NLI contradiction detection) for the Searcher
+        # tier -- this branch had none of that, only the reconstructed-URL check above,
+        # since it was added later (2026-07-19) narrowly scoped to the one bug that
+        # motivated it. 2026-07-26 ROADMAP/RESEARCH.md review (VeriCite comparison)
+        # surfaced this as a real, unprincipled coverage gap between the two tiers, not
+        # a missing feature needing new claim-extraction machinery -- real_grounding_problem
+        # already exists, is already proven via Check A, and works unchanged against an
+        # Analyzer's own final_text the same way it does a Searcher's.
+        from utils.grounding import real_grounding_problem
+        problem = await real_grounding_problem(_strip_follow_up_directions(final_text))
+        if problem and problem != "no_urls":
+            verification_warnings += (
+                f"\n\n[SYSTEM VERIFICATION WARNING: this summary attributes a claim to "
+                f"a source that does not match anything actually fetched this run, or to "
+                f"something that isn't a real URL at all ({problem}). Do not treat the "
+                f"associated claim as sourced when writing findings.md.]"
+            )
+
+    final_text += verification_warnings
+
+    # Populate the structured findings store (previously dead code — RunState.add_finding
+    # was defined but never called) so a completion-check retry or later debugging has real
+    # {source_url, summary} records instead of only the model's own narration. Preferring
+    # URLs actually fetched during THIS task over the task name keeps findings traceable to
+    # a real source when one exists (Searcher-tier calls); Analyzer-tier calls fetch nothing
+    # themselves, so they fall back to the task name as the record's identifier.
+    # task_name/depth (ROADMAP Phase 5, "Coverage accounting") let RunState.coverage()
+    # group findings by which top-level (depth==1) task produced them, and tell a real
+    # fetched-URL finding apart from a task-name fallback one -- see that method's own
+    # docstring for why depth==1 only (a nested Analyzer's lack of a new URL is
+    # expected, not a coverage gap).
+    #
+    # `_FINDING_SUMMARY_BUDGET` chars total, but the verification warnings (if any) are
+    # NEVER part of the truncated slice — they're guaranteed room by reserving their
+    # length off the body's share first, then concatenated back in full. See the
+    # comment on `verification_warnings` above for why this ordering matters.
+    #
+    # 2026-07-19 (engine-driven iterative deepening, ROADMAP item 10): FOLLOW-UP
+    # DIRECTIONS is specified to be the LAST section of a Searcher's summary, which
+    # means it was the FIRST thing this same truncation silently dropped for any real
+    # summary over ~1500 chars — the identical failure shape as the verification-warning
+    # bug this budget already carves an exception for. Extracted and stored separately
+    # (RunState.add_finding's own field, never subject to this budget), same treatment.
+    follow_up_directions = _extract_follow_up_directions(final_text)
+    body_budget = _FINDING_SUMMARY_BUDGET - len(verification_warnings)
+    body_text = final_text[:len(final_text) - len(verification_warnings)] if verification_warnings else final_text
+    finding_summary = body_text[:body_budget] + verification_warnings
+
+    this_depth = delegation_depth_ctx.get()
+    top_level_task_name = top_level_task_name_ctx.get()
+    run_state = run_state_ctx.get()
+    if run_state is not None and agent_id not in _NON_RESEARCH_DISPATCH_ROLES:
+        if new_urls:
+            # Attribution safety net (2026-08-27): the in-turn nudge above (attribution_
+            # nudged) gives the model one bounded chance to cover every co-fetched URL
+            # explicitly, but it can decline or run out of turns -- this is the backstop
+            # for whatever's still unreflected in the FINAL finding_summary once the turn
+            # is over. Only checked when >1 URL was fetched (a single-URL dispatch's
+            # summary is trivially about that one URL, nothing to disambiguate).
+            unreflected_urls = set()
+            if len(new_urls) > 1:
+                from tools.fs import get_workspace_file_content
+                unreflected_urls = {
+                    u["url"] for u in new_urls
+                    if not _synthesis_reflects_url_content(
+                        finding_summary, get_workspace_file_content(u["filename"]) or "", u["url"])
+                }
+            for u in new_urls:
+                per_url_summary = finding_summary
+                if u["url"] in unreflected_urls:
+                    per_url_summary = (
+                        f"{finding_summary}\n\n[SYSTEM ATTRIBUTION WARNING: this source "
+                        f"was fetched alongside others in one dispatch turn, but the "
+                        f"synthesis above does not clearly reflect this specific source's "
+                        f"own content -- do not treat this URL as the source for the "
+                        f"claims above; see sources/{u['filename']} for what this source "
+                        f"actually says.]"
+                    )
+                run_state.add_finding(u["url"], per_url_summary, task_name=task_name, depth=this_depth,
+                                       follow_up_directions=follow_up_directions, agent_id=agent_id,
+                                       top_level_task_name=top_level_task_name)
+        elif reference_urls:
+            # An Analyzer fetches nothing itself, but the Searcher that delegated to it
+            # is instructed to pass the real source URL IN its instructions (see
+            # prompts.py: "The Analyzer NEEDS the URL to include it in its summary") --
+            # reference_urls (above) already extracts exactly that. Recovering the real
+            # URL here instead of falling to task_name is the difference between a
+            # traceable finding and the 2026-07-21 fabrication bug: task_name silently
+            # standing in for source_url reached FindingsWriter with no marker that it
+            # wasn't a real URL, and got cited as one (5/19 findings in a live qwen3:8b
+            # run). See _build_findings_source_material's own non-http handling for the
+            # remaining defense-in-depth case (no reference URL either).
+            for u in reference_urls:
+                run_state.add_finding(u, finding_summary, task_name=task_name, depth=this_depth,
+                                       follow_up_directions=follow_up_directions, agent_id=agent_id,
+                                       top_level_task_name=top_level_task_name)
+        else:
+            run_state.add_finding(task_name, finding_summary, task_name=task_name, depth=this_depth,
+                                   follow_up_directions=follow_up_directions, agent_id=agent_id,
+                                   top_level_task_name=top_level_task_name)
+
+    # RAG findings cache (ROADMAP.md "Strategic options" item 5, 2026-07-20): only cache
+    # a finding that passed the EXACT SAME grounding+relevance gate above with zero
+    # warnings — a cache entry is exactly as verified as a same-run finding, never less.
+    # Deliberately caches the atomic (source_url, summary) pair, not a whole answer, so a
+    # future cache hit still requires the Searcher to incorporate/cite it itself, the
+    # same as a fresh web_search result — this is what makes it safe across different
+    # models, unlike the deleted knowledge_cache (929b987) it replaces.
+    rag_cfg = config.get_setting("rag_cache", {})
+    if _should_cache_finding(
+        verification_warnings, new_urls, rag_cfg.get("enabled", False), finding_summary
+    ):
+        from utils import rag_cache
+
+        model = config.cfg.get("api", {}).get("openai_model", "")
+        for u in new_urls:
+            rag_cache.save(task_name, u["url"], finding_summary, model)
+
+    return f"## Result for {task_name}\n{final_text}\n---"
+
+
 # Extracted from create_local_agent's nested-closure body (2026-08-23, ROADMAP.md Pending
 # "create_local_agent's nested-closure god-function") -- these two used to be `_run_single_task`
 # and `delegate_tasks`, deeply nested closures capturing dozens of create_local_agent locals by
@@ -1609,233 +1850,11 @@ async def _dispatch_single_task(
                                 )}]))
                                 current_input = new_inputs
 
-            if subagent_callback:
-                await subagent_callback(None, is_subagent=True, agent_name=agent_name, is_done=True)
-
-            new_urls = task_fetched_urls_ctx.get() or []
-
-            # Computed unconditionally (NOT gated behind grounding_check.enabled below) --
-            # the add_finding fallback further down needs this as the real source when an
-            # Analyzer fetched nothing itself, regardless of whether the reconstructed-URL
-            # warning check that also reads it is turned on.
-            from utils.grounding import extract_cited_urls
-            reference_urls = {u.rstrip("/") for u in extract_cited_urls(instructions)}
-
-            # Upstream verification (Tier-2 Searcher output only, detected generically via
-            # target_children rather than hardcoded agent names — Analyzers are leaf nodes with
-            # no children). Catches a hallucinated citation in a specialist's summary before it
-            # ever reaches the Planner's context, instead of only at final-report time — error
-            # propagation into findings.md was previously undetectable until the very end of
-            # the run, by which point the retry budget was already partly spent.
-            # Collected separately from final_text (rather than appended in place) so the
-            # add_finding call below can guarantee these warnings survive its 1500-char
-            # truncation. Confirmed live (2026-07-18 fine-tune benchmark): a Searcher's own
-            # final_text hallucinated citations to URLs never fetched, this exact
-            # verification warning correctly fired, but it was appended to the END of a
-            # final_text already >1500 chars — `final_text[:1500]` then silently sliced the
-            # warning off before it ever reached FindingsWriter, and the fabricated citations
-            # went in ungrounded. A warning that gets silently truncated away is worse than no
-            # check at all — it looks like defense-in-depth while doing nothing.
-            verification_warnings = ""
-
-            gc_cfg = config.get_setting("grounding_check", {})
-            # enabled is the grounding_check section's master switch (2026-07-12 audit, G2)
-            if target_children and gc_cfg.get("enabled", True) and gc_cfg.get("verify_specialist_output", True):
-                from utils.grounding import real_grounding_problem
-                problem = await real_grounding_problem(_strip_follow_up_directions(final_text))
-                if problem and problem != "no_urls":
-                    verification_warnings += (
-                        f"\n\n[SYSTEM VERIFICATION WARNING: this summary attributes a claim to "
-                        f"a source that does not match anything actually fetched this run, or to "
-                        f"something that isn't a real URL at all ({problem}). Do not treat the "
-                        f"associated claim as sourced when writing findings.md.]"
-                    )
-
-                # Topical-relevance check: an instruction requiring "Colombia" is not the same
-                # as a fetched source actually BEING about Colombia — confirmed live, forcing
-                # the scope entity into every sub-task's instructions still let a US article, a
-                # Mexico-specific paper, and a generic global page through, because search
-                # result ranking and blind top-1 auto-fetch don't check relevance either. This
-                # is a cheap, deterministic substitute: does anything actually fetched for THIS
-                # task even mention the entity the instructions said it must be about?
-                if gc_cfg.get("verify_scope_relevance", True):
-                    scope_entities = _extract_scope_entities(instructions)
-                    if scope_entities and new_urls:
-                        from tools.fs import get_workspace_file_content
-                        # Case-insensitive on both sides (C8 companion fix): "Colombia"
-                        # must match a page's lowercase "colombia" — the entity comes from
-                        # instruction casing, the page from editorial casing.
-                        lowered = [t.lower() for t in scope_entities]
-                        matched = any(
-                            any(term in (get_workspace_file_content(u["filename"]) or "").lower() for term in lowered)
-                            for u in new_urls
-                        )
-                        if not matched:
-                            entities_str = "/".join(sorted(scope_entities))
-                            verification_warnings += (
-                                f"\n\n[SYSTEM RELEVANCE WARNING: none of the sources fetched for "
-                                f"this task actually mention {entities_str}, despite the task "
-                                f"instructions requiring it. This may be an off-topic or "
-                                f"wrong-country source — verify before presenting these findings "
-                                f"as being about {entities_str}.]"
-                            )
-
-            # Downstream half of the SAME real bug class as the delegate_tasks filename/URL
-            # checks above (2026-07-19 audit) — that fix stops a Searcher handing an Analyzer a
-            # GUESSED reference; this catches the mirror direction, an Analyzer reporting a
-            # GUESSED/reconstructed URL back UP in its own summary instead of the real one it
-            # was told to analyze. Both WEB_SEARCHER_INSTRUCTIONS and DATA_ANALYZER_INSTRUCTIONS
-            # already warn against this in prompt text ("NEVER guess or reconstruct a URL from a
-            # filename") but had no structural backstop — unlike the Searcher-tier check above
-            # (gated on target_children, since Analyzers are leaf nodes with none), which is why
-            # this needs its own branch with a different reference set: an Analyzer never fetches
-            # anything itself (no fetch_url_to_workspace tool), so `get_fetched_urls()` is the
-            # wrong ground truth here — the correct one is the URL(s) actually present in THIS
-            # task's own `instructions`, which the delegate_tasks fix above now guarantees are
-            # real. No live-observed occurrence of this direction yet (unlike the other, which
-            # was caught live) — added proactively since it's the same mechanism, same fix shape.
-            elif (not target_children and target_config and target_config.name in ("DocumentAnalyzer", "DataAnalyzer")
-                  and gc_cfg.get("enabled", True) and gc_cfg.get("verify_specialist_output", True)):
-                from utils.grounding import _urls_prefix_match
-                if reference_urls:
-                    reconstructed = [
-                        u for u in extract_cited_urls(_strip_follow_up_directions(final_text))
-                        if u.rstrip("/") not in reference_urls
-                        and not any(_urls_prefix_match(u.rstrip("/"), r) for r in reference_urls)
-                    ]
-                    if reconstructed:
-                        verification_warnings += (
-                            f"\n\n[SYSTEM VERIFICATION WARNING: this summary cites "
-                            f"{reconstructed[0]!r}, which does not match the source URL you were "
-                            f"actually given to analyze ({', '.join(sorted(reference_urls))}) — "
-                            f"this looks like a reconstructed or guessed URL, not the real one. "
-                            f"Do not treat the associated claim as sourced when writing "
-                            f"findings.md.]"
-                        )
-
-                # A correct citation URL doesn't mean the CLAIM is right -- an Analyzer reads
-                # one document and can still misreport a figure, misattribute a stat, or
-                # otherwise contradict what its own source actually says. Check A above already
-                # runs the full real_grounding_problem pipeline (stub detection, quote-fidelity,
-                # content-level term-overlap, and NLI contradiction detection) for the Searcher
-                # tier -- this branch had none of that, only the reconstructed-URL check above,
-                # since it was added later (2026-07-19) narrowly scoped to the one bug that
-                # motivated it. 2026-07-26 ROADMAP/RESEARCH.md review (VeriCite comparison)
-                # surfaced this as a real, unprincipled coverage gap between the two tiers, not
-                # a missing feature needing new claim-extraction machinery -- real_grounding_problem
-                # already exists, is already proven via Check A, and works unchanged against an
-                # Analyzer's own final_text the same way it does a Searcher's.
-                from utils.grounding import real_grounding_problem
-                problem = await real_grounding_problem(_strip_follow_up_directions(final_text))
-                if problem and problem != "no_urls":
-                    verification_warnings += (
-                        f"\n\n[SYSTEM VERIFICATION WARNING: this summary attributes a claim to "
-                        f"a source that does not match anything actually fetched this run, or to "
-                        f"something that isn't a real URL at all ({problem}). Do not treat the "
-                        f"associated claim as sourced when writing findings.md.]"
-                    )
-
-            final_text += verification_warnings
-
-            # Populate the structured findings store (previously dead code — RunState.add_finding
-            # was defined but never called) so a completion-check retry or later debugging has real
-            # {source_url, summary} records instead of only the model's own narration. Preferring
-            # URLs actually fetched during THIS task over the task name keeps findings traceable to
-            # a real source when one exists (Searcher-tier calls); Analyzer-tier calls fetch nothing
-            # themselves, so they fall back to the task name as the record's identifier.
-            # task_name/depth (ROADMAP Phase 5, "Coverage accounting") let RunState.coverage()
-            # group findings by which top-level (depth==1) task produced them, and tell a real
-            # fetched-URL finding apart from a task-name fallback one -- see that method's own
-            # docstring for why depth==1 only (a nested Analyzer's lack of a new URL is
-            # expected, not a coverage gap).
-            #
-            # `_FINDING_SUMMARY_BUDGET` chars total, but the verification warnings (if any) are
-            # NEVER part of the truncated slice — they're guaranteed room by reserving their
-            # length off the body's share first, then concatenated back in full. See the
-            # comment on `verification_warnings` above for why this ordering matters.
-            #
-            # 2026-07-19 (engine-driven iterative deepening, ROADMAP item 10): FOLLOW-UP
-            # DIRECTIONS is specified to be the LAST section of a Searcher's summary, which
-            # means it was the FIRST thing this same truncation silently dropped for any real
-            # summary over ~1500 chars — the identical failure shape as the verification-warning
-            # bug this budget already carves an exception for. Extracted and stored separately
-            # (RunState.add_finding's own field, never subject to this budget), same treatment.
-            follow_up_directions = _extract_follow_up_directions(final_text)
-            body_budget = _FINDING_SUMMARY_BUDGET - len(verification_warnings)
-            body_text = final_text[:len(final_text) - len(verification_warnings)] if verification_warnings else final_text
-            finding_summary = body_text[:body_budget] + verification_warnings
-
-            this_depth = delegation_depth_ctx.get()
-            top_level_task_name = top_level_task_name_ctx.get()
-            run_state = run_state_ctx.get()
-            if run_state is not None and agent_id not in _NON_RESEARCH_DISPATCH_ROLES:
-                if new_urls:
-                    # Attribution safety net (2026-08-27): the in-turn nudge above (attribution_
-                    # nudged) gives the model one bounded chance to cover every co-fetched URL
-                    # explicitly, but it can decline or run out of turns -- this is the backstop
-                    # for whatever's still unreflected in the FINAL finding_summary once the turn
-                    # is over. Only checked when >1 URL was fetched (a single-URL dispatch's
-                    # summary is trivially about that one URL, nothing to disambiguate).
-                    unreflected_urls = set()
-                    if len(new_urls) > 1:
-                        from tools.fs import get_workspace_file_content
-                        unreflected_urls = {
-                            u["url"] for u in new_urls
-                            if not _synthesis_reflects_url_content(
-                                finding_summary, get_workspace_file_content(u["filename"]) or "", u["url"])
-                        }
-                    for u in new_urls:
-                        per_url_summary = finding_summary
-                        if u["url"] in unreflected_urls:
-                            per_url_summary = (
-                                f"{finding_summary}\n\n[SYSTEM ATTRIBUTION WARNING: this source "
-                                f"was fetched alongside others in one dispatch turn, but the "
-                                f"synthesis above does not clearly reflect this specific source's "
-                                f"own content -- do not treat this URL as the source for the "
-                                f"claims above; see sources/{u['filename']} for what this source "
-                                f"actually says.]"
-                            )
-                        run_state.add_finding(u["url"], per_url_summary, task_name=task_name, depth=this_depth,
-                                               follow_up_directions=follow_up_directions, agent_id=agent_id,
-                                               top_level_task_name=top_level_task_name)
-                elif reference_urls:
-                    # An Analyzer fetches nothing itself, but the Searcher that delegated to it
-                    # is instructed to pass the real source URL IN its instructions (see
-                    # prompts.py: "The Analyzer NEEDS the URL to include it in its summary") --
-                    # reference_urls (above) already extracts exactly that. Recovering the real
-                    # URL here instead of falling to task_name is the difference between a
-                    # traceable finding and the 2026-07-21 fabrication bug: task_name silently
-                    # standing in for source_url reached FindingsWriter with no marker that it
-                    # wasn't a real URL, and got cited as one (5/19 findings in a live qwen3:8b
-                    # run). See _build_findings_source_material's own non-http handling for the
-                    # remaining defense-in-depth case (no reference URL either).
-                    for u in reference_urls:
-                        run_state.add_finding(u, finding_summary, task_name=task_name, depth=this_depth,
-                                               follow_up_directions=follow_up_directions, agent_id=agent_id,
-                                               top_level_task_name=top_level_task_name)
-                else:
-                    run_state.add_finding(task_name, finding_summary, task_name=task_name, depth=this_depth,
-                                           follow_up_directions=follow_up_directions, agent_id=agent_id,
-                                           top_level_task_name=top_level_task_name)
-
-            # RAG findings cache (ROADMAP.md "Strategic options" item 5, 2026-07-20): only cache
-            # a finding that passed the EXACT SAME grounding+relevance gate above with zero
-            # warnings — a cache entry is exactly as verified as a same-run finding, never less.
-            # Deliberately caches the atomic (source_url, summary) pair, not a whole answer, so a
-            # future cache hit still requires the Searcher to incorporate/cite it itself, the
-            # same as a fresh web_search result — this is what makes it safe across different
-            # models, unlike the deleted knowledge_cache (929b987) it replaces.
-            rag_cfg = config.get_setting("rag_cache", {})
-            if _should_cache_finding(
-                verification_warnings, new_urls, rag_cfg.get("enabled", False), finding_summary
-            ):
-                from utils import rag_cache
-
-                model = config.cfg.get("api", {}).get("openai_model", "")
-                for u in new_urls:
-                    rag_cache.save(task_name, u["url"], finding_summary, model)
-
-            return f"## Result for {task_name}\n{final_text}\n---"
+            return await _finalize_dispatch(
+                task_name=task_name, instructions=instructions, agent_id=agent_id, agent_name=agent_name,
+                final_text=final_text, target_config=target_config, target_children=target_children,
+                subagent_callback=subagent_callback,
+            )
         finally:
             if children_token is not None:
                 available_sub_agents_ctx.reset(children_token)
@@ -1849,6 +1868,244 @@ async def _dispatch_single_task(
             specialist_delegate_task_count_ctx.reset(specialist_delegate_count_token)
             task_read_grep_count_ctx.reset(read_grep_count_token)
             scope_entities_ctx.reset(scope_token)
+
+
+# -------------------------------------------------------------
+# Validate BEFORE dispatching anything. Found via a real end-to-end test: a model emitted
+# tasks shaped like {"due": 1, "task": "..."} instead of {"task_name", "instructions",
+# "agent_id"} — completely wrong field names. The old code silently defaulted to
+# task_name="Unknown_Task", instructions="" and dispatched it anyway, so the sub-agent
+# searched for the literal string "Unknown_Task" and got garbage, unrelated results, which
+# then poisoned everything downstream (the Planner had nothing real to report). A malformed
+# call must fail loudly and immediately, not silently degrade into wasted quota on garbage
+# work — this lets the model see exactly what was wrong and retry with the correct shape.
+# -------------------------------------------------------------
+
+# Numbered-placeholder detector: found live, a model planning "12 candidate sectors"
+# dispatched tasks literally named/instructed around "sector 1", "sector 2", etc. instead
+# of naming the real sectors first — every resulting web_search query was the literal,
+# meaningless phrase "market size of sector 1 in colombia", returning garbage (a currency
+# site, an energy-agency report, unrelated Wikipedia pages) across all 12. Same principle
+# as the malformed-schema check below: reject loudly before wasting quota on it, rather
+# than relying on the prompt rule alone (see prompts.py's DISPATCH step for the prompt-side
+# half of this fix).
+# Matches "sector 1" / "sector_1" (post-normalization) / "sector #4" AND "sector X" /
+# "item Y" — a bare capital letter is as common a placeholder as a number (confirmed
+# live). The keyword itself stays case-insensitive; the single-letter placeholder stays
+# case-SENSITIVE (only a bare capital, e.g. "sector X") so this doesn't false-positive on
+# a keyword incidentally followed by a lowercase word-initial letter in real prose.
+# Checked against `instructions` ONLY, not `task_name` — found live, a real 12-task batch
+# ("Analyze market 1: Logistics and supply chain management in Colombia", ...) was rejected
+# wholesale because task_name used "market 1"/"market 2" as an ordinary numbered list label
+# while instructions fully named the real, specific topic ("Assess the needs of logistics
+# and supply chain management in Colombia..."). task_name is never what actually drives a
+# Searcher's search query (only instructions is — see WEB_SEARCHER_INSTRUCTIONS' Workflow),
+# so a numbered task_name label is harmless; the original documented failure case (the
+# literal garbage query "market size of sector 1 in colombia") had the placeholder in
+# instructions itself, which this narrower check still catches.
+_PLACEHOLDER_RE = re.compile(
+    r'\b(?:[Ss]ector|[Ii]tem|[Mm]arket|[Tt]opic|[Oo]ption|[Cc]andidate|[Cc]ategory|'
+    r'[Pp]roduct|[Ss]ervice|[Aa]rea)\s*(?:#?\d+\b|[A-Z]\b)'
+)
+# Catches the OTHER half of the same real failure: a task instructed to act "for each
+# identified sector" (or similar) inside a batch dispatched via asyncio.gather — but
+# delegate_tasks runs every task in a batch CONCURRENTLY, so a sibling "identify the
+# sectors" task's results don't exist yet when this one runs. This is exactly the
+# sequential-vs-concurrent rule already in SUBAGENT_DELEGATION_INSTRUCTIONS, just not
+# being followed — confirmed live, a real run's web_search literally queried "Evaluate
+# competition level for sector X" because of this.
+_CROSS_TASK_DEPENDENCY_RE = re.compile(r'\bfor each\b.{0,40}\bidentif', re.IGNORECASE)
+
+
+def _reject_bad_schema(i: int, t) -> str | None:
+    """Not an object, or missing/empty task_name or instructions."""
+    if not isinstance(t, dict):
+        return (f"Task {i}: not an object — got {type(t).__name__}.")
+    missing = [k for k in ("task_name", "instructions") if not t.get(k)]
+    if missing:
+        return (
+            f"Task {i} {t!r}: missing or empty required field(s) {missing}. "
+            f"Each task MUST be shaped exactly as "
+            f"{{\"task_name\": \"...\", \"instructions\": \"...\", \"agent_id\": \"...\"}}."
+        )
+    return None
+
+
+def _reject_placeholder(i: int, t) -> str | None:
+    """Unresolved numbered/lettered placeholder ("sector 3", "item X") in instructions."""
+    # Normalize underscores/hyphens to spaces first — "sector_1" (a real observed
+    # instructions string) otherwise never matches \bsector\b, since '_' counts as a word
+    # character and leaves no boundary between "analyze_" and "sector".
+    placeholder_text = str(t.get("instructions", "")).replace("_", " ").replace("-", " ")
+    m = _PLACEHOLDER_RE.search(placeholder_text)
+    if m:
+        return (
+            f"Task {i} ({t.get('task_name')!r}): looks like an unresolved placeholder "
+            f"({m.group(0)!r}), not a real research topic — a Searcher given this will "
+            f"search for that literal meaningless phrase. If you're enumerating multiple "
+            f"items, you must know and use each item's REAL name (e.g. 'fintech for gig "
+            f"workers', not 'sector 3' or 'sector X') before dispatching. If you don't "
+            f"know the real names yet, delegate a background task to identify them first."
+        )
+    return None
+
+
+def _reject_pronoun_without_subject(i: int, t) -> str | None:
+    """Instructions lean on a pronoun with no concrete subject anywhere."""
+    if _lacks_concrete_subject(str(t.get("instructions", ""))):
+        return (
+            f"Task {i} ({t.get('task_name')!r}): instructions rely on a pronoun ('it'/'its'/"
+            f"'them') with no concrete subject anywhere — the sub-agent executing this has "
+            f"NO memory of your conversation or of sibling tasks, so it cannot know what "
+            f"the pronoun refers to and will search for the literal phrase. Restate the "
+            f"full subject explicitly in EVERY task's instructions (e.g. 'Summarize Python "
+            f"3.14\\'s headline feature', not 'Summarize its headline feature')."
+        )
+    return None
+
+
+def _reject_cross_task_dependency(i: int, t) -> str | None:
+    """"for each identified ..." inside a batch that runs concurrently."""
+    dep_m = _CROSS_TASK_DEPENDENCY_RE.search(" ".join(str(t.get(k, "")) for k in ("task_name", "instructions")))
+    if dep_m:
+        return (
+            f"Task {i} ({t.get('task_name')!r}): says \"{dep_m.group(0)}\" — this task "
+            f"depends on another task's output, but ALL tasks in one delegate_tasks call "
+            f"run CONCURRENTLY, so a sibling 'identify X' task's results do not exist yet "
+            f"when this one runs. Split this into two SEQUENTIAL delegate_tasks calls: "
+            f"first the identification task alone, wait for its real result, THEN a second "
+            f"call with one task per REAL item it found."
+        )
+    return None
+
+
+def _reject_analyzer_input(i: int, t) -> str | None:
+    """DocumentAnalyzer/DataAnalyzer pointed at a URL never fetched this task, or at a guessed filename."""
+    # Real, confirmed live failure (2026-07-19 corpus audit: 83/563 Analyzer-delegating
+    # instructions across 19/76 runs referenced a URL never actually fetched this task) —
+    # a Searcher sees a URL in a search-result SNIPPET and delegates an Analyzer task to
+    # "read" it as if it had already been fetched, when fetch_url_to_workspace was never
+    # called on it. The Analyzer then burns its whole quota guessing filename variants for
+    # a file that structurally cannot exist (confirmed live: 9+ grep_workspace_file calls,
+    # no Finished). Checked only for Analyzer-tier targets (DocumentAnalyzer/DataAnalyzer)
+    # — those are the roles whose entire job is reading an already-fetched file, so this is
+    # the one delegation shape where "the referenced URL must already be fetched" is a real
+    # invariant, not a false constraint (WebSearcher/AcademicSearcher tasks legitimately
+    # instruct new research on URLs nothing has fetched yet). Scoped to the CALLING task's
+    # own real fetches (task_fetched_urls_ctx, not the whole run's) — a Searcher can only
+    # honestly hand its Analyzer children what it itself actually fetched.
+    if t.get("agent_id") in ("DocumentAnalyzer", "DataAnalyzer"):
+        from utils.grounding import extract_cited_urls, _urls_prefix_match
+        own_fetched_entries = task_fetched_urls_ctx.get() or []
+        own_fetched = {e["url"].rstrip("/") for e in own_fetched_entries}
+        cited = extract_cited_urls(str(t.get("instructions", "")))
+        if cited:
+            unfetched = [
+                u for u in cited
+                if u.rstrip("/") not in own_fetched
+                and not any(_urls_prefix_match(u.rstrip("/"), f) for f in own_fetched)
+            ]
+            if unfetched:
+                # See _find_sibling_fetch's own docstring for why this distinction exists
+                # (RESEARCH.md Sec.17g) -- the generic advice below is WRONG, not just
+                # unhelpful, when a sibling task already fetched this exact URL.
+                from utils.run_state import get_fetched_urls
+                u0 = unfetched[0]
+                already = _find_sibling_fetch(u0, get_fetched_urls())
+                if already:
+                    return (
+                        f"Task {i} ({t.get('task_name')!r}): instructs {t.get('agent_id')} "
+                        f"to read {u0!r} — that URL was already fetched by a DIFFERENT task "
+                        f"this run (not this one), saved as {already.get('filename')!r}. Do "
+                        f"NOT call fetch_url_to_workspace on it again — it will just tell "
+                        f"you it's already fetched, which wastes a call and gets you no "
+                        f"further. Delegate {t.get('agent_id')} with the real saved "
+                        f"filename directly ({already.get('filename')!r}), not the URL."
+                    )
+                else:
+                    return (
+                        f"Task {i} ({t.get('task_name')!r}): instructs {t.get('agent_id')} to "
+                        f"read {u0!r}, but that URL was never actually fetched this "
+                        f"task — it looks like it came from a search-result snippet, not a real "
+                        f"fetch_url_to_workspace call. {t.get('agent_id')} can only read files "
+                        f"you actually fetched; if this source matters, call "
+                        f"fetch_url_to_workspace on it yourself first, THEN delegate the "
+                        f"analysis with the real saved filename."
+                    )
+        # Sibling bug to the unfetched-URL check above, confirmed live in the SAME
+        # benchmark run (2026-07-19): the URL WAS genuinely fetched, but the Searcher
+        # constructed a GUESSED filename for the Analyzer task (a plausible-looking
+        # pattern built from the URL's own path segments, e.g.
+        # 'sources/bcpublication_org_BM_3487.md') instead of the REAL saved filename
+        # fetch_url_to_workspace actually returned (e.g. 'sources/bcpublication_org_
+        # 58286b27.md', hash-suffixed). Same root family as WEB_SEARCHER_INSTRUCTIONS'
+        # existing "NEVER guess or reconstruct a URL from a filename" rule, just the
+        # inverse direction, previously unguarded. Confirmed live: the Searcher dispatched
+        # BOTH the guessed-filename task AND a correct-filename task for the identical URL
+        # back to back — real wasted duplicate delegation, not just a wrong-filename typo.
+        # Matched against the prompt's own fixed instruction template
+        # ("Read the file '<path>'. Source URL: ...", see prompts.py's real Analyzer
+        # dispatch examples) so this doesn't misfire on legitimately-phrased instructions.
+        filename_m = re.search(r"[Rr]ead the file '([^']+)'", str(t.get("instructions", "")))
+        if filename_m and cited:
+            claimed_filename = filename_m.group(1)
+            real_filename = next(
+                (e["filename"] for e in own_fetched_entries
+                 if e["url"].rstrip("/") == cited[0].rstrip("/")
+                 or _urls_prefix_match(cited[0].rstrip("/"), e["url"].rstrip("/"))),
+                None,
+            )
+            if real_filename and claimed_filename not in (real_filename, real_filename.split("/")[-1]):
+                return (
+                    f"Task {i} ({t.get('task_name')!r}): instructs {t.get('agent_id')} to "
+                    f"read {claimed_filename!r}, but that filename was GUESSED, not the "
+                    f"real one — the actual saved filename for that URL is "
+                    f"{real_filename!r} (from your own fetch_url_to_workspace result). "
+                    f"Never construct a filename from a URL's path; always use the exact "
+                    f"filename the fetch tool returned."
+                )
+    return None
+
+
+def _reject_hallucinated_agent_id(i: int, t) -> str | None:
+    """Non-generative routing classifier: hallucinated or misrouted agent_id."""
+    # Non-generative routing classifier (RESEARCH.md §6, ROADMAP.md "Pending", 2026-07-20)
+    # — catches a hallucinated agent_id ("searcher", "PeerReviewer", invented role names,
+    # ~4.9% of real historical delegate_tasks calls) BEFORE dispatch, rather than only after
+    # _run_single_task's own exact-string lookup fails per-task post-dispatch. Decision
+    # logic lives in _agent_routing_rejection_reason (pure function, directly testable) —
+    # this closure only gathers the caller's real roster and the classifier's prediction.
+    agent_routing_cfg = config.get_setting("agent_routing_classifier", {})
+    if agent_routing_cfg.get("enabled", False):
+        from utils.agent_routing import predict_agent_id, KNOWN_AGENT_IDS
+        caller_role_names = frozenset(c.name for c in available_sub_agents_ctx.get())
+        candidate_classes = caller_role_names & KNOWN_AGENT_IDS
+        prediction = (
+            predict_agent_id(str(t.get("instructions", "")), candidate_classes)
+            if candidate_classes else None
+        )
+        reason = _agent_routing_rejection_reason(
+            t.get("agent_id"), caller_role_names, prediction,
+            agent_routing_cfg.get("min_confidence", 0.6),
+        )
+        if reason:
+            return (f"Task {i} ({t.get('task_name')!r}): {reason}")
+    return None
+
+
+_TASK_REJECTION_RULES = (
+    _reject_bad_schema, _reject_placeholder, _reject_pronoun_without_subject,
+    _reject_cross_task_dependency, _reject_analyzer_input, _reject_hallucinated_agent_id,
+)
+
+
+def _task_rejection(i: int, t) -> str | None:
+    """First matching rule wins (same order as the old inline loop); None means the task is valid."""
+    for rule in _TASK_REJECTION_RULES:
+        msg = rule(i, t)
+        if msg:
+            return msg
+    return None
 
 
 async def _dispatch_tasks_batch(
@@ -1906,207 +2163,7 @@ async def _dispatch_tasks_batch(
                 f"rejected call). Stop planning further and let the system finalize a report "
                 f"from what has already been researched."
             )
-    # -------------------------------------------------------------
-    # Validate BEFORE dispatching anything. Found via a real end-to-end test: a model emitted
-    # tasks shaped like {"due": 1, "task": "..."} instead of {"task_name", "instructions",
-    # "agent_id"} — completely wrong field names. The old code silently defaulted to
-    # task_name="Unknown_Task", instructions="" and dispatched it anyway, so the sub-agent
-    # searched for the literal string "Unknown_Task" and got garbage, unrelated results, which
-    # then poisoned everything downstream (the Planner had nothing real to report). A malformed
-    # call must fail loudly and immediately, not silently degrade into wasted quota on garbage
-    # work — this lets the model see exactly what was wrong and retry with the correct shape.
-    # -------------------------------------------------------------
-    # Numbered-placeholder detector: found live, a model planning "12 candidate sectors"
-    # dispatched tasks literally named/instructed around "sector 1", "sector 2", etc. instead
-    # of naming the real sectors first — every resulting web_search query was the literal,
-    # meaningless phrase "market size of sector 1 in colombia", returning garbage (a currency
-    # site, an energy-agency report, unrelated Wikipedia pages) across all 12. Same principle
-    # as the malformed-schema check below: reject loudly before wasting quota on it, rather
-    # than relying on the prompt rule alone (see prompts.py's DISPATCH step for the prompt-side
-    # half of this fix).
-    # Matches "sector 1" / "sector_1" (post-normalization) / "sector #4" AND "sector X" /
-    # "item Y" — a bare capital letter is as common a placeholder as a number (confirmed
-    # live). The keyword itself stays case-insensitive; the single-letter placeholder stays
-    # case-SENSITIVE (only a bare capital, e.g. "sector X") so this doesn't false-positive on
-    # a keyword incidentally followed by a lowercase word-initial letter in real prose.
-    # Checked against `instructions` ONLY, not `task_name` — found live, a real 12-task batch
-    # ("Analyze market 1: Logistics and supply chain management in Colombia", ...) was rejected
-    # wholesale because task_name used "market 1"/"market 2" as an ordinary numbered list label
-    # while instructions fully named the real, specific topic ("Assess the needs of logistics
-    # and supply chain management in Colombia..."). task_name is never what actually drives a
-    # Searcher's search query (only instructions is — see WEB_SEARCHER_INSTRUCTIONS' Workflow),
-    # so a numbered task_name label is harmless; the original documented failure case (the
-    # literal garbage query "market size of sector 1 in colombia") had the placeholder in
-    # instructions itself, which this narrower check still catches.
-    _placeholder_re = re.compile(
-        r'\b(?:[Ss]ector|[Ii]tem|[Mm]arket|[Tt]opic|[Oo]ption|[Cc]andidate|[Cc]ategory|'
-        r'[Pp]roduct|[Ss]ervice|[Aa]rea)\s*(?:#?\d+\b|[A-Z]\b)'
-    )
-    # Catches the OTHER half of the same real failure: a task instructed to act "for each
-    # identified sector" (or similar) inside a batch dispatched via asyncio.gather — but
-    # delegate_tasks runs every task in a batch CONCURRENTLY, so a sibling "identify the
-    # sectors" task's results don't exist yet when this one runs. This is exactly the
-    # sequential-vs-concurrent rule already in SUBAGENT_DELEGATION_INSTRUCTIONS, just not
-    # being followed — confirmed live, a real run's web_search literally queried "Evaluate
-    # competition level for sector X" because of this.
-    _cross_task_dependency_re = re.compile(r'\bfor each\b.{0,40}\bidentif', re.IGNORECASE)
-
-    errors = []
-    for i, t in enumerate(tasks):
-        if not isinstance(t, dict):
-            errors.append(f"Task {i}: not an object — got {type(t).__name__}.")
-            continue
-        missing = [k for k in ("task_name", "instructions") if not t.get(k)]
-        if missing:
-            errors.append(
-                f"Task {i} {t!r}: missing or empty required field(s) {missing}. "
-                f"Each task MUST be shaped exactly as "
-                f"{{\"task_name\": \"...\", \"instructions\": \"...\", \"agent_id\": \"...\"}}."
-            )
-            continue
-        # Normalize underscores/hyphens to spaces first — "sector_1" (a real observed
-        # instructions string) otherwise never matches \bsector\b, since '_' counts as a word
-        # character and leaves no boundary between "analyze_" and "sector".
-        placeholder_text = str(t.get("instructions", "")).replace("_", " ").replace("-", " ")
-        m = _placeholder_re.search(placeholder_text)
-        if m:
-            errors.append(
-                f"Task {i} ({t.get('task_name')!r}): looks like an unresolved placeholder "
-                f"({m.group(0)!r}), not a real research topic — a Searcher given this will "
-                f"search for that literal meaningless phrase. If you're enumerating multiple "
-                f"items, you must know and use each item's REAL name (e.g. 'fintech for gig "
-                f"workers', not 'sector 3' or 'sector X') before dispatching. If you don't "
-                f"know the real names yet, delegate a background task to identify them first."
-            )
-            continue
-        if _lacks_concrete_subject(str(t.get("instructions", ""))):
-            errors.append(
-                f"Task {i} ({t.get('task_name')!r}): instructions rely on a pronoun ('it'/'its'/"
-                f"'them') with no concrete subject anywhere — the sub-agent executing this has "
-                f"NO memory of your conversation or of sibling tasks, so it cannot know what "
-                f"the pronoun refers to and will search for the literal phrase. Restate the "
-                f"full subject explicitly in EVERY task's instructions (e.g. 'Summarize Python "
-                f"3.14\\'s headline feature', not 'Summarize its headline feature')."
-            )
-            continue
-        dep_m = _cross_task_dependency_re.search(" ".join(str(t.get(k, "")) for k in ("task_name", "instructions")))
-        if dep_m:
-            errors.append(
-                f"Task {i} ({t.get('task_name')!r}): says \"{dep_m.group(0)}\" — this task "
-                f"depends on another task's output, but ALL tasks in one delegate_tasks call "
-                f"run CONCURRENTLY, so a sibling 'identify X' task's results do not exist yet "
-                f"when this one runs. Split this into two SEQUENTIAL delegate_tasks calls: "
-                f"first the identification task alone, wait for its real result, THEN a second "
-                f"call with one task per REAL item it found."
-            )
-            continue
-        # Real, confirmed live failure (2026-07-19 corpus audit: 83/563 Analyzer-delegating
-        # instructions across 19/76 runs referenced a URL never actually fetched this task) —
-        # a Searcher sees a URL in a search-result SNIPPET and delegates an Analyzer task to
-        # "read" it as if it had already been fetched, when fetch_url_to_workspace was never
-        # called on it. The Analyzer then burns its whole quota guessing filename variants for
-        # a file that structurally cannot exist (confirmed live: 9+ grep_workspace_file calls,
-        # no Finished). Checked only for Analyzer-tier targets (DocumentAnalyzer/DataAnalyzer)
-        # — those are the roles whose entire job is reading an already-fetched file, so this is
-        # the one delegation shape where "the referenced URL must already be fetched" is a real
-        # invariant, not a false constraint (WebSearcher/AcademicSearcher tasks legitimately
-        # instruct new research on URLs nothing has fetched yet). Scoped to the CALLING task's
-        # own real fetches (task_fetched_urls_ctx, not the whole run's) — a Searcher can only
-        # honestly hand its Analyzer children what it itself actually fetched.
-        if t.get("agent_id") in ("DocumentAnalyzer", "DataAnalyzer"):
-            from utils.grounding import extract_cited_urls, _urls_prefix_match
-            own_fetched_entries = task_fetched_urls_ctx.get() or []
-            own_fetched = {e["url"].rstrip("/") for e in own_fetched_entries}
-            cited = extract_cited_urls(str(t.get("instructions", "")))
-            if cited:
-                unfetched = [
-                    u for u in cited
-                    if u.rstrip("/") not in own_fetched
-                    and not any(_urls_prefix_match(u.rstrip("/"), f) for f in own_fetched)
-                ]
-                if unfetched:
-                    # See _find_sibling_fetch's own docstring for why this distinction exists
-                    # (RESEARCH.md Sec.17g) -- the generic advice below is WRONG, not just
-                    # unhelpful, when a sibling task already fetched this exact URL.
-                    from utils.run_state import get_fetched_urls
-                    u0 = unfetched[0]
-                    already = _find_sibling_fetch(u0, get_fetched_urls())
-                    if already:
-                        errors.append(
-                            f"Task {i} ({t.get('task_name')!r}): instructs {t.get('agent_id')} "
-                            f"to read {u0!r} — that URL was already fetched by a DIFFERENT task "
-                            f"this run (not this one), saved as {already.get('filename')!r}. Do "
-                            f"NOT call fetch_url_to_workspace on it again — it will just tell "
-                            f"you it's already fetched, which wastes a call and gets you no "
-                            f"further. Delegate {t.get('agent_id')} with the real saved "
-                            f"filename directly ({already.get('filename')!r}), not the URL."
-                        )
-                    else:
-                        errors.append(
-                            f"Task {i} ({t.get('task_name')!r}): instructs {t.get('agent_id')} to "
-                            f"read {u0!r}, but that URL was never actually fetched this "
-                            f"task — it looks like it came from a search-result snippet, not a real "
-                            f"fetch_url_to_workspace call. {t.get('agent_id')} can only read files "
-                            f"you actually fetched; if this source matters, call "
-                            f"fetch_url_to_workspace on it yourself first, THEN delegate the "
-                            f"analysis with the real saved filename."
-                        )
-                    continue
-            # Sibling bug to the unfetched-URL check above, confirmed live in the SAME
-            # benchmark run (2026-07-19): the URL WAS genuinely fetched, but the Searcher
-            # constructed a GUESSED filename for the Analyzer task (a plausible-looking
-            # pattern built from the URL's own path segments, e.g.
-            # 'sources/bcpublication_org_BM_3487.md') instead of the REAL saved filename
-            # fetch_url_to_workspace actually returned (e.g. 'sources/bcpublication_org_
-            # 58286b27.md', hash-suffixed). Same root family as WEB_SEARCHER_INSTRUCTIONS'
-            # existing "NEVER guess or reconstruct a URL from a filename" rule, just the
-            # inverse direction, previously unguarded. Confirmed live: the Searcher dispatched
-            # BOTH the guessed-filename task AND a correct-filename task for the identical URL
-            # back to back — real wasted duplicate delegation, not just a wrong-filename typo.
-            # Matched against the prompt's own fixed instruction template
-            # ("Read the file '<path>'. Source URL: ...", see prompts.py's real Analyzer
-            # dispatch examples) so this doesn't misfire on legitimately-phrased instructions.
-            filename_m = re.search(r"[Rr]ead the file '([^']+)'", str(t.get("instructions", "")))
-            if filename_m and cited:
-                claimed_filename = filename_m.group(1)
-                real_filename = next(
-                    (e["filename"] for e in own_fetched_entries
-                     if e["url"].rstrip("/") == cited[0].rstrip("/")
-                     or _urls_prefix_match(cited[0].rstrip("/"), e["url"].rstrip("/"))),
-                    None,
-                )
-                if real_filename and claimed_filename not in (real_filename, real_filename.split("/")[-1]):
-                    errors.append(
-                        f"Task {i} ({t.get('task_name')!r}): instructs {t.get('agent_id')} to "
-                        f"read {claimed_filename!r}, but that filename was GUESSED, not the "
-                        f"real one — the actual saved filename for that URL is "
-                        f"{real_filename!r} (from your own fetch_url_to_workspace result). "
-                        f"Never construct a filename from a URL's path; always use the exact "
-                        f"filename the fetch tool returned."
-                    )
-                    continue
-        # Non-generative routing classifier (RESEARCH.md §6, ROADMAP.md "Pending", 2026-07-20)
-        # — catches a hallucinated agent_id ("searcher", "PeerReviewer", invented role names,
-        # ~4.9% of real historical delegate_tasks calls) BEFORE dispatch, rather than only after
-        # _run_single_task's own exact-string lookup fails per-task post-dispatch. Decision
-        # logic lives in _agent_routing_rejection_reason (pure function, directly testable) —
-        # this closure only gathers the caller's real roster and the classifier's prediction.
-        agent_routing_cfg = config.get_setting("agent_routing_classifier", {})
-        if agent_routing_cfg.get("enabled", False):
-            from utils.agent_routing import predict_agent_id, KNOWN_AGENT_IDS
-            caller_role_names = frozenset(c.name for c in available_sub_agents_ctx.get())
-            candidate_classes = caller_role_names & KNOWN_AGENT_IDS
-            prediction = (
-                predict_agent_id(str(t.get("instructions", "")), candidate_classes)
-                if candidate_classes else None
-            )
-            reason = _agent_routing_rejection_reason(
-                t.get("agent_id"), caller_role_names, prediction,
-                agent_routing_cfg.get("min_confidence", 0.6),
-            )
-            if reason:
-                errors.append(f"Task {i} ({t.get('task_name')!r}): {reason}")
-                continue
+    errors = [msg for i, t in enumerate(tasks) if (msg := _task_rejection(i, t))]
     if errors:
         return (
             "Error: delegate_tasks call rejected — none of these tasks were dispatched (no quota "
