@@ -1,5 +1,5 @@
 """AUROC + operating points of each scores_all_*.json against pairs.jsonl labels, split by negative kind."""
-import json, glob, sys
+import json, glob
 rows=[json.loads(l) for l in open("eval/claim_support/pairs_all.jsonl")]
 def auroc(pos,neg):
     if not pos or not neg: return float('nan')

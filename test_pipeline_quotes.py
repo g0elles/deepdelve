@@ -256,7 +256,7 @@ def test_judge_separates_empty_verdict_from_error():
 
 def test_seed_evidence_reaches_memory_workspace():
     """In a memory workspace _get_safe_path returns a bare key, so the pipeline source copy must go to _IN_MEMORY_FS, not the cwd."""
-    import json, tempfile, pathlib, hashlib, os
+    import tempfile, pathlib, hashlib, os
     import config as _config
     from tools.fs import _IN_MEMORY_FS, get_workspace_file_content
     from pipeline.bridge import seed_run_state_from_evidence
