@@ -501,15 +501,11 @@ def run(query: str, model: str, out: Path, topk: int, extractor: str = "ce", jud
     # _compute_unanswered above was hoisted out (it never mutates anything). The other 4 nested
     # closures below (gather_round, process_bm25, process_ce, process_llm) were deliberately left
     # as-is: each both READS and WRITES several of this function's locals via `nonlocal`
-    # (seen/titles/evidence/gstats/owner/funnel/emitted_total/kept_total/failed_total/calls), and
-    # this whole function has ZERO existing test coverage (confirmed: every test importing
-    # pipeline.run exercises only its smaller pure helpers -- sentences/bm25_top/entity checks/
-    # etc. -- never run() itself, which also makes real network/LLM calls via plan/search/fetch/
-    # judge/extract/select_ce/facet_unanswered/reformulate_question). Restructuring untested,
-    # heavily-mutated, I/O-driven state-threading code for a readability win alone risks a silent
-    # correctness regression in the evidence-gathering pipeline that feeds every report this
-    # project writes -- not worth it without a real test harness first (the same "test before you
-    # refactor" discipline tools/web.py's _fetch_raw extraction followed, 2026-10-17 session).
+    # (seen/titles/evidence/gstats/owner/funnel/emitted_total/kept_total/failed_total/calls).
+    # 2026-10-21: test_pipeline_run.py now pins run() end to end (all three extractors, gap
+    # rounds, the one answer-gap round, evidence.json/metrics.json) with every network/LLM seam
+    # patched, so the closures CAN now be restructured against a real safety net; still not done
+    # because it is a readability-only win on the path that feeds every report.
     t0, calls = time.time(), 0
     out.mkdir(parents=True, exist_ok=True)
     facets = plan(model, query)
