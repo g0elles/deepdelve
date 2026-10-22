@@ -130,6 +130,63 @@ Read: pp. 1-4 (everything through limitations and ethics) and the start of the r
 - New option from SCREWS: keep the last draft that passed the gap check and restore it (or its disclosure section) when a later rewrite fails it. The deterministic check is a better selector than the paper's LLM selector. Not in the plan yet; decide after the user reviews.
 - Nothing read supports relying on small-model self-correction, so the design should not depend on it.
 
+## Part 2 (2026-10-23): beyond arXiv. Engineering docs, post-mortems, issue trackers, plus three more papers
+
+Source classes differ in weight and are labelled. Peer-reviewed/preprint = measured. Vendor engineering blog = practitioner experience, usually no
+numbers. GitHub issue = a reproducible report, not a study. Raw copies were fetched with curl and converted with pandoc/pdftotext, then read;
+none of this is a search summary except where marked.
+
+### Papers (arXiv), read
+- **Jaroslawicz et al., How Many Instructions Can LLMs Follow at Once? (IFScale), arXiv 2507.11538, 24 pp.** Read pp. 1-9 (method, results, discussion, conclusion); appendices NOT read.
+  500 keyword-inclusion instructions in a business-report task, 20 models via OpenRouter, 5 seeds. Reasoning models (o3, Gemini 2.5 Pro) stay near-perfect up to roughly 100-250 instructions;
+  best models reach 68% at 500. Primacy bias: earlier instructions are satisfied more, peaking around 150-200 instructions and fading at extreme density. Omission is the dominant error.
+  gpt-oss was not tested. Use: a standing-requirements footer of about 3 sentences is far below any density where degradation appears in this study; ordering effects are irrelevant at that size. Caveat: one synthetic task type.
+- **Laban et al., LLMs Get Lost In Multi-Turn Conversation, arXiv 2505.06120, 36 pp.** Read pp. 1-12 (method, results, Section 7 implications); appendices NOT read.
+  15 LLMs, 200,000+ simulated conversations, 6 generation tasks. Fully-specified single turn averages 90%; the same content revealed over several turns averages 65% (-39%). Putting every shard into ONE fresh prompt (CONCAT) keeps 95.1% of the single-turn score.
+  Degradation is mostly unreliability (best-to-worst gap), and lowering temperature does not fix it in multi-turn settings. Repeating earlier information every turn (Snowball) recovers only 15-20% of the loss. Their advice: consolidate everything into one new prompt before retrying.
+  Tasks most prone: generative, complex, and non-decomposable (a new requirement changes the whole output), which describes report rewriting. Use: supports Builder passes being fresh-context with ALL standing requirements in one instruction; it argues against piecemeal single-problem directives. gpt-oss not tested; underspecified user conversations, not tool-calling.
+- **Jin/OPPO, How Far Are We from Genuinely Useful Deep Research Agents? (FINDER, DEFT), arXiv 2512.01948, 34 pp.** Read pp. 1-10 (method, taxonomy, discussion) and the appendix examples for CSD and SCF; remaining appendices NOT read.
+  ~1,000 reports from mainstream deep research agents, 14 failure modes in three groups. Most frequent: Strategic Content Fabrication 18.95% of failures, Insufficient External Information Acquisition 16.30%, Content Specification Deviation 10.73% (report omits explicitly required components), Verification Mechanism Failure 8.72%.
+  Their conclusion: pre-constraints and post-verification must extend into the generation stage. No category covers an undisclosed evidence gap, so DeepDelve's `undisclosed_evidence_gap` check has no named counterpart in this taxonomy (closest: CSD and SCF). Annotation is human-LLM co-coded (Gemini 2.5 Flash).
+- **Yang et al., SWE-agent, arXiv 2405.15793 (NeurIPS 2024), 118 pp.** Read the design principles (Sec. 2), the ACI description (Sec. 3), the editing/guardrail ablations (Sec. 5.1) and the observation-template appendix; the 118-page appendix is otherwise NOT read.
+  Four ACI principles incl. "guardrails mitigate error propagation and hasten recovery". Edit with a linter that discards invalid edits: 18.0% on SWE-bench Lite vs 15.0% without linting vs 10.3% with plain bash editing (single configuration each, GPT-4 Turbo).
+  When a command produces no output the harness inserts an explicit message ("Your command ran successfully and did not produce any output") because bare silence confused the agent into extra commands; malformed generations trigger an error response and a re-ask until valid. Use: supports an explicit no-op notice to the writer and re-asking on an invalid pass.
+
+### Vendor engineering documentation (primary, practitioner evidence, read in full)
+- **Anthropic, Building effective agents (2024-12).** Agents get "ground truth" from the environment at each step; stopping conditions such as a maximum number of iterations; programmatic "gate" checks on intermediate steps; evaluator-optimizer fits when criteria are clear.
+  ACI advice: give the model tokens to think before it writes itself into a corner, keep formats close to natural text, avoid formatting overhead, "poka-yoke" tools. No measurements.
+- **Anthropic, Effective harnesses for long-running agents.** Reported failure modes: declares the job done too early; marks features done without testing. Fix: a structured feature list the agent may edit only by flipping a `passes` field. They report the model "is less likely to inappropriately change or overwrite JSON files compared to Markdown files". Anecdotal, no numbers.
+- **Anthropic, How we built our multi-agent research system.** Deterministic safeguards (retry logic, checkpoints) combined with the model's adaptability; end-state evaluation over turn-by-turn; a single LLM judge with a rubric (factual accuracy, citation accuracy, completeness, source quality, tool efficiency) was the most consistent; early agents "continued when they already had sufficient results" and, without detailed task descriptions, "leave gaps".
+- **Manus, Context engineering for AI agents.** "Recitation": rewriting a todo list so objectives sit at the end of the context, reported as reducing goal drift over about 50 tool calls. Function-calling modes Auto/Required/Specified implemented by response prefill or logit masking. "Keep the wrong stuff in": leave failed attempts in context. No measurements; the keep-failures advice conflicts with the Holloway abstract below.
+- **Cognition (Devin), Don't Build Multi-Agents.** "Actions carry implicit decisions, and conflicting decisions carry bad results"; share full traces. It recounts the 2024 "edit apply model" pattern (one model decides, a small one rewrites the file) as faulty because the applier misreads the instruction. Opinion piece, no data.
+- **Aider, Unified diffs make GPT-4 Turbo 3X less lazy.** 89 refactoring tasks; baseline 20%, unified diff 61%; lazy-comment tasks 12 to 4. Function/tool-calling edit formats did worse than plain-text formats for code ("stuffing source code into JSON is complicated and error prone"). Flexible harness-side application matters: disabling it gave a 9x increase in edit errors. The benchmark uses a deterministic AST-node-count test to catch elided code. GPT-4 Turbo (2024) only.
+- **Claude Code hooks reference (Stop hook).** A completion gate that can block the stop and force continuation, with built-in loop protection: a `stop_hook_active` flag and an 8-consecutive-continuation cap that resets whenever the model calls a tool. This is a progress-based cap, not a raw attempt count.
+- **OpenHands Stuck Detector (SDK docs).** Default-on detection of five patterns on semantic equality: 4+ identical action-observation pairs, 3+ identical errors, 3+ consecutive agent monologue messages, 6+ ping-pong alternations, repeated context-window errors.
+- **OpenAI, A practical guide to building agents (guardrails, exit conditions) and Agents SDK guardrails docs.** Layered guardrails mixing rules-based and LLM checks; "set limits on agent retries or actions", escalate past a failure threshold. Mostly input/safety guardrails; little on output completeness.
+
+### GitHub issues on the serving layer (Ollama / llama.cpp), read in full
+- **ollama/ollama #17274 (open; reproduced on 0.32.1, 0.32.15, 0.34.0).** When a text-tag tool call (`<tool_call>`) fails to parse, Ollama discards everything: empty content, no tool_calls, `finish_reason: stop`, yet nonzero `eval_count`. The reporter corrected the original claim: the model had emitted the tool's description as its name, so the parser was right, but the drop is invisible to the caller. Shown for qwen2.5/qwen3, not gpt-oss.
+- **llama.cpp #30377 (open).** gpt-oss-120b with tools + `response_format: json_schema` loops in the reasoning channel and never emits a tool call (tool_calls=0 until the token limit); each of tools-only and schema-only works. The reporter's mitigation is a two-pass design.
+- **ollama/ollama #11867 (closed as duplicate), #12158 (open).** gpt-oss:20b with `format` returns empty content; reasoning field missing after a tool round trip.
+- Search results (titles only, not read in full): ollama #19060 (empty gpt-oss output on a Vulkan backend), ollama-python #679 (gpt-oss tool call text left in content), a LangChain forum thread (gpt-oss tool call placed in the wrong channel), mantis #99 (empty message through LiteLLM only).
+- Use for DeepDelve: these show that "the turn ended with no tool call" can be a serving-layer artifact as well as the model's choice. None of them reproduces our exact case (gpt-oss:20b, Ollama, no `format`, read tools then no write), so this is a hypothesis to test, not a cause.
+
+### Abstract-level only (not read in full)
+- NeurIPS 2026 "When Tools Fail, Agents Fabricate" and the ICML 2026 workshop "Rapid Fixes, Gradual Failures": see "Not obtained" above; unchanged.
+
+### Looked for and not obtained
+- ICD 203 (US intelligence analytic standards, which require identifying information gaps): every dni.gov/odni.gov/archive.dni.gov host returned an "Access Denied" bot-protection page to a plain fetch. Not bypassed. Cited only as a pointer; its wording is unverified.
+- Nothing found, in any source class, that measures how often an LLM writer ends a repair turn without making the edit, or that studies disclosing unanswered sub-questions in long-form LLM reports.
+
+### What Part 2 changes in the plan
+1. **New first step: test the serving layer before building detection.** Replay the Builder's exact instructions K times against `/api/chat` (gpt-oss:20b, same tools) and classify each outcome: write call, read call, text only, or empty with `eval_count` > 0. This decides whether a read-only pass is model choice (re-dispatch, item 1) or a dropped call (fix at the client). GPU is idle; no code change needed.
+2. **Item 1 gains an alternative (1D):** have the Builder return the finished report as plain text and let the harness write the file. Supported by analogy: Aider (tool-call formats worse than plain text for code), Anthropic ACI advice (avoid formatting overhead), SWE-agent (harness-side application and verification). DeepDelve already has narration salvage (`_salvage_narrated_report`) for the failure case; this would make it the primary path for this problem. Evidence is indirect.
+3. **Item 4 (cap) should be progress-based:** Claude Code's cap resets when a tool is called; OpenHands detects identical consecutive outputs. A hash of the report text repeated across Builder passes is a direct no-progress signal that the current attempt counter lacks.
+4. **Item 2 stays, with a boundary:** standing requirements are invariants, not a merge of several problems into one dispatch (that was tried and reverted, see memory). Laban supports one consolidated fresh prompt; Cognition supports passing decisions forward; Holloway's abstract says full history does not help. A compact "already satisfied, do not regress" list is the middle path and is untested.
+5. **No-op feedback (SWE-agent):** when a pass changes nothing, say so explicitly in the next directive.
+6. **Structured requirement list (Anthropic harness):** keep `evidence_gaps` as structured data the harness checks, rather than prose the Builder may delete. Already the case in state; the report side is the gap.
+7. Nothing in Part 2 supports relying on the model to retain a fix across rewrites without an external check.
+
 ## Corrections to the earlier version of this file
 - It said SilentProbe showed "retrying with different inputs often doesn't help". Precisely: 11 of 94 loops retried and 0 of 11 recovered; the setting is guessing an undisclosed API vocabulary.
 - It presented LIT-RAGBench's Claude result as a general finding; it rests on 3 questions.
