@@ -30,13 +30,13 @@ jobs:
         run: ruff check .
 
       # 2026-10-17 audit finding: CI previously ran only 2 of 27 test files (structural + tools),
-      # never run_tests.py itself -- 25 files including the project's own highest-risk-density
-      # suites only ran when a human remembered to run them manually. --clean --strict: a fresh
-      # HOME with no cached models (what a clean clone actually sees) and a SKIPPED line counts as
-      # a failure, not a silently-passing gap -- confirmed both pass clean in this exact shape
-      # before wiring it in here.
+      # never run_tests.py itself. --clean = fresh HOME and HF offline, what a clean clone sees.
+      # NOT --strict here: a CI runner has no cached HuggingFace models (NLI, reranker, embedder),
+      # so the scenarios that need one print SKIPPED instead of running, and --strict turns every
+      # SKIPPED into a failure (first branch run, 2026-10-22: 3 files failed that way). Run
+      # `python run_tests.py --clean --strict` locally, where the models are cached, to cover them.
       - name: Full test suite (run_tests.py)
-        run: python run_tests.py --clean --strict
+        run: python run_tests.py --clean
 
       # Non-blocking (|| true): this codebase makes heavy, deliberate use of function-local
       # imports (lazy loading / breaking circular imports -- see pyproject.toml's own ruff-scope
