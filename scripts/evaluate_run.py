@@ -19,6 +19,15 @@ WALL_MARKERS = ("just a moment", "performing security verification", "checking y
 FIG = re.compile(r"\b\d+(?:[.,]\d+)?\s?(?:%|percent|per cent)", re.I)
 
 
+def run_active() -> bool:
+    """True while a DeepDelve run process is alive (the state file only changes between completion
+    attempts, minutes apart, so its mtime cannot tell 'running' from 'done')."""
+    import subprocess
+    out = subprocess.run(["pgrep", "-af", r"app\.cli_main|deepdelve-api|src\.api|pipeline\.run"], capture_output=True, text=True).stdout
+    me = str(os.getpid())
+    return any(l.split(None, 1)[0] != me and "pgrep" not in l and "run_eval_reminder" not in l for l in out.splitlines() if l.strip())
+
+
 def load(d):
     j = json.load(open(os.path.join(d, "_run_state.json")))
     return j.get("data", j)
@@ -31,7 +40,8 @@ def norm_fig(s):
 
 def source_texts(d):
     out = {}
-    for f in glob.glob(os.path.join(d, "sources", "*.md")):
+    # free-form runs save fetches under sources/; evidence-only runs seed them as src_*.md in the run dir itself
+    for f in glob.glob(os.path.join(d, "sources", "*.md")) + glob.glob(os.path.join(d, "src_*.md")):
         out[os.path.basename(f)] = open(f, errors="ignore").read()
     return out
 
@@ -98,10 +108,14 @@ def main():
     ap.add_argument("--no-siblings", action="store_true")
     a = ap.parse_args()
     r = score(a.run_dir)
-    try:  # silences scripts/run_eval_reminder.py for this run
-        open(os.path.join(a.run_dir, ".evaluated"), "w").write(time.strftime("%F %T"))
-    except OSError:
-        pass
+    idle = not run_active()
+    if idle:  # silences scripts/run_eval_reminder.py, but only for a run that has stopped writing
+        try:
+            open(os.path.join(a.run_dir, ".evaluated"), "w").write(time.strftime("%F %T"))
+        except OSError:
+            pass
+    else:
+        print("NOTE: a run process is still alive; this scorecard is of an INTERMEDIATE state and the run is NOT marked evaluated.\n")
     print(f"# Run scorecard: {r['dir']}\nquery: {r['query']}\n")
     print(f"path: {'evidence-only (pipeline)' if r['evidence_only'] else 'free-form agent'} | wall {r['wall_min']} min | "
           f"{r['attempts']} completion attempts: {' -> '.join(r['chain'])}")
