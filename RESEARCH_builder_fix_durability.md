@@ -1,39 +1,138 @@
-# Literature leads: Builder fixes that do not stick (2026-10-22)
+# Literature: Builder fixes that do not stick (2026-10-22, read 2026-10-22/23)
 
-**Status: SEARCH-SUMMARY LEVEL ONLY. No paper below has been read. None is marked verified, none may be cited as
-load-bearing evidence, and every number here is as reported by a search summary. The full read is scheduled for
-2026-10-23 (starred papers first); a paper gets a verified mark only after `pdfinfo` page count and a read of every
-section that could matter, per CLAUDE.md.** Context: ARCHITECTURE.md §2 "Builder fixes do not stick".
+Context: ARCHITECTURE.md §2 "Builder fixes do not stick". PDFs are in `papers/` (gitignored). Page counts are from `pdfinfo`.
+Every paper below was read from the downloaded PDF text, not from a search summary. Read coverage is stated per paper; where a
+section was not read it is named. The first version of this file (search-summary level) is superseded by this one; several of its
+statements were wrong or overstated and are corrected in "Corrections to the earlier version".
 
-## Cause 1: a Builder pass that writes nothing (silent no-op)
-| Paper | Reported finding (unverified) | Relevance |
-|---|---|---|
-| * Look Before You Leap: Pre-Action Verification for LLM Agents, arXiv 2609.11957 | Content-anchored edits (search/replace, diff) fail cleanly; location-anchored edits fail silently (line numbers corrupt 99.1% of files under a one-line shift). Deterministic pre-action check turns silent failures recoverable. | Supports comparing the artifact before/after a Builder pass and reacting. |
-| * Understanding Agent-Reactive Bugs at the Model-Harness Boundary, arXiv 2607.15684 | Harness-level bug taxonomy; includes an agent retrying the same failed edit until the iteration cap. | Same shape as repeated read-only Builder passes. |
-| When Tools Fail, Agents Fabricate (NeurIPS 2026, neurips.cc/virtual/2026/173038) | Agents accept faulted tool data on first contact; a verification-first monitor lifted recovery only 42.5% to 48.0%. | Argues for a deterministic harness check, not model self-noticing. |
-| SilentProbe, arXiv 2609.00035 | Of 94 retried cases, 11 retried with a different value, 0 of 11 recovered a non-zero result. | Retry with a CHANGED directive, not an identical one. |
+## Read in full (main body, every section that could carry a claim used here)
 
-## Cause 2: a fix for problem A lost when rewriting for problem B
-| Paper | Reported finding (unverified) | Relevance |
-|---|---|---|
-| * SCREWS, Microsoft Research (microsoft.com/en-us/research/?p=974454) | Revisions can introduce new mistakes; rolling back to the earlier result can be better. | Rollback to the last draft that passed a check. NEW option not in the first brainstorm. |
-| LLMs as Packagers of HPC Software, arXiv 2511.05626 | Repair loops oscillate between error states; authors justify a ~5-15 attempt cutoff. | Matches replay 2 and 3 behaviour. |
-| ICML 2026 paper on refinement history, icml.cc/virtual/2026/82772 | Compares including full refinement history vs not (only the setup was seen). | Should the Builder see its earlier drafts? |
-| Gap | Nothing found testing constraint preservation across multi-turn edits. | Needs its own search. |
+### Huang et al., Large Language Models Cannot Self-Correct Reasoning Yet, arXiv 2310.01798 (ICLR 2024), 17 pp
+Read: pp. 1-9 (all sections incl. conclusion, limitations); NOT read: references and Appendix A (full prompts/responses).
+- Tested GPT-3.5-Turbo, GPT-4, GPT-4-Turbo, Llama-2-70B-chat on GSM8K, CommonSenseQA, HotpotQA. With oracle labels self-correction
+  helps (GPT-3.5 GSM8K 75.9 to 84.3); without them accuracy drops (GPT-3.5 CommonSenseQA 75.8 to 38.1; Llama-2-70B GSM8K 62.0 to 43.5).
+- Multi-agent debate no better than self-consistency at equal response count (Table 7).
+- **Sec. 5 + conclusion: requirements should be in the INITIAL prompt, not only in the feedback prompt.** Moving the "include ALL
+  concepts" requirement into the first prompt beat Self-Refine's gain (CommonGen-Hard 81.8 vs 75.1 after self-correction).
+  They also say valid external feedback (code executors, tools, search) is where correction works.
+- Scope limit stated by the authors: reasoning tasks only; style/safety self-correction may behave differently.
+- **The paper contains no "below 13B parameters" claim** (searched the full text; no occurrence of 13B or a size threshold).
+- Use for DeepDelve: supports fix 2A (standing requirements in the Builder instructions) and supports the harness design of
+  deterministic external checks as the feedback source. Does not test report editing or small local models.
 
-## Cause 3: weak gap-disclosure detection
-| Paper | Reported finding (unverified) | Relevance |
-|---|---|---|
-| GRACE, arXiv 2601.04525 | RL for grounded response and abstention when evidence is insufficient. | Abstention is hard for models. |
-| LIT-RAGBench, arXiv 2603.06198 | Current LLMs still struggle to recognise insufficient evidence in RAG. | Same. |
-| Prompt-based abstention study (as summarised; source not identified) | Abstention works when context is absent, fails when it is misleading. | Penetration figures standing in for adoption rates are the misleading case. |
-| Gap | Nothing on disclosing gaps in LONG-FORM reports; all results are short-answer QA. | Needs its own search. |
+### Shridhar et al., SCREWS, arXiv 2309.13075, 22 pp
+Read: pp. 1-15 (body, references, Appendix A token cost); Appendix B (prompts, pp. 16-22) only by section headings.
+- ChatGPT (gpt-3.5-turbo-0301) mainly, GPT-4 for some runs; GSM8K, StrategyQA (490 train items), Big-Bench AutoDebugging (33 test items).
+- Resampling alone can lower accuracy (StrategyQA CoT 77.18 to 74.54 with same-method resampling). A Selection module that can keep
+  the earlier answer helped on all three datasets (e.g. AutoDebugging Answer-Only 73.52 to 88.23 with resample + select).
+- The default "always keep the most recent revision" is the practice they argue against. Their selector is an LLM or majority
+  vote and stays well below the oracle upper bound (Table 2, independent sampling: 74.90 achieved vs 85.36 possible; 81.34 vs 89.08).
+- More revision rounds gave little (GSM8K 79.22 to 79.45 to 79.52). Resampling cannot fix facts the model lacks (needs tools).
+- Use for DeepDelve: supports rollback/selection. Our selector would be the deterministic gap check, which avoids the paper's
+  weak-selector problem. Small test sets (33 items for the debugging claim); reasoning tasks, not report editing.
 
-## Small-model self-correction (background)
-* Small Language Model Can Self-Correct, arXiv 2401.07301 (AAAI): prompt-only self-correction hard for small models; fine-tunes instead.
-* arXiv 2604.13759 claims prompt-only correction is unreliable below ~13B, citing Huang et al. SECONDARY CLAIM: verify against the original.
-* arXiv 2506.15894 argues intrinsic self-correction may be stronger than commonly shown (counter-evidence; read both sides).
+### Chen et al., Understanding Agent-Reactive Bugs at the Model-Harness Boundary, arXiv 2607.15684, 12 pp
+Read: all 12 pp.
+- 255 manually labelled issues (Codex, Gemini-CLI, LangChain, CrewAI) out of 3,037 engaged, 8.4% of discussed issues; two annotators.
+- Symptoms: silent errors 108, crash 71, error-in-output 34, retry loop 33, hang 9. Top trigger: task instruction non-compliance (INC) 67,
+  **81% of INC cases surface as silent errors** because the model still emits fluent output that satisfies the harness's surface contract.
+  Statement fabrication 20 (18 silent). Retry-loop example: Gemini-CLI edit with non-matching old_string, read-fail-retry until the cap.
+- Merged harness fixes: validate tool calls before execution, tolerant parsing, prompt steering, registry checks, runtime loop guards.
+  Developers attribute INC to the model 22 of 67 times and only 11 of 67 ended in a merged harness PR (mismatch with users).
+- Recommends trace-based oracles: check the agent's claimed behaviour against real tool-call records.
+- Limits: observational GitHub issues, 4 projects, closed-source agents excluded, no measured fix effectiveness.
+- Use for DeepDelve: closest description of our failure (Builder "finishes" fluently without a write). Supports fix 1A (compare the
+  claim/outcome with the real tool-call or file record). Qualitative; not evidence of a fix rate.
 
-## Effect on the plan (provisional, pending the full read)
-Supports a deterministic harness check (fix 1A) and a structural gap section (1C/2B) over model self-correction, and adds a
-rollback-to-last-passing-draft option. Does not change the cause analysis, which rests on the replay logs, not on these papers.
+### Althoubi, Look Before You Leap: Pre-Action Verification for LLM Agents, arXiv 2609.11957, 8 pp
+Read: all 8 pp. The supplementary material it refers to is not in the PDF and was not read.
+- Shell commands: 9,930 commands, 482 tools; verifier recall 0.958 at 10.0% FPR (7.0% with selective abstention); syntax + binary
+  checks are oracle-exact (0 FP, recall 0.500).
+- Edits: 640 edits, 224 files, 23,040 trials. Content-anchored formats (search/replace, diff) never silent; line ranges 99.1% silent under a
+  one-line shift; whole-function edits hit the wrong function 12.7% of the time unperturbed. Robust-Apply: 1 silent misapplication in 8,320 trials.
+- States that post-hoc repair triggers only after an observed error, which a silent failure does not produce.
+- Limits stated by the authors: synthetic errors; real-model evidence is only 42 commands and 9 edits from one unspecified Claude version, all valid.
+- Use for DeepDelve: supports the principle "cheap deterministic check, refuse when unsure, return a recoverable signal". It studies
+  wrong-location edits, NOT a model that makes no edit, so support for 1A is by analogy only.
+
+### Li et al., SilentProbe, arXiv 2609.00035, 12 pp
+Read: all 12 pp (appendix tables skimmed).
+- 2,501 public OpenAPI documents (721,320 parameters): 7.5% declare an enum, 15.2% any machine-checkable constraint, 40.1% of documents state a
+  constraint in prose that the schema does not encode. 219 live perturbations over 27 vendors: machine-checkable constraints gave an honest
+  error 111/111; prose-only failed silently 44/61 (p = 2e-13). 12 models, 8 families.
+- A vocabulary shown only by example was missed 88/88; written out in full, used correctly 88-91%. Promoting it to an enum: 88/88 to 0/89.
+- Agent loops that hit a silent zero-row result: 11/94 retried with a different value, 0/11 recovered. False negative to the user 41%,
+  invented figure 12%.
+- Limits: sample not random (endpoints reachable through one aggregation layer), invented value cases are a lower bound, authors affiliated with the aggregation layer (disclosed).
+- Use for DeepDelve: a prose constraint can be ignored silently while a machine-checkable one is enforced. This is the same argument
+  as "a prompt sentence is not enforcement". Different mechanism (third-party APIs, not model non-compliance). The 0/11 figure is
+  about API vocabulary guessing, not about re-dispatching a writer.
+
+### Melone et al., LLMs as Packagers of HPC Software (SpackIt), arXiv 2511.05626, 18 pp
+Read: pp. 1-11 body; Appendix A (ablation table) and B (failure taxonomy) in full; Appendix C (case studies), D (metrics), E (configuration) NOT read in full.
+- 308 CMake packages; GPT-5, GPT-4.1, Claude Sonnet 3.7, Mistral Large 2.1. GPT-5 install success 19.7% zero-shot, 82.9% best configuration within 5 repairs.
+- Repair loop fed by deterministic build/audit output: GPT-4.1 38.9% to 60% with `spack audit` feedback (one configuration).
+- k = 30 run (GPT-5, one similar reference): 74% by attempt 5, plateau about 83% after about 15. "Upon manual inspection, two packages
+  oscillated between distinct error states, alternately fixing one issue while reintroducing another." The 5-15 attempt cutoff is the authors' inference.
+- Use for DeepDelve: loops fed by deterministic feedback converge, with diminishing returns. The oscillation evidence is two packages.
+  Frontier models, not small local ones.
+
+### Zhao et al., GRACE, arXiv 2601.04525, 18 pp
+Read: pp. 1-9 (method, experiments, conclusion, limitations); pp. 10-18 (references, appendices B-C: prompts, ablations, retrievers, case study) NOT read.
+- Trains Qwen3-4B / Llama3.1-8B with RL (DAPO variant) to emit either an `<evidence>` or an `<llm>` (insufficient evidence + disclaimer) path.
+  QASPER 1,451 test, HotpotQA 500 test. Prompt-only Qwen3-4B already scores 42.23 unanswerable-LJ on QASPER; SuRe collapses refusal to about 0-8%.
+- Limits stated: single run, no larger models, needs ground-truth evidence annotations.
+- Use for DeepDelve: little. Training-based and short-answer QA; fine-tuning is deferred in this project. Confirms abstention behaviour varies hugely by method.
+
+### Itai et al., LIT-RAGBench, arXiv 2603.06198 (LREC 2026), 12 pp
+Read: body through conclusion; reference list skimmed.
+- 114 Japanese questions (+ English translation); Abstention aspect split: Insufficient Evidence 34.6%, Contradictory 1.9%, Incomplete Chunk 1.9%.
+  Abstention accuracy 0.60 (Llama-3.1-8B, ja) to 0.95 (Claude-Sonnet-4, ja). Over-abstention on answerable items 0.213 for Llama-3.1-8B, 0.259 for Claude-Sonnet-4.
+- "Claude-Sonnet-4 detected inconsistencies in all tasks" rests on 3 questions. Authors list small sample size as their main limitation.
+- Use for DeepDelve: little. Short-answer RAG; shows small models both under-abstain and over-abstain.
+
+### Han et al., Small Language Model Can Self-Correct, arXiv 2401.07301 (AAAI 2024), 9 pp
+Read: body through conclusion and references; Appendix (prompt examples, cases) NOT read.
+- Fine-tunes 6B-13B models with Partial Answer Masking on about 15,000 samples. OpenBookQA/CommonsenseQA (multiple choice). Gains 0.0 to +5.6 points.
+- Llama2-7B and Vicuna models are 97-99% confident and almost never modify an answer (R2R/W2R near 0), i.e. they do not self-correct even after training.
+- The claim that prompt-only self-correction is hard for small models is stated in the introduction and not tested in the paper.
+- Use for DeepDelve: confident small models leave their output unchanged, which resembles the read-only Builder pass. Different task and fine-tuned.
+
+### Silver et al., Language Models can perform Single-Utterance Self-Correction of Perturbed Reasoning, arXiv 2506.15894, 28 pp
+Read: pp. 1-4 (everything through limitations and ethics) and the start of the reference list; Appendices B-E (pp. 5-28, prompts, perturbation lists, examples) NOT read.
+- Seven models, 7B to 671B, GSM8K / GSM-Symbolic / MATH-500, synthetic perturbations in a 100-token reasoning stub, single utterance.
+- On-policy recovery on GSM8K: Command R7B 10.8% (direct 88.0), Nemo 12B 9.3% (87.7), Gemma 2 27B 12.1% (90.8), Qwen 2.5 72B 41.8%,
+  LLaMA 3.3 70B 43.1%, QwQ 32B 66.4%, R1 89.3%. Models under 30B averaged a 78.1 point absolute drop; over 30B 41.7 (R1 excluded).
+- The headline "stronger intrinsic self-correction than commonly shown" is driven by the large and reasoning models. For models in our size class the paper's own table shows recovery near 10%.
+- Use for DeepDelve: do not read it as support for small-model self-correction. Math chain-of-thought, not text editing.
+
+## Read, but NOT reliable enough to cite
+
+### Khan and Khan, The Cognitive Companion, arXiv 2604.13759, 20 pp (read in full)
+- Feasibility study: 35 proxy-labelled probe examples (the second collection had only 3 DEGRADED examples, CV AUROC undefined), quality judged
+  by the same model, in-domain evaluation, 3 runs per condition. The authors say so themselves.
+- **Reference list contains placeholder IDs ("arXiv:2501.xxxxx", "arXiv:2601.xxxxx") and generic author lists (e.g. "Pipis, Chen, Wang"; "Garcia, Patel, Rodriguez"),
+  for the papers it relies on most (looping rates, INSPECTOR, STaSC, SpecRA).** These could not be verified and look machine-generated.
+- It attributes "models below approximately 13 billion parameters struggle to reliably self-correct reasoning errors through prompting alone" to
+  Huang et al. 2024. I read Huang et al. in full (above) and that statement is not in it.
+- Verdict: the "below 13B" claim is unsupported by its cited source and must not be used. The paper is not citable.
+
+## Not obtained / abstract level only (NOT read in full)
+- Kaynar, Yan, Kingsford, "When Tools Fail, Agents Fabricate" (NeurIPS 2026, OpenReview HLCpv21u07). Only the conference page abstract was readable (OpenReview returned HTML, not a PDF).
+  Reported there: about 2,100 fault-triggered runs, recovery 27-54%, confident fabrication 19-30%, monitor raised correct recovery 42.5% to 48.0% and cut fabrication 24.7% to 20.3%, removing chain-of-thought raised fabrication 7.7 points.
+- Holloway and Amin, "Rapid Fixes, Gradual Failures" (ICML 2026 workshop poster, OpenReview QSO4fnmXfR). Abstract only. Reported: gains front-loaded, many non-recovered seeds repeat the same wrong program for ten attempts, full refinement history does not help and hurts on harder benchmarks. Directly relevant to the repeated-identical-output pattern if the full text confirms it.
+- The "prompt-based abstention fails when context is misleading rather than absent" study from the first search was never identified; treat as unsourced.
+
+## What this changes in the plan (CURRENT.md 2026-10-22 PLAN)
+- Item 2 (standing requirements in every Builder directive): now directly supported by Huang et al. Sec. 5 (put requirements in the initial prompt, not only in the correction prompt).
+- Item 1 (detect a write that did not happen): supported in principle by Chen et al. (trace-based oracles) and Althoubi (deterministic pre/post check), but neither tests this exact case. Keep, and measure it.
+- Item 4 (deterministic fallback after repeated failures): the loop literature shows diminishing returns (SpackIt plateau) and that a model that repeats its output rarely escapes by itself (Han et al.; Holloway abstract). Keep.
+- New option from SCREWS: keep the last draft that passed the gap check and restore it (or its disclosure section) when a later rewrite fails it. The deterministic check is a better selector than the paper's LLM selector. Not in the plan yet; decide after the user reviews.
+- Nothing read supports relying on small-model self-correction, so the design should not depend on it.
+
+## Corrections to the earlier version of this file
+- It said SilentProbe showed "retrying with different inputs often doesn't help". Precisely: 11 of 94 loops retried and 0 of 11 recovered; the setting is guessing an undisclosed API vocabulary.
+- It presented LIT-RAGBench's Claude result as a general finding; it rests on 3 questions.
+- It relayed "prompt-only self-correction is unreliable below ~13B" as a claim to verify. Verified: false attribution, see Cognitive Companion above.
+- It listed 2506.15894 as counter-evidence that self-correction is stronger than believed; the paper's own table shows about 10% recovery for models under 30B.
+- It marked nothing as read. The coverage above is now explicit; unread parts are named per paper.
