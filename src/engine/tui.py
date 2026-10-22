@@ -913,6 +913,30 @@ class BasicTuiAgent(App):
         else:
             opt_list.display = False
 
+    # Slash-command dispatch (was one if/elif chain in on_input_submitted). Exact-match commands first, then
+    # prefix commands that take an argument; an unrecognised /word is NOT rejected, it falls through to the
+    # research-prompt path below (pinned by test_tui_slash_commands.py). /files is not in these tables: it is
+    # handled before dispatch because it needs its own early return.
+    _EXACT_COMMANDS = {
+        "/exit": "_cmd_exit",
+        "/stop": "_cmd_stop",
+        "/new": "_cmd_new",
+        "/toggle_thinking": "_cmd_toggle_thinking",
+        "/toggle_headless_fetch": "_cmd_toggle_headless_fetch",
+        "/toggle_persistence": "_cmd_toggle_persistence",
+        "/sessions": "_cmd_sessions",
+        "/resume": "_cmd_resume",
+        "/resume-run": "_cmd_resume_run",
+        "/config": "_cmd_config",
+    }
+    _PREFIX_COMMANDS = (
+        ("/depth", "_cmd_depth"),
+        ("/style", "_cmd_style"),
+        ("/seed-url", "_cmd_seed_url"),
+        ("/seed-doc", "_cmd_seed_doc"),
+        ("/pipeline-evidence", "_cmd_pipeline_evidence"),
+    )
+
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         query = event.value.strip()
         event.input.value = ""
@@ -947,168 +971,10 @@ class BasicTuiAgent(App):
                 chat.scroll_end(animate=False)
             return
 
-        if query == "/exit": self.exit()
-        elif query == "/stop":
-            self._is_agent_running = False
-            self.workers.cancel_all()
-            chat = self.query_one("#chat-container", VerticalScroll)
-            for widget in self.query("ToolCallWidget"):
-                if not widget._done:
-                    widget.mark_stopped()
-            for widget in self.query("ProcessingWidget"):
-                widget.mark_stopped()
-            for widget in self.query("SubAgentStatusWidget"):
-                if not widget._done:
-                    widget.mark_stopped()
-            for widget in self.query("ThinkingWidget"):
-                widget.finish()
-            chat.mount(Static(Markdown("**System:**\nStopped."), classes="agent-bubble"))
-            chat.scroll_end(animate=False)
-        elif query == "/new":
-            self._is_agent_running = False
-            self.workers.cancel_all()
-            reset_session()
-            self._pending_clarify = None
-            self._clarify_done = False
-            self._active_run_dir = None
-            self._conv_fetched = None
-            self._conv_verified_cache_urls = None
-            self._conv_run_state = None
-
-            global _current_session_id, _session_events, _current_call_by_source, _current_text_by_source
-            _current_session_id = str(uuid.uuid4())
-            _session_events.clear()
-            _current_call_by_source.clear()
-            _current_text_by_source.clear()
-
-            chat = self.query_one("#chat-container", VerticalScroll)
-            await chat.remove_children()
-            chat.mount(self._banner_widget())
-            chat.scroll_end(animate=False)
-        elif query == "/toggle_thinking":
-            config.cfg["settings"]["enable_thinking"] = not config.cfg["settings"]["enable_thinking"]
-            config.save_config()
-            state = "ON" if config.cfg["settings"]["enable_thinking"] else "OFF"
-            chat = self.query_one("#chat-container", VerticalScroll)
-            chat.mount(Static(Markdown(f"**System:**\nThinking capability is now **{state}**"), classes="agent-bubble"))
-            chat.scroll_end(animate=False)
-        elif query == "/toggle_headless_fetch":
-            # Session-only, like report_style/search_mode — NOT in _PERSISTABLE_SETTINGS_KEYS, so
-            # no save_config() call (mirrors why report_style's --style flag never persists either).
-            fetch_settings = config.cfg["settings"].setdefault("fetch", {})
-            fetch_settings["headless_fallback"] = not fetch_settings.get("headless_fallback", True)
-            state = "ON" if fetch_settings["headless_fallback"] else "OFF"
-            chat = self.query_one("#chat-container", VerticalScroll)
-            chat.mount(Static(Markdown(f"**System:**\nHeadless-browser fetch fallback is now **{state}**"), classes="agent-bubble"))
-            chat.scroll_end(animate=False)
-        elif query.startswith("/depth"):
-            # Session-only, same as report_style/search_mode above — not in
-            # _PERSISTABLE_SETTINGS_KEYS, mirrors why --depth never persists on the CLI either.
-            arg = query[len("/depth"):].strip().lower()
-            chat = self.query_one("#chat-container", VerticalScroll)
-            if arg not in _DEPTH_PRESETS:
-                chat.mount(Static(Markdown(f"**System:**\nUsage: `/depth quick|standard|deep` (got `{arg or '(none)'}`)"), classes="agent-bubble"))
-            else:
-                apply_depth_preset(config.cfg, arg)
-                chat.mount(Static(Markdown(f"**System:**\nResearch depth set to **{arg}** for the next run."), classes="agent-bubble"))
-            chat.scroll_end(animate=False)
-        elif query.startswith("/style"):
-            arg = query[len("/style"):].strip().lower()
-            chat = self.query_one("#chat-container", VerticalScroll)
-            if arg not in ("standard", "academic", "answer"):
-                chat.mount(Static(Markdown(f"**System:**\nUsage: `/style standard|academic|answer` (got `{arg or '(none)'}`)"), classes="agent-bubble"))
-            else:
-                config.cfg.setdefault("settings", {})["report_style"] = arg
-                chat.mount(Static(Markdown(f"**System:**\nReport style set to **{arg}** for the next run."), classes="agent-bubble"))
-            chat.scroll_end(animate=False)
-        elif query.startswith("/seed-url"):
-            arg = query[len("/seed-url"):].strip()
-            chat = self.query_one("#chat-container", VerticalScroll)
-            if not arg:
-                chat.mount(Static(Markdown("**System:**\nUsage: `/seed-url <url>` (repeatable — queues for the next research run)"), classes="agent-bubble"))
-            else:
-                self._pending_seed_urls.append(arg)
-                chat.mount(Static(Markdown(f"**System:**\nQueued seed URL ({len(self._pending_seed_urls)} pending): {arg}"), classes="agent-bubble"))
-            chat.scroll_end(animate=False)
-        elif query.startswith("/seed-doc"):
-            arg = query[len("/seed-doc"):].strip()
-            chat = self.query_one("#chat-container", VerticalScroll)
-            if not arg:
-                chat.mount(Static(Markdown("**System:**\nUsage: `/seed-doc <path>` (repeatable — queues a local file for the next research run)"), classes="agent-bubble"))
-            elif not os.path.isfile(os.path.expanduser(arg)):
-                chat.mount(Static(Markdown(f"**System:**\nNot a file: `{arg}`"), classes="agent-bubble"))
-            else:
-                self._pending_seed_docs.append(os.path.expanduser(arg))
-                chat.mount(Static(Markdown(f"**System:**\nQueued seed document ({len(self._pending_seed_docs)} pending): {arg}"), classes="agent-bubble"))
-            chat.scroll_end(animate=False)
-        elif query.startswith("/pipeline-evidence"):
-            arg = os.path.expanduser(query[len("/pipeline-evidence"):].strip())
-            chat = self.query_one("#chat-container", VerticalScroll)
-            if not arg:
-                msg = "Usage: `/pipeline-evidence <dir>` (dir holding a stage-graph run's evidence.json; used by the next research run instead of its own research phase)"
-            elif not os.path.isfile(os.path.join(arg, "evidence.json")):
-                msg = f"No evidence.json in: `{arg}`"
-            else:
-                self._pending_pipeline_evidence = arg
-                msg = f"Queued pipeline evidence: {arg}"
-            chat.mount(Static(Markdown(f"**System:**\n{msg}"), classes="agent-bubble"))
-            chat.scroll_end(animate=False)
-        elif query == "/toggle_persistence":
-            config.cfg["settings"]["enable_session_persistence"] = not config.cfg["settings"].get("enable_session_persistence", True)
-            config.save_config()
-            state = "ON" if config.cfg["settings"]["enable_session_persistence"] else "OFF"
-            chat = self.query_one("#chat-container", VerticalScroll)
-            msg = f"**System:**\nSession persistence is now **{state}**."
-            if config.cfg["settings"]["enable_session_persistence"]:
-                log_dir = Path.home() / f".{config.APP_NAME}" / "sessions"
-                log_file = log_dir / f"session_{_current_session_id}.json"
-                msg += f"\nSaving to: `{log_file}`"
-                _write_log(force=True)
-            chat.mount(Static(Markdown(msg), classes="agent-bubble"))
-            chat.scroll_end(animate=False)
-        elif query == "/sessions":
-            chat = self.query_one("#chat-container", VerticalScroll)
-            log_dir = Path.home() / f".{config.APP_NAME}" / "sessions"
-            if not log_dir.exists():
-                chat.mount(Static(Markdown("**System:**\nNo sessions found."), classes="agent-bubble"))
-            else:
-                files = sorted(log_dir.glob("session_*.json"), key=os.path.getmtime, reverse=True)
-                if not files:
-                    chat.mount(Static(Markdown("**System:**\nNo sessions found."), classes="agent-bubble"))
-                else:
-                    lines = ["**Saved Sessions:**\n"]
-                    for f in files[:10]:
-                        try:
-                            with open(f, "r") as fs:
-                                j = json.load(fs)
-                                ts = j.get("timestamp", "Unknown")
-                                sid = j.get("session_id", f.stem.replace('session_', ''))
-                                lines.append(f"- **ID:** `{sid}` (Date: {ts})")
-                        except Exception:
-                            lines.append(f"- Invalid session file: `{f.name}`")
-                    chat.mount(Static(Markdown("\n".join(lines)), classes="agent-bubble"))
-            chat.scroll_end(animate=False)
-        elif query == "/resume":
-            self._show_session_picker()
-        elif query == "/resume-run":
-            self._show_run_picker()
-        elif query == "/config":
-            chat = self.query_one("#chat-container", VerticalScroll)
-            config_path = getattr(config, "_CONFIG_PATH", "Unknown")
-            lines = [f"**System Configuration (Loaded from: `{config_path}`)**\n"]
-            is_auto_approved = getattr(config, 'AUTO_APPROVE', False)
-            if is_auto_approved:
-                lines.insert(0, "> [!WARNING]\n> **AUTO_APPROVE ENABLED**: All Interactive execution safeguards are bypassed!\n\n")
-            for section, values in config.cfg.items():
-                lines.append(f"### {section.replace('_', ' ').title()}")
-                if isinstance(values, dict):
-                    for k, v in values.items():
-                        lines.append(f"- **{k}:** `{v}`")
-                else:
-                    lines.append(f"- `{values}`")
-                lines.append("")
-            chat.mount(Static(Markdown("\n".join(lines)), classes="agent-bubble"))
-            chat.scroll_end(animate=False)
+        handler = self._EXACT_COMMANDS.get(query) or next(
+            (h for p, h in self._PREFIX_COMMANDS if query.startswith(p)), None)
+        if handler:
+            await getattr(self, handler)(query)
         elif query:
             log_prompt(query)
             if self._pending_clarify:
@@ -1120,6 +986,185 @@ class BasicTuiAgent(App):
                 self.clarify_query(query)
             else:
                 self.run_agent(query)
+
+    async def _cmd_exit(self, query: str) -> None:
+        self.exit()
+
+    async def _cmd_stop(self, query: str) -> None:
+        self._is_agent_running = False
+        self.workers.cancel_all()
+        chat = self.query_one("#chat-container", VerticalScroll)
+        for widget in self.query("ToolCallWidget"):
+            if not widget._done:
+                widget.mark_stopped()
+        for widget in self.query("ProcessingWidget"):
+            widget.mark_stopped()
+        for widget in self.query("SubAgentStatusWidget"):
+            if not widget._done:
+                widget.mark_stopped()
+        for widget in self.query("ThinkingWidget"):
+            widget.finish()
+        chat.mount(Static(Markdown("**System:**\nStopped."), classes="agent-bubble"))
+        chat.scroll_end(animate=False)
+
+    async def _cmd_new(self, query: str) -> None:
+        self._is_agent_running = False
+        self.workers.cancel_all()
+        reset_session()
+        self._pending_clarify = None
+        self._clarify_done = False
+        self._active_run_dir = None
+        self._conv_fetched = None
+        self._conv_verified_cache_urls = None
+        self._conv_run_state = None
+
+        global _current_session_id, _session_events, _current_call_by_source, _current_text_by_source
+        _current_session_id = str(uuid.uuid4())
+        _session_events.clear()
+        _current_call_by_source.clear()
+        _current_text_by_source.clear()
+
+        chat = self.query_one("#chat-container", VerticalScroll)
+        await chat.remove_children()
+        chat.mount(self._banner_widget())
+        chat.scroll_end(animate=False)
+
+    async def _cmd_toggle_thinking(self, query: str) -> None:
+        config.cfg["settings"]["enable_thinking"] = not config.cfg["settings"]["enable_thinking"]
+        config.save_config()
+        state = "ON" if config.cfg["settings"]["enable_thinking"] else "OFF"
+        chat = self.query_one("#chat-container", VerticalScroll)
+        chat.mount(Static(Markdown(f"**System:**\nThinking capability is now **{state}**"), classes="agent-bubble"))
+        chat.scroll_end(animate=False)
+
+    async def _cmd_toggle_headless_fetch(self, query: str) -> None:
+        # Session-only, like report_style/search_mode — NOT in _PERSISTABLE_SETTINGS_KEYS, so
+        # no save_config() call (mirrors why report_style's --style flag never persists either).
+        fetch_settings = config.cfg["settings"].setdefault("fetch", {})
+        fetch_settings["headless_fallback"] = not fetch_settings.get("headless_fallback", True)
+        state = "ON" if fetch_settings["headless_fallback"] else "OFF"
+        chat = self.query_one("#chat-container", VerticalScroll)
+        chat.mount(Static(Markdown(f"**System:**\nHeadless-browser fetch fallback is now **{state}**"), classes="agent-bubble"))
+        chat.scroll_end(animate=False)
+
+    async def _cmd_depth(self, query: str) -> None:
+        # Session-only, same as report_style/search_mode above — not in
+        # _PERSISTABLE_SETTINGS_KEYS, mirrors why --depth never persists on the CLI either.
+        arg = query[len("/depth"):].strip().lower()
+        chat = self.query_one("#chat-container", VerticalScroll)
+        if arg not in _DEPTH_PRESETS:
+            chat.mount(Static(Markdown(f"**System:**\nUsage: `/depth quick|standard|deep` (got `{arg or '(none)'}`)"), classes="agent-bubble"))
+        else:
+            apply_depth_preset(config.cfg, arg)
+            chat.mount(Static(Markdown(f"**System:**\nResearch depth set to **{arg}** for the next run."), classes="agent-bubble"))
+        chat.scroll_end(animate=False)
+
+    async def _cmd_style(self, query: str) -> None:
+        arg = query[len("/style"):].strip().lower()
+        chat = self.query_one("#chat-container", VerticalScroll)
+        if arg not in ("standard", "academic", "answer"):
+            chat.mount(Static(Markdown(f"**System:**\nUsage: `/style standard|academic|answer` (got `{arg or '(none)'}`)"), classes="agent-bubble"))
+        else:
+            config.cfg.setdefault("settings", {})["report_style"] = arg
+            chat.mount(Static(Markdown(f"**System:**\nReport style set to **{arg}** for the next run."), classes="agent-bubble"))
+        chat.scroll_end(animate=False)
+
+    async def _cmd_seed_url(self, query: str) -> None:
+        arg = query[len("/seed-url"):].strip()
+        chat = self.query_one("#chat-container", VerticalScroll)
+        if not arg:
+            chat.mount(Static(Markdown("**System:**\nUsage: `/seed-url <url>` (repeatable — queues for the next research run)"), classes="agent-bubble"))
+        else:
+            self._pending_seed_urls.append(arg)
+            chat.mount(Static(Markdown(f"**System:**\nQueued seed URL ({len(self._pending_seed_urls)} pending): {arg}"), classes="agent-bubble"))
+        chat.scroll_end(animate=False)
+
+    async def _cmd_seed_doc(self, query: str) -> None:
+        arg = query[len("/seed-doc"):].strip()
+        chat = self.query_one("#chat-container", VerticalScroll)
+        if not arg:
+            chat.mount(Static(Markdown("**System:**\nUsage: `/seed-doc <path>` (repeatable — queues a local file for the next research run)"), classes="agent-bubble"))
+        elif not os.path.isfile(os.path.expanduser(arg)):
+            chat.mount(Static(Markdown(f"**System:**\nNot a file: `{arg}`"), classes="agent-bubble"))
+        else:
+            self._pending_seed_docs.append(os.path.expanduser(arg))
+            chat.mount(Static(Markdown(f"**System:**\nQueued seed document ({len(self._pending_seed_docs)} pending): {arg}"), classes="agent-bubble"))
+        chat.scroll_end(animate=False)
+
+    async def _cmd_pipeline_evidence(self, query: str) -> None:
+        arg = os.path.expanduser(query[len("/pipeline-evidence"):].strip())
+        chat = self.query_one("#chat-container", VerticalScroll)
+        if not arg:
+            msg = "Usage: `/pipeline-evidence <dir>` (dir holding a stage-graph run's evidence.json; used by the next research run instead of its own research phase)"
+        elif not os.path.isfile(os.path.join(arg, "evidence.json")):
+            msg = f"No evidence.json in: `{arg}`"
+        else:
+            self._pending_pipeline_evidence = arg
+            msg = f"Queued pipeline evidence: {arg}"
+        chat.mount(Static(Markdown(f"**System:**\n{msg}"), classes="agent-bubble"))
+        chat.scroll_end(animate=False)
+
+    async def _cmd_toggle_persistence(self, query: str) -> None:
+        config.cfg["settings"]["enable_session_persistence"] = not config.cfg["settings"].get("enable_session_persistence", True)
+        config.save_config()
+        state = "ON" if config.cfg["settings"]["enable_session_persistence"] else "OFF"
+        chat = self.query_one("#chat-container", VerticalScroll)
+        msg = f"**System:**\nSession persistence is now **{state}**."
+        if config.cfg["settings"]["enable_session_persistence"]:
+            log_dir = Path.home() / f".{config.APP_NAME}" / "sessions"
+            log_file = log_dir / f"session_{_current_session_id}.json"
+            msg += f"\nSaving to: `{log_file}`"
+            _write_log(force=True)
+        chat.mount(Static(Markdown(msg), classes="agent-bubble"))
+        chat.scroll_end(animate=False)
+
+    async def _cmd_sessions(self, query: str) -> None:
+        chat = self.query_one("#chat-container", VerticalScroll)
+        log_dir = Path.home() / f".{config.APP_NAME}" / "sessions"
+        if not log_dir.exists():
+            chat.mount(Static(Markdown("**System:**\nNo sessions found."), classes="agent-bubble"))
+        else:
+            files = sorted(log_dir.glob("session_*.json"), key=os.path.getmtime, reverse=True)
+            if not files:
+                chat.mount(Static(Markdown("**System:**\nNo sessions found."), classes="agent-bubble"))
+            else:
+                lines = ["**Saved Sessions:**\n"]
+                for f in files[:10]:
+                    try:
+                        with open(f, "r") as fs:
+                            j = json.load(fs)
+                            ts = j.get("timestamp", "Unknown")
+                            sid = j.get("session_id", f.stem.replace('session_', ''))
+                            lines.append(f"- **ID:** `{sid}` (Date: {ts})")
+                    except Exception:
+                        lines.append(f"- Invalid session file: `{f.name}`")
+                chat.mount(Static(Markdown("\n".join(lines)), classes="agent-bubble"))
+        chat.scroll_end(animate=False)
+
+    async def _cmd_resume(self, query: str) -> None:
+        self._show_session_picker()
+
+    async def _cmd_resume_run(self, query: str) -> None:
+        self._show_run_picker()
+
+    async def _cmd_config(self, query: str) -> None:
+        chat = self.query_one("#chat-container", VerticalScroll)
+        config_path = getattr(config, "_CONFIG_PATH", "Unknown")
+        lines = [f"**System Configuration (Loaded from: `{config_path}`)**\n"]
+        is_auto_approved = getattr(config, 'AUTO_APPROVE', False)
+        if is_auto_approved:
+            lines.insert(0, "> [!WARNING]\n> **AUTO_APPROVE ENABLED**: All Interactive execution safeguards are bypassed!\n\n")
+        for section, values in config.cfg.items():
+            lines.append(f"### {section.replace('_', ' ').title()}")
+            if isinstance(values, dict):
+                for k, v in values.items():
+                    lines.append(f"- **{k}:** `{v}`")
+            else:
+                lines.append(f"- `{values}`")
+            lines.append("")
+        chat.mount(Static(Markdown("\n".join(lines)), classes="agent-bubble"))
+        chat.scroll_end(animate=False)
+
 
     async def _load_session_by_id(self, sid: str):
         chat = self.query_one("#chat-container", VerticalScroll)
