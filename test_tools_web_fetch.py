@@ -257,6 +257,64 @@ def main():
             _config.cfg["settings"]["workspace"] = _orig_ws14
         reset_fetched_urls()
 
+    # --- 2026-10-21: a fetch whose page declared no <title> (a PDF) is recorded with a readable fallback title
+    # ("host: last path segment"), so findings.md headings are never a raw "Source: <url>" string. ---
+    def _fallback_title_scenario():
+        from tools.web import _save_fetched
+        from utils.run_state import reset_fetched_urls, get_fetched_urls
+        _orig_ws = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory"}
+        try:
+            reset_fetched_urls()
+            _save_fetched(["https://digital-strategy.ec.europa.eu/en/node/12840/printable/pdf"], "sources/a.md", "word " * 200, True, None)
+            _save_fetched(["https://example.co/page"], "sources/b.md", "word " * 200, True, {"title": "A Real Title"})
+            titles = {e["url"]: e.get("title") for e in get_fetched_urls()}
+            assert titles["https://digital-strategy.ec.europa.eu/en/node/12840/printable/pdf"] == "digital-strategy.ec.europa.eu: pdf", titles
+            assert titles["https://example.co/page"] == "A Real Title", "a declared title must win over the fallback"
+        finally:
+            reset_fetched_urls()
+            if _orig_ws is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws
+
+    _fallback_title_scenario()
+
+    # --- 2026-10-21: a literal-ellipsis filename resolves to the one real file, and a call that read nothing
+    # (not found / over the line limit) gives its cap unit back, so a mangled name does not eat the budget. ---
+    def _ellipsis_and_refund_scenario():
+        from tools.fs import read_workspace_file as _rwf, resolve_fuzzy_filename as _rff, _IN_MEMORY_FS
+        from utils.run_state import task_read_grep_count_ctx as _trgc
+        _orig_ws = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory"}
+        saved = dict(_IN_MEMORY_FS)
+        try:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS["sources/firstmonday_org_finland_digital_public_services_design_princ_b76bf29a.md"] = "\n".join(f"line {i}" for i in range(400))
+            _IN_MEMORY_FS["sources/thisdaylive_com_finland_digital_public_service_ecosystem_202_1d9693d7.md"] = "other"
+            assert _rff("sources/firstmonday...b76bf29a.md") == "sources/firstmonday_org_finland_digital_public_services_design_princ_b76bf29a.md"
+            assert _rff("sources/thisday\u2026") == "sources/thisdaylive_com_finland_digital_public_service_ecosystem_202_1d9693d7.md"
+            assert _rff("sources/...md") is None, "nothing left to match on"
+            _IN_MEMORY_FS["sources/firstmonday_org_second_paper_b76bf29a.md"] = "x"
+            assert _rff("sources/firstmonday...b76bf29a.md") is None, "two files fit the elision: ambiguous, do not guess"
+            _trgc.set([0])
+            assert "not found" in _rwf.func(filename="sources/nope_nothing_here_at_all.md")
+            assert _trgc.get()[0] == 0, "a not-found read must not spend the analyzer cap"
+            assert "restricts you to" in _rwf.func(filename="sources/firstmonday_org_finland_digital_public_services_design_princ_b76bf29a.md")
+            assert _trgc.get()[0] == 0, "an over-limit read must not spend the analyzer cap"
+            assert "line 3" in _rwf.func(filename="sources/firstmonday_org_finland_digital_public_services_design_princ_b76bf29a.md", start_line=1, end_line=20)
+            assert _trgc.get()[0] == 1, "a successful read still counts"
+        finally:
+            _trgc.set(None)
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved)
+            if _orig_ws is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws
+
+    _ellipsis_and_refund_scenario()
+
     # --- read_workspace_file/grep_workspace_file per-dispatch analyzer_read_cap (2026-08-01,
     # RESEARCH.md Sec.16): once task_read_grep_count_ctx (THIS dispatch's own combined read+grep
     # call count) is at the configured cap, a call for either tool must be rejected outright, no

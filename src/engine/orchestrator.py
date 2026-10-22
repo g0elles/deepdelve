@@ -2187,6 +2187,7 @@ async def _dispatch_tasks_batch(
     excluded_topics = _extract_excluded_topics(run_state.data.get("query", "")) if run_state else set()
     prior_dispatched = run_state.data.setdefault("dispatched_tasks", []) if run_state else []
     skipped = []
+    excluded_skips = 0  # how many of `skipped` were query-exclusion hits (the rest were rename-guard skips)
     coroutines = []
     dispatched_names = []
     rename_note_by_name = {}
@@ -2204,6 +2205,7 @@ async def _dispatch_tasks_batch(
         task_text = _EXCLUSION_CUE_RE.sub(" ", task_text)
         hit = next((topic for topic in excluded_topics if topic in task_text), None)
         if hit:
+            excluded_skips += 1
             skipped.append(
                 f"## Skipped {name}\nNot dispatched: this topic matches an explicit exclusion "
                 f"in the original query ({hit!r}). Do not research it, do not include it in "
@@ -2256,11 +2258,19 @@ async def _dispatch_tasks_batch(
         coroutines.append(run_single_task(name, instr, aid))
 
     if skipped and not coroutines:
-        return (
-            "Error: every task in this call matches a topic the original query explicitly "
-            "excluded — none were dispatched. Re-read the query's exclusion list and delegate "
-            "only topics that are actually in scope.\n" + "\n".join(skipped)
-        )
+        if excluded_skips == len(skipped):
+            reason = ("matches a topic the original query explicitly excluded — none were dispatched. "
+                      "Re-read the query's exclusion list and delegate only topics that are actually in scope.")
+        elif excluded_skips == 0:
+            # 2026-10-21: this branch used to say "excluded" for rename-guard skips too, sending the
+            # Planner to re-read an exclusion list the query did not have.
+            reason = ("repeats an already-dispatched task under a new name — none were dispatched. "
+                      "The earlier task's results are already in this run; continue that angle under its "
+                      "original task_name or delegate something genuinely different.")
+        else:
+            reason = ("was skipped (a query-excluded topic or a repeat of an already-dispatched task) — "
+                      "none were dispatched. See each skip reason below.")
+        return "Error: every task in this call " + reason + "\n" + "\n".join(skipped)
 
     # Pre-reserve enough shared-pool headroom for the WHOLE batch before any task in it starts
     # (ROADMAP's tracked open angle (c), 2026-07-21): with max_concurrent_tasks small (often

@@ -142,6 +142,17 @@ def main():
                 }])
                 assert "explicitly excluded" in r, r
 
+                # Every task is a rename-guard skip (not an exclusion): the aggregate error must say so
+                # (2026-10-21: it used to say "explicitly excluded" and sent the Planner to re-read an
+                # exclusion list the query did not have).
+                _rs_rn = run_state_ctx.get()
+                _prior = "Compare the Finnish and Estonian approaches to digital public services using official government sources."
+                _rs_rn.data["dispatched_tasks"] = [{"task_name": "comparison", "instructions": _prior}]
+                r = await dt.func(tasks=[{"task_name": "comparison_v2", "instructions": _prior, "agent_id": "WebSearcher"}])
+                assert "repeats an already-dispatched task" in r and "explicitly excluded" not in r, r
+                _rs_rn.data["dispatched_tasks"] = []
+                _rs_rn.data.pop("rename_advisory_counts", None)
+
                 # Planner replan-round hard cap (depth==0) -- rejected once the round count already
                 # meets the configured cap, no quota consumed.
                 _orig_cap = config.cfg["settings"].get("max_planner_delegate_rounds")

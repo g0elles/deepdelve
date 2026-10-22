@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 from typing import Optional
+from urllib.parse import urlsplit
 
 import config
 
@@ -115,6 +116,16 @@ def reset_fetched_urls() -> None:
     # api.py) already gets this right for free, instead of needing its own new call added in three
     # places by hand.
     verified_cache_urls_ctx.set([])
+
+
+def fallback_title(url: str) -> str:
+    """Readable heading for a source whose page declared no <title> (a PDF): "host: last path
+    segment" instead of a raw URL heading, whose path fragments (".../RegData/...") the writer then
+    copied into prose as if they were names. Moved here from pipeline/bridge.py 2026-10-21 so the
+    free-form fetch path uses the same one (its PDFs reached the report as "[Source: https://...]")."""
+    p = urlsplit(url)
+    last = re.sub(r"\.\w{2,4}$", "", p.path.rstrip("/").rsplit("/", 1)[-1])
+    return f"{p.netloc.removeprefix('www.')}: {re.sub(r'[-_]+', ' ', last)}".strip(": ")
 
 
 def record_fetched_url(url: str, filename: str, stub: Optional[str] = None,

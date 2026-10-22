@@ -133,6 +133,17 @@ def resolve_fuzzy_filename(filename: str) -> str | None:
     if not real_files:
         return None
 
+    # A name the model abbreviated with a literal ellipsis ('sources/firstmonday...b76bf29a.md',
+    # copied from an elided display of the real name; 2026-10-21 run: that miss cost an Analyzer one
+    # of its 8 reads on a 394-line paper). The ellipsis marks removed characters, so the real file is
+    # the one whose name starts with the part before it and ends with the part after it.
+    elided = re.match(r"^(.*?)(?:\.\.\.|\u2026)(.*)$", filename.rsplit("/", 1)[-1])
+    if elided:
+        head, tail = (_clean_filename_for_match(x) if x else "" for x in elided.groups())
+        if len(head) + len(tail) >= 6:
+            hits = [r for r in real_files if (c := _clean_filename_for_match(r)).startswith(head) and c.endswith(tail)]
+            return hits[0] if len(hits) == 1 else None
+
     cleaned_request = _clean_filename_for_match(filename)
     if len(cleaned_request) < 6:  # too short to fuzzy-match safely
         return None
@@ -202,6 +213,18 @@ def _check_analyzer_read_cap(tool_name: str) -> str | None:
     return None
 
 
+def _refund_analyzer_read() -> None:
+    """Give back the cap unit _check_analyzer_read_cap took for a call that read nothing (file not
+    found, or a request the line limit refused). The cap exists to stop an Analyzer grinding on one
+    hard document; a failed lookup is not that, and in the 2026-10-21 run one 'not found' consumed
+    1 of 8 and left the Analyzer unable to finish a real 394-line paper. The tool's global quota
+    (with_quota) is still spent, so a loop of bad names still ends."""
+    from utils.run_state import task_read_grep_count_ctx
+    counter = task_read_grep_count_ctx.get()
+    if counter is not None and counter[0] > 0:
+        counter[0] -= 1
+
+
 @tool
 @with_quota
 def read_workspace_file(filename: str, start_line: int = 1, end_line: int = -1) -> str:
@@ -215,6 +238,7 @@ def read_workspace_file(filename: str, start_line: int = 1, end_line: int = -1) 
             resolved = resolve_fuzzy_filename(filename)
             content = get_workspace_file_content(resolved) if resolved else None
             if content is None:
+                _refund_analyzer_read()
                 return f"Error: '{filename}' not found."
             filename = resolved
 
@@ -229,6 +253,7 @@ def read_workspace_file(filename: str, start_line: int = 1, end_line: int = -1) 
         end = min(total, end_line)
 
         if (end - start + 1) > max_lines:
+            _refund_analyzer_read()
             return f"Error: Requested {end - start + 1} lines, but your quota restricts you to {max_lines} lines per read. Use grep_workspace_file or chunked bounds."
 
         chunk = "\n".join(lines[start - 1:end])
@@ -345,6 +370,7 @@ def grep_workspace_file(filename: str, pattern: str, context_lines: int = 2) -> 
             resolved = resolve_fuzzy_filename(filename)
             content = get_workspace_file_content(resolved) if resolved else None
             if content is None:
+                _refund_analyzer_read()
                 return f"Error: '{filename}' not found."
             # Unlike read_workspace_file, the result body never mentions the filename — the model
             # needs an explicit note or it won't learn the corrected name for later calls.

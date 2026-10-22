@@ -8,7 +8,7 @@ from bs4 import BeautifulSoup
 from agent_framework import tool
 from tools.core import with_quota, tool_quotas_ctx, TOOL_ERROR_PREFIX
 from tools.fs import _get_safe_path, _get_workspace_type, _IN_MEMORY_FS
-from utils.run_state import record_fetched_url, task_id_ctx
+from utils.run_state import fallback_title, record_fetched_url, task_id_ctx
 from utils.browser_fetch import fetch_via_headless_browser
 from utils.ssrf_guard import is_unsafe_fetch_host as _is_unsafe_fetch_host  # noqa: F401 -- re-export, kept for existing callers in this module
 
@@ -616,12 +616,12 @@ def _save_fetched(urls_fetched: list[str], filename: str, data, convert_to_md: b
         # content — this is what the real grounding check cross-references, independent of what
         # the model later claims.
         for u in urls_fetched:
-            record_fetched_url(u, filename, stub=stub, title=metadata.get("title") if metadata else None)
+            record_fetched_url(u, filename, stub=stub, title=(metadata.get("title") if metadata else None) or (None if stub else fallback_title(u)))
         return f"Fetched URL successfully to '{filename}' on disk.{stub_warning}"
     else:
         _IN_MEMORY_FS[path] = chunk
         for u in urls_fetched:
-            record_fetched_url(u, filename, stub=stub, title=metadata.get("title") if metadata else None)
+            record_fetched_url(u, filename, stub=stub, title=(metadata.get("title") if metadata else None) or (None if stub else fallback_title(u)))
         return f"Fetched URL successfully to '{filename}' in memory.{stub_warning}"
 
 
