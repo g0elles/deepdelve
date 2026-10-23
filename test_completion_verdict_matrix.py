@@ -469,6 +469,25 @@ def main():
                                "confirmed in the available sources.")},
          None, None, "", [], [],
          {"evidence_gaps": [{"facet": "Finland citizen adoption of digital services", "questions": ["Finland e-government usage rate"]}]}),
+        # 2026-10-23 (ARCHITECTURE.md §2 "Builder fixes do not stick"): replay-1 shape -- ONLY the Finland gap is disclosed, the
+        # Estonia gap never is; the old one-phrase-clears-all rule passed this. Must FIRE, and name Estonia.
+        ("undisclosed_evidence_gap_one_of_two_disclosed", True, {"findings.md": _FINDINGS_OK,
+          "final_report.md": (f"- el pais avanza de forma sostenida segun cifras oficiales [gov]({_SRC})\n"
+                               "- Finland's citizen adoption rate for digital services could not be found in available sources.\n"
+                               "- Estonia's citizen adoption of digital services is described as strong [gov]({_SRC}).")},
+         "undisclosed_evidence_gap", "Estonia citizen adoption", "", [], [], {"evidence_gaps": [{"facet": "Finland citizen adoption of digital services", "questions": ["q"]}, {"facet": "Estonia citizen adoption of digital services", "questions": ["q"]}]}),
+        # Hollow meta-note: names the topic and a disclosure phrase but only points at another file -> not a disclosure, must FIRE.
+        ("undisclosed_evidence_gap_hollow_meta_note", True, {"findings.md": _FINDINGS_OK,
+          "final_report.md": (f"- el pais avanza de forma sostenida segun cifras oficiales [gov]({_SRC})\n"
+                               "- Finland citizen adoption of digital services: not found, see the findings file.")},
+         "undisclosed_evidence_gap", "doesn't disclose that specific evidence", "", [], [],
+         {"evidence_gaps": [{"facet": "Finland citizen adoption of digital services", "questions": ["q"]}]}),
+        # Both gaps disclosed per-sentence -> clean.
+        ("undisclosed_evidence_gap_both_disclosed", True, {"findings.md": _FINDINGS_OK,
+          "final_report.md": (f"- el pais avanza de forma sostenida segun cifras oficiales [gov]({_SRC})\n"
+                               "- Finland's citizen adoption rate for digital services could not be found in available sources.\n"
+                               "- Estonia's citizen adoption rate for digital services could not be found in available sources.")},
+         None, None, "", [], [], {"evidence_gaps": [{"facet": "Finland citizen adoption of digital services", "questions": ["q"]}, {"facet": "Estonia citizen adoption of digital services", "questions": ["q"]}]}),
     ]
 
     with tempfile.TemporaryDirectory() as tmpdir:
