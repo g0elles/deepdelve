@@ -727,6 +727,31 @@ def main():
     _RS.data = {}
     assert _standing_requirements(_RS) == "" and _standing_requirements(None) == ""
 
+    # Item 4: the harness-written section must satisfy the very check that triggered it, for every gap.
+    from types import SimpleNamespace
+    from engine.completion import _append_harness_gap_section
+    from engine.completion_checks_structural import check_undisclosed_evidence_gap
+    _gaps = [{"facet": "Estonia citizen adoption of digital services"}, {"facet": "Finland citizen adoption of digital services"}]
+    _orig_ws = _config.cfg.get("settings", {}).get("workspace")
+    _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
+    _saved = dict(_IN_MEMORY_FS)
+    try:
+        _IN_MEMORY_FS.clear()
+        _IN_MEMORY_FS["final_report.md"] = "# Report\n\nSome grounded text."
+        _ctx = lambda: SimpleNamespace(content=_get_ws("final_report.md"), run_state=SimpleNamespace(data={"evidence_gaps": _gaps}),
+                                       req_artifact="final_report.md", last_chance_prefix="")
+        from tools.fs import get_workspace_file_content as _get_ws
+        assert check_undisclosed_evidence_gap(_ctx()) is not None
+        assert _append_harness_gap_section("final_report.md", _gaps)
+        assert check_undisclosed_evidence_gap(_ctx()) is None, _get_ws("final_report.md")
+        assert not _append_harness_gap_section("missing.md", _gaps)
+    finally:
+        _IN_MEMORY_FS.clear(); _IN_MEMORY_FS.update(_saved)
+        if _orig_ws is None:
+            _config.cfg["settings"].pop("workspace", None)
+        else:
+            _config.cfg["settings"]["workspace"] = _orig_ws
+
 
 if __name__ == "__main__":
     main()

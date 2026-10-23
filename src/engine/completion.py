@@ -322,7 +322,7 @@ _FINDINGS_WRITER_FIXABLE_PROBLEMS = tuple(dict.fromkeys(s.problem for s in _CHEC
 from engine.completion_dispatch import (  # noqa: F401,E402 — re-exported for test_structural_checks.py/finetune/*
     _WRITER_EMPTY_RETRY_ATTEMPTS, _dispatch_writer_review_fix, _MAX_FACET_DISPATCHES,
     _dispatch_per_facet_builder_fix, _dispatch_per_facet_findings_writer_fix,
-    _select_deepening_tasks, _dispatch_deepening_round,
+    _select_deepening_tasks, _dispatch_deepening_round, _append_harness_gap_section,
 )
 
 
@@ -692,6 +692,13 @@ async def _try_builder_fixable_dispatch(dispatch_task, problem, verdict, req_art
     has_builder_pair = has_peer_reviewer and any(c.name == "Builder" for c in caller_sub_agents)
     if not has_builder_pair:
         return False
+    if problem == "undisclosed_evidence_gap" and _consecutive_occurrences(run_state, problem) >= 2:
+        # Second consecutive miss: the Builder had its chance, so the harness writes the disclosure itself (item 4, 2026-10-23).
+        if _append_harness_gap_section(req_artifact, run_state.data.get("evidence_gaps") or []):
+            notify(f"**System ({attempt + 1}/{max_attempts}):** evidence-gap disclosure still missing after a Builder pass -- "
+                   f"appended a harness-written 'Evidence gaps and data limitations' section to `{req_artifact}`.")
+            run_state.save()
+            return True
     notify(f"**System ({attempt + 1}/{max_attempts}):** {verdict.warning} (dispatching Builder to rewrite, not the Planner)")
     if pool is not None:
         _ensure_writer_quota_headroom(pool)

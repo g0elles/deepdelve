@@ -21,6 +21,25 @@ from engine.findings_evidence import _build_findings_source_material
 _WRITER_EMPTY_RETRY_ATTEMPTS = 2
 
 
+def _append_harness_gap_section(req_artifact: str, gaps: list) -> bool:
+    """Escalation for a second consecutive `undisclosed_evidence_gap` (ARCHITECTURE.md §2 "Builder fixes do not stick"): the Builder
+    has had a chance and the disclosure still is not in the file, so the harness appends it itself, labelled harness-written. Wording
+    reuses the check's own template sentence, so the next check pass accepts it. Backend-agnostic (disk or in-memory)."""
+    from tools.fs import _get_safe_path, _get_workspace_type, _IN_MEMORY_FS
+    current = get_workspace_file_content(req_artifact)
+    path = _get_safe_path(req_artifact)
+    if current is None or not path or not gaps:
+        return False
+    lines = "\n".join(f"- A specific figure for {g['facet']} could not be confirmed in the available sources." for g in gaps)
+    new = f"{current.rstrip()}\n\n## Evidence gaps and data limitations\n\n*(Harness-written: the sources gathered did not cover these points.)*\n\n{lines}\n"
+    if _get_workspace_type() == "disk":
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(new)
+    else:
+        _IN_MEMORY_FS[path] = new
+    return True
+
+
 async def _redispatch_if_unchanged(dispatch_task, writer_role: str, req_artifact: str, before: Optional[str],
                                    instructions: str, attempt: int, label: str, notify) -> None:
     """Builder only. A pass that finishes without changing the artifact is invisible to the

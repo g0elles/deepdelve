@@ -469,6 +469,14 @@ def main():
                                "confirmed in the available sources.")},
          None, None, "", [], [],
          {"evidence_gaps": [{"facet": "Finland citizen adoption of digital services", "questions": ["Finland e-government usage rate"]}]}),
+        # Harness-written escalation section (completion_dispatch._append_harness_gap_section) must pass the WHOLE chain, not only its own check.
+        ("undisclosed_evidence_gap_harness_section_clean", True, {"findings.md": _FINDINGS_OK,
+          "final_report.md": (f"- el pais avanza de forma sostenida segun cifras oficiales [gov]({_SRC})\n\n"
+                               "## Evidence gaps and data limitations\n\n*(Harness-written: the sources gathered did not cover these points.)*\n\n"
+                               "- A specific figure for Finland citizen adoption of digital services could not be confirmed in the available sources.\n"
+                               "- A specific figure for Estonia citizen adoption of digital services could not be confirmed in the available sources.\n")},
+         None, None, "", [], [],
+         {"evidence_gaps": [{"facet": "Finland citizen adoption of digital services", "questions": ["q"]}, {"facet": "Estonia citizen adoption of digital services", "questions": ["q"]}]}),
         # 2026-10-23 (ARCHITECTURE.md §2 "Builder fixes do not stick"): replay-1 shape -- ONLY the Finland gap is disclosed, the
         # Estonia gap never is; the old one-phrase-clears-all rule passed this. Must FIRE, and name Estonia.
         ("undisclosed_evidence_gap_one_of_two_disclosed", True, {"findings.md": _FINDINGS_OK,
