@@ -1127,3 +1127,23 @@ def check_untracked_delegation(ctx: Ctx) -> Optional[Verdict]:
         f"SYSTEM WARNING: {ctx.last_chance_prefix}{directive}",
     )
 
+
+_REPORT_META_RE = re.compile(_GAP_META_RE.pattern + r'|final_report\b|workspace files?', re.I)
+
+
+def check_report_meta_language(ctx: Ctx) -> Optional[Verdict]:
+    """The report text names the pipeline's own files ("draws exclusively on findings.md"). Seen in 2 consecutive live runs (2026-10-22, 2026-10-23)
+    despite a BUILDER_INSTRUCTIONS rule (prompts.py "Write for the reader"), so the prompt alone is not enough. Builder-fixable and self-resolving
+    (delete or reword the phrase), so no `_capped` escalation; not quarantined (the content is right, only the wording is wrong)."""
+    if not ctx.content:
+        return None
+    hits = sorted({m.group(0).lower() for m in _REPORT_META_RE.finditer(ctx.content)})
+    if not hits:
+        return None
+    return Verdict(
+        "report_meta_language",
+        f"`{ctx.req_artifact}` mentions the pipeline's own files or sections ({', '.join(hits[:3])}).",
+        f"SYSTEM WARNING: {ctx.last_chance_prefix}The report text mentions the research workflow's internals ({', '.join(repr(h) for h in hits[:3])}). "
+        f"Readers never see these files. Delete or reword every such phrase (e.g. a Methodology line should describe the kinds of sources "
+        f"used, cited by name, not a file). Keep every other claim, citation and section unchanged.",
+    )

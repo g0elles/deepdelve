@@ -51,6 +51,7 @@ from engine.completion_checks_structural import (  # noqa: F401 — re-exported 
     check_findings_ungrounded, check_missing_findings, check_stale_findings,
     check_findings_underuses_evidence, check_missing_artifact,
     check_undisclosed_evidence_gap,
+    check_report_meta_language,
     check_academic_citation_style_abandoned, check_uneven_task_investment,
     check_untracked_delegation, _findings_facet_coverage,
 )
@@ -148,6 +149,8 @@ _CHECK_SPECS = [
                 # Added 2026-10-17: the fix is always available -- add one disclosure sentence per gap -- see
                 # check_undisclosed_evidence_gap's own docstring.
                 builder_fixable=True),
+    # After the gap check: its disclosure text must exist before wording is policed. Self-resolving (delete the phrase).
+    _check_spec(check_report_meta_language, "report_meta_language", "completion", builder_fixable=True),
     # Structural, not grounding -- needs only ctx.content/report_style, so it belongs here
     # (tier="completion") rather than "grounding" despite being citation-related; placed right
     # after check_missing_artifact (needs ctx.content to exist, same requirement as this check)
@@ -678,8 +681,9 @@ def _standing_requirements(run_state) -> str:
     if not gaps:
         return ""
     from engine.completion_checks_structural import gap_disclosure_sentence
-    lines = " ".join(gap_disclosure_sentence(g) for g in gaps)
-    return (f"STANDING REQUIREMENT (keep true after your edit): the report must keep one sentence per evidence gap, worded like: {lines} "
+    lines = "\n".join(f"- **{g['facet']}:** {gap_disclosure_sentence(g)}" for g in gaps)
+    return (f"STANDING REQUIREMENT (keep true after your edit): the report must keep one sentence per evidence gap, as one bullet per gap "
+            f"led by the facet name (in a section titled 'Evidence gaps and data limitations' if there is one), worded like:\n{lines}\n"
             f"Say this only about the named quantity, never that the whole topic has no evidence. If a related figure exists, cite it in "
             f"the NEXT sentence and label it a proxy.\n\n")
 

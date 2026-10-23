@@ -31,7 +31,7 @@ def _append_harness_gap_section(req_artifact: str, gaps: list) -> bool:
     if current is None or not path or not gaps:
         return False
     from engine.completion_checks_structural import gap_disclosure_sentence
-    lines = "\n".join(f"- {gap_disclosure_sentence(g)}" for g in gaps)
+    lines = "\n".join(f"- **{g['facet']}:** {gap_disclosure_sentence(g)}" for g in gaps)
     new = f"{current.rstrip()}\n\n## Evidence gaps and data limitations\n\n*(Harness-written: the sources gathered did not cover these points.)*\n\n{lines}\n"
     if _get_workspace_type() == "disk":
         with open(path, "w", encoding="utf-8") as f:

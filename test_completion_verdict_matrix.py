@@ -507,6 +507,13 @@ def main():
                                "- Finland's citizen adoption rate for digital services could not be found in available sources.\n"
                                "- Estonia's citizen adoption rate for digital services could not be found in available sources.")},
          None, None, "", [], [], {"evidence_gaps": [{"facet": "Finland citizen adoption of digital services", "questions": ["q"]}, {"facet": "Estonia citizen adoption of digital services", "questions": ["q"]}]}),
+        # check_report_meta_language (2026-10-23): report text names the pipeline's own file -> fires; reworded -> clean; harness gap section -> clean.
+        ("report_meta_language", True, {"findings.md": _FINDINGS_OK,
+          "final_report.md": f"- this report draws exclusively on findings.md for its claims [gov]({_SRC})"},
+         "report_meta_language", "findings.md", "", [], []),
+        ("report_meta_language_clean", True, {"findings.md": _FINDINGS_OK,
+          "final_report.md": f"- this report draws on government statistics and official publications [gov]({_SRC})"},
+         None, None, "", [], []),
     ]
 
     with tempfile.TemporaryDirectory() as tmpdir:

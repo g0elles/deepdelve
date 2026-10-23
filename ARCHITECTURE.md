@@ -753,6 +753,7 @@ it.
 | Adding... | Check these |
 |---|---|
 | A new completion-check problem | §1's four-tuple checklist + verdict-matrix test row |
+| A prompt-only wording rule the model keeps breaking (e.g. no mention of `findings.md` in the report) | Back it with a check, not more prompt text: `check_report_meta_language` (`completion_checks_structural.py`) is the template, one `_check_spec` row, builder_fixable, plus a matrix row. Prompt rule alone failed in 2 consecutive live runs (2026-10-22/23). |
 | A fix that a Builder rewrite for a DIFFERENT problem could silently undo (a disclosure, a required section) | §2 "Builder fixes do not stick": add it to `_standing_requirements` (`completion.py`) so every Builder instruction restates it, and give its check an escalation that does not depend on the Builder (see `_append_harness_gap_section`). Rewrites only carry the CURRENT problem's `verdict.inject`. |
 | A new `run_state.data` key that should survive `--resume-run` | §3: `_RESUME_CARRYOVER_KEYS` (`utils/run_state.py`), shared by both `run_cli` and `_resume_run` via `merge_resumed_state` |
 | A new sub-agent dispatch role | Does its first message look like FindingsWriter's (one big self-contained blob) or like everyone else's (built up turn-by-turn)? → §2's compaction-exclusion question. Does it need `write_workspace_file` gated behind something else? → `writer_gate_ctx` pattern. |
