@@ -128,6 +128,13 @@ def fallback_title(url: str) -> str:
     return f"{p.netloc.removeprefix('www.')}: {re.sub(r'[-_]+', ' ', last)}".strip(": ")
 
 
+# A bot-challenge page's own <title>. The headless retry can fetch the REAL page after a first interstitial response, but the title was taken
+# from that first response, so real digifyworld pages reached every 2026-10-22 report as "Checking your browser before accessing. Just a moment...".
+_INTERSTITIAL_TITLE_RE = re.compile(
+    r"just a moment|checking your browser|attention required|access denied|performing security verification|"
+    r"verify(?:ing)? (?:that )?you(?:'re| are) (?:a )?human|are you a robot|one more step", re.I)
+
+
 def record_fetched_url(url: str, filename: str, stub: Optional[str] = None,
                         title: Optional[str] = None) -> None:
     entry = {"url": url, "filename": filename, "timestamp": time.time()}
@@ -143,6 +150,8 @@ def record_fetched_url(url: str, filename: str, stub: Optional[str] = None,
     # live 2026-07-21: _build_findings_source_material had no title to give FindingsWriter, forcing
     # it to invent one for every entry before it could even start consolidating). Same
     # absent-key-when-not-present convention as stub.
+    if title and _INTERSTITIAL_TITLE_RE.search(title):
+        title = fallback_title(url)  # every title path (free-form fetch, pipeline seed) converges here
     if title:
         entry["title"] = title
 

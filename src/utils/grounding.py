@@ -1306,6 +1306,12 @@ def _claim_context_words(line: str, fig_start: int, fig_end: int, subj_start: in
     return frozenset(w[:5] for w in re.findall(r"[a-z]{4,}", window.lower()) if w not in _CLAIM_CONTEXT_STOP and w not in subj)
 
 
+# Words that make a capitalised phrase a rating CATEGORY ("Very High", "Upper Middle"), not a named subject. UN EGDI pages say "classified in the Very High group"
+# for every top country, so "very high" was "the same subject" for Finland's 0.9575 and Estonia's 0.9727 and fired cross_source_contradiction at
+# attempts 5 of a 2026-10-23 run (two different entities, 8 attempts and ~25 min lost to a false positive).
+_GRADE_LABEL_WORDS = frozenset({"very", "high", "higher", "highest", "low", "lower", "lowest", "medium", "middle", "upper", "moderate", "top", "bottom"})
+
+
 def _extract_figure_claims_ctx(text: str) -> list[tuple[str, str, frozenset]]:
     """Per-line (subject_phrase, figure, context_words) triples: every real 2+-word proper-noun subject phrase on
     a line, paired with its NEAREST checkable number on that SAME line (by character distance,
@@ -1326,7 +1332,7 @@ def _extract_figure_claims_ctx(text: str) -> list[tuple[str, str, frozenset]]:
         subject_matches = []
         for m in _PROPER_NOUN_PHRASE_RE.finditer(line):
             normalized = _normalize_proper_noun_phrase(m.group(0))
-            if normalized:
+            if normalized and not set(normalized.lower().split()) <= _GRADE_LABEL_WORDS:
                 subject_matches.append((normalized.lower(), m.start(), m.end()))
         figure_matches = [(m.group(0), m.start(), m.end()) for m in _NUMERIC_CLAIM_RE.finditer(line)]
         if not subject_matches or not figure_matches:

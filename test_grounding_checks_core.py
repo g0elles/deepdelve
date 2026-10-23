@@ -37,6 +37,12 @@ _SOURCE_TEXT = (
 _FINDINGS_OK = f"- hallado ({_SRC})"
 
 def main():
+    # A rating category ("Very High") is not a named subject: Finland's 0.9575 and Estonia's 0.9727 EGDI scores are for different entities.
+    from utils.grounding import _extract_figure_claims_ctx
+    assert not any(subj == "very high" for subj, _, _ in _extract_figure_claims_ctx(
+        "Estonia is classified in the Very High group with an EGDI score of 0.9727."))
+    assert any(subj == "united nations" for subj, _, _ in _extract_figure_claims_ctx(
+        "The United Nations rated the score 0.9727."))
     # --- find_cross_source_contradictions: citation-only lines must never be treated as claims.
     # Live-confirmed false positive (2026-07-14, real Iceland-population TUI run): an agency name
     # ("Statistics Iceland") appearing ONLY inside a `- Source: [Title - Statistics Iceland](url)`

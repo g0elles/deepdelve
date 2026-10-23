@@ -199,6 +199,13 @@ Problem: `_standing_requirements` (completion.py) told the Builder to state "no 
 ### Search result (search-summary level, a lead not evidence)
 Three standard searches found no paper on disclosing PARTIAL coverage in long-form research reports; abstention work is QA-shaped. Treat "no prior work found" as provisional.
 
+### Spot check of the gap judge (2026-10-23, h19_gate, n=5 unanswered sub-questions, my labels, one labeller)
+- Finland "e-government usage statistics": JUDGE WRONG. `pipeline/run.py::facet_unanswered` showed each quote cut at 220 chars; the Eurostat quote's answer ("Finland and Sweden (all 96%)") sat at chars 270-316. Cause: a truncation bug, now cut at 600. The report cited that 96% figure and still disclosed "no evidence", the Phase 2 contradiction.
+- Finland "strategy 2024": ambiguous (quotes describe AI deployment and cross-sectoral models, no dated strategy document).
+- Estonia adoption rate / e-government usage / online service penetration: judge right on the exact quantity (only internet penetration and a 99% prescription-digitalisation rate were kept).
+- So 1 of 5 was a clear false "unanswered", from a bug; 3 right; 1 ambiguous. Too small for a rate, and one labeller.
+- Related false positive from the same runs: `cross_source_contradiction` fired on the category label "Very High" (Finland 0.9575 vs Estonia 0.9727, different entities), costing about 25 minutes; `_GRADE_LABEL_WORDS` in `utils/grounding.py` now excludes grade labels as subjects.
+
 ### What this changes (inference, not yet built)
 1. The "none found" wording is a factual claim the harness cannot verify; it must not be mandated for a sub-question that has cited evidence. Candidate rule: disclose at SUB-QUESTION granularity, as "no source directly states <question text>", and allow a labelled proxy ("closest available: ... [n]"), instead of "no sufficient evidence was found".
 2. `check_undisclosed_evidence_gap`, the standing-requirement text, and `_append_harness_gap_section` must change together (same wording family), and `evaluate_run.py` follows.

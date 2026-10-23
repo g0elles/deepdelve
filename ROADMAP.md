@@ -296,6 +296,13 @@ tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
   scoped to candidates. The orchestrator's 12000-token cap comment attributes runaway generations to quantization EOS degradation; effort level is not mentioned.
   Untested lead: Harmony guidance (§2.5.1) says earlier turns' reasoning traces should be dropped from multi-turn history, and agent_framework_ollama
   appears to re-send `thinking` on assistant messages (_chat_client.py:493); whether that costs context/time here has not been measured.
+  Re-test after the Ollama upgrade 0.34.4 -> 0.40.9 (2026-10-23, raw API, served model `deepdelve-gpt-oss`, runner llamacpp, 100% GPU, num_ctx 16384): `/api/show`
+  still lists think values low/medium/high (default medium) and the template is unchanged (`Reasoning:` line only when think is a level or unset; `think=false` emits none).
+  One fixed question (answer 79, 3 repeats native, 2 compat), median generated tokens / thinking chars: unset 462/1353, false 632/2017, low 421/583, medium 741/1432,
+  high 2088/5611; compat `reasoning_effort` low 533/692, high 2218/6285. All native runs correct (3/3 each); compat low 1/2 (the 138-token run was wrong). So `false` is still NOT off
+  (632 tokens, thinking present), levels order low < medium < high, and compat `reasoning_effort` maps to the same levels. Limits: n=3 cannot separate unset/false/medium
+  (unset and medium send the identical prompt yet differ 462 vs 741, which is the noise floor); only low vs high is resolved; no like-for-like 0.34.4 numbers exist on this prompt,
+  so "unchanged" rests on the template and qualitative behaviour, not a paired comparison. Not re-tested: tool-call serialisation bugs, repeated-token abort, other models.
   Recommended next step (not done, needs a decision): A/B `think:"low"` vs the default per role on the project's own eval, not a global flip.
   A/B on the same fixed evidence (h24, `eval/thinking_effort/run_ab.sh`) found two harness defects before any verdict: baseline_1 aborted at ~7 s (Ollama repeat guard),
   the writer dispatch exception fell through to the Planner, which then did free research (5 delegate_tasks, 11 searches, no report after 31 min, stopped by hand);

@@ -727,6 +727,15 @@ def main():
     _RS.data = {}
     assert _standing_requirements(_RS) == "" and _standing_requirements(None) == ""
 
+    from utils.run_state import fetched_urls_ctx, record_fetched_url as _rec
+    reset_fetched_urls()
+    _rec("https://www.digifyworld.com/digital-adoption/estonia/", "src_x.md", title="Checking your browser before accessing. Just a moment...")
+    _rec("https://example.org/a", "src_y.md", title="Real Page Title")
+    _t = {e["url"]: e.get("title") for e in fetched_urls_ctx.get()}
+    assert _t["https://www.digifyworld.com/digital-adoption/estonia/"] == "digifyworld.com: estonia", _t
+    assert _t["https://example.org/a"] == "Real Page Title"
+    reset_fetched_urls()
+
     from engine.completion import _gap_fire_count
     _RS.data = {"completion_check_attempts": [{"problem": "undisclosed_evidence_gap"}, {"problem": "cross_source_contradiction"}, {"problem": "undisclosed_evidence_gap"}]}
     assert _gap_fire_count(_RS) == 2, "interleaved fires must count (run 3 shape)"

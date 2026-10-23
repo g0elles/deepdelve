@@ -933,6 +933,9 @@ tool) — instead, remove or rewrite the specific claim using only what `finding
   isn't already in `findings.md` — the engine will reject a report that cites a URL it never
   actually fetched.
 - Mark any unverified claims from informal sources.
+- **Write for the reader, not the workflow.** Never mention `findings.md`, workspace files, "the evidence base",
+  or how the research was gathered anywhere in the report text (confirmed live 2026-10-22: "drawing exclusively
+  from the compiled research findings in `findings.md`" opened a report). Sources are cited, not described as files.
 - {report_style_instructions}
 
 {citation_format_instructions}

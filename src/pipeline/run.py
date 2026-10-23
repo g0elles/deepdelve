@@ -141,7 +141,9 @@ def facet_unanswered(model: str, query: str, facet: dict, quotes: list[str]) -> 
     judge()'s own None-on-error convention: advisory, not a gate, so a model hiccup must never block a run over this."""
     if not quotes:
         return list(range(len(facet["questions"])))
-    ql = "\n".join(f"{i}. {q[:220]}" for i, q in enumerate(quotes))
+    # Quotes are whole sentences (up to a few hundred chars). Cut at 220 the judge never saw "(98%), the Netherlands, Finland and Sweden (all 96%)" at
+    # the end of the Eurostat quote and marked "Finland e-government usage statistics" unanswered (h19_gate, 2026-10-23 hand check).
+    ql = "\n".join(f"{i}. {q[:600]}" for i, q in enumerate(quotes))
     qs = "\n".join(f"{i}. {q}" for i, q in enumerate(facet["questions"]))
     p = (f"Facet: {facet['name']}\n\nQuestions:\n{qs}\n\nPassages:\n{ql}\n\n"
          f"For each question, give the number of ONE passage that directly answers it, or -1 if none does. A passage answers a "
