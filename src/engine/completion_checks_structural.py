@@ -918,6 +918,26 @@ _GAP_DISCLOSURE_RE = re.compile(
 _GAP_META_RE = re.compile(r'findings(?:\.md| file)|evidence gaps? section|data limitations? section', re.I)
 
 
+def undisclosed_gap_facets(content: str, gaps: list) -> list:
+    """Facets in `gaps` that `content` does not disclose; pure, so scripts/evaluate_run.py scores a finished report with the SAME rule."""
+    # Per-gap, same-sentence match (2026-10-23, ARCHITECTURE.md §2 "Builder fixes do not stick"): the old rule cleared EVERY gap on one
+    # disclosure phrase within 400 chars of any one facet word, so a report disclosing only the Finland gap passed the Estonia gap too
+    # (replay 1 never disclosed Estonia yet went clean), and a hollow "see the findings file" note could pass. A gap now counts as
+    # disclosed only by a sentence that has a disclosure phrase, is not a meta-reference, and contains most of THAT gap's own facet words.
+    sentences = [x for x in re.split(r"[.!?\n]+", content.lower()) if _GAP_DISCLOSURE_RE.search(x) and not _GAP_META_RE.search(x)]
+    undisclosed = []
+    all_words = [{w[:5] for w in re.findall(r"[a-z]{4,}", g["facet"].lower())} for g in gaps]
+    shared = set.intersection(*all_words)
+    for g, ws in zip(gaps, all_words):
+        words = list(ws)
+        need = max(1, math.ceil(0.6 * len(words)))
+        # Distinctive words (not in every gap's facet, e.g. estonia vs finland) must ALL appear, else a sibling gap's sentence passes this one.
+        distinct = ws - shared
+        if not any(sum(w in x for w in words) >= need and all(w in x for w in distinct) for x in sentences):
+            undisclosed.append(g["facet"])
+    return undisclosed
+
+
 def check_undisclosed_evidence_gap(ctx: Ctx) -> Optional[Verdict]:
     """A `--pipeline-evidence` run's own answer-gap round (`pipeline/run.py`'s `facet_unanswered`/`reformulate_question`, 2026-10-17)
     already made ONE dedicated re-search attempt per unanswered question before the evidence was seeded. `run_state.data["evidence_gaps"]`
@@ -940,21 +960,7 @@ def check_undisclosed_evidence_gap(ctx: Ctx) -> Optional[Verdict]:
     gaps = (ctx.run_state.data or {}).get("evidence_gaps")
     if not gaps:
         return None
-    # Per-gap, same-sentence match (2026-10-23, ARCHITECTURE.md §2 "Builder fixes do not stick"): the old rule cleared EVERY gap on one
-    # disclosure phrase within 400 chars of any one facet word, so a report disclosing only the Finland gap passed the Estonia gap too
-    # (replay 1 never disclosed Estonia yet went clean), and a hollow "see the findings file" note could pass. A gap now counts as
-    # disclosed only by a sentence that has a disclosure phrase, is not a meta-reference, and contains most of THAT gap's own facet words.
-    sentences = [x for x in re.split(r"[.!?\n]+", ctx.content.lower()) if _GAP_DISCLOSURE_RE.search(x) and not _GAP_META_RE.search(x)]
-    undisclosed = []
-    all_words = [{w[:5] for w in re.findall(r"[a-z]{4,}", g["facet"].lower())} for g in gaps]
-    shared = set.intersection(*all_words)
-    for g, ws in zip(gaps, all_words):
-        words = list(ws)
-        need = max(1, math.ceil(0.6 * len(words)))
-        # Distinctive words (not in every gap's facet, e.g. estonia vs finland) must ALL appear, else a sibling gap's sentence passes this one.
-        distinct = ws - shared
-        if not any(sum(w in x for w in words) >= need and all(w in x for w in distinct) for x in sentences):
-            undisclosed.append(g["facet"])
+    undisclosed = undisclosed_gap_facets(ctx.content, gaps)
     if not undisclosed:
         return None
     named = ", ".join(undisclosed[:3])

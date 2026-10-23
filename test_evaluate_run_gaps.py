@@ -1,0 +1,24 @@
+import json, os, sys, tempfile
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts"))
+from evaluate_run import score, verdict
+
+GAPS = [{"facet": "Estonia citizen adoption of digital services"}, {"facet": "Finland citizen adoption of digital services"}]
+
+
+def _run(report, gaps):
+    d = tempfile.mkdtemp()
+    json.dump({"data": {"evidence_gaps": gaps, "query": "q", "started_at": 0}}, open(os.path.join(d, "_run_state.json"), "w"))
+    open(os.path.join(d, "final_report.md"), "w").write(report)
+    return verdict(score(d))
+
+
+pad = "word " * 600
+flags = _run(pad + "\nFinland citizen adoption of digital services could not be found in available sources.\n", GAPS)
+assert any("1/2 evidence gap" in f and "Estonia" in f for f in flags), flags
+flags = _run(pad + "\nDigital services adoption: not found, see the findings file.\n## Sources\n1. Just a moment...\n", GAPS)
+assert any("2/2 evidence gap" in f for f in flags) and any("meta-reference" in f for f in flags) and any("bot-wall" in f for f in flags), flags
+flags = _run(pad + "\n## Evidence gaps and data limitations\n- A specific figure for Estonia citizen adoption of digital services could not be confirmed in the available sources.\n"
+             "- A specific figure for Finland citizen adoption of digital services could not be confirmed in the available sources.\n", GAPS)
+assert not any("evidence gap" in f for f in flags), flags
+assert any("recorded no evidence gaps" in f for f in _run(pad + "\n## Data limitations\nx\n", []))
+print("test_evaluate_run_gaps OK")
