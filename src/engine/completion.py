@@ -665,6 +665,17 @@ def _notify_final_verdict(ctx: "Ctx", problem: Optional[str], req_artifact: str,
                    f"not silently accepted as a success.")
 
 
+def _standing_requirements(run_state) -> str:
+    """Invariants every Builder pass must keep true, appended to its fix instructions (ARCHITECTURE.md §2 'Builder fixes do not stick':
+    a fix for one problem silently dropped the evidence-gap disclosures an earlier pass had added). Invariants only, not a second problem."""
+    gaps = (run_state.data or {}).get("evidence_gaps") if run_state is not None else None
+    if not gaps:
+        return ""
+    names = "; ".join(g["facet"] for g in gaps)
+    return (f"STANDING REQUIREMENT (keep true after your edit): the report must keep one sentence per evidence gap saying plainly "
+            f"that no sufficient evidence was found for it, naming the gap's own subject. Gaps: {names}.\n\n")
+
+
 async def _try_builder_fixable_dispatch(dispatch_task, problem, verdict, req_artifact, attempt, max_attempts,
                                          notify, pool, run_state, force_whole_rebuild,
                                          caller_sub_agents, has_peer_reviewer) -> bool:
@@ -708,13 +719,13 @@ async def _try_builder_fixable_dispatch(dispatch_task, problem, verdict, req_art
                 f"writing it for the first time, reconsidering your whole approach "
                 f"to this task rather than repeating the same local fix. The "
                 f"specific problem previously flagged was:\n{clean_inject}\n\n"
-                f"{_BUILDER_NO_DELEGATE_CLARIFICATION}"
+                f"{_BUILDER_NO_DELEGATE_CLARIFICATION}{_standing_requirements(run_state)}"
                 f"Write the corrected file now via write_workspace_file."
             )
         else:
             builder_instructions = (
                 f"Rewrite '{req_artifact}' from findings.md, fixing this specific problem:\n"
-                f"{verdict.inject}\n\n{_BUILDER_NO_DELEGATE_CLARIFICATION}"
+                f"{verdict.inject}\n\n{_BUILDER_NO_DELEGATE_CLARIFICATION}{_standing_requirements(run_state)}"
                 f"Write the corrected file now via write_workspace_file."
             )
         await _dispatch_writer_review_fix(dispatch_task, "Builder", req_artifact, builder_instructions, attempt, notify)

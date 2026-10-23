@@ -720,6 +720,13 @@ def main():
 
     _unchanged_guard_scenario()
 
+    from engine.completion import _standing_requirements
+    class _RS:
+        data = {"evidence_gaps": [{"facet": "Estonia adoption"}, {"facet": "Finland adoption"}]}
+    assert "Estonia adoption" in _standing_requirements(_RS) and "Finland adoption" in _standing_requirements(_RS)
+    _RS.data = {}
+    assert _standing_requirements(_RS) == "" and _standing_requirements(None) == ""
+
 
 if __name__ == "__main__":
     main()
