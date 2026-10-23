@@ -534,7 +534,7 @@ through it) keyed on a `run_state.data` flag, add the flag to `_RESUME_CARRYOVER
 surface), then grep the completion checks and directives for anything that demands the restricted action and make it
 flag-aware, since a verdict the run can no longer satisfy just loops. A prompt sentence is not enforcement.
 
-### Builder fixes do not stick: `undisclosed_evidence_gap` re-fires (root cause found 2026-10-22, NOT yet fixed)
+### Builder fixes do not stick: `undisclosed_evidence_gap` re-fires (root cause found 2026-10-22, fixed 2026-10-23, live verification pending)
 
 Symptom: run `..._214936` (evidence-only, h19 gated evidence) hit `undisclosed_evidence_gap` four attempts in a row, exhausted its
 retry budget and shipped a 377-word report flagged UNVERIFIED. Three `--resume-run` replays of it (attempts truncated to the first
@@ -557,11 +557,21 @@ two, `replay_gap_{1,2,3}`) reproduced the re-firing in two of three, so it is st
    Estonia adoption rate is missing (it discloses a different gap). Replay 2's clean report also leaks Builder working-file
    language ("the evidence gaps section in the findings file lists ...") into the body.
 
-Not yet fixed (documentation only, per the user's instruction). Candidate fixes, each needing this section's checklist
-(`_CHECK_SPECS` row, verdict matrix in `test_structural_checks.py`): detect a no-write Builder pass by comparing the artifact
-content/mtime before and after the dispatch and re-dispatching with a "you did not call write_workspace_file" directive; append the
-standing evidence-gap requirement to every Builder directive, not only the gap verdict; require each gap to be disclosed by its own
-distinctive facet words (not shared entity words) and reject meta-references to "findings file"/"evidence gaps section".
+Fixes (2026-10-23, commits 98d1757..b2af404; Phase 2 replays still to run), one per cause plus an escalation:
+
+1. `_redispatch_if_unchanged` (`completion_dispatch.py`): Builder only; if the artifact is byte-identical after a pass, ONE re-dispatch
+   whose first line says the file was unchanged and the next tool call must be `write_workspace_file`.
+2. `_standing_requirements(run_state)` (`completion.py`): appended to both `_try_builder_fixable_dispatch` instruction branches, so a
+   fix for any problem restates the evidence-gap disclosure invariant. Invariants only, NOT a merge of problems into one dispatch.
+3. `undisclosed_gap_facets` (`completion_checks_structural.py`, used by the check and by `scripts/evaluate_run.py`): a gap is
+   disclosed only by a sentence with a disclosure phrase, no `_GAP_META_RE` meta-reference, most of THAT gap's facet words, and all
+   of its distinctive words (those not shared by every gap).
+4. Escalation: on the second consecutive `undisclosed_evidence_gap`, `_try_builder_fixable_dispatch` skips the Builder and
+   `_append_harness_gap_section` appends a labelled "Evidence gaps and data limitations" section using the check's own template
+   sentence. Trigger is consecutive-problem count only; there is no report-hash comparison (fix 1 covers unchanged files).
+
+Pins: matrix rows in `test_completion_verdict_matrix.py` (`..._one_of_two_disclosed`, `..._hollow_meta_note`,
+`..._harness_section_clean`), `test_dispatch_ablation_and_salvage.py`, `test_evaluate_run_gaps.py`.
 
 ## 3. `RunState.data`: the persisted-state surface, and the carryover-allowlist trap
 
@@ -736,6 +746,7 @@ it.
 | Adding... | Check these |
 |---|---|
 | A new completion-check problem | §1's four-tuple checklist + verdict-matrix test row |
+| A fix that a Builder rewrite for a DIFFERENT problem could silently undo (a disclosure, a required section) | §2 "Builder fixes do not stick": add it to `_standing_requirements` (`completion.py`) so every Builder instruction restates it, and give its check an escalation that does not depend on the Builder (see `_append_harness_gap_section`). Rewrites only carry the CURRENT problem's `verdict.inject`. |
 | A new `run_state.data` key that should survive `--resume-run` | §3: `_RESUME_CARRYOVER_KEYS` (`utils/run_state.py`), shared by both `run_cli` and `_resume_run` via `merge_resumed_state` |
 | A new sub-agent dispatch role | Does its first message look like FindingsWriter's (one big self-contained blob) or like everyone else's (built up turn-by-turn)? → §2's compaction-exclusion question. Does it need `write_workspace_file` gated behind something else? → `writer_gate_ctx` pattern. |
 | A new entry point that dispatches research turns (beyond `run_cli`/`run_agent`/`api.py`) | §5: call the shared `run_loop.run_agent_loop` with a `RunLoopSurface`, don't hand-roll a new `while has_requests:` copy — read `RunLoopSurface`'s field docstrings first, most new surfaces need none of the optional hooks. Does it run turns concurrently in one process? The five module-level globals (`_session` and `tui.py`'s session-log state) are NOT contextvar-safe — either guarantee single-flight (the route `api.py` took) or make those globals contextvars first. Does it need follow-up/same-conversation continuation? → persist `AgentSession.to_dict()` per-run, don't trust the global to survive between calls. Does it need "Q&A on an existing report" semantics? → mirror `skip_completion_check`'s exact condition, don't approximate it. |
