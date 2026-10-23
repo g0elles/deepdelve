@@ -187,6 +187,23 @@ none of this is a search summary except where marked.
 6. **Structured requirement list (Anthropic harness):** keep `evidence_gaps` as structured data the harness checks, rather than prose the Builder may delete. Already the case in state; the report side is the gap.
 7. Nothing in Part 2 supports relying on the model to retain a fix across rewrites without an external check.
 
+## Part 3 (2026-10-23): what a "gap" disclosure should say. Triggered by Phase 2 run 1 (contradictory Evidence Gaps section)
+
+Problem: `_standing_requirements` (completion.py) told the Builder to state "no sufficient evidence was found" for every flagged gap. In run `..._205047` the report then cited a 96% Finnish figure [4] and Estonia usage proxies in the body, and the gap section said "no sufficient evidence ... Nevertheless ...". Local measurement (h19_gate): gaps are per SUB-QUESTION (`pipeline/run.py::facet_unanswered`), but the disclosure is per FACET; f1 and f3 had 1 of 3 questions unanswered, f4 3 of 3 (and its sources hold proxy usage figures: 99% e-tax filing, 100% of services online). The judge is a binary exact-quantity test (gpt-oss, think=low, unvalidated).
+
+### Papers read (PDFs in `papers/`, page counts from `pdfinfo`)
+- **Joren et al., Sufficient Context, ICLR 2025, arXiv:2411.06037. 25 of 25 pages read.** Sufficiency is a property of (question, context), binary; "incomplete, inconclusive, or contradictory" counts as insufficient (Sec.3). Autorater (Gemini 1.5 Pro, 1-shot) 93% accuracy on 115 hand-labelled items; FLAMe-24B 87.8%; TRUE-NLI 82.6% (Table 1). Models answer correctly 35-62% of the time with insufficient context (abstract; Table 2 gives eight reasons, e.g. partial multi-hop fragments plus parametric knowledge). Adding retrieval cut abstention (Claude 3.5 Sonnet 84.1% to 52%). Limitations they state: QA only, binary label, a graded score is future work. Implication: an "insufficient" verdict does not mean "nothing useful in context", and even the best judge here errs ~7% on a small set; our unvalidated gpt-oss judge should not be treated as ground truth for a factual "none found" sentence.
+- **Yuan et al., Progressive Confidence Estimation, arXiv:2604.05952. 20 of 20 pages read.** Per-claim confidence scores (1-10, thresholds >6 high, <4 low) emitted inline in the report; QA sub-task decomposition. Reports ECE on xBench-DeepSearch (0.34 vs 0.36-0.53 baselines) and mid-range RACE on DeepResearch Bench (34.13 overall, Table 3). Caveats: the abstract's "significantly increases user trust" has NO user study in the paper body; the confidence head is described as trained in prior work, not here; the report case study is qualitative. Relevance: shows an alternative to binary section-level disclosure (graded, per-claim), nothing on gap disclosure.
+- **Feng et al., Don't Hallucinate, Abstain, arXiv:2402.00367. Main body only (pp.1-9 of 27); appendix and references NOT read.** Per-question answer/abstain with 14 mechanisms; Cooperate/Compete best in 9 of 12 settings; retrieval hurts some calibration baselines. Not load-bearing: it is per-question abstention, not long-form disclosure.
+
+### Search result (search-summary level, a lead not evidence)
+Three standard searches found no paper on disclosing PARTIAL coverage in long-form research reports; abstention work is QA-shaped. Treat "no prior work found" as provisional.
+
+### What this changes (inference, not yet built)
+1. The "none found" wording is a factual claim the harness cannot verify; it must not be mandated for a sub-question that has cited evidence. Candidate rule: disclose at SUB-QUESTION granularity, as "no source directly states <question text>", and allow a labelled proxy ("closest available: ... [n]"), instead of "no sufficient evidence was found".
+2. `check_undisclosed_evidence_gap`, the standing-requirement text, and `_append_harness_gap_section` must change together (same wording family), and `evaluate_run.py` follows.
+3. Measure before adopting (Model Evaluation Standard spirit): the judge's false-"unanswered" rate on h19-style evidence by hand labelling, then compare old vs new wording on the same evidence, k>=3.
+
 ## Corrections to the earlier version of this file
 - It said SilentProbe showed "retrying with different inputs often doesn't help". Precisely: 11 of 94 loops retried and 0 of 11 recovered; the setting is guessing an undisclosed API vocabulary.
 - It presented LIT-RAGBench's Claude result as a general finding; it rests on 3 questions.
