@@ -727,6 +727,12 @@ def main():
     _RS.data = {}
     assert _standing_requirements(_RS) == "" and _standing_requirements(None) == ""
 
+    from engine.completion import _gap_fire_count
+    _RS.data = {"completion_check_attempts": [{"problem": "undisclosed_evidence_gap"}, {"problem": "cross_source_contradiction"}, {"problem": "undisclosed_evidence_gap"}]}
+    assert _gap_fire_count(_RS) == 2, "interleaved fires must count (run 3 shape)"
+    _RS.data = {}
+    assert _gap_fire_count(_RS) == 0
+
     # Item 4: the harness-written section must satisfy the very check that triggered it, for every gap.
     from types import SimpleNamespace
     from engine.completion import _append_harness_gap_section

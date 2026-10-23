@@ -30,7 +30,8 @@ def _append_harness_gap_section(req_artifact: str, gaps: list) -> bool:
     path = _get_safe_path(req_artifact)
     if current is None or not path or not gaps:
         return False
-    lines = "\n".join(f"- A specific figure for {g['facet']} could not be confirmed in the available sources." for g in gaps)
+    from engine.completion_checks_structural import gap_disclosure_sentence
+    lines = "\n".join(f"- {gap_disclosure_sentence(g)}" for g in gaps)
     new = f"{current.rstrip()}\n\n## Evidence gaps and data limitations\n\n*(Harness-written: the sources gathered did not cover these points.)*\n\n{lines}\n"
     if _get_workspace_type() == "disk":
         with open(path, "w", encoding="utf-8") as f:

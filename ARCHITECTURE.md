@@ -568,7 +568,14 @@ Fixes (2026-10-23, commits 98d1757..b2af404; Phase 2 replays still to run), one 
    of its distinctive words (those not shared by every gap).
 4. Escalation: on the second consecutive `undisclosed_evidence_gap`, `_try_builder_fixable_dispatch` skips the Builder and
    `_append_harness_gap_section` appends a labelled "Evidence gaps and data limitations" section using the check's own template
-   sentence. Trigger is consecutive-problem count only; there is no report-hash comparison (fix 1 covers unchanged files).
+   sentence. Trigger is the TOTAL number of `undisclosed_evidence_gap` attempts in the run (`_gap_fire_count`, >= 2), not consecutive: Phase 2 run 3 fired it at attempts 4/6/8 with other problems between, so a consecutive count never triggered. No report-hash comparison (fix 1 covers unchanged files).
+
+Wording (2026-10-23, after Phase 2 run 1 showed a contradictory section; RESEARCH_builder_fix_durability.md Part 3): fixes 2 and 4 and the
+check's template all take their sentence from ONE function, `gap_disclosure_sentence` (`completion_checks_structural.py`): "No source in
+the available evidence directly states: <unanswered question(s)>." It speaks about the named quantity only, never "no evidence about the
+topic", and a cited proxy may follow. The check accepts a sentence naming the gap's facet OR any one of its unanswered questions. Change the
+wording in that function only; `findings_evidence.py`'s FindingsWriter note carries the same rule in prose. Open: nothing yet detects a
+disclosure that contradicts a cited figure on the same topic (needs the judge-accuracy measurement first).
 
 Pins: matrix rows in `test_completion_verdict_matrix.py` (`..._one_of_two_disclosed`, `..._hollow_meta_note`,
 `..._harness_section_clean`), `test_dispatch_ablation_and_salvage.py`, `test_evaluate_run_gaps.py`.

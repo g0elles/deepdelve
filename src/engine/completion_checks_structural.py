@@ -912,10 +912,19 @@ def check_missing_artifact(ctx: Ctx) -> Optional[Verdict]:
 _GAP_DISCLOSURE_RE = re.compile(
     r'\b(?:not found|no (?:data|information|figures?|reliable (?:data|figures?))|unavailable|'
     r'could not (?:find|be found|be confirmed)|was unable to find|not available in (?:the )?(?:available )?sources?|'
-    r'no .{0,30}(?:was|were) found)\b', re.I)
+    r'no .{0,30}(?:was|were) found|no (?:available )?sources? (?:in the (?:available )?evidence )?directly (?:states?|answers?|reports?))\b', re.I)
 
 
 _GAP_META_RE = re.compile(r'findings(?:\.md| file)|evidence gaps? section|data limitations? section', re.I)
+
+
+def gap_disclosure_sentence(gap: dict) -> str:
+    """The ONE wording for an evidence-gap disclosure, shared by the check's template, the Builder's standing requirement, the harness-written
+    section and the FindingsWriter note. Sub-question level and a statement about the NAMED quantity only (never "no evidence about the topic"):
+    the pipeline's gap judge is a binary exact-quantity test that is often right about the quantity and wrong about the topic (RESEARCH_builder_fix_durability.md
+    Part 3), so a blanket "no evidence" contradicted the report's own cited body."""
+    qs = "; ".join(gap.get("questions") or []) or gap["facet"]
+    return f"No source in the available evidence directly states: {qs}."
 
 
 def undisclosed_gap_facets(content: str, gaps: list) -> list:
@@ -926,14 +935,17 @@ def undisclosed_gap_facets(content: str, gaps: list) -> list:
     # disclosed only by a sentence that has a disclosure phrase, is not a meta-reference, and contains most of THAT gap's own facet words.
     sentences = [x for x in re.split(r"[.!?\n]+", content.lower()) if _GAP_DISCLOSURE_RE.search(x) and not _GAP_META_RE.search(x)]
     undisclosed = []
-    all_words = [{w[:5] for w in re.findall(r"[a-z]{4,}", g["facet"].lower())} for g in gaps]
-    shared = set.intersection(*all_words)
-    for g, ws in zip(gaps, all_words):
-        words = list(ws)
-        need = max(1, math.ceil(0.6 * len(words)))
+    _w = lambda t: {x[:5] for x in re.findall(r"[a-z]{4,}", t.lower())}
+    # A gap is disclosed by a sentence naming its facet OR any one of its unanswered questions (the sub-question wording the disclosure now uses).
+    cands = [[_w(g["facet"])] + [_w(q) for q in g.get("questions") or []] for g in gaps]
+    shared = set.intersection(*[c[0] for c in cands])
+    for g, cs in zip(gaps, cands):
         # Distinctive words (not in every gap's facet, e.g. estonia vs finland) must ALL appear, else a sibling gap's sentence passes this one.
-        distinct = ws - shared
-        if not any(sum(w in x for w in words) >= need and all(w in x for w in distinct) for x in sentences):
+        ok = any(
+            sum(w in x for w in c) >= max(1, math.ceil(0.6 * len(c))) and all(w in x for w in c - shared)
+            for c in cs for x in sentences
+        )
+        if not ok:
             undisclosed.append(g["facet"])
     return undisclosed
 
@@ -972,16 +984,15 @@ def check_undisclosed_evidence_gap(ctx: Ctx) -> Optional[Verdict]:
     # suggest strong digital engagement"). Same lesson as check_missing_artifact naming the bad
     # URL instead of saying "something failed" -- a literal sentence to insert removes the
     # chance the model satisfies the letter of a vague instruction while missing its point.
-    template_sentences = "\n".join(
-        f'- "A specific figure for {g} could not be confirmed in the available sources."'
-        for g in undisclosed[:3]
-    )
+    by_facet = {g["facet"]: g for g in gaps}
+    template_sentences = "\n".join(f'- "{gap_disclosure_sentence(by_facet[f])}"' for f in undisclosed[:3])
     return Verdict(
         "undisclosed_evidence_gap",
         f"`{ctx.req_artifact}` doesn't disclose that specific evidence could not be found for: {named}.",
         f"SYSTEM WARNING: {ctx.last_chance_prefix}A dedicated re-search could not find a direct answer for one or more questions "
         f"about: {named}. Insert one sentence like this per topic, near where that topic is discussed (wording can be adjusted, "
-        f"but keep the plain 'could not be confirmed in the available sources' meaning):\n{template_sentences}\n"
+        f"but keep it a statement about THAT specific quantity only, never 'no evidence about the topic'; if a related figure exists you may "
+        f"add it in the next sentence, cited and labelled as a proxy, not as the answer):\n{template_sentences}\n"
         f"Do NOT instead hedge a DIFFERENT, nearby number (e.g. an overall index score) while still stating the actually-missing "
         f"figure (e.g. a service-adoption rate) as if an internet-penetration or general-digitalization percentage already answers "
         f"it -- that is the exact failure this check exists to catch. Keep every other real, grounded claim unchanged.",

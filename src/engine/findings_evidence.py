@@ -687,7 +687,8 @@ def _build_findings_source_material(run_state: "RunState", task_names: Optional[
         lines = "\n".join(f"- {g['facet']}: {', '.join(g['questions'])}" for g in gaps)
         gaps_note = (
             f"\n\n(EVIDENCE GAPS -- a dedicated re-search could not find a direct answer for these specific questions:\n{lines}\n"
-            f"For each one, state plainly in the report that it was not found in available sources. Do NOT substitute a "
+            f"For each one, state plainly that no source directly states that specific quantity (a statement about the named quantity only, "
+            f"not 'no evidence about the topic'). A related figure may follow, labelled as a proxy. Do NOT substitute a "
             f"different, related figure and imply it answers the question -- e.g. citing internet-penetration percentages "
             f"for a 'service adoption rate' question misrepresents the evidence.)"
         )

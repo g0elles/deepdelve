@@ -477,6 +477,17 @@ def main():
                                "- A specific figure for Estonia citizen adoption of digital services could not be confirmed in the available sources.\n")},
          None, None, "", [], [],
          {"evidence_gaps": [{"facet": "Finland citizen adoption of digital services", "questions": ["q"]}, {"facet": "Estonia citizen adoption of digital services", "questions": ["q"]}]}),
+        # Sub-question wording (gap_disclosure_sentence): each gap disclosed by quoting its own unanswered question, with a labelled proxy after -> clean.
+        ("undisclosed_evidence_gap_subquestion_wording_clean", True, {"findings.md": _FINDINGS_OK,
+          "final_report.md": (f"- el pais avanza de forma sostenida segun cifras oficiales [gov]({_SRC})\n"
+                               "- No source in the available evidence directly states: Finland digital public services strategy 2024.\n"
+                               "- No source in the available evidence directly states: Finland e-government usage statistics. Closest available: 96% online interaction (proxy).\n")},
+         None, None, "", [], [], {"evidence_gaps": [{"facet": "Finland digital public services approach", "questions": ["Finland digital public services strategy 2024"]}, {"facet": "Finland citizen adoption rate of digital services", "questions": ["Finland e-government usage statistics"]}]}),
+        # A sentence about the adoption question must not clear the sibling Finland-APPROACH gap (shared entity word, different quantity) -> must FIRE on the approach gap.
+        ("undisclosed_evidence_gap_sibling_question_not_cleared", True, {"findings.md": _FINDINGS_OK,
+          "final_report.md": (f"- el pais avanza de forma sostenida segun cifras oficiales [gov]({_SRC})\n"
+                               "- No source in the available evidence directly states: Finland e-government usage statistics.\n")},
+         "undisclosed_evidence_gap", "Finland digital public services approach", "", [], [], {"evidence_gaps": [{"facet": "Finland digital public services approach", "questions": ["Finland digital public services strategy 2024"]}, {"facet": "Finland citizen adoption rate of digital services", "questions": ["Finland e-government usage statistics"]}]}),
         # 2026-10-23 (ARCHITECTURE.md §2 "Builder fixes do not stick"): replay-1 shape -- ONLY the Finland gap is disclosed, the
         # Estonia gap never is; the old one-phrase-clears-all rule passed this. Must FIRE, and name Estonia.
         ("undisclosed_evidence_gap_one_of_two_disclosed", True, {"findings.md": _FINDINGS_OK,

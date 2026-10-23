@@ -665,15 +665,23 @@ def _notify_final_verdict(ctx: "Ctx", problem: Optional[str], req_artifact: str,
                    f"not silently accepted as a success.")
 
 
+def _gap_fire_count(run_state) -> int:
+    """Total (NOT consecutive) attempts this run that recorded `undisclosed_evidence_gap`, current one included. Phase 2 run 3 (2026-10-23):
+    the gap fired at attempts 4, 6 and 8 with unrelated problems between them, so a consecutive count never reached 2 and the escalation never ran."""
+    return sum(1 for a in run_state.data.get("completion_check_attempts", []) if a.get("problem") == "undisclosed_evidence_gap")
+
+
 def _standing_requirements(run_state) -> str:
     """Invariants every Builder pass must keep true, appended to its fix instructions (ARCHITECTURE.md §2 'Builder fixes do not stick':
     a fix for one problem silently dropped the evidence-gap disclosures an earlier pass had added). Invariants only, not a second problem."""
     gaps = (run_state.data or {}).get("evidence_gaps") if run_state is not None else None
     if not gaps:
         return ""
-    names = "; ".join(g["facet"] for g in gaps)
-    return (f"STANDING REQUIREMENT (keep true after your edit): the report must keep one sentence per evidence gap saying plainly "
-            f"that no sufficient evidence was found for it, naming the gap's own subject. Gaps: {names}.\n\n")
+    from engine.completion_checks_structural import gap_disclosure_sentence
+    lines = " ".join(gap_disclosure_sentence(g) for g in gaps)
+    return (f"STANDING REQUIREMENT (keep true after your edit): the report must keep one sentence per evidence gap, worded like: {lines} "
+            f"Say this only about the named quantity, never that the whole topic has no evidence. If a related figure exists, cite it in "
+            f"the NEXT sentence and label it a proxy.\n\n")
 
 
 async def _try_builder_fixable_dispatch(dispatch_task, problem, verdict, req_artifact, attempt, max_attempts,
@@ -692,8 +700,8 @@ async def _try_builder_fixable_dispatch(dispatch_task, problem, verdict, req_art
     has_builder_pair = has_peer_reviewer and any(c.name == "Builder" for c in caller_sub_agents)
     if not has_builder_pair:
         return False
-    if problem == "undisclosed_evidence_gap" and _consecutive_occurrences(run_state, problem) >= 2:
-        # Second consecutive miss: the Builder had its chance, so the harness writes the disclosure itself (item 4, 2026-10-23).
+    if problem == "undisclosed_evidence_gap" and _gap_fire_count(run_state) >= 2:
+        # Second miss in this run: the Builder had its chance, so the harness writes the disclosure itself (item 4, 2026-10-23).
         if _append_harness_gap_section(req_artifact, run_state.data.get("evidence_gaps") or []):
             notify(f"**System ({attempt + 1}/{max_attempts}):** evidence-gap disclosure still missing after a Builder pass -- "
                    f"appended a harness-written 'Evidence gaps and data limitations' section to `{req_artifact}`.")
