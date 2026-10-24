@@ -26,7 +26,7 @@ def collect(case_dir: str) -> dict:
         "minutes": round((ts[-1] - d["started_at"]) / 60, 1) if ts and d.get("started_at") else None,
         "dispatch_minutes": {k: round(v, 1) for k, v in sorted(roles.items())},
         "words_lost": meta["clean_words"] - len(rep.split()), "cites_lost": meta["clean_cites"] - len(re.findall(r"\[\d+", rep)),
-        "other_problems": sorted({p for p in chain if p not in exp and p != "clean"}),
+        "other_problems": sorted({p for p in chain if p not in exp and p != "clean"}), "budget_exhausted": d.get("budget_exhausted"),
     }
 
 
