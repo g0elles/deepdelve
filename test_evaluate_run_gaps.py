@@ -44,3 +44,19 @@ json.dump({"data": {"budget_exhausted": "wall_clock", "query": "q", "started_at"
 open(os.path.join(_d, "final_report.md"), "w").write(pad)
 assert any("HARD max_run_minutes cap" in f for f in verdict(score(_d))), "a budget-exhausted run must be flagged"
 print("test_evaluate_run_gaps OK")
+# --- citation counting (audit 2026-10-24): "title (url)" source lists, "# Sources" headings, listed-vs-cited ---
+_fd = tempfile.mkdtemp()
+json.dump({"data": {"fetched_urls": [{"url": "https://a.org/x"}, {"url": "https://b.org/y"}, {"url": "https://c.org/z"}], "query": "q", "started_at": 0}}, open(os.path.join(_fd, "_run_state.json"), "w"))
+def _score(report):
+    open(os.path.join(_fd, "final_report.md"), "w").write(report)
+    return score(_fd)
+_r = _score(pad + " Claim one [1]. Claim two [2].\n\n# Sources\n1. **Page A** (https://a.org/x)\n2. **Page B** (https://b.org/y)\n3. **Page C** (https://c.org/z)\n")
+assert _r["cited"] == 2 and _r["inline_cites"] == 2 and _r["listed_n"] == 3, _r  # "title (url)" list under "# Sources": 2 of 3 cited, was 0 of 3
+assert any("[3]" in f and "never cited" in f for f in verdict(_r)), verdict(_r)
+_r = _score(pad + "\n## Sources\n1. **[Page A](https://a.org/x)**\n2. **[Page B](https://b.org/y)**\n3. **[Page C](https://c.org/z)**\n")
+assert _r["cited"] == 0 and _r["inline_cites"] == 0, _r  # listed is not cited: used to score 3 of 3
+assert any("no inline citations" in f for f in verdict(_r)), verdict(_r)
+_r = _score(pad + " See [Page A](https://a.org/x) and [Page B](https://b.org/y).\n")
+assert _r["cited"] == 2, _r  # inline markdown links keep working
+assert not any("no inline citations" in f for f in verdict(_r))
+print("test_evaluate_run_gaps citations OK")

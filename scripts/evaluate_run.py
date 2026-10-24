@@ -59,8 +59,6 @@ def score(d):
     srcs = source_texts(d)
     fetched = s.get("fetched_urls", [])
     urls = {(u["url"] if isinstance(u, dict) else u) for u in fetched}
-    cited = {u.rstrip("/") for u in re.findall(r"\]\((https?://[^)\s]+)\)", rep)}
-    cited_n = sum(1 for u in urls if u.rstrip("/") in cited)
     stubs = [n for n, t in srcs.items() if len(t.split()) < STUB_WORDS or any(m in t.lower()[:1500] for m in WALL_MARKERS)]
     corpus_n = norm_fig(" ".join(srcs.values()))
     figs = FIG.findall(rep)
@@ -71,17 +69,27 @@ def score(d):
     errs = s.get("tool_error_samples", [])
     gaps = s.get("evidence_gaps") or s.get("unanswered_facets") or []
     gap_facets = [g for g in (s.get("evidence_gaps") or []) if isinstance(g, dict) and g.get("facet")]
-    src_block = rep.split("## Sources", 1)[-1] if "## Sources" in rep else ""
+    # Sources heading at any level 1-3 (a report with "# Sources" was parsed as having no list); body = everything before it.
+    m_src = re.search(r"^#{1,3} Sources\b", rep, re.M)
+    src_block = rep[m_src.end():] if m_src else ""
     # A Sources-list entry no [N] in the body points at: "cites 12/12" counted list entries, so an uncited source passed (verify run 2026-10-23).
-    body_text = rep.split("## Sources", 1)[0]
+    body_text = rep[:m_src.start()] if m_src else rep
     listed = {int(n) for n in re.findall(r"^\s*(\d+)\.\s", src_block, re.M)}
     cited_in_body = {int(n) for grp in re.findall(r"\[(\d+(?:\s*[,\-]\s*\d+)*)\]", body_text) for n in re.findall(r"\d+", grp)}
-    uncited_listed = sorted(listed - cited_in_body) if "## Sources" in rep and listed and cited_in_body else []
+    uncited_listed = sorted(listed - cited_in_body) if m_src and listed and cited_in_body else []
+    # number -> URL from "N. [title](url)" and "N. title (url)" lists alike (the second form scored 0 cited before, audit 2026-10-24)
+    num2url = {int(m.group(1)): m.group(2).rstrip("/") for m in re.finditer(r"^\s*(\d+)\.\s.*?\((https?://[^)\s]+)\)", src_block, re.M)}
+    inline_cites = len(re.findall(r"\[\d+(?:\s*[,\-]\s*\d+)*\]", body_text))
+    if cited_in_body:  # cited = fetched pages some inline [N] in the body points at; a list entry alone no longer counts
+        cited = {num2url[n] for n in cited_in_body if n in num2url}
+    else:  # reports that link inline with markdown links instead of numbers
+        cited = {u.rstrip("/") for u in re.findall(r"\]\((https?://[^)\s]+)\)", body_text)}
+    cited_n = sum(1 for u in urls if u.rstrip("/") in cited)
     gap_heading = bool(re.search(r"^#+ .*(evidence gaps?|data limitations?)", rep, re.I | re.M))
     return {
         "gaps_total": len(gap_facets), "gaps_undisclosed": undisclosed_gap_facets(rep, gap_facets) if rep and gap_facets else [],
         "gap_meta": len(_REPORT_META_RE.findall(rep)), "wall_titles": [m for m in WALL_MARKERS if m in src_block.lower()],
-        "unrequested_gap_section": gap_heading and not gap_facets, "uncited_listed": uncited_listed, "budget_exhausted": s.get("budget_exhausted"),
+        "unrequested_gap_section": gap_heading and not gap_facets, "uncited_listed": uncited_listed, "inline_cites": inline_cites, "listed_n": len(listed), "budget_exhausted": s.get("budget_exhausted"),
         # Advisory only: detecting WHICH figure is an unlabelled stand-in is too fuzzy for a completion check (a false fire costs a Builder pass).
         "gaps_no_proxy_label": bool(gap_facets) and bool(rep) and not re.search(r"\bproxy\b|closest (?:available|related)|related figure|not (?:the same as|a direct)", rep, re.I),
         "dir": os.path.basename(d.rstrip("/")), "evidence_only": bool(s.get("evidence_only")),
@@ -117,6 +125,8 @@ def verdict(r):
         flags.append(f"{r['gap_meta']} meta-reference(s) to the findings file / gaps section in the report text")
     if r["budget_exhausted"]:
         flags.append(f"run was stopped by the HARD max_run_minutes cap ({r['budget_exhausted']}): the report is whatever existed at the limit")
+    if r["listed_n"] and r["inline_cites"] == 0 and r["words"] >= 200:
+        flags.append(f"report body has no inline citations ({r['listed_n']} sources only listed at the end): no claim can be traced to a source")
     if r["uncited_listed"]:
         flags.append(f"Sources list entries never cited in the body: {r['uncited_listed']}")
     if r["gaps_no_proxy_label"]:
