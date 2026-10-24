@@ -1,4 +1,6 @@
 import functools
+import hashlib
+import json
 
 import config as app_config
 
@@ -57,6 +59,60 @@ def _wrap_brave_search_tool(tool):
     return tool
 
 
+def _article_urls(obj) -> list[str]:
+    """Source URLs an MCP tool's structured (JSON) output names for the articles it returned: pmcUrl / pubmedUrl / url fields,
+    and doi fields as doi.org links. Only these fields, never URLs inside article text (a reference list is not a fetch)."""
+    found = []
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k in ("pmcUrl", "pubmedUrl", "url") and isinstance(v, str) and v.startswith("http"):
+                found.append(v)
+            elif k == "doi" and isinstance(v, str) and v.startswith("10."):
+                found.append("https://doi.org/" + v)
+            elif k.lower() not in ("references", "citations", "citedby", "related", "relatedarticles"):
+                found += _article_urls(v)  # a cited or related paper was not fetched
+    elif isinstance(obj, list):
+        for v in obj:
+            found += _article_urls(v)
+    return list(dict.fromkeys(found))
+
+
+def _wrap_capture_fetches(tool, tool_names: list[str]):
+    """Opt-in per server (spec key `capture_fetches: [tool names]`). A fetch-style MCP tool hands its article text straight to the
+    model, so nothing is saved to the workspace (the Analyzers read files, not chat) and nothing is recorded as fetched (the
+    grounding checks then treat every citation to it as invented). This saves the text to sources/ and records the article URLs
+    the tool's JSON output names, exactly like fetch_url_to_workspace, and hands the model a pointer instead of the full text.
+    A result without any such URL is passed through unchanged and unrecorded."""
+    original = tool.call_tool
+
+    @functools.wraps(original)
+    async def call_tool(tool_name, **kwargs):
+        result = await original(tool_name, **kwargs)
+        if tool_name not in tool_names or not isinstance(result, list):
+            return result
+        texts = [getattr(c, "text", None) or "" for c in result]
+        urls = []
+        for t in texts:
+            try:
+                urls += _article_urls(json.loads(t))
+            except ValueError:
+                pass
+        urls = list(dict.fromkeys(urls))
+        full = "\n\n".join(t for t in texts if t and not t.lstrip().startswith("{"))
+        if not urls or not full.strip():
+            return result
+        from agent_framework import Content
+        from tools.web import _save_fetched, _fetched_filename
+        fn = f"mcp_{tool.name}_{tool_name}_{hashlib.sha1(urls[0].encode()).hexdigest()[:8]}"
+        _save_fetched(urls, fn, f"Content-Level: as returned by the {tool.name} MCP tool {tool_name} (a full text only if the body below is one)\n\n" + full)
+        shown = ", ".join(urls[:6])
+        return [Content.from_text(text=f"Saved the returned article text to workspace file '{_fetched_filename(fn)}' ({len(full)} characters). "
+                                       f"Source URL(s) now citable: {shown}. Delegate its analysis; do not call this tool again for the same article.")]
+
+    tool.call_tool = call_tool
+    return tool
+
+
 def _build_mcp_tool(spec: dict):
     from agent_framework import MCPStdioTool, MCPStreamableHTTPTool
 
@@ -78,6 +134,8 @@ def _build_mcp_tool(spec: dict):
 
     if "brave" in name.lower():
         tool = _wrap_brave_search_tool(tool)
+    if spec.get("capture_fetches"):
+        tool = _wrap_capture_fetches(tool, list(spec["capture_fetches"]))
     return tool
 
 

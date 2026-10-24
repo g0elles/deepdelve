@@ -515,6 +515,18 @@ def main():
     assert "the" not in _terms and "with" not in _terms and "new" not in _terms, _terms
 
     _fetch_raw_html_happy_path_scenario()
+    _client_challenge_stub_scenario()
+
+
+def _client_challenge_stub_scenario():
+    """The nature.com 'Client Challenge' shell (35 prose words, no older marker) is a stub, so its claims never become findings; real prose naming a challenge is not."""
+    from tools.web import _stub_reason
+    from utils.run_state import _INTERSTITIAL_TITLE_RE
+    shell = ("Title: Client Challenge\n\nA required part of this site couldn\u2019t load. This may be due to a browser extension, network issues, or browser "
+             "settings. Please check your connection, disable any ad blockers, or try using a different browser.")
+    assert _stub_reason(shell), "Client Challenge shell must be a stub"
+    assert _INTERSTITIAL_TITLE_RE.search("Client Challenge")
+    assert _stub_reason("# Review\n\n" + "The client challenge in this trial was the dosing schedule across sites and cohorts in the study. " * 12) is None
 
 
 if __name__ == "__main__":

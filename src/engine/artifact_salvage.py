@@ -7,11 +7,38 @@
 # engine/completion.py imports these back at module level, so every existing external import path
 # (e.g. engine/tui.py's `from engine.completion import _restore_quarantined_draft` re-export,
 # consumed by test_structural_checks.py) keeps working unchanged.
+import glob
 import logging
 import os
+import re
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _rejected_snapshots(path: str) -> list[str]:
+    """Every `<path>.rejected_attempt_N`, in attempt order. Numeric, not lexicographic, and not capped at 9: the old
+    `sorted(range(1, 10))` lookup put attempt 9 after attempt 10 and never saw attempt 10 or later (2026-10-24: a run restored its
+    empty attempt-9 template while a 7 KB attempt-8 draft sat beside it)."""
+    found = [(int(m.group(1)), p) for p in glob.glob(glob.escape(path) + ".rejected_attempt_*")
+             if (m := re.search(r"\.rejected_attempt_(\d+)$", p))]
+    return [p for _, p in sorted(found)]
+
+
+def _best_snapshot(snapshots: list[str]) -> str | None:
+    """The most recent draft that still has substance: at least half the words of the longest snapshot. A later, nearly empty template
+    (headings only, 'not covered') must not replace the real draft that failed one check."""
+    sizes = {}
+    for p in snapshots:
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                sizes[p] = len(f.read().split())
+        except OSError:
+            continue
+    if not sizes:
+        return None
+    floor = max(sizes.values()) / 2
+    return [p for p in snapshots if sizes.get(p, -1) >= floor][-1]
 
 
 def _quarantine_artifact(req_artifact: str, attempt: int) -> None:
@@ -55,9 +82,7 @@ def _content_unchanged_since_last_quarantine(req_artifact: str, current_content:
         path = _get_safe_path(req_artifact)
         if not path:
             return False
-        existing = sorted(
-            (p for p in (f"{path}.rejected_attempt_{n}" for n in range(1, 10)) if os.path.exists(p)),
-        )
+        existing = _rejected_snapshots(path)
         if not existing:
             return False
         with open(existing[-1], "r", encoding="utf-8") as f:
@@ -80,12 +105,10 @@ def _restore_quarantined_draft(req_artifact: str, problem: str) -> bool:
         path = _get_safe_path(req_artifact)
         if not path or os.path.exists(path):
             return False
-        rejected = sorted(
-            (p for p in (f"{path}.rejected_attempt_{n}" for n in range(1, 10)) if os.path.exists(p)),
-        )
-        if not rejected:
+        best = _best_snapshot(_rejected_snapshots(path))
+        if not best:
             return False
-        with open(rejected[-1], "r", encoding="utf-8") as f:
+        with open(best, "r", encoding="utf-8") as f:
             draft = f.read()
         banner = (
             f"> **QUARANTINED DRAFT (restored)** — this draft failed the completion check "

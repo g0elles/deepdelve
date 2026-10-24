@@ -14,6 +14,7 @@ from tools.todos import write_todos, read_todos
 from tools.meta import think_tool
 from tools.data import extract_structured_data
 from tools.rag import search_verified_findings
+from tools.scholar import scholar_search, scholar_fetch
 
 # -------------------------------------------------------------
 # [!CAUTION] RULES FOR LLM CODING ASSISTANTS EDITING THIS:
@@ -56,6 +57,8 @@ __all__ = [
     "verify_url_live",
     "extract_structured_data",
     "search_verified_findings",
+    "scholar_search",
+    "scholar_fetch",
     # TUI helpers (not agent tools)
     "get_workspace_files",
     "get_workspace_file_content",

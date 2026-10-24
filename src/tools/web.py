@@ -491,7 +491,10 @@ _STUB_MARKERS_RE = re.compile(
     # above already protects a real article that merely discusses captchas as a topic.
     r'captcha|checking if you.{0,3}re a real person|(?:are|is) a bot\b|automated (?:bad )?bot|'
     r'not a robot|verify (?:you|that you)(?:.{0,3}re| are) (?:a )?human|prove you.{0,3}re human|'
-    r'unusual traffic|request unblock|please solve this|just a moment',
+    r'unusual traffic|request unblock|please solve this|just a moment|'
+    # Nature/Springer "Client Challenge" shell (2026-10-24: three nature.com pages, 299 bytes each, were recorded as real sources and
+    # their article claims reached findings.md): ~35 prose words, none of the markers above.
+    r'client challenge|a required part of this site couldn.?t load',
     re.IGNORECASE)
 
 # Analytics/tracking-script chrome (Adobe Analytics `s.propN = "..."; s.eVarN = "..."; ...` style)

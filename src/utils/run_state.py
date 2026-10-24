@@ -136,7 +136,7 @@ def fallback_title(url: str) -> str:
 # from that first response, so real digifyworld pages reached every 2026-10-22 report as "Checking your browser before accessing. Just a moment...".
 _INTERSTITIAL_TITLE_RE = re.compile(
     r"just a moment|checking your browser|attention required|access denied|performing security verification|"
-    r"verify(?:ing)? (?:that )?you(?:'re| are) (?:a )?human|are you a robot|one more step", re.I)
+    r"verify(?:ing)? (?:that )?you(?:'re| are) (?:a )?human|are you a robot|one more step|client challenge", re.I)
 
 
 def record_fetched_url(url: str, filename: str, stub: Optional[str] = None,
