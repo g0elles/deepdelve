@@ -1,0 +1,8 @@
+{"run":"val_raft_20260929_205408","unit":"table","type":"C3","sev":2,"stage":"W","note":"comparison table lists ZooKeeper under Paxos users; the report's own bullet calls its protocol Zab/Paxos and Zab is a distinct protocol"}
+{"run":"val_raft_20260929_205408","unit":"tikv","type":"C3","sev":2,"stage":"W","note":"a TiKV configuration parameter pair is stated as the general Raft election-timeout rule"}
+{"run":"val_raft_20260929_205408","unit":"208ms","type":"C3","sev":2,"stage":"W","note":"one blog implementation's 208 ms failover listed as a finding about Raft"}
+{"run":"val_raft_20260929_205408","unit":"four-steps","type":"C1","sev":2,"stage":"W","note":"'Log replication in Raft involves four steps: sending requests, etc.' names no steps; the answer to the log-replication half of the query is a stub"}
+{"run":"val_raft_20260929_205408","unit":"sources","type":"F1","sev":2,"stage":"H","note":"all 15 source titles are query-facet labels ('Leader election in Raft', 'Leader election in Paxos'), not page titles, so the source list cannot be read"}
+{"run":"val_raft_20260929_205408","unit":"structure","type":"F1","sev":1,"stage":"W","note":"22 findings bullets each restate one source before a table; little synthesis between sources"}
+{"run":"val_raft_20260929_205408","unit":"bitcoin","type":"S2","sev":1,"stage":"W","note":"Bitcoin proof-of-work and NB-Raft in IoTDB/Alibaba bullets do not bear on the question"}
+{"run":"val_raft_20260929_205408","unit":"paxos-systems","type":"Q1","sev":1,"stage":"W","note":"production systems that use Paxos: only Chubby and ZooKeeper are named, the latter mislabelled"}

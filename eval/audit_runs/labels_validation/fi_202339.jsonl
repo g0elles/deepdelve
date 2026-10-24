@@ -1,0 +1,5 @@
+{"run":"val_fi_20261023_202339","unit":"comparison","type":"C4","sev":3,"stage":"W","note":"Estonia's share of government services online (over 99%) set against Finland's internet penetration (98.2%) as if comparable (NOT BLIND: this report was evaluated earlier in the session)"}
+{"run":"val_fi_20261023_202339","unit":"eid","type":"C5","sev":2,"stage":"W","note":"says Finland's eID usage is 'high but not quantified' while the cited material gives a figure above 90% (not blind)"}
+{"run":"val_fi_20261023_202339","unit":"sources","type":"S1","sev":2,"stage":"E","note":"key Estonian adoption figures rest on a LinkedIn post and a company-formation blog (not blind)"}
+{"run":"val_fi_20261023_202339","unit":"approach","type":"Q1","sev":2,"stage":"W","note":"Finland's approach is thin: a climate-neutrality goal stands in for a description of digital services (not blind)"}
+{"run":"val_fi_20261023_202339","unit":"sources-list","type":"F1","sev":1,"stage":"W","note":"one listed source never cited in the body (not blind)"}

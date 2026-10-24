@@ -17,3 +17,15 @@ EVIDENCE = {
     "h13_psilocybin": "eval/heldout3_runs/h13", "h22_glp1": "eval/heldout4_runs/rerun2/h22", "h21_lsm": "eval/heldout4_runs/rerun2/h21",
     "h12_raft": "eval/heldout3_runs/h12", "h18_congestion": "eval/heldout3_runs/h18", "h23_flu": "eval/heldout4_runs/rerun2/h23", "h27_remote": "eval/heldout4_runs/rerun2/h27",
 }
+
+# Validation set (cheap check on existing reports, 2026-10-24): label key -> run folder. Labels live in labels_validation/.
+VAL_RUNS = {
+    "val_fi_20261017_163846": "src/research_output/compare_finland_s_and_estonia_s_approach_37dce8_20261017_163846",
+    "val_fi_20261017_174505": "src/research_output/compare_finland_s_and_estonia_s_approach_37dce8_20261017_174505",
+    "val_raft_20260929_205408": "research_output/how_do_raft_and_paxos_differ_in_leader_e_0ba009_20260929_205408",
+    "val_aiact_20261001_185243": "research_output/what_are_the_latest_developments_in_the_bc7ad7_20261001_185243",
+    "val_fi_20261021_214936": "src/research_output/compare_finland_s_and_estonia_s_approach_37dce8_20261021_214936",
+    "val_fi_20261021_210135": "src/research_output/compare_finland_s_and_estonia_s_approach_37dce8_20261021_210135",
+    "val_fi_20261023_202339": "src/research_output/compare_finland_s_and_estonia_s_approach_37dce8_20261023_202339",
+    "val_fi_20261017_190810": "src/research_output/compare_finland_s_and_estonia_s_approach_37dce8_20261017_190810",
+}

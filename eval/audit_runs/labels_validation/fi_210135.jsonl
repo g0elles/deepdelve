@@ -1,0 +1,8 @@
+{"run":"val_fi_20261021_210135","unit":"Q-adoption","type":"Q1","sev":3,"stage":"W","note":"no adoption or usage figure for Estonia; Finland has two different internet measures (97.8% penetration, 93.7% users) in adjacent bullets; the analysis ranks the countries on strengths that have no shared measure"}
+{"run":"val_fi_20261021_210135","unit":"bullets","type":"C4","sev":3,"stage":"W","note":"Finland 97.8% internet penetration and 93.7% internet users listed one after the other as if one measure; neither is a digital-service adoption rate"}
+{"run":"val_fi_20261021_210135","unit":"roadmap","type":"C1","sev":2,"stage":"E","note":"'2023 roadmap renewal' cited to a page whose saved text is accessibility boilerplate and generic EU roadmap text"}
+{"run":"val_fi_20261021_210135","unit":"sources","type":"S1","sev":2,"stage":"E","note":"Finland's sustainability and digital-ID claims come from a Nigerian newspaper and a law-firm blog"}
+{"run":"val_fi_20261021_210135","unit":"sustainability","type":"S2","sev":1,"stage":"W","note":"carbon neutrality and data-centre heat bullets do not bear on public-service approach or adoption"}
+{"run":"val_fi_20261021_210135","unit":"analysis","type":"C1","sev":1,"stage":"W","note":"'Estonia's open-innovation platform' and 'policy agility' have no source"}
+{"run":"val_fi_20261021_210135","unit":"rank","type":"C3","sev":1,"stage":"W","note":"'top EU position in digital public services' is a paraphrase of a page title"}
+{"run":"val_fi_20261021_210135","unit":"gap","type":"G1","sev":2,"stage":"W","note":"no limitation noted for the missing Estonia usage data"}

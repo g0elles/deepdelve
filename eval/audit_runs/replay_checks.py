@@ -4,7 +4,10 @@ Output: per-run firings, and per defect type: labelled defects, runs where a che
 import glob, json, os, sys
 HERE = os.path.dirname(os.path.abspath(__file__)); ROOT = os.path.abspath(HERE + "/../..")
 sys.path.insert(0, ROOT + "/src"); sys.path.insert(0, HERE)
-from runs import RUNS
+import runs as _runs
+SET = os.environ.get("AUDIT_SET", "main")  # AUDIT_SET=validation scores the cheap-validation reports against labels_validation/
+RUNS = _runs.VAL_RUNS if SET == "validation" else _runs.RUNS
+LABEL_DIR = "/labels_validation" if SET == "validation" else "/labels"
 
 
 class Run:
@@ -47,7 +50,7 @@ except ImportError:
 
 def labels():
     out = {k: [] for k in RUNS}
-    for f in glob.glob(HERE + "/labels/*.jsonl"):
+    for f in glob.glob(HERE + LABEL_DIR + "/*.jsonl"):
         if "check_firings" in f: continue
         for l in open(f):
             d = json.loads(l)
