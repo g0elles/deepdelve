@@ -148,6 +148,29 @@ def verdict(r):
     return flags
 
 
+def advisory(d):
+    """Shadow detectors from the 2026-10-24 report-defect audit (eval/audit_runs/detectors.py), shown as hints UNDER the scorecard, never as flags: their precision was measured
+    on a small hand-labelled set (eval/audit_runs/PHASE_C_VERDICT.md, VALIDATION_VERDICT.md). Any failure here is swallowed: the scorecard must not depend on them."""
+    out = []
+    try:
+        from types import SimpleNamespace
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "eval", "audit_runs"))
+        import detectors
+        rp = os.path.join(d, "final_report.md")
+        if not os.path.exists(rp):
+            return out
+        run = SimpleNamespace(key=os.path.basename(d.rstrip("/")), dir=d, report=open(rp, errors="ignore").read(), state=load(d), sources=source_texts(d))
+        run.query = run.state.get("query", "")
+        for name in ("stale_status", "figure_context", "citation_structure", "facet_coverage", "weak_sources"):
+            try:
+                out += [f"{name}: {f}" for f in detectors.DETECTORS[name](run)[:6]]
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("run_dir")
@@ -175,6 +198,11 @@ def main():
     print("\n## Flags")
     for f in verdict(r) or ["none"]:
         print(f"- {f}")
+    adv = advisory(a.run_dir)
+    if adv:
+        print("\n## Advisory (shadow detectors; hints, not flags; precision measured on a small labelled set only)")
+        for f in adv:
+            print(f"- {f}")
     if not a.no_siblings and r["query"]:
         sib = []
         for d in sorted(glob.glob(os.path.join(os.path.dirname(a.run_dir.rstrip('/')), "*/"))):

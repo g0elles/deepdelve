@@ -1,6 +1,6 @@
 import json, os, sys, tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts"))
-from evaluate_run import score, verdict
+from evaluate_run import score, verdict, advisory
 
 GAPS = [{"facet": "Estonia citizen adoption of digital services"}, {"facet": "Finland citizen adoption of digital services"}]
 
@@ -60,3 +60,14 @@ _r = _score(pad + " See [Page A](https://a.org/x) and [Page B](https://b.org/y).
 assert _r["cited"] == 2, _r  # inline markdown links keep working
 assert not any("no inline citations" in f for f in verdict(_r))
 print("test_evaluate_run_gaps citations OK")
+# --- advisory shadow detectors (audit 2026-10-24): hints only, never flags, never fatal ---
+_ad = tempfile.mkdtemp()
+json.dump({"data": {"started_at": 1790900000, "query": "q"}}, open(os.path.join(_ad, "_run_state.json"), "w"))  # 2026-10-02
+open(os.path.join(_ad, "final_report.md"), "w").write(pad + " Topline data from the Phase 3 trial are expected in summer 2024. A claim [1].\n\n## Sources\n1. **[a](https://a.org/x)**\n")
+_hints = advisory(_ad)
+assert any(h.startswith("stale_status:") and "summer 2024" in h for h in _hints), _hints
+assert not any("stale_status" in f for f in verdict(score(_ad))), "advisory hints must not become flags"
+_nr = tempfile.mkdtemp()
+json.dump({"data": {"query": "q", "started_at": 0}}, open(os.path.join(_nr, "_run_state.json"), "w"))
+assert advisory(_nr) == [], "no report, no hints, no crash"
+print("test_evaluate_run_gaps advisory OK")

@@ -150,8 +150,7 @@ def det_citation_structure(run):
     if listed and not cites and len(body.split()) > 200: out.append(f"no inline citations; {len(listed)} sources only listed")
     urls = re.findall(r"^\s*\d+\.\s.*?\((https?://[^)\s]+)\)", srcs, re.M); dup = {u for u in urls if urls.count(u) > 1}
     if dup: out.append(f"{len(dup)} source URL(s) listed more than once")
-    for claim, cs in _claims(body):
-        if len(set(cs)) >= 4: out.append(f"{len(set(cs))} citations stacked on one sentence: {claim[:80]!r}")
+    # The "many citations on one sentence" rule was dropped after validation (2026-10-24): precision 0.67, it fired on a range row that legitimately cites five sources.
     return out
 
 
