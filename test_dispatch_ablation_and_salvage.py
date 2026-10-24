@@ -730,6 +730,25 @@ def main():
     from engine.completion_dispatch import _BUILDER_WRITE_FIRST
     assert "DELETE the claim" in _CLAIM_UNSUPPORTED_BUILDER_DIRECTIVE and "write_workspace_file" in _BUILDER_WRITE_FIRST
 
+    # Per-dispatch timing (experiment plan Step 0, 2026-10-23): recorded for success AND failure, and a missing run_state must not break the dispatch.
+    import asyncio as _aio_t, tempfile as _tf_t
+    from engine.artifact_salvage import _dispatch_task_retrying_transient_json_error as _wrap
+    from utils.run_state import RunState as _RS_t, run_state_ctx as _rsc
+    async def _ok(name, *a): return "done"
+    async def _boom(name, *a): raise RuntimeError("real failure")
+    _rs_t = _RS_t(_tf_t.mkdtemp()); _tok = _rsc.set(_rs_t)
+    try:
+        assert _aio_t.run(_wrap(_ok, "SubAgent_BuilderFix_attempt1", "x")) == "done"
+        try:
+            _aio_t.run(_wrap(_boom, "SubAgent_ReviewFix_attempt1", "x")); raise AssertionError("must propagate")
+        except RuntimeError:
+            pass
+        _tm = _rs_t.data["dispatch_timings"]
+        assert [t["name"] for t in _tm] == ["SubAgent_BuilderFix_attempt1", "SubAgent_ReviewFix_attempt1"] and all(t["seconds"] >= 0 for t in _tm), _tm
+    finally:
+        _rsc.reset(_tok)
+    assert _aio_t.run(_wrap(_ok, "SubAgent_X", "x")) == "done"  # no run_state in context: still dispatches
+
     from utils.run_state import fetched_urls_ctx, record_fetched_url as _rec
     reset_fetched_urls()
     _rec("https://www.digifyworld.com/digital-adoption/estonia/", "src_x.md", title="Checking your browser before accessing. Just a moment...")

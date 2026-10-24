@@ -304,6 +304,13 @@ tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
   (unset and medium send the identical prompt yet differ 462 vs 741, which is the noise floor); only low vs high is resolved; no like-for-like 0.34.4 numbers exist on this prompt,
   so "unchanged" rests on the template and qualitative behaviour, not a paired comparison. Not re-tested: tool-call serialisation bugs, repeated-token abort, other models.
   Recommended next step (not done, needs a decision): A/B `think:"low"` vs the default per role on the project's own eval, not a global flip.
+  **Other-model re-test on Ollama 0.40.9 (2026-10-23, native `/api/chat`, one model loaded at a time, nested-array `delegate_tasks`-style tool, 4 calls each at temperature 0):** `mistral-nemo:12b`,
+  `llama3-groq-tool-use:8b`, `llama3.2:3b` all returned a proper list of dicts 4/4, so the nested-array stringification found earlier did NOT reproduce here (caveat: one simple prompt,
+  temperature 0 makes the 4 calls near-identical, so n is effectively 1 per model; a fix upstream is plausible, not proven). `ministral-3:8b`: same tool 4/4 OK, and a multi-line `write_workspace_file`
+  content argument (the raw-newline shape behind the open JSON bug) 6/6 OK at temperature 0.08 with a short context; the bug previously fired in 3 of 5 FULL runs, so this clears a probe, not the model
+  (a full run under the Model Evaluation Standard is still needed before the BLOCKED status can change). `qwen3:4b`: `think=false` still generates the SAME number of tokens as `think=true` (1592 vs 1592 on a
+  trivial multiplication) and the reasoning appears in the visible `content` instead of the `thinking` field, so the Qwen3 think passthrough bug is STILL PRESENT on 0.40.9.
+  Repeated-token abort guard: not testable without a reproducible degenerate loop, no regression seen in the two 0.40.9 agent runs. Probe: scratchpad `toolprobe.py`.
   A/B on the same fixed evidence (h24, `eval/thinking_effort/run_ab.sh`) found two harness defects before any verdict: baseline_1 aborted at ~7 s (Ollama repeat guard),
   the writer dispatch exception fell through to the Planner, which then did free research (5 delegate_tasks, 11 searches, no report after 31 min, stopped by hand);
   low_1 finished in 7.4 min and passed the project's own checks (n=1 each, NOT a verdict). Both fixed 2026-09-30 (see ARCHITECTURE.md section 2, "Evidence-only runs and

@@ -310,6 +310,10 @@ class RunState:
             "tool_error_count": 0,
             "tool_error_samples": [],
             "subagent_invocations": {},
+            # Per-dispatch wall time of every writer/reviewer/fix sub-agent call (2026-10-23, experiment plan Step 0: invocation counts alone could
+            # not say where the minutes of a run go). [{"name", "start", "seconds"}], appended by engine.artifact_salvage's dispatch wrapper.
+            # In _RESUME_CARRYOVER_KEYS so a resumed run keeps its earlier timings.
+            "dispatch_timings": [],
             # Engine-driven iterative deepening (2026-07-19, ROADMAP item 10): how many deepening
             # rounds this run has already dispatched (bounded by settings.max_deepening_rounds),
             # and which real follow_up_directions strings have already been turned into a
@@ -541,6 +545,7 @@ _RESUME_CARRYOVER_KEYS = (
     # failures loses the escalated nudge wording on resume and starts back at the mild
     # first-time message.
     "no_urls_count",
+    "dispatch_timings",
     # verified_cache_urls (2026-09-09, QA audit): without this, a resumed run's carried-over
     # findings.md/report content that legitimately cited a rag_cache hit would get re-flagged as
     # ungrounded on resume, since the contextvar (utils.run_state.verified_cache_urls_ctx) resets

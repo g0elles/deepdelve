@@ -276,6 +276,8 @@ def main():
     _rs_eo = _RS_eo(_tf_eo.mkdtemp())
     _merge_eo(_rs_eo, {"query": "q", "evidence_only": True})
     assert _rs_eo.data["evidence_only"] is True
+    assert "dispatch_timings" in _resume_keys, (
+        "shared resume-carryover allowlist must include dispatch_timings (a resumed run keeps its earlier per-dispatch timings)")
     assert "evidence_gaps" in _resume_keys, (
         "shared resume-carryover allowlist must include evidence_gaps (a resumed evidence-only run must keep its disclosed gaps)")
     _rs_eg = _RS_eo(_tf_eo.mkdtemp())

@@ -232,9 +232,18 @@ async def _dispatch_task_retrying_transient_json_error(dispatch_task, *args, **k
     transient Ollama generation failures (see _is_transient_ollama_json_error) -- every other
     exception, and a second occurrence of the same one, propagates immediately so this can never
     mask a real, reproducible failure or loop unboundedly."""
+    import time
+    from utils.run_state import run_state_ctx
+    t0 = time.time()
     try:
-        return await dispatch_task(*args, **kwargs)
-    except Exception as e:
-        if not _is_transient_ollama_json_error(e):
-            raise
-        return await dispatch_task(*args, **kwargs)
+        try:
+            return await dispatch_task(*args, **kwargs)
+        except Exception as e:
+            if not _is_transient_ollama_json_error(e):
+                raise
+            return await dispatch_task(*args, **kwargs)
+    finally:
+        rs = run_state_ctx.get()
+        if rs is not None:  # timing is a diagnostic: it must never be able to break a dispatch
+            rs.data.setdefault("dispatch_timings", []).append(
+                {"name": str(args[0]) if args else "?", "start": round(t0, 1), "seconds": round(time.time() - t0, 1)})

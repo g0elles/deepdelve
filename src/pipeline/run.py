@@ -148,7 +148,10 @@ def facet_unanswered(model: str, query: str, facet: dict, quotes: list[str]) -> 
     p = (f"Facet: {facet['name']}\n\nQuestions:\n{qs}\n\nPassages:\n{ql}\n\n"
          f"For each question, give the number of ONE passage that directly answers it, or -1 if none does. A passage answers a "
          f"question only if it states the SAME quantity or attribute the question names, about the SAME entity -- a related but "
-         f"different quantity, a general background statement, or a passage that only shares keywords does NOT answer it.")
+         f"different quantity, a general background statement, or a passage that only shares keywords does NOT answer it. "
+         f"For a question about a strategy, system, platform or approach (not a number), a passage that names and describes that "
+         f"thing for that entity DOES answer it; do not require a figure. (Hand check 2026-10-23: the quantity-only wording marked "
+         f"Estonia's strategy, platform and delivery-model questions unanswered although the passages described them.)")
     try:
         ans = call_json(model, p, ANSWER_SCHEMA, think="low", timeout=180)["answers"]
         answered = {a["q"] for a in ans if isinstance(a.get("quote"), int) and a["quote"] >= 0}
