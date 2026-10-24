@@ -26,6 +26,7 @@ from typing import Any, Awaitable, Callable, Optional
 
 from agent_framework import Message
 
+import config
 from engine.completion import run_completion_check
 from engine.orchestrator import (
     MalformedRetryResult,
@@ -33,6 +34,7 @@ from engine.orchestrator import (
     iter_agent_stream,
     stream_content_chars,
 )
+from utils import reader_notes
 
 
 @dataclass
@@ -255,7 +257,6 @@ async def run_agent_loop(agent, session, current_input, surface: RunLoopSurface)
                     # below) -- never nudge-loop.
                     budget_nudged = True
                     run_stream_chars = 0
-                    import config
 
                     req_artifact = config.get_required_artifact()
                     endgame = (
@@ -321,6 +322,15 @@ async def run_agent_loop(agent, session, current_input, surface: RunLoopSurface)
                                 text = getattr(c, "text", None)
                                 if text:
                                     run_stream_chars += len(text)
+        # Reader notes: appended once, after the last completion check (so no check ever reads them), for research runs only. This loop is the one
+        # shared by run_cli, run_agent and _run_research, so all three surfaces get the same behaviour. Mandatory: there is no setting to turn it off. Fail-open inside append_to_artifact.
+        if run_state is not None and not surface.skip_completion_check:
+            req = config.get_required_artifact()
+            if req:
+                n_notes = reader_notes.append_to_artifact(req, run_state.data.get("fetched_urls") or [], run_state.data.get("started_at"))
+                if n_notes is not None:
+                    surface.notify(f"Reader notes appended to the end of {req}: {n_notes} automatic hint(s) (unverified, may be wrong)." if n_notes
+                                   else f"Reader notes appended to the end of {req}: no automatic hints raised (this does not mean the report is error-free).")
     except Exception:
         if run_state is not None:
             run_state.sync_fetched_urls()

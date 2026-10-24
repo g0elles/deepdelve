@@ -35,19 +35,9 @@ _ASOF = re.compile(r"\bas of\s+(\d{1,2}\s+(?:%s)\s+(?:19|20)\d{2}|(?:%s)\s+\d{1,
 
 
 def det_stale_status(run):
-    out = []; now = float(run.state.get("started_at") or time.time()); t = time.gmtime(now); y, mo = t.tm_year, t.tm_mon
+    from utils import reader_notes as rn
     body, _, _ = split_report(run.report)
-    for m in _FUT.finditer(body):
-        mod, yr = m.group(1).lower().strip(), int(m.group(2)); mon = next((i + 1 for i, n in enumerate(_MONTHS) if n in mod), None)
-        if not mon: mon = next((v for k, v in _SEASON.items() if k in mod), 12)
-        if yr < y or (yr == y and mon < mo):
-            out.append(f"future-tense statement about {mod} {yr} written in {y}-{mo:02d}: {body[max(0, m.start() - 20):m.end() + 10]!r}")
-    for m in _ASOF.finditer(body):
-        d = re.sub(r",", "", m.group(1)); mt = re.search(r"(%s)" % "|".join(_MONTHS), d, re.I); yr = int(re.search(r"(?:19|20)\d{2}", d).group(0))
-        if not mt: continue
-        age_days = (y - yr) * 365 + (mo - (_MONTHS.index(mt.group(1).lower()) + 1)) * 30
-        if age_days > 30: out.append(f"'as of {d}' is about {age_days} days before the run")
-    return out
+    return rn.stale_status(body, float(run.state.get("started_at") or time.time()))
 
 
 # ---- WP3b query-part coverage -------------------------------------------------------------------------------------------------------------------------
@@ -98,36 +88,11 @@ def _claims(body):
             if cites and len(text) > 25: yield text, cites
 
 
-def det_figure_context(run, radius=160):
-    out = []; body, _, _ = split_report(run.report); n2f = _sources_by_number(run)
-    for claim, cites in _claims(body):
-        cl = norm(claim)
-        for fm in _FIG.finditer(cl):
-            fig, unit = fm.group(1).replace(",", ""), (fm.group(2) or "").lower()
-            if len(fig.replace(".", "").lstrip("$")) < 2 or (not unit and not fig.startswith("$") and "." not in fig): continue  # bare small integers / years carry no figure semantics
-            around = cl[max(0, fm.start() - 30):fm.start()].lower(); subj = toks(cl[max(0, fm.start() - 90):fm.start()] + " " + cl[fm.end():fm.end() + 60])  # the clause around the figure
-            found_any = False; ok = False; reason = ""
-            for n in cites:
-                f = n2f.get(n)
-                if not f: continue
-                src = norm(run.sources[f]); low = src.lower()
-                pos = [m.start() for m in re.finditer(r"(?<![\d.])" + re.escape(fig) + r"(?![\d])", src)]
-                if not pos: continue
-                found_any = True
-                for p in pos:
-                    ctx = src[max(0, p - radius):p + radius]
-                    if len(subj & toks(ctx)) >= 2:
-                        ok = True
-                        pre = low[max(0, p - 12):p]
-                        if re.search(r"\bby\s*\$?$", around) and re.search(r"\bto\s*\$?\s*$", pre) and not re.search(r"\bby\s*\$?\s*$", pre): ok = False; reason = "claim says 'by <figure>', source says 'to <figure>'"
-                        break
-                if ok: break
-            if not found_any:
-                elsewhere = [k for k, s in run.sources.items() if re.search(r"(?<![\d.])" + re.escape(fig) + r"(?![\d])", norm(s))]
-                if elsewhere: out.append(f"figure {fig}{unit} not in cited source(s) {cites} but in {len(elsewhere)} other saved page(s): {claim[:90]!r}")
-            elif not ok:
-                out.append(f"figure {fig}{unit} in cited source but not near the claim's subject{(' (' + reason + ')') if reason else ''}: {claim[:90]!r}")
-    return out
+def det_figure_context(run):
+    from utils import reader_notes as rn
+    body, _, _ = split_report(run.report)
+    n2f = _sources_by_number(run)
+    return rn.figure_context(body, {n: run.sources[f] for n, f in n2f.items()}, run.sources)
 
 
 # ---- WP3d gap sentence vs body -------------------------------------------------------------------------------------------------------------------------
@@ -145,12 +110,13 @@ def det_gap_vs_body(run):
 
 # ---- WP3e citation integrity (structural) -------------------------------------------------------------------------------------------------------------
 def det_citation_structure(run):
-    out = []; body, _, srcs = split_report(run.report)
-    listed = re.findall(r"^\s*(\d+)\.\s", srcs, re.M); cites = re.findall(r"\[\d+(?:\s*[,\-]\s*\d+)*\]", body)
-    if listed and not cites and len(body.split()) > 200: out.append(f"no inline citations; {len(listed)} sources only listed")
-    urls = re.findall(r"^\s*\d+\.\s.*?\((https?://[^)\s]+)\)", srcs, re.M); dup = {u for u in urls if urls.count(u) > 1}
-    if dup: out.append(f"{len(dup)} source URL(s) listed more than once")
-    # The "many citations on one sentence" rule was dropped after validation (2026-10-24): precision 0.67, it fired on a range row that legitimately cites five sources.
+    from utils import reader_notes as rn
+    out = rn.no_inline_citations(run.report)
+    _, _, srcs = split_report(run.report)
+    urls = re.findall(r"^\s*\d+\.\s.*?\((https?://[^)\s]+)\)", srcs, re.M)
+    dup = {u for u in urls if urls.count(u) > 1}
+    if dup:
+        out.append(f"{len(dup)} source URL(s) listed more than once")
     return out
 
 
