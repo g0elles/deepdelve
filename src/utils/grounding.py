@@ -1053,6 +1053,10 @@ def find_paraphrased_quotes(text: str) -> list[str]:
 # quantitative-claim vector specifically, not proper nouns, which appear in harmless narrative
 # far too often to gate on.
 _NUMERIC_CLAIM_RE = re.compile(r'\b\d+(?:[.,]\d+)+\b|\b(?:19|20)\d{2}\b|\b\d+\s?%|\b(?:USD|COP|EUR)\s?\d')
+# The cross-source check needs the percent sign kept on a decimal percentage: _NUMERIC_CLAIM_RE tries its decimal branch first, so "29.1 %" came out as the
+# bare decimal "29.1" (kind "decimal") and was compared with unrelated decimals ("0.1", "3.6 point") in other fetched pages. Two false alarms in one
+# 2026-10-24 psilocybin run held it for four cycles (about 30 minutes). Percent branch first here; _NUMERIC_CLAIM_RE itself is shared and stays as it was.
+_XSRC_FIGURE_RE = re.compile(r'\b\d+(?:[.,]\d+)?\s?%|\b\d+(?:[.,]\d+)+\b|\b(?:19|20)\d{2}\b|\b(?:USD|COP|EUR)\s?\d')
 
 
 def split_into_heading_sections(text: str) -> list[list[str]]:
@@ -1335,7 +1339,7 @@ def _extract_figure_claims_ctx(text: str) -> list[tuple[str, str, frozenset]]:
             normalized = _normalize_proper_noun_phrase(m.group(0))
             if normalized and not set(normalized.lower().split()) <= _GRADE_LABEL_WORDS:
                 subject_matches.append((normalized.lower(), m.start(), m.end()))
-        figure_matches = [(m.group(0), m.start(), m.end()) for m in _NUMERIC_CLAIM_RE.finditer(line)]
+        figure_matches = [(m.group(0), m.start(), m.end()) for m in _XSRC_FIGURE_RE.finditer(line)]
         if not subject_matches or not figure_matches:
             continue
         for subject, s_start, s_end in subject_matches:
