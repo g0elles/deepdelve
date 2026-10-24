@@ -21,6 +21,8 @@ from tools import (
     think_tool,
     extract_structured_data,
     search_verified_findings,
+    scholar_search,
+    scholar_fetch,
 )
 from prompts import (
     PLANNER_INSTRUCTIONS,
@@ -72,7 +74,7 @@ web_searcher = SubAgentConfig(
 academic_searcher = SubAgentConfig(
     name="AcademicSearcher",
     instructions=ACADEMIC_SEARCHER_INSTRUCTIONS,
-    tools=[web_search, fetch_url_to_workspace, think_tool, search_verified_findings],
+    tools=[scholar_search, scholar_fetch, web_search, fetch_url_to_workspace, think_tool, search_verified_findings],
     sub_agents=[document_analyzer, data_analyzer]
 )
 

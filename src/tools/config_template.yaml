@@ -160,6 +160,13 @@ settings:
     # is instead of posing as Chrome. Set a browser string here only if a site you are allowed to
     # read refuses the honest one. (The headless-browser fallback is a real Chromium and is unaffected.)
     user_agent: ""
+  # Scholarly APIs for AcademicSearcher (tools/scholar.py): Europe PMC, OpenAlex, Unpaywall. Free, no login.
+  # `email` is sent as the polite-client identity those services ask for (env DEEPDELVE_CONTACT_EMAIL overrides it);
+  # leave empty to skip Unpaywall and the OpenAlex mailto. Optional OpenAlex key (free, $1/day instead of a shared
+  # $0.10/day per IP): openalex_api_key or env OPENALEX_API_KEY. auto_fetch_top = open-access full texts saved per search.
+  scholar:
+    email: ""
+    auto_fetch_top: 2
   quotas:
     # Quotas are GLOBAL — shared cumulatively across the Planner and every dispatched specialist
     # (WebSearcher, AcademicSearcher, DocumentAnalyzer, DataAnalyzer). Each key becomes a prompt
@@ -167,6 +174,8 @@ settings:
     delegate_tasks: 15
     web_search: 15
     fetch_url_to_workspace: 15
+    scholar_search: 10
+    scholar_fetch: 10
     search_verified_findings: 10
     write_workspace_file: 10
     edit_workspace_file: 10

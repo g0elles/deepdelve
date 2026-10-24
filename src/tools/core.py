@@ -70,7 +70,7 @@ _TOOL_FAILURE_STREAK_LIMIT = 3
 # Research tools refused for the whole run once RunState.data["evidence_only"] is set (a pre-gathered
 # pipeline evidence table was loaded instead of researching). Structural, not a prompt sentence: see the
 # comment in check_quota and RunState.__init__'s evidence_only key.
-_EVIDENCE_ONLY_BLOCKED_TOOLS = frozenset({"delegate_tasks", "web_search", "fetch_url_to_workspace"})
+_EVIDENCE_ONLY_BLOCKED_TOOLS = frozenset({"delegate_tasks", "web_search", "fetch_url_to_workspace", "scholar_search", "scholar_fetch"})
 # Refusals tolerated per run before the loop hard stop (the normal quota path aborts at limit + 3; this path never reaches it).
 _EVIDENCE_ONLY_REFUSAL_LIMIT = 10
 
