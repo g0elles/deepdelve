@@ -466,6 +466,14 @@ def main():
             assert claim_grounding_problem("## T\n\n" + ok_line + srcs) is None
             assert (claim_grounding_problem("## T\n\n" + bad_line + srcs) or "").startswith("claim_unsupported"), "numbered fabrication must be flagged"
             assert len(decompose_claim_segments("A grew [1], while B fell [2][3].")) == 2
+            # Inflection variants share a term (flu report, 2026-10-24): the claim says "Pacific Island regions", the source "Pacific Islands"; the
+            # segment's only salient terms were two such variants, so exact set matching flagged a supported claim. A different place still fails.
+            record_fetched_url("https://nr.example.com/b", filename="sources/nr_b.md")
+            _IN_MEMORY_FS["sources/nr_b.md"] = (
+                "Source-URL: https://nr.example.com/b\n\nThe conference covered the Pacific Islands and the Western Highlands during the survey of the region.")
+            srcs_b = "\n\n## Sources\n1. **[B](https://nr.example.com/b)**\n"
+            assert claim_grounding_problem("## T\n\n- The study stresses the Pacific Island regions and the Western Highland towns [1].\n" + srcs_b) is None
+            assert (claim_grounding_problem("## T\n\n- The study stresses the Caribbean Island regions and the Eastern Lowland towns [1].\n" + srcs_b) or "").startswith("claim_unsupported")
             assert len(decompose_claim_segments("A grew ([x](https://nr.example.com/a)).")) == 1
             # Standard-style `[N]` citations (2026-10-01 A/B: four cited lines flagged uncited). A resolved [N] is a
             # citation on the line; an unresolved [N] and a bare figure line still are not.
