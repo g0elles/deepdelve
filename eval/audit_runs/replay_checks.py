@@ -1,7 +1,7 @@
 """Replay checks and shadow detectors over the audited reports, offline (no model, no network), and score them against the hand labels.
 Each check is a function f(run) -> list[str] of findings; `run` gives report text, source texts, the run's fetched-url list and the evidence facets.
 Output: per-run firings, and per defect type: labelled defects, runs where a check of that type fired, matches. Repo root: python eval/audit_runs/replay_checks.py [name ...]"""
-import glob, json, os, re, sys
+import glob, json, os, sys
 HERE = os.path.dirname(os.path.abspath(__file__)); ROOT = os.path.abspath(HERE + "/../..")
 sys.path.insert(0, ROOT + "/src"); sys.path.insert(0, HERE)
 from runs import RUNS
