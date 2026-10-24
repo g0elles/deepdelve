@@ -23,3 +23,6 @@ eval/claim_support/new_pairs.jsonl
 eval/pipeline_relevance.jsonl
 eval/thinking_effort/matrix_*_content/
 eval/thinking_effort/proxy_capture.jsonl
+
+# fault-injection bench workspaces (copies of run folders with fetched web text)
+eval/harness_bench/workspaces/
