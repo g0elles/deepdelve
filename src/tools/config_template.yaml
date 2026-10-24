@@ -708,6 +708,17 @@ settings:
   #         command: uvx
   #         args: ["semantic-scholar-mcp"]
   #         agents: ["AcademicSearcher"]
+  #   - PubMed / PMC / Europe PMC (tested live 2026-10-24, @cyanheads/pubmed-mcp-server, Apache-2.0, Node). `capture_fetches` lists the
+  #     fetch-style tools whose article text should be saved to sources/ and recorded as fetched (without it the text only reaches
+  #     the model, no Analyzer can read it and the grounding checks treat any citation to it as invented):
+  #     mcp_servers:
+  #       - name: pubmed
+  #         transport: stdio
+  #         command: npx
+  #         args: ["-y", "@cyanheads/pubmed-mcp-server@2.10.23"]
+  #         env: {MCP_TRANSPORT_TYPE: stdio, NCBI_ADMIN_EMAIL: you@example.org, UNPAYWALL_EMAIL: you@example.org, PATH: "...", HOME: "..."}
+  #         capture_fetches: [pubmed_fetch_fulltext, pubmed_fetch_articles, pubmed_europepmc_fetch]
+  #         agents: ["AcademicSearcher"]
   mcp_servers: []
   # Controlled-ablation switches for the completion-check coordination layer (2026-08-17,
   # RESEARCH.md §18f) -- every mechanism here was validated only by "did the specific live-observed
