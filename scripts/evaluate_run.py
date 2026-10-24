@@ -81,7 +81,7 @@ def score(d):
     return {
         "gaps_total": len(gap_facets), "gaps_undisclosed": undisclosed_gap_facets(rep, gap_facets) if rep and gap_facets else [],
         "gap_meta": len(_REPORT_META_RE.findall(rep)), "wall_titles": [m for m in WALL_MARKERS if m in src_block.lower()],
-        "unrequested_gap_section": gap_heading and not gap_facets, "uncited_listed": uncited_listed,
+        "unrequested_gap_section": gap_heading and not gap_facets, "uncited_listed": uncited_listed, "budget_exhausted": s.get("budget_exhausted"),
         # Advisory only: detecting WHICH figure is an unlabelled stand-in is too fuzzy for a completion check (a false fire costs a Builder pass).
         "gaps_no_proxy_label": bool(gap_facets) and bool(rep) and not re.search(r"\bproxy\b|closest (?:available|related)|related figure|not (?:the same as|a direct)", rep, re.I),
         "dir": os.path.basename(d.rstrip("/")), "evidence_only": bool(s.get("evidence_only")),
@@ -115,6 +115,8 @@ def verdict(r):
         flags.append(f"{len(r['gaps_undisclosed'])}/{r['gaps_total']} evidence gap(s) not disclosed in the report text: {r['gaps_undisclosed'][:3]}")
     if r["gap_meta"]:
         flags.append(f"{r['gap_meta']} meta-reference(s) to the findings file / gaps section in the report text")
+    if r["budget_exhausted"]:
+        flags.append(f"run was stopped by the HARD max_run_minutes cap ({r['budget_exhausted']}): the report is whatever existed at the limit")
     if r["uncited_listed"]:
         flags.append(f"Sources list entries never cited in the body: {r['uncited_listed']}")
     if r["gaps_no_proxy_label"]:

@@ -11,7 +11,7 @@ from typing import Optional
 from tools import tool_quotas_ctx, get_workspace_file_content, writer_gate_ctx
 from engine.artifact_salvage import (
     _DETERMINISTIC_SALVAGE_BANNER, _salvage_narrated_report,
-    _dispatch_task_retrying_transient_json_error,
+    _dispatch_task_retrying_transient_json_error, _dispatch_bounded,
 )
 from engine.findings_evidence import _build_findings_source_material
 
@@ -541,7 +541,7 @@ async def _dispatch_deepening_round(dispatch_task, run_state: "RunState", notify
     )
 
     results = await asyncio.gather(
-        *(dispatch_task(t["task_name"], t["instructions"], t["agent_id"]) for t in tasks),
+        *(_dispatch_bounded(dispatch_task, t["task_name"], t["instructions"], t["agent_id"]) for t in tasks),  # hard max_run_minutes cap applies here too
         return_exceptions=True,
     )
     for direction, result in zip(directions, results):

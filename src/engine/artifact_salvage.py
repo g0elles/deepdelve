@@ -227,21 +227,49 @@ def _is_transient_ollama_json_error(exc: Exception) -> bool:
     return "error parsing tool call" in msg and "unexpected end of JSON input" in msg
 
 
+class RunBudgetExhausted(Exception):
+    """The run's wall-clock limit (settings.max_run_minutes) passed before or during a sub-agent dispatch. An ordinary Exception on purpose: the
+    _try_*_dispatch handlers treat any dispatch failure as "fall back", and run_completion_check then finishes through its final path (it never starts
+    a Planner turn on an exhausted budget)."""
+
+
+async def _dispatch_bounded(dispatch_task, *args, **kwargs):
+    """One dispatch, cut off at the run deadline (hard cap; 2026-10-23: max_run_minutes used to be soft, checked only between attempts, so a
+    Write->Review->Fix chain overran it by 20+ minutes and each new problem type added more time). Only a timeout that lands AT the deadline is ours;
+    any other TimeoutError came from inside the dispatch and propagates unchanged."""
+    import asyncio
+    import time
+    from utils.run_state import run_deadline_ctx
+    deadline = run_deadline_ctx.get()
+    if deadline is None:
+        return await dispatch_task(*args, **kwargs)
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise RunBudgetExhausted("run wall-clock limit already reached; dispatch not started")
+    try:
+        return await asyncio.wait_for(dispatch_task(*args, **kwargs), timeout=remaining)
+    except asyncio.TimeoutError:
+        if time.monotonic() >= deadline - 0.05:
+            raise RunBudgetExhausted("run wall-clock limit reached during dispatch; dispatch cancelled") from None
+        raise
+
+
 async def _dispatch_task_retrying_transient_json_error(dispatch_task, *args, **kwargs):
     """Thin wrapper around dispatch_task: retries ONCE, unchanged, if the call raises one of the known
     transient Ollama generation failures (see _is_transient_ollama_json_error) -- every other
     exception, and a second occurrence of the same one, propagates immediately so this can never
-    mask a real, reproducible failure or loop unboundedly."""
+    mask a real, reproducible failure or loop unboundedly. Every call is bounded by the run deadline
+    (_dispatch_bounded) and its wall time is recorded in run_state's dispatch_timings."""
     import time
     from utils.run_state import run_state_ctx
     t0 = time.time()
     try:
         try:
-            return await dispatch_task(*args, **kwargs)
+            return await _dispatch_bounded(dispatch_task, *args, **kwargs)
         except Exception as e:
             if not _is_transient_ollama_json_error(e):
                 raise
-            return await dispatch_task(*args, **kwargs)
+            return await _dispatch_bounded(dispatch_task, *args, **kwargs)
     finally:
         rs = run_state_ctx.get()
         if rs is not None:  # timing is a diagnostic: it must never be able to break a dispatch

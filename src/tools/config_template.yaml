@@ -375,10 +375,13 @@ settings:
   # report_underuses_evidence -> undisclosed_evidence_gap x2 -> uncited_claims — each only
   # became checkable once the previous one was fixed, see ARCHITECTURE.md §1's two-tier gate)
   # and ran out of wall clock at 6/14 completion-check attempts used, before 2 more real
-  # citation-misattribution defects were ever reached. The existing distinct-problem-bonus
-  # mechanism (completion.py's DISTINCT_PROBLEM_BONUS_CAP) already grants extra attempts +
-  # proportional extra wall-clock for a chain like this; this raises the BASE budget it scales
-  # from, not a new mechanism.
+  # citation-misattribution defects were ever reached. The distinct-problem bonus
+  # (completion.py's DISTINCT_PROBLEM_BONUS_CAP) grants extra ATTEMPTS for such a chain.
+  # HARD CAP (2026-10-23): this is a hard limit. The bonus used to add wall-clock slices too, and the
+  # deadline was only read between attempts, so a smoke case ran 90+ minutes against 60. Now the bonus
+  # adds attempts only, every writer/reviewer/fix dispatch is cut off at the limit, and the run finishes
+  # through the final path (restore or salvage) with run_state's budget_exhausted = "wall_clock". The
+  # interactive TUI passes no deadline and is unaffected.
   max_run_minutes: 60
   # Wall-clock budget in minutes for EACH sub-agent dispatch (Searcher/Analyzer/Builder/
   # FindingsWriter/PeerReviewer) — independent of max_run_minutes above, deliberately: that's a

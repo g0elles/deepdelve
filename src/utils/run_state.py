@@ -101,6 +101,10 @@ def _next_task_id() -> int:
 # store — the reason RunState.add_finding() existed but was dead code until this wiring.
 run_state_ctx = contextvars.ContextVar('run_state_ctx', default=None)
 
+# time.monotonic() deadline of the current run (settings.max_run_minutes), set by engine.completion.run_completion_check for its whole retry chain so every
+# writer/reviewer/fix dispatch can be cut off at the limit (engine.artifact_salvage). None = no wall-clock cap (interactive TUI).
+run_deadline_ctx = contextvars.ContextVar('run_deadline_ctx', default=None)
+
 # Scope entities of the CURRENT delegated task (e.g. {"Colombia"}), set by orchestrator's
 # _run_single_task so web_search can warn when a search query drops the task's own required
 # scope — live case: a Colombia-scoped task searched "predictive maintenance offshore wind

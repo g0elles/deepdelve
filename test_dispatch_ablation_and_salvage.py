@@ -687,6 +687,53 @@ def main():
 
     contextvars.copy_context().run(_missing_findings_escalation_scenario)
 
+    # --- hard wall-clock cap, loop level (2026-10-23): a writer dispatch that would outlast budget_deadline is cut off, the run finishes through the
+    # final path with budget_exhausted recorded, and NO Planner turn is started on the exhausted budget (should_retry False). ---
+    def _hard_cap_scenario():
+        import time as _time_h
+        from types import SimpleNamespace
+        from tools.core import tool_quotas_ctx as q_ctx
+        from engine.orchestrator import available_sub_agents_ctx
+        _orig_ws = _config.cfg.get("settings", {}).get("workspace")
+        _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
+        saved_fs = dict(_IN_MEMORY_FS)
+        try:
+            _IN_MEMORY_FS.clear()
+            reset_fetched_urls()
+            record_fetched_url(_SRC, filename="sources/page.md")
+            _IN_MEMORY_FS["sources/page.md"] = _SOURCE_TEXT
+            q_ctx.set({"delegate_tasks": {"used": 1, "limit": 5}})
+            available_sub_agents_ctx.set([SimpleNamespace(name="FindingsWriter"), SimpleNamespace(name="PeerReviewer")])
+            started = []
+
+            async def slow_dispatch(label, instr, role):
+                started.append(label)
+                await _asyncio.sleep(10)
+                return "late"
+
+            with tempfile.TemporaryDirectory() as tmpdir_h:
+                rs = RunState(tmpdir_h)
+                run_state_ctx.set(rs)
+                msgs = []
+                t0 = _time_h.monotonic()
+                should_retry, _ = _asyncio.run(run_completion_check(
+                    query="q", current_input="q", run_state=rs, notify=msgs.append, dispatch_task=slow_dispatch,
+                    budget_deadline=_time_h.monotonic() + 0.5))
+                assert _time_h.monotonic() - t0 < 6, "the dispatch was not cut off at the deadline"
+                assert started, "a writer dispatch should have started before the cap hit"
+                assert should_retry is False, ("an exhausted budget must end the run, not hand a Planner turn back", msgs)
+                assert rs.data.get("budget_exhausted") == "wall_clock", rs.data.get("budget_exhausted")
+        finally:
+            _IN_MEMORY_FS.clear()
+            _IN_MEMORY_FS.update(saved_fs)
+            reset_fetched_urls()
+            if _orig_ws is None:
+                _config.cfg["settings"].pop("workspace", None)
+            else:
+                _config.cfg["settings"]["workspace"] = _orig_ws
+
+    contextvars.copy_context().run(_hard_cap_scenario)
+
 
     # --- unchanged-artifact guard (2026-10-23, ARCHITECTURE.md §2 "Builder fixes do not stick"):
     # a Builder pass that leaves the artifact byte-identical gets exactly one write-first
@@ -772,6 +819,38 @@ def main():
     finally:
         _rsc.reset(_tok)
     assert _aio_t.run(_wrap(_ok, "SubAgent_X", "x")) == "done"  # no run_state in context: still dispatches
+
+    # Hard wall-clock cap (2026-10-23): max_run_minutes bounds every dispatch.
+    import time as _time_t
+    from engine.artifact_salvage import RunBudgetExhausted as _RBE
+    from utils.run_state import run_deadline_ctx as _rdc
+    async def _slow(name, *a):
+        await _aio_t.sleep(5); return "late"
+    async def _inner_timeout(name, *a): raise TimeoutError("from inside the dispatch, not the run deadline")
+    _tok2 = _rdc.set(_time_t.monotonic() + 0.3)
+    try:
+        _t0 = _time_t.monotonic()
+        try:
+            _aio_t.run(_wrap(_slow, "SubAgent_BuilderFix_attempt1", "x")); raise AssertionError("must be cut off")
+        except _RBE:
+            assert _time_t.monotonic() - _t0 < 2.0, "dispatch was not cut off at the deadline"
+        _rdc.set(_time_t.monotonic() + 30)  # fresh, distant deadline: a TimeoutError raised inside the dispatch is not ours
+        try:
+            _aio_t.run(_wrap(_inner_timeout, "SubAgent_X", "x")); raise AssertionError("must propagate")
+        except _RBE:
+            raise AssertionError("an unrelated TimeoutError must not be reported as budget exhaustion")
+        except TimeoutError:
+            pass
+        _rdc.set(_time_t.monotonic() - 1)  # deadline already passed: the dispatch must not even start
+        _started = []
+        async def _mark(name, *a): _started.append(name); return "x"
+        try:
+            _aio_t.run(_wrap(_mark, "SubAgent_X", "x")); raise AssertionError("must refuse to start")
+        except _RBE:
+            assert not _started
+    finally:
+        _rdc.reset(_tok2)
+    assert _aio_t.run(_wrap(_slow if False else _ok, "SubAgent_X", "x")) == "done"  # no deadline: unbounded as before
 
     from utils.run_state import fetched_urls_ctx, record_fetched_url as _rec
     reset_fetched_urls()

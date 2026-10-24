@@ -1074,11 +1074,12 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
     # budget_deadline is checked independently, below, regardless of how many attempts remain.
     # Each bonus attempt also earns a proportional slice of extra wall-clock time (this run's own
     # configured per-attempt pace), not a flat guess.
-    _configured_run_minutes = config.get_setting("max_run_minutes", 0) or 0
-    _bonus_seconds_per_attempt = (
-        (_configured_run_minutes * 60) / max_attempts if (_configured_run_minutes and max_attempts) else 0
-    )
+    # HARD wall-clock cap (2026-10-23): bonus attempts no longer extend budget_deadline. The old per-bonus time slice made max_run_minutes soft (a run
+    # that kept hitting a NEW problem type got up to 4 extra slices), and the deadline was only read between attempts, so one Write->Review->Fix chain
+    # overran it by 20+ minutes (smoke case: 90+ minutes against a 60 minute limit). Dispatches are now cut off at the deadline (artifact_salvage).
 
+    from utils.run_state import run_deadline_ctx
+    _deadline_token = run_deadline_ctx.set(budget_deadline)
     try:
         while True:
             attempt = run_state.attempt
@@ -1089,11 +1090,10 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                 if bonus_used < DISTINCT_PROBLEM_BONUS_CAP:
                     run_state.data["distinct_problem_bonus_used"] = bonus_used + 1
                     max_attempts += 1
-                    if budget_deadline is not None and _bonus_seconds_per_attempt:
-                        budget_deadline += _bonus_seconds_per_attempt
             if budget_deadline is not None and attempt < max_attempts and time.monotonic() > budget_deadline:
                 notify("**System (final):** max_run_minutes exceeded mid-retry-chain — stopping "
                        "further Write/Review/Fix dispatches and finishing with whatever exists.")
+                run_state.data["budget_exhausted"] = "wall_clock"
                 attempt = max_attempts
             ctx, verdict = await _detect_verdict(req_artifact, attempt, max_attempts, run_state)
             problem = verdict.problem if verdict else None
@@ -1196,6 +1196,13 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                 ):
                     continue
 
+                if budget_deadline is not None and time.monotonic() > budget_deadline:
+                    # A dispatch was cut off at the deadline (RunBudgetExhausted -> the _try_* fallback returned False) or the clock ran out: do NOT start a
+                    # Planner turn on an exhausted budget. Finish through the same final path as the between-attempts stop at the top of this loop.
+                    notify("**System (final):** max_run_minutes reached during a fix pass -- finishing with whatever exists.")
+                    run_state.data["budget_exhausted"] = "wall_clock"
+                    run_state.attempt = max_attempts
+                    continue
                 notify(f"**System ({attempt + 1}/{max_attempts}):** {verdict.warning}")
                 new_inputs = [current_input] if isinstance(current_input, str) else list(current_input)
                 # No artifact-rebuild equivalent at the Planner level (nothing to dispatch a fresh
@@ -1231,3 +1238,5 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
         notify(f"**System:** completion check itself crashed — run ends unverified. This is an "
                f"engine bug, not a model failure:\n```\n{traceback.format_exc()}\n```")
         return False, current_input
+    finally:
+        run_deadline_ctx.reset(_deadline_token)

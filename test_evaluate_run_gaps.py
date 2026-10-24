@@ -39,4 +39,8 @@ assert not any("unresolved" in f or "max_run_minutes" in f for f in flags), flag
 _body = pad + " A claim [1]. Another claim [2][3]. A range [4, 5]."
 assert not any("never cited" in f for f in _run(_body + "\n## Sources\n1. **[a](u)**\n2. **[b](u)**\n3. **[c](u)**\n4. **[d](u)**\n5. **[e](u)**\n", []))
 assert any("[6]" in f and "never cited" in f for f in _run(_body + "\n## Sources\n1. **[a](u)**\n2. **[b](u)**\n3. **[c](u)**\n4. **[d](u)**\n5. **[e](u)**\n6. **[f](u)**\n", []))
+_d = tempfile.mkdtemp()
+json.dump({"data": {"budget_exhausted": "wall_clock", "query": "q", "started_at": 0}}, open(os.path.join(_d, "_run_state.json"), "w"))
+open(os.path.join(_d, "final_report.md"), "w").write(pad)
+assert any("HARD max_run_minutes cap" in f for f in verdict(score(_d))), "a budget-exhausted run must be flagged"
 print("test_evaluate_run_gaps OK")
