@@ -466,6 +466,14 @@ def main():
             assert claim_grounding_problem("## T\n\n" + ok_line + srcs) is None
             assert (claim_grounding_problem("## T\n\n" + bad_line + srcs) or "").startswith("claim_unsupported"), "numbered fabrication must be flagged"
             assert len(decompose_claim_segments("A grew [1], while B fell [2][3].")) == 2
+            # A bold label between two capitalised words must not fuse them into one phrase (Raft/Paxos report, 2026-10-24: "Using Raft **indirectly**:
+            # Kubernetes uses etcd" gave the term "Raft Kubernetes", absent from the source). A fabricated multi-word claim is still flagged.
+            record_fetched_url("https://nr.example.com/c", filename="sources/nr_c.md")
+            _IN_MEMORY_FS["sources/nr_c.md"] = (
+                "Source-URL: https://nr.example.com/c\n\nIf you have used Kubernetes you have used Raft indirectly, because etcd, its storage engine, uses Raft consensus.")
+            srcs_c = "\n\n## Sources\n1. **[C](https://nr.example.com/c)**\n"
+            assert claim_grounding_problem("## T\n\n- Using Raft **indirectly**: Kubernetes uses etcd, which uses Raft [1].\n" + srcs_c) is None
+            assert (claim_grounding_problem("## T\n\n- Using Zorblax **indirectly**: Quantum Senate uses Martian Tariff, which uses Zorblax [1].\n" + srcs_c) or "").startswith("claim_unsupported")
             # Inflection variants share a term (flu report, 2026-10-24): the claim says "Pacific Island regions", the source "Pacific Islands"; the
             # segment's only salient terms were two such variants, so exact set matching flagged a supported claim. A different place still fails.
             record_fetched_url("https://nr.example.com/b", filename="sources/nr_b.md")

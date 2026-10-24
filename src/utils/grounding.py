@@ -1274,7 +1274,9 @@ _LABEL_BOLD_RE = re.compile(r'\*\*[^*\d]{2,80}?:\*\*|\*\*[^*\d]{2,80}?\*\*\s*[:\
 
 
 def _strip_citation_apparatus(segment: str) -> str:
-    return _LABEL_BOLD_RE.sub(' ', _MARKDOWN_LINK_RE.sub(' ', segment))
+    # Replaced by a sentence break, not a space: with a space the words either side joined into one capitalised "phrase" ("Using Raft **indirectly**:
+    # Kubernetes uses etcd" became the term "Raft Kubernetes", absent from the source, and a supported claim was flagged; Raft/Paxos report, 2026-10-24).
+    return _LABEL_BOLD_RE.sub(' . ', _MARKDOWN_LINK_RE.sub(' . ', segment))
 
 
 def _is_citation_only_line(line: str) -> bool:
