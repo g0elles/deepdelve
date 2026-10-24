@@ -706,6 +706,11 @@ settings:
   # `eval/evaluate.py --runs 3` against the standing benchmark to measure whether that specific
   # mechanism is genuinely load-bearing.
   ablation:
+    # Dynamic switches, absent = off (2026-10-23, experiment plan Step 1): `disable_check_<problem>: true` removes one completion check by its problem
+    # name (e.g. disable_check_undisclosed_evidence_gap, disable_check_report_underuses_findings; names in completion.py's _CHECK_SPECS), and
+    # `disable_review_fix: true` (or `disable_review_fix_builder` / `disable_review_fix_findingswriter`) skips the PeerReviewer + Fix passes after a
+    # writer dispatch. For measuring what each costs and catches; never for normal runs. Read via completion.py::_ablation_disabled, so CLI, TUI and API
+    # all see it; deliberately NOT in save_config()'s persistable keys.
     # Disables completion.py::run_completion_check's force_whole_rebuild escalation entirely --
     # both its original 3-consecutive-same-problem trigger AND the 2026-08-17 content-identity
     # trigger (_content_unchanged_since_last_quarantine). With this True, a stuck retry loop just

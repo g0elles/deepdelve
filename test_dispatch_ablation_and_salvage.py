@@ -720,6 +720,30 @@ def main():
 
     _unchanged_guard_scenario()
 
+    # Per-check and review-fix ablation switches (2026-10-23): default off; the config key removes exactly the named check / pass and nothing else.
+    import config as _cfg_abl
+    import engine.completion as _comp_abl
+    from engine.completion_dispatch import _review_fix_skipped
+    from engine.completion_checks_structural import check_undisclosed_evidence_gap, check_report_meta_language
+    _saved_abl = _cfg_abl.cfg.setdefault("settings", {}).get("ablation")
+    try:
+        _cfg_abl.cfg["settings"].pop("ablation", None)
+        _all = _comp_abl._active_completion_checks(None)
+        assert check_undisclosed_evidence_gap in _all and check_report_meta_language in _all and not _review_fix_skipped("Builder")
+        _cfg_abl.cfg["settings"]["ablation"] = {"disable_check_undisclosed_evidence_gap": True}
+        _less = _comp_abl._active_completion_checks(None)
+        assert check_undisclosed_evidence_gap not in _less and len(_less) == len(_all) - 1 and check_report_meta_language in _less
+        assert len(_comp_abl._drop_ablated(_comp_abl.GROUNDING_CHECKS)) == len(_comp_abl.GROUNDING_CHECKS)
+        _cfg_abl.cfg["settings"]["ablation"] = {"disable_review_fix_builder": True}
+        assert _review_fix_skipped("Builder") and not _review_fix_skipped("FindingsWriter")
+        _cfg_abl.cfg["settings"]["ablation"] = {"disable_review_fix": True}
+        assert _review_fix_skipped("Builder") and _review_fix_skipped("FindingsWriter")
+    finally:
+        if _saved_abl is None:
+            _cfg_abl.cfg["settings"].pop("ablation", None)
+        else:
+            _cfg_abl.cfg["settings"]["ablation"] = _saved_abl
+
     from engine.completion import _standing_requirements
     class _RS:
         data = {"evidence_gaps": [{"facet": "Estonia adoption"}, {"facet": "Finland adoption"}]}

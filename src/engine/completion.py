@@ -228,12 +228,22 @@ GROUNDING_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [s.func for s in _C
 _EVIDENCE_ONLY_SKIPPED_CHECKS = frozenset(s.func for s in _CHECK_SPECS if s.evidence_only_skip)
 
 
+_PROBLEM_BY_CHECK = {s.func: s.problem for s in _CHECK_SPECS}
+
+
+def _drop_ablated(checks: list) -> list:
+    """Per-check ablation (2026-10-23, experiment plan Step 1, session_status/CURRENT.md): `settings.ablation.disable_check_<problem>` removes one check
+    from its tier so its value (what it catches, what it costs) can be measured with the standing ablation protocol. Default off for every check."""
+    kept = [c for c in checks if not _ablation_disabled(f"check_{_PROBLEM_BY_CHECK[c]}")]
+    return checks if len(kept) == len(checks) else kept  # same object when nothing is ablated: default behaviour (and its identity test) unchanged
+
+
 def _active_completion_checks(run_state) -> list:
     """COMPLETION_CHECKS for this run: all of them, minus the research-remedy checks when the run is evidence-only. Every place
     that iterates the list (verdict detection, the other-problems addendum, the final-verdict summary) goes through here."""
     if run_state is not None and run_state.data.get("evidence_only"):
-        return [c for c in COMPLETION_CHECKS if c not in _EVIDENCE_ONLY_SKIPPED_CHECKS]
-    return COMPLETION_CHECKS
+        return _drop_ablated([c for c in COMPLETION_CHECKS if c not in _EVIDENCE_ONLY_SKIPPED_CHECKS])
+    return _drop_ablated(COMPLETION_CHECKS)
 
 
 # The problem names COMPLETION_CHECKS' own members can produce -- used by the cross-tier
@@ -469,7 +479,7 @@ async def _detect_verdict(req_artifact: str, attempt: int, max_attempts: int,
     # G2). The pre-grounding checks above are structural, not grounding, and still run.
     if verdict is None and config.get_setting("grounding_check", {}).get("enabled", True):
         ctx.grounding_problem = await real_grounding_problem(ctx.content or "")
-        verdict = next((v for check in GROUNDING_CHECKS if (v := check(ctx)) is not None), None)
+        verdict = next((v for check in _drop_ablated(GROUNDING_CHECKS) if (v := check(ctx)) is not None), None)
         # Both siblings share the same starvation risk (2026-07-24's finding, applied
         # 2026-07-29 to the newer per-task check too) -- neither is meant to compete with a
         # real correctness problem, but a run stuck on one OTHER recurring problem must not

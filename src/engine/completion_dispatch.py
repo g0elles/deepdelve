@@ -47,6 +47,13 @@ def _append_harness_gap_section(req_artifact: str, gaps: list) -> bool:
     return True
 
 
+def _review_fix_skipped(writer_role: str) -> bool:
+    """Ablation (2026-10-23, experiment plan Step 1): `settings.ablation.disable_review_fix` skips the PeerReviewer + Fix passes for every writer role,
+    `disable_review_fix_builder` / `disable_review_fix_findingswriter` for one role, so the value of the Review->Fix pass can be measured against its minutes."""
+    from engine.completion import _ablation_disabled
+    return _ablation_disabled("review_fix") or _ablation_disabled(f"review_fix_{writer_role.lower()}")
+
+
 async def _redispatch_if_unchanged(dispatch_task, writer_role: str, req_artifact: str, before: Optional[str],
                                    instructions: str, attempt: int, label: str, notify) -> None:
     """Builder only. A pass that finishes without changing the artifact is invisible to the
@@ -280,6 +287,9 @@ async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artif
 
     await _redispatch_if_unchanged(dispatch_task, writer_role, req_artifact, artifact_before,
                                    write_instructions, attempt, "unchanged", notify)
+    if _review_fix_skipped(writer_role):
+        notify(f"**System ({attempt + 1}):** ablation: skipping PeerReviewer + Fix for {writer_role} (settings.ablation.disable_review_fix*).")
+        return
 
     # Snapshot read_workspace_file's usage count BEFORE dispatching PeerReviewer, so a fabricated
     # "REVIEW: CLEAN" that never actually opened the file can be caught below (see is_clean gate).
