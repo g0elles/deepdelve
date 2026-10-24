@@ -143,6 +143,8 @@ module load, by a one-line filter/comprehension each:
 |---|---|---|
 | `COMPLETION_CHECKS` / `GROUNDING_CHECKS` | whether the check runs at all, its priority (= the row's position in `_CHECK_SPECS`) | `tier="completion"` / `"grounding"` |
 | `_QUARANTINE_PROBLEMS` | whether the bad artifact gets renamed aside (`.rejected_attempt_N`) before retry, vs. left in place for the model to "overwrite" | `quarantine=True` |
+
+> Snapshot lookups (`.rejected_attempt_N`) go through `artifact_salvage._rejected_snapshots` (numeric order, any N) and the final restore picks `_best_snapshot` (latest draft with at least half the longest draft's words). Never `sorted(...)` the names or `range(1, 10)` them: 2026-10-24 a run restored an empty attempt-9 template over a real attempt-8 draft.
 | `_BUILDER_FIXABLE_PROBLEMS` | whether a fresh-context **Builder** dispatch fixes `final_report.md`, vs. falling back to injecting a nudge into the Planner's own (ever-growing) conversation | `builder_fixable=True` |
 | `_FINDINGS_WRITER_FIXABLE_PROBLEMS` | same, for **FindingsWriter**/`findings.md` | `findings_writer_fixable=True` |
 | `_EVIDENCE_ONLY_SKIPPED_CHECKS` | whether this check is skipped for an evidence-only run (§2's own "Evidence-only runs" section) | `evidence_only_skip=True` |

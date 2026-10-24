@@ -65,4 +65,13 @@ import engine.completion as _completion
 import engine.run_loop as _run_loop
 assert "reader_notes.strip_from_artifact" in inspect.getsource(_completion.run_completion_check)
 assert "reader_notes.append_to_artifact" in inspect.getsource(_run_loop.run_agent_loop)
+# 10. an unverified restored draft and an empty placeholder report get a note (the failed 2026-10-24 CRISPR run said "no hints" on an empty template); a real report does not
+EMPTY = ("> **QUARANTINED DRAFT (restored)** - this draft failed the completion check (not_grounded).\n\n# Final Report\n## Abstract\nNo substantive conclusions can be drawn.\n"
+         "## 2.1. Section 1\nNot covered by this run's research.\n## 2.2. Section 2\nNot covered by this run's research.\n## Conclusion\nNo relevant findings were identified.\n")
+n10 = rn.unverified_or_empty(EMPTY)
+assert len(n10) == 2 and "Unverified draft" in n10[0] and "Placeholder report" in n10[1], n10
+assert rn.compute_notes(EMPTY, {}, {}, t_2026_10)[:2] == n10
+real = "# T\n" + pad + " clean sentence [1].\n\n## Sources\n1. **[a](https://a.org/x)**\n"
+assert rn.unverified_or_empty(real) == [] and rn.unverified_or_empty("# T\n" + "A short factual answer that is still a real answer to the question, with enough words to count as one [1]. " * 3) == []
+assert len(rn.unverified_or_empty("> **AUTO-RECOVERED DRAFT** - x\n\n" + real)) == 1
 print("test_reader_notes OK")

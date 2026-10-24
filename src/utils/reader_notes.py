@@ -35,6 +35,9 @@ _FIG = re.compile(r"(?<![\w.])(\$?\d[\d,]*(?:\.\d+)?)\s?(%|percent|x|×|mg|kg|ms
 _CITE_GROUP = re.compile(r"\[(\d+(?:\s*[,\-]\s*\d+)*)\]")
 
 
+_RESTORE_BANNER_RE = re.compile(r"^> \*\*(?:QUARANTINED|AUTO-RECOVERED) DRAFT.*?\n\n", re.S)
+_NO_CONTENT_RE = re.compile(r"not covered by this run|no data available|no relevant findings|no substantive conclusions|no quantitative data were found", re.I)
+
 def norm(t: str) -> str:
     return re.sub(r"(\d)·(\d)", r"\1.\2", t.replace(" ", " ").replace("‑", "-").replace("‐", "-"))
 
@@ -173,11 +176,25 @@ def no_inline_citations(report: str) -> list:
     return []
 
 
+def unverified_or_empty(report: str) -> list:
+    """A report that is an unverified restored draft (banner from engine/artifact_salvage.py) or says it holds no findings.
+    The other detectors are silent on such a report, and 'no hints' would read as a clean bill of health."""
+    notes = []
+    head = report.lstrip()[:400]
+    if "QUARANTINED DRAFT" in head or "AUTO-RECOVERED DRAFT" in head:
+        notes.append("Unverified draft: this report failed the final check and was restored without a corrected rewrite (see the notice at its top). Treat every claim as unchecked.")
+    text = _RESTORE_BANNER_RE.sub("", report)
+    words = len(re.sub(r"^#+ .*$", "", text, flags=re.M).split())
+    if len(_NO_CONTENT_RE.findall(text)) >= 2 or words < 40:
+        notes.append("Placeholder report: it states that no findings were found or leaves its sections empty, so it does not answer the question.")
+    return notes
+
+
 def compute_notes(report: str, n2text: dict, all_sources: dict, started_at: float, max_notes: int = MAX_NOTES) -> list:
     """Highest-priority notes first (no citations, then citation checks, then dated expectations), capped, de-duplicated."""
     report = strip_block(report)
     body, _ = split_report(report)
-    notes = no_inline_citations(report) + figure_context(body, n2text, all_sources) + stale_status(body, started_at)
+    notes = unverified_or_empty(report) + no_inline_citations(report) + figure_context(body, n2text, all_sources) + stale_status(body, started_at)
     seen, out = set(), []
     for n in notes:
         if n not in seen:
