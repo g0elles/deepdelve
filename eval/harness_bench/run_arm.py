@@ -4,7 +4,10 @@ An arm = the live ~/.deepdelve/config.yaml plus `--ablation key=value` overrides
 (16 GB VRAM) in a seeded random order so drift (thermal, server state) is not confounded with the arm. Results append to <workspace>/results.jsonl.
 GPU-heavy: check `ollama ps` / nothing else running first.
 
-Usage: python eval/harness_bench/run_arm.py ARM --bases DIR [DIR ...] --faults F [F ...] [--reps 3] [--ablation disable_review_fix=true] [--seed 0] [--dry-run]"""
+A case that outlives --cap-min (default 45) is stopped with SIGTERM (then SIGKILL after 60 s) and recorded as timed_out: settings.max_run_minutes is SOFT (each new distinct
+problem type extends the deadline, see completion.py's distinct-problem bonus), and the first smoke case cascaded for over 90 minutes from one injected sentence.
+
+Usage: python eval/harness_bench/run_arm.py ARM --bases DIR [DIR ...] --faults F [F ...] [--reps 3] [--ablation disable_review_fix=true] [--seed 0] [--cap-min 45] [--dry-run]"""
 import argparse, json, os, random, subprocess, sys, time
 
 import yaml
@@ -39,7 +42,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("arm"); ap.add_argument("--bases", nargs="+", required=True); ap.add_argument("--faults", nargs="+", required=True)
     ap.add_argument("--reps", type=int, default=3); ap.add_argument("--ablation", nargs="*", default=[]); ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--cap-min", type=float, default=45); ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
     ws = os.path.join(HERE, "workspaces", a.arm)
     os.makedirs(ws, exist_ok=True)
@@ -55,12 +58,23 @@ def main():
         case = build_case(b, f, os.path.abspath(ws), name)
         t0 = time.time()
         env = {**os.environ, "DEEPDELVE_FORCE_VIRTUAL_DISPLAY": "1"}
+        timed_out = False
         with open(os.path.join(case, "_run.log"), "w") as log:
-            subprocess.run([sys.executable, os.path.join(ROOT, "src", "app.py"), "--config", cfg, "--auto-approve", "--resume-run", name],
-                           cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
-        res = {**collect(case), "arm": a.arm, "wall_min": round((time.time() - t0) / 60, 1)}
+            proc = subprocess.Popen([sys.executable, os.path.join(ROOT, "src", "app.py"), "--config", cfg, "--auto-approve", "--resume-run", name],
+                                    cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
+            try:
+                proc.wait(timeout=a.cap_min * 60)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                proc.terminate()  # SIGTERM first, as with other GPU processes in this project
+                try:
+                    proc.wait(timeout=60)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+        res = {**collect(case), "arm": a.arm, "wall_min": round((time.time() - t0) / 60, 1), "timed_out": timed_out}
         open(os.path.join(ws, "results.jsonl"), "a").write(json.dumps(res) + "\n")
-        print(f"  {name}: detected={res['detected']} clean={res['ended_clean']} checks={res['checks']} one_pass={res['fixed_in_one_pass']} wall={res['wall_min']}m", flush=True)
+        print(f"  {name}: detected={res['detected']} clean={res['ended_clean']} checks={res['checks']} one_pass={res['fixed_in_one_pass']} wall={res['wall_min']}m timed_out={timed_out}", flush=True)
 
 
 if __name__ == "__main__":
