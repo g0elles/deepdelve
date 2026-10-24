@@ -161,6 +161,15 @@ def main():
                      [(a, "The EU AI Act sets fines of up to 7% of worldwide turnover."),
                       (b, "The EU AI Act sets fines of up to 3% of worldwide turnover for lesser breaches.")])
         assert len(hits2) == 1 and "'3%'" in hits2[0], hits2
+        # decimal percentage vs a bare decimal (live 2026-10-24, psilocybin: the report's "29.1 %" was read as the decimal 29.1 and compared with
+        # "0.1" and "3.6 point" on other pages, 4 corrective cycles). A decimal percentage is a percent; a bare decimal on another page is no rival.
+        assert _run("- Compass Pathways reported 29.1\u202f%% remission in the high dose group at week three [a](%s)" % a,
+                    [(a, "Compass Pathways reported 29.1% remission in the high dose group at week three."),
+                     (b, "Compass Pathways reported a 0.1 change in the high dose group at week three.")]) == []
+        hits3 = _run("- Compass Pathways reported 29.1\u202f%% remission in the high dose group at week three [a](%s)" % a,
+                     [(a, "Compass Pathways reported 29.1% remission in the high dose group at week three."),
+                      (b, "Compass Pathways reported 31.5% remission in the high dose group at week three.")])
+        assert len(hits3) == 1 and "'31.5%'" in hits3[0], hits3
         # already surfaced, spaced: the report states the other source's 3% as "3 %" (the writer's spacing). Live 2026-10-01 (A/B low_1): the
         # report said "7 % ... lower fines of EUR 15 million or 3 %" and the check still demanded the 3% be surfaced, because the "already in the
         # report" test was a raw substring match while the figure comparison ignores whitespace.
