@@ -1,0 +1,29 @@
+{
+ "_about": "Hand labels (single labeller: Claude, 2026-10-23, each read against the saved quotes) for gap-judge decisions. label: gap = no saved quote states the asked quantity/attribute for that entity; answered = at least one saved quote does; borderline = partial. Every labelled question was flagged unanswered by SOME judge version, so this set measures false gaps well and misses poorly; add unflagged questions before trusting recall. Needs a second labeller.",
+ "labels": [
+  {"dir": "eval/heldout4_runs/h19_gate2", "facet": "f1", "q": 1, "label": "borderline", "note": "Finland platform architecture: eID/Suomi.fi/data-exchange mentions, no architecture description"},
+  {"dir": "eval/heldout4_runs/h19_gate2", "facet": "f2", "q": 0, "label": "answered", "note": "Estonia strategy: Digital Agenda 2030 / 2035 plan quotes"},
+  {"dir": "eval/heldout4_runs/h19_gate2", "facet": "f2", "q": 1, "label": "answered", "note": "X-Road / X-tee platform quotes"},
+  {"dir": "eval/heldout4_runs/h19_gate2", "facet": "f2", "q": 2, "label": "answered", "note": "digital by default, services online quotes"},
+  {"dir": "eval/heldout4_runs/h19_gate2", "facet": "f3", "q": 0, "label": "gap", "note": "only internet penetration and eID/broadband programmes"},
+  {"dir": "eval/heldout4_runs/h19_gate2", "facet": "f3", "q": 1, "label": "gap", "note": "same"},
+  {"dir": "eval/heldout4_runs/h19_gate2", "facet": "f3", "q": 2, "label": "gap", "note": "same"},
+  {"dir": "eval/heldout4_runs/h19_gate2", "facet": "f4", "q": 0, "label": "gap", "note": "only penetration, business cloud/AI use"},
+  {"dir": "eval/heldout4_runs/h19_gate2", "facet": "f4", "q": 1, "label": "gap", "note": "same"},
+  {"dir": "eval/heldout4_runs/h19_gate2", "facet": "f4", "q": 2, "label": "gap", "note": "same"},
+  {"dir": "eval/heldout4_runs/rerun2/h22", "facet": "f1", "q": 0, "label": "answered", "note": "mechanism: appetite suppression, delayed gastric emptying"},
+  {"dir": "eval/heldout4_runs/rerun2/h22", "facet": "f1", "q": 1, "label": "answered", "note": "how agonists reduce appetite: satiety, brain receptors"},
+  {"dir": "eval/heldout4_runs/rerun2/h22", "facet": "f1", "q": 2, "label": "answered", "note": "GLP-1 receptor signalling and satiety"},
+  {"dir": "eval/heldout4_runs/rerun2/h22", "facet": "f2", "q": 1, "label": "gap", "note": "no BMI reduction figure"},
+  {"dir": "eval/heldout4_runs/rerun2/h22", "facet": "f3", "q": 0, "label": "gap", "note": "no cardiovascular event reduction in obesity phase 3"},
+  {"dir": "eval/heldout4_runs/rerun2/h22", "facet": "f3", "q": 1, "label": "gap", "note": "same"},
+  {"dir": "eval/heldout4_runs/rerun2/h22", "facet": "f3", "q": 2, "label": "gap", "note": "same"},
+  {"dir": "eval/heldout4_runs/rerun2/h23", "facet": "f4", "q": 1, "label": "gap", "note": "Canada fatalities: only indigenous mortality ratios"},
+  {"dir": "eval/heldout4_runs/rerun2/h23", "facet": "f4", "q": 2, "label": "borderline", "note": "Latin America: a Brazil mortality comparison only"},
+  {"dir": "eval/heldout4_runs/rerun2/h23", "facet": "f5", "q": 0, "label": "borderline", "note": "China: says estimates varied widely, one unattributed 3.2% rate"},
+  {"dir": "eval/heldout4_runs/rerun2/h23", "facet": "f5", "q": 1, "label": "gap", "note": "Japan: masks photo caption, no figure"},
+  {"dir": "eval/heldout4_runs/rerun2/h25", "facet": "f2", "q": 1, "label": "gap", "note": "Vietnam internet penetration absent"},
+  {"dir": "eval/heldout4_runs/rerun2/h25", "facet": "f3", "q": 1, "label": "gap", "note": "Ghana internet penetration absent"},
+  {"dir": "eval/heldout4_runs/rerun2/h26", "facet": "f3", "q": 1, "label": "gap", "note": "basic-services coverage vs insurance coverage quotes"}
+ ]
+}

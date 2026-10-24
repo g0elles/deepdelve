@@ -46,6 +46,14 @@ def main():
     c = collect(case)
     assert c["detected"] and c["ended_clean"] and c["fixed_in_one_pass"] and c["checks"] == 2 and c["minutes"] == 5.0, c
     assert c["dispatch_minutes"] == {"BuilderFix": 2.0, "ReviewFix": 1.0} and c["words_lost"] == 0 and c["cites_lost"] == 0 and c["other_problems"] == [], c
+    # judge A/B scoring (eval/judge_cases): pure counting, no GPU
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "eval", "judge_cases"))
+    from ab_judge import score
+    labs = [{"dir": "d", "facet": "f", "q": 0, "label": "gap"}, {"dir": "d", "facet": "f", "q": 1, "label": "answered"}, {"dir": "d", "facet": "f", "q": 2, "label": "answered"},
+            {"dir": "d", "facet": "f", "q": 3, "label": "gap"}, {"dir": "d", "facet": "f", "q": 4, "label": "borderline"}]
+    assert score(labs, {("d", "f"): {0, 1, 4}}) == {"gap_caught": 1, "false_gap": 1, "answered_ok": 1, "gap_missed": 1, "borderline_flagged": 1}
+    lj = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "eval", "judge_cases", "labels.json")))["labels"]
+    assert len(lj) == 24 and {x["label"] for x in lj} == {"gap", "answered", "borderline"}
     print("test_harness_bench OK")
 
 
