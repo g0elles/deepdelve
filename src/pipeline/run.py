@@ -166,7 +166,7 @@ def reformulate_question(model: str, facet_name: str, question: str) -> list[str
          f"answers this question when the first phrasing did not.")
     try:
         qs = call_json(model, p, REFORMULATE_SCHEMA, think="low", timeout=60)["queries"]
-        return [q for q in qs if isinstance(q, str) and q.strip()][:2]
+        return [drop_years(q, question) or q for q in qs if isinstance(q, str) and q.strip()][:2]
     except Exception:
         return []
 
@@ -356,6 +356,14 @@ def _plan_covered(model: str, query: str) -> list[dict]:
     return facets
 
 
+def drop_years(q: str, allowed: str) -> str:
+    """Remove 4-digit years from a search question unless `allowed` (the user's request / the original question) contains them. The planner prompt
+    says "no dates" yet h19_gate2 (2026-10-23) came back with "... 2025" on every question, and the exact-quantity judge then marked topics with
+    good older evidence as gaps."""
+    keep = set(re.findall(r"\b20[0-3]\d\b", allowed))
+    return re.sub(r"\s{2,}", " ", re.sub(r"\b20[0-3]\d\b", lambda m: m.group(0) if m.group(0) in keep else "", q)).strip()
+
+
 def _plan(model: str, query: str, hint: str = "") -> list[dict]:
     p = (f"Write facet names and search queries in the same language as the request. "
          f"Break this research request into 2-6 facets that together fully answer it. Each facet gets "
@@ -374,7 +382,10 @@ def _plan(model: str, query: str, hint: str = "") -> list[dict]:
          f"benefits vs harms): one facet per outcome, and the sources will show which direction it went. "
          f"Set `entity` to the one named place, country, organization, person, technology or method the facet is about "
          f"(e.g. a city, a country, a data structure), or \"\" if the facet is not about one specific named entity.\n\nRequest: {query}{hint}")
-    return call_json(model, p, PLAN_SCHEMA, think="low")["facets"]  # gpt-oss: default reasoning + `format` can run >5 min and return empty JSON (q06, q21)
+    facets = call_json(model, p, PLAN_SCHEMA, think="low")["facets"]  # gpt-oss: default reasoning + `format` can run >5 min and return empty JSON (q06, q21)
+    for f in facets:
+        f["questions"] = [drop_years(q, query) or q for q in f["questions"]]
+    return facets
 
 
 def search(question: str, k: int, stats: dict | None = None) -> list[str]:

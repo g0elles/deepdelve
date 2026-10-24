@@ -409,6 +409,13 @@ def test_reformulate_question_falls_back_to_the_original_on_error():
         R.call_json = real
 
 
+def test_drop_years_strips_only_years_the_request_did_not_contain():
+    import pipeline.run as R
+    assert R.drop_years("Finland digital service adoption rate 2025", "Compare Finland and Estonia") == "Finland digital service adoption rate"
+    assert R.drop_years("Estonia 2024 e-government usage 2025", "usage in 2024") == "Estonia 2024 e-government usage"
+    assert R.drop_years("population 1999", "x") == "population 1999"  # only 2000-2039 are treated as planner-added years
+
+
 if __name__ == "__main__":
     # This file is pytest-style (module-level test_ functions) and pytest is not installed: without this block `python test_pipeline_quotes.py`
     # ran NOTHING and exited 0. Run every test_ function, fail loudly on the first error.

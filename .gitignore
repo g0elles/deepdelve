@@ -15,3 +15,11 @@ CLAUDE.md
 papers/
 CAREER_OPPORTUNITIES.md
 diagrams/*.visual-check.*
+
+# eval artifacts holding fetched web pages or web-derived text (public repo): per-run folders, large pair/relevance dumps, raw capture
+eval/heldout*_runs/*/
+eval/claim_support/pairs*.jsonl
+eval/claim_support/new_pairs.jsonl
+eval/pipeline_relevance.jsonl
+eval/thinking_effort/matrix_*_content/
+eval/thinking_effort/proxy_capture.jsonl
