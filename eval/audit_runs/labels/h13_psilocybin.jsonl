@@ -1,0 +1,11 @@
+{"run":"h13_psilocybin","unit":"Q-phase3","type":"Q2","sev":3,"stage":"W","note":"saved sources hold Phase 3 results (second Phase 3 trial, 581 participants, 39% response at 26 weeks, reported July 2026; a 2026 Phase 3 explainer); report says Phase 3 topline is still 'expected in summer 2024'"}
+{"run":"h13_psilocybin","unit":"C7","type":"C6","sev":3,"stage":"W","note":"expected-date from a 2023 press item stated as current; contradicted by newer saved sources"}
+{"run":"h13_psilocybin","unit":"Q-mechanism","type":"Q1","sev":3,"stage":"W","note":"first half of the query (how psilocybin works) unanswered; saved sources include a Nature paper, Frontiers neurobiology review, PMC reviews on mechanism and plasticity, none cited"}
+{"run":"h13_psilocybin","unit":"sources","type":"S1","sev":2,"stage":"W","note":"every claim rests on a popular-science site, a news article and a company-partner press item while peer-reviewed and agency sources are saved and uncited (3 of 21 sources cited)"}
+{"run":"h13_psilocybin","unit":"C5/C6","type":"C5","sev":2,"stage":"W","note":"2b trial described as 'not yet published' and as 'published in NEJM' in the same report without dating either"}
+{"run":"h13_psilocybin","unit":"C8","type":"C3","sev":2,"stage":"W","note":"'convergence of evidence from multiple large trials' while the report describes one large trial and a smaller one"}
+{"run":"h13_psilocybin","unit":"C2/C10","type":"C4","sev":2,"stage":"W","note":"the 104-participant trial is in major depressive disorder, the 2b trial in treatment-resistant depression; the report titles and concludes about treatment-resistant depression for both"}
+{"run":"h13_psilocybin","unit":"C9","type":"C1","sev":2,"stage":"W","note":"'growing confidence from regulatory agencies' has no source"}
+{"run":"h13_psilocybin","unit":"C6","type":"C2","sev":1,"stage":"W","note":"'no significant effect for the 10 mg dose' is in the STAT article [2], cited as [3]"}
+{"run":"h13_psilocybin","unit":"sources","type":"F1","sev":1,"stage":"H","note":"source 2 title names a different article than the STAT page it links"}
+{"run":"h13_psilocybin","unit":"run","type":"F1","sev":2,"stage":"J","note":"59 min and 8 cycles spent on a figure disagreement; run ended on an unresolved cross_source_contradiction, none of the three defects above flagged"}

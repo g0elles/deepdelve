@@ -1,0 +1,13 @@
+{"run":"raft_20260929_224216","unit":"C29","type":"C1","sev":3,"stage":"W","note":"report says HDFS HA 'incorrectly claims' Paxos and 'relies on ZooKeeper'; the cited source says HDFS HA uses Paxos for NameNode state; the ZooKeeper correction appears in no saved source"}
+{"run":"raft_20260929_224216","unit":"C27","type":"C1","sev":2,"stage":"W","note":"'less commonly used in mainstream databases' not in cited or any source; cite points to a duplicate article instead of the Paxos Commit paper"}
+{"run":"raft_20260929_224216","unit":"C18","type":"C2","sev":1,"stage":"W","note":"2F+1 / F+1 claim is in the Lamport-Gray paper [7], cited as [13] (unrelated article)"}
+{"run":"raft_20260929_224216","unit":"C16","type":"C2","sev":1,"stage":"W","note":"livelock / distinguished proposer is in [12]/[13], cited as [14]"}
+{"run":"raft_20260929_224216","unit":"C4","type":"C2","sev":1,"stage":"W","note":"'does not prescribe leader selection' not in [14]; found in [16]"}
+{"run":"raft_20260929_224216","unit":"C6","type":"C3","sev":2,"stage":"W","note":"TiKV config parameter names presented as the general Raft election mechanism"}
+{"run":"raft_20260929_224216","unit":"C11","type":"C3","sev":2,"stage":"W","note":"one toy loopback implementation's 208 ms measurement stated as 'a typical failover'; source is a blog (LinkedIn)"}
+{"run":"raft_20260929_224216","unit":"C24","type":"C2","sev":1,"stage":"W","note":"five citations stacked on one sentence; [2] is a TiKV config page, irrelevant to it"}
+{"run":"raft_20260929_224216","unit":"C28","type":"C3","sev":1,"stage":"W","note":"Zab called 'Paxos-derived'; source says influenced by Paxos principles"}
+{"run":"raft_20260929_224216","unit":"C30","type":"C1","sev":1,"stage":"W","note":"conclusion claims (Paxos influential in transaction commit; future hybrid approaches) unsourced"}
+{"run":"raft_20260929_224216","unit":"C15","type":"S1","sev":1,"stage":"E","note":"definition of Paxos rests on the question text of a StackOverflow post"}
+{"run":"raft_20260929_224216","unit":"sources","type":"F1","sev":2,"stage":"H","note":"all 21 source titles read 'Raftstore Config'; two URLs listed twice (12/13, 14/21)"}
+{"run":"raft_20260929_224216","unit":"Q-prod-systems","type":"Q1","sev":2,"stage":"U","note":"query asks which production systems use each; Paxos side is only Chubby (as a lesson) plus a wrong HDFS/ZooKeeper line"}

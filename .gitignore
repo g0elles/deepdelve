@@ -26,3 +26,5 @@ eval/thinking_effort/proxy_capture.jsonl
 
 # fault-injection bench workspaces (copies of run folders with fetched web text)
 eval/harness_bench/workspaces/
+eval/audit_runs/pairs_sample.jsonl
+eval/audit_runs/*.log
