@@ -95,9 +95,14 @@ def stale_status(body: str, started_at: float) -> list:
     return out
 
 
+def _label(fig: str, unit: str) -> str:
+    return f"{fig}{'' if unit in ('', '%') else ' '}{unit}"
+
+
 def figure_context(body: str, n2text: dict, all_sources: dict, radius: int = 160) -> list:
-    """A figure whose cited source does not hold it near the claim's subject. n2text: {N: source text}; all_sources: every saved page's text."""
-    out = []
+    """A figure whose cited source does not hold it near the claim's subject. n2text: {N: source text}; all_sources: every saved page's text.
+    One note per claim and kind, naming every figure of that kind in it."""
+    grouped = {}  # (claim, kind, reason) -> {"cites": ..., "figs": [labels], "elsewhere": max count}
     norm_all = None
     for claim, cites in _claims(body):
         cl = norm(claim)
@@ -129,18 +134,29 @@ def figure_context(body: str, n2text: dict, all_sources: dict, radius: int = 160
                         break
                 if ok:
                     break
-            label = f"{fig}{unit}"
+            if ok:
+                continue
             short = " ".join(claim.split())[:90]
             if not found_any:
                 if norm_all is None:
                     norm_all = [norm(s) for s in all_sources.values()]
                 elsewhere = sum(1 for s in norm_all if re.search(r"(?<![\d.])" + re.escape(fig) + r"(?![\d])", s))
-                if elsewhere:
-                    out.append(f"Citation check: the figure {label} (\"{short}...\") is not in the cited source {sorted(set(cites))} but appears in {elsewhere} other source(s) "
-                               f"that were read; the citation number may be wrong.")
-            elif not ok:
-                out.append(f"Citation check: the figure {label} appears in the cited source but not near the subject of this claim (\"{short}...\")"
-                           + (f"; {reason}" if reason else "") + "; check the source.")
+                if not elsewhere:
+                    continue
+                g = grouped.setdefault((short, "absent", ""), {"cites": sorted(set(cites)), "figs": [], "elsewhere": 0})
+                g["elsewhere"] = max(g["elsewhere"], elsewhere)
+            else:
+                g = grouped.setdefault((short, "far", reason), {"cites": sorted(set(cites)), "figs": [], "elsewhere": 0})
+            g["figs"].append(_label(fig, unit))
+    out = []
+    for (short, kind, reason), g in grouped.items():
+        figs = ", ".join(dict.fromkeys(g["figs"]))
+        if kind == "absent":
+            out.append(f"Citation check: not in the cited source {g['cites']} but found in {g['elsewhere']} other source(s) that were read: {figs} (\"{short}...\"); "
+                       f"the citation number may be wrong.")
+        else:
+            out.append(f"Citation check: found in the cited source but not near this claim's subject: {figs} (\"{short}...\")"
+                       + (f"; {reason}" if reason else "") + "; check the source.")
     return out
 
 
