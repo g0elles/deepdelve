@@ -159,7 +159,8 @@ def test_snap_urls_to_fetched_repairs_model_typography():
          "https://aimagicpunch.com/eu-ai-act-summary-key-provisions-2026-timeline/",
          "https://policy-insider.ai/latest-eu-ai-act-updates-tracking-delegated-acts-and-ai-office-guidanc/",
          "https://en.wikipedia.org/wiki/Cretaceous\u2013Paleogene_extinction_event",
-         "https://amb.example/a-b", "https://amb.example/ab", "https://en.wikipedia.org/wiki/Mercury_(planet)"]
+         "https://amb.example/a-b", "https://amb.example/ab", "https://en.wikipedia.org/wiki/Mercury_(planet)",
+         "https://digital-strategy.ec.europa.eu/en/factpages/finlands-2026-digital-decade-country-report"]
     tok = fetched_urls_ctx.set([{"url": u} for u in F])
     saved_ws = _config.cfg["settings"].get("workspace")
     _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}
@@ -176,6 +177,7 @@ def test_snap_urls_to_fetched_repairs_model_typography():
                           "https://alicelabs.ai/\u200bre" + (NB + "e") * 3 + "\u2026",       # looped garbage: matches nothing
                           f"https://policy{NB}x\u2026"):                                     # truncation prefix too short to be trusted
             assert snap_urls_to_fetched(untouched) == untouched, untouched
+        assert snap_urls_to_fetched("(https://digital-strategy.ec.europa.eu/en/factpages/\ufb01nlands-2026-digital-decade-country-report)") == f"({F[7]})"  # PDF ligature
         paren = f"[Mercury]({F[6]})"
         assert snap_urls_to_fetched(paren) == paren and snap_urls_to_fetched(F[6]) == F[6]  # a correct URL with its own ')' is not doubled
         assert snap_urls_to_fetched(f"a high{NB}risk system") == f"a high{NB}risk system"    # prose outside URLs is not rewritten

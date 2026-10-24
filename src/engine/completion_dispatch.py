@@ -21,6 +21,12 @@ from engine.findings_evidence import _build_findings_source_material
 _WRITER_EMPTY_RETRY_ATTEMPTS = 2
 
 
+# Builder only: read-only passes without a write were seen in 3/3 replays and twice in the 2026-10-23 verify run; the re-dispatch below costs a
+# full pass each time. Stating it up front in every Builder fix/rewrite message is meant to avoid it (effect not yet measured).
+_BUILDER_WRITE_FIRST = ("\n\nREMINDER: reading is not fixing. After at most one read of the source files, your next tool call MUST be "
+                        "`write_workspace_file` with the complete corrected file.")
+
+
 def _append_harness_gap_section(req_artifact: str, gaps: list) -> bool:
     """Escalation for a second consecutive `undisclosed_evidence_gap` (ARCHITECTURE.md §2 "Builder fixes do not stick"): the Builder
     has had a chance and the disclosure still is not in the file, so the harness appends it itself, labelled harness-written. Wording
@@ -117,6 +123,8 @@ async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artif
         {"write_done": False, "recommended_tool": recommended_tool, "target_file": req_artifact}
     ) if writer_role == "FindingsWriter" else None
     artifact_before = get_workspace_file_content(req_artifact)
+    if writer_role == "Builder" and artifact_before is not None:
+        write_instructions += _BUILDER_WRITE_FIRST
     try:
         write_result = await _dispatch_task_retrying_transient_json_error(dispatch_task, f"{writer_role}Fix_attempt{attempt + 1}", write_instructions, writer_role)
     finally:
@@ -353,6 +361,7 @@ async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artif
         f"then rewrite the file:\n\n{review_text}\n\n"
         f"--- YOUR ORIGINAL TASK INSTRUCTIONS AND SOURCE MATERIAL (unchanged) ---\n{write_instructions}"
         f"{think_tool_note}"
+        f"{_BUILDER_WRITE_FIRST if writer_role == 'Builder' else ''}"
     )
     gate_token = writer_gate_ctx.set(
         {"write_done": False, "recommended_tool": recommended_tool, "target_file": req_artifact}

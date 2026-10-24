@@ -16,9 +16,10 @@ import sys
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
-from engine.completion_checks_structural import _GAP_META_RE, undisclosed_gap_facets  # noqa: E402  same rule the completion check uses
+from engine.completion_checks_structural import _GAP_META_RE, _REPORT_META_RE, undisclosed_gap_facets  # noqa: E402  same rule the completion check uses
 
 STUB_WORDS = 150  # a "source" shorter than this is a stub or an interstitial, not evidence
+MAX_RUN_MIN = 60  # settings.max_run_minutes default; a run past it ended on the wall clock, not on a clean check
 WALL_MARKERS = ("just a moment", "performing security verification", "checking your browser", "access denied", "enable javascript")
 FIG = re.compile(r"\b\d+(?:[.,]\d+)?\s?(?:%|percent|per cent)", re.I)
 
@@ -74,8 +75,10 @@ def score(d):
     gap_heading = bool(re.search(r"^#+ .*(evidence gaps?|data limitations?)", rep, re.I | re.M))
     return {
         "gaps_total": len(gap_facets), "gaps_undisclosed": undisclosed_gap_facets(rep, gap_facets) if rep and gap_facets else [],
-        "gap_meta": len(_GAP_META_RE.findall(rep)), "wall_titles": [m for m in WALL_MARKERS if m in src_block.lower()],
+        "gap_meta": len(_REPORT_META_RE.findall(rep)), "wall_titles": [m for m in WALL_MARKERS if m in src_block.lower()],
         "unrequested_gap_section": gap_heading and not gap_facets,
+        # Advisory only: detecting WHICH figure is an unlabelled stand-in is too fuzzy for a completion check (a false fire costs a Builder pass).
+        "gaps_no_proxy_label": bool(gap_facets) and bool(rep) and not re.search(r"\bproxy\b|closest (?:available|related)|related figure|not (?:the same as|a direct)", rep, re.I),
         "dir": os.path.basename(d.rstrip("/")), "evidence_only": bool(s.get("evidence_only")),
         "wall_min": round((end - s.get("started_at", end)) / 60), "attempts": len(att),
         "chain": [a.get("problem") or "clean" for a in att], "words": len(rep.split()),
@@ -107,10 +110,16 @@ def verdict(r):
         flags.append(f"{len(r['gaps_undisclosed'])}/{r['gaps_total']} evidence gap(s) not disclosed in the report text: {r['gaps_undisclosed'][:3]}")
     if r["gap_meta"]:
         flags.append(f"{r['gap_meta']} meta-reference(s) to the findings file / gaps section in the report text")
+    if r["gaps_no_proxy_label"]:
+        flags.append("gaps recorded but the report never labels a stand-in figure as a proxy: check what fills each gap's place")
     if r["wall_titles"]:
         flags.append(f"bot-wall text in the report's source list: {r['wall_titles']}")
     if r["unrequested_gap_section"]:
         flags.append("report has an evidence-gaps/limitations section but the run recorded no evidence gaps")
+    if r["chain"] and r["chain"][-1] != "clean":
+        flags.append(f"run ended on an unresolved completion problem ({r['chain'][-1]}): the report was never verified clean")
+    if r["chain"] and r["wall_min"] > MAX_RUN_MIN:
+        flags.append(f"wall clock {r['wall_min']} min exceeds max_run_minutes ({MAX_RUN_MIN})")
     if r["words"] < 500:
         flags.append(f"short report ({r['words']} words)")
     if r["tool_errors"] > 15:

@@ -20,5 +20,20 @@ assert any("2/2 evidence gap" in f for f in flags) and any("meta-reference" in f
 flags = _run(pad + "\n## Evidence gaps and data limitations\n- A specific figure for Estonia citizen adoption of digital services could not be confirmed in the available sources.\n"
              "- A specific figure for Finland citizen adoption of digital services could not be confirmed in the available sources.\n", GAPS)
 assert not any("evidence gap" in f for f in flags), flags
+assert any("never labels a stand-in" in f for f in flags), flags
+assert not any("never labels" in f for f in _run(pad + " Closest available: 96% online interaction (proxy).\n- A specific figure for Estonia citizen adoption of digital services could not be confirmed in the available sources.\n"
+                                                  "- A specific figure for Finland citizen adoption of digital services could not be confirmed in the available sources.\n", GAPS))
 assert any("recorded no evidence gaps" in f for f in _run(pad + "\n## Data limitations\nx\n", []))
+def _attempts(problems, minutes):
+    d = tempfile.mkdtemp()
+    att = [{"problem": p, "timestamp": minutes * 60} for p in problems]
+    json.dump({"data": {"completion_check_attempts": att, "query": "q", "started_at": 0}}, open(os.path.join(d, "_run_state.json"), "w"))
+    open(os.path.join(d, "final_report.md"), "w").write(pad)
+    return verdict(score(d))
+
+
+flags = _attempts(["missing_artifact", "claim_unsupported"], 88)
+assert any("unresolved completion problem (claim_unsupported)" in f for f in flags) and any("exceeds max_run_minutes" in f for f in flags), flags
+flags = _attempts(["missing_artifact", None], 20)
+assert not any("unresolved" in f or "max_run_minutes" in f for f in flags), flags
 print("test_evaluate_run_gaps OK")

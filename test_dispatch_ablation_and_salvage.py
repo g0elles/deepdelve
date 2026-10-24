@@ -726,6 +726,9 @@ def main():
     assert "Estonia adoption" in _standing_requirements(_RS) and "Finland adoption" in _standing_requirements(_RS)
     _RS.data = {}
     assert _standing_requirements(_RS) == "" and _standing_requirements(None) == ""
+    from engine.completion import _CLAIM_UNSUPPORTED_BUILDER_DIRECTIVE
+    from engine.completion_dispatch import _BUILDER_WRITE_FIRST
+    assert "DELETE the claim" in _CLAIM_UNSUPPORTED_BUILDER_DIRECTIVE and "write_workspace_file" in _BUILDER_WRITE_FIRST
 
     from utils.run_state import fetched_urls_ctx, record_fetched_url as _rec
     reset_fetched_urls()

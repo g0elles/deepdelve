@@ -57,7 +57,8 @@ _URL_IN_TEXT_RE = re.compile(r"https?://[^\s)\]>\"'`]+")
 def _url_skeleton(url: str) -> str:
     """Letters and digits only, lowercased: invariant to every punctuation/typography variant (non-breaking hyphen, zero-width space,
     stray inserted hyphens, ...)."""
-    return re.sub(r"[^0-9a-z]", "", url.lower())
+    # NFKC first: a PDF's text layer carries ligature glyphs ("\ufb01nland"), and a URL copied from it must still match "finland" (found 2026-10-23).
+    return re.sub(r"[^0-9a-z]", "", unicodedata.normalize("NFKC", url).lower())
 
 
 def snap_urls_to_fetched(text: str) -> str:

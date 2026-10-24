@@ -674,6 +674,14 @@ def _gap_fire_count(run_state) -> int:
     return sum(1 for a in run_state.data.get("completion_check_attempts", []) if a.get("problem") == "undisclosed_evidence_gap")
 
 
+# claim_unsupported's inject text tells the PLANNER to delegate a re-read, which a Builder cannot do, so a Builder rewrite kept the same attributions
+# and the problem fired again (verify run 2026-10-23: twice, the second unresolved at the wall clock). Tell the Builder the move it can make.
+_CLAIM_UNSUPPORTED_BUILDER_DIRECTIVE = (
+    "For each source named in the problem above: read that source's file in the workspace once, and keep an attributed claim ONLY if it shares a "
+    "checkable number, name or figure with that file's text. Otherwise DELETE the claim and its citation; do not reword it and do not keep the "
+    "citation. Leave every other claim unchanged.\n\n")
+
+
 def _standing_requirements(run_state) -> str:
     """Invariants every Builder pass must keep true, appended to its fix instructions (ARCHITECTURE.md §2 'Builder fixes do not stick':
     a fix for one problem silently dropped the evidence-gap disclosures an earlier pass had added). Invariants only, not a second problem."""
@@ -744,7 +752,8 @@ async def _try_builder_fixable_dispatch(dispatch_task, problem, verdict, req_art
         else:
             builder_instructions = (
                 f"Rewrite '{req_artifact}' from findings.md, fixing this specific problem:\n"
-                f"{verdict.inject}\n\n{_BUILDER_NO_DELEGATE_CLARIFICATION}{_standing_requirements(run_state)}"
+                f"{verdict.inject}\n\n{_BUILDER_NO_DELEGATE_CLARIFICATION}"
+                f"{_CLAIM_UNSUPPORTED_BUILDER_DIRECTIVE if problem == 'claim_unsupported' else ''}{_standing_requirements(run_state)}"
                 f"Write the corrected file now via write_workspace_file."
             )
         await _dispatch_writer_review_fix(dispatch_task, "Builder", req_artifact, builder_instructions, attempt, notify)
