@@ -107,6 +107,11 @@ settings:
   # Orthogonal to --depth (that only changes tool budgets, this changes report SHAPE); set via
   # --style on the CLI or this key directly.
   report_style: standard
+  # Reader notes (2026-10-24, report-defect audit): after a research run finishes, a few automatic hints are appended to the END of the report in a marked
+  # block ("Reader notes (automatic, unverified)"): a figure that is not in its cited source but is in another page that was read, a body with no inline
+  # citations, and a dated expectation that has already passed. Hints only, never a failure; nothing is appended when there is nothing to say; removed
+  # before every completion check so a resumed run never reads its own notes (utils/reader_notes.py). Set false to turn the block off.
+  reader_notes: true
   # Optional PDF export of the final report, alongside references.bib (always generated once a
   # report cites at least one real source, no config needed). Off (null) by default: needs the
   # `pandoc` system binary, which this project can't bundle via pip. Set to a pandoc

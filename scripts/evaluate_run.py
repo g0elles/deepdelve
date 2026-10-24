@@ -33,6 +33,11 @@ def run_active() -> bool:
     return any(l.split(None, 1)[0] != me and "pgrep" not in l and "run_eval_reminder" not in l for l in out.splitlines() if l.strip())
 
 
+def _strip_notes(text):
+    from utils.reader_notes import strip_block
+    return strip_block(text)
+
+
 def load(d):
     j = json.load(open(os.path.join(d, "_run_state.json")))
     return j.get("data", j)
@@ -55,7 +60,7 @@ def score(d):
     s, rep = load(d), ""
     rp = os.path.join(d, "final_report.md")
     if os.path.exists(rp):
-        rep = open(rp, errors="ignore").read()
+        rep = _strip_notes(open(rp, errors="ignore").read())  # the appended reader-notes block is not part of the report being scored
     srcs = source_texts(d)
     fetched = s.get("fetched_urls", [])
     urls = {(u["url"] if isinstance(u, dict) else u) for u in fetched}
@@ -159,7 +164,7 @@ def advisory(d):
         rp = os.path.join(d, "final_report.md")
         if not os.path.exists(rp):
             return out
-        run = SimpleNamespace(key=os.path.basename(d.rstrip("/")), dir=d, report=open(rp, errors="ignore").read(), state=load(d), sources=source_texts(d))
+        run = SimpleNamespace(key=os.path.basename(d.rstrip("/")), dir=d, report=_strip_notes(open(rp, errors="ignore").read()), state=load(d), sources=source_texts(d))
         run.query = run.state.get("query", "")
         for name in ("stale_status", "figure_context", "citation_structure", "facet_coverage", "weak_sources"):
             try:

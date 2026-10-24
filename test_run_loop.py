@@ -404,6 +404,49 @@ def scenario_on_malformed_give_up_suppresses_reraise():
     print("scenario_on_malformed_give_up_suppresses_reraise: OK")
 
 
+def scenario_reader_notes_appended_once_after_the_last_check():
+    """Reader notes (2026-10-24 audit): a finished research run gets the marked block at the end of the report, once, after the completion check;
+    a follow-up turn (skip_completion_check) and settings.reader_notes=false get nothing; the same shared loop serves all three surfaces."""
+    import config
+    import engine.run_loop as run_loop
+    from utils import reader_notes
+
+    pad = "word " * 250
+    for label, skip, enabled, expect in (("on", False, True, True), ("skip_completion_check", True, True, False), ("setting off", False, False, False)):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_state = _make_run_state(tmpdir)
+            run_state.data["started_at"] = 1790900000
+            report = os.path.join(tmpdir, "final_report.md")
+            open(report, "w").write("# T\n" + pad + "\n\n## Sources\n1. **[a](https://a.org/x)**\n")  # listed sources, no inline citation -> one note
+            surface, recorded, notified = _make_surface(run_state, skip_completion_check=skip)
+            seen_at_check = []
+
+            async def fake_completion_check(**kwargs):
+                seen_at_check.append(reader_notes.BEGIN in open(report).read())
+                return False, kwargs["current_input"]
+
+            orig, orig_path = _patch_completion_check(fake_completion_check), reader_notes._path
+            reader_notes._path = lambda name: os.path.join(tmpdir, name)
+            settings = config.cfg.setdefault("settings", {})
+            old_flag = settings.get("reader_notes", "absent")
+            settings["reader_notes"] = enabled
+            try:
+                update = _FakeUpdate(contents=[_FakeContent(type="text", text="hello")])
+                asyncio.run(run_loop.run_agent_loop(_FakeAgent([_FakeStream(updates=[update])]), None, "prompt", surface))
+            finally:
+                _restore_completion_check(orig)
+                reader_notes._path = orig_path
+                if old_flag == "absent":
+                    settings.pop("reader_notes", None)
+                else:
+                    settings["reader_notes"] = old_flag
+            text = open(report).read()
+            assert (text.count(reader_notes.BEGIN) == 1) == expect, (label, text[-300:])
+            assert not any(seen_at_check), (label, "the completion check must never see the notes block")
+            assert any("Reader notes" in m for m in notified) == expect, (label, notified)
+    print("scenario_reader_notes_appended_once_after_the_last_check: OK")
+
+
 def main():
     scenario_normal_completion()
     scenario_malformed_retry_then_give_up()
@@ -412,6 +455,7 @@ def main():
     scenario_wall_clock_deadline_expiry()
     scenario_crash_save_on_generic_exception()
     scenario_on_malformed_give_up_suppresses_reraise()
+    scenario_reader_notes_appended_once_after_the_last_check()
     print("All test_run_loop.py scenarios passed.")
 
 

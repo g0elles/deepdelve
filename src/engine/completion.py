@@ -26,6 +26,7 @@ from typing import Callable, Optional
 import config
 from agent_framework import Message
 from tools import tool_quotas_ctx, get_workspace_files, get_workspace_file_content
+from utils import reader_notes
 from utils.run_state import get_fetched_urls, get_search_health
 from utils.grounding import (
     real_grounding_problem,
@@ -1043,6 +1044,7 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
     req_artifact = config.get_required_artifact()
     if not req_artifact:
         return False, current_input
+    reader_notes.strip_from_artifact(req_artifact)  # a resumed run's report may still carry the previous run's notes block; no check may read it
 
     # Configurable, not hardcoded — the fixed default of 3 was cutting runs off with real sources
     # sitting unused in findings.md, well before hardware was anywhere near a real constraint
