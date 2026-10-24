@@ -16,7 +16,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
-from engine.completion_checks_structural import _GAP_META_RE, _REPORT_META_RE, undisclosed_gap_facets  # noqa: E402  same rule the completion check uses
+from engine.completion_checks_structural import _REPORT_META_RE, undisclosed_gap_facets  # noqa: E402  same rule the completion check uses
 
 STUB_WORDS = 150  # a "source" shorter than this is a stub or an interstitial, not evidence
 MAX_RUN_MIN = 60  # settings.max_run_minutes default; a run past it ended on the wall clock, not on a clean check
