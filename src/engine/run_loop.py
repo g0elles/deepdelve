@@ -323,12 +323,14 @@ async def run_agent_loop(agent, session, current_input, surface: RunLoopSurface)
                                 if text:
                                     run_stream_chars += len(text)
         # Reader notes: appended once, after the last completion check (so no check ever reads them), for research runs only. This loop is the one
-        # shared by run_cli, run_agent and _run_research, so all three surfaces get the same behaviour. Fail-open inside append_to_artifact.
-        if run_state is not None and not surface.skip_completion_check and config.cfg.get("settings", {}).get("reader_notes", True):
+        # shared by run_cli, run_agent and _run_research, so all three surfaces get the same behaviour. Mandatory: there is no setting to turn it off. Fail-open inside append_to_artifact.
+        if run_state is not None and not surface.skip_completion_check:
             req = config.get_required_artifact()
-            n_notes = reader_notes.append_to_artifact(req, run_state.data.get("fetched_urls") or [], run_state.data.get("started_at")) if req else 0
-            if n_notes:
-                surface.notify(f"Reader notes: {n_notes} automatic hint(s) appended to the end of {req} (unverified, may be wrong).")
+            if req:
+                n_notes = reader_notes.append_to_artifact(req, run_state.data.get("fetched_urls") or [], run_state.data.get("started_at"))
+                if n_notes is not None:
+                    surface.notify(f"Reader notes appended to the end of {req}: {n_notes} automatic hint(s) (unverified, may be wrong)." if n_notes
+                                   else f"Reader notes appended to the end of {req}: no automatic hints raised (this does not mean the report is error-free).")
     except Exception:
         if run_state is not None:
             run_state.sync_fetched_urls()

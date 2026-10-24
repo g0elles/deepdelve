@@ -5,7 +5,7 @@ detectable with plain string work at high precision on the hand-labelled set. Th
 a figure that is not in the cited source but is in another saved page (wrong citation number), a body with no inline citations at all, and a
 dated expectation that has already passed ("expected in summer 2024" written in 2026). They are hints, not verdicts: the block says so, never fails a
 run, never feeds the completion checks (`strip_from_artifact` removes it before every check, so a resumed run does not see its own notes), and is
-skipped when there is nothing to say. Off with `settings.reader_notes: false`.
+always present on a research run (mandatory, no setting): with no hints it says so and that this proves nothing about correctness.
 
 Pure functions take text and dicts so they are unit-testable; `append_to_artifact` / `strip_from_artifact` are the only parts that touch the workspace.
 Numbers are normalised for narrow no-break spaces and for the middle-dot decimals some sources use. The block holds no URLs and no numbered-list lines,
@@ -60,8 +60,13 @@ def strip_block(text: str) -> str:
     return _BLOCK_RE.sub("\n", text).rstrip("\n") + "\n" if BEGIN in text else text
 
 
+NO_HINTS = ("No automatic hints were raised. This does not mean the report is free of errors: the checks cover only a few kinds of problem "
+            "(a figure that is not in its cited source, a body with no inline citations, a date that has already passed).")
+
+
 def format_block(notes: list) -> str:
-    return f"\n\n{BEGIN}\n{HEADING}\n\n{INTRO}\n\n" + "\n".join(f"- {n}" for n in notes) + f"\n{END}\n"
+    body = "\n".join(f"- {n}" for n in notes) if notes else NO_HINTS
+    return f"\n\n{BEGIN}\n{HEADING}\n\n{INTRO}\n\n{body}\n{END}\n"
 
 
 def source_numbers(report: str) -> dict:
@@ -208,13 +213,14 @@ def strip_from_artifact(req_artifact: str) -> bool:
         return False
 
 
-def append_to_artifact(req_artifact: str, fetched_urls: list, started_at: float) -> int:
-    """Compute and append the notes block; returns the number of notes written (0 = nothing appended). Fail-open: any error leaves the report untouched."""
+def append_to_artifact(req_artifact: str, fetched_urls: list, started_at: float):
+    """Compute and append the notes block (always, even with no hints); returns the number of hints in it, or None when nothing was written (no report, or any error: the
+    report is then left untouched). Fail-open."""
     try:
         from tools.fs import get_workspace_file_content
         path = _path(req_artifact)
         if not path or not os.path.exists(path):
-            return 0
+            return None
         with open(path, "r", encoding="utf-8") as f:
             report = strip_block(f.read())
         url2file = {(e.get("url") or "").rstrip("/"): e.get("filename") for e in (fetched_urls or []) if isinstance(e, dict) and not e.get("stub")}
@@ -225,12 +231,8 @@ def append_to_artifact(req_artifact: str, fetched_urls: list, started_at: float)
                 all_sources[fn] = txt
         n2text = {n: all_sources[url2file[u]] for n, u in source_numbers(report).items() if url2file.get(u) in all_sources}
         notes = compute_notes(report, n2text, all_sources, started_at or time.time())
-        if not notes:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(report)
-            return 0
         with open(path, "w", encoding="utf-8") as f:
             f.write(report.rstrip("\n") + format_block(notes))
         return len(notes)
     except Exception:
-        return 0
+        return None
