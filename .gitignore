@@ -28,3 +28,5 @@ eval/thinking_effort/proxy_capture.jsonl
 eval/harness_bench/workspaces/
 eval/audit_runs/pairs_sample.jsonl
 eval/audit_runs/*.log
+eval/comprehension/papers/
+eval/comprehension/results/
