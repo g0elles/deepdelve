@@ -1161,6 +1161,16 @@ def decompose_claim_segments(line: str) -> list[str]:
     return segments
 
 
+def _term_keys(terms: set) -> set:
+    """Salient terms compared up to letter case, a trailing plural -s on each word and an apostrophe-s. A claim saying "Pacific Island regions" and a
+    source saying "Pacific Islands" share a term; exact set matching called them disjoint and flagged a supported claim (flu report, 2026-10-24: the
+    segment had only two proper-noun terms, both inflection variants of the source's, and cost the run cycles). Only claim_grounding_problem uses this."""
+    out = set()
+    for t in terms:
+        out.add(" ".join(re.sub(r"(?:'s|\u2019s)$", "", w.lower()).rstrip("s") if not w.isdigit() else w for w in t.replace("-", " ").split()))
+    return out
+
+
 def claim_grounding_problem(report: str) -> str | None:
     """Content-level check beyond URL-presence, CLAIM-scoped (this project's report format keeps
     a claim and its citation on one line, same as find_non_url_citations/find_unsupported_regulation_ids):
@@ -1221,7 +1231,7 @@ def claim_grounding_problem(report: str) -> str | None:
                 if source_terms is None:
                     continue
                 checkable = True
-                if seg_terms & source_terms:
+                if _term_keys(seg_terms) & _term_keys(source_terms):
                     supported = True
                     break
             if checkable and not supported:
