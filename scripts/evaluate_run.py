@@ -72,11 +72,16 @@ def score(d):
     gaps = s.get("evidence_gaps") or s.get("unanswered_facets") or []
     gap_facets = [g for g in (s.get("evidence_gaps") or []) if isinstance(g, dict) and g.get("facet")]
     src_block = rep.split("## Sources", 1)[-1] if "## Sources" in rep else ""
+    # A Sources-list entry no [N] in the body points at: "cites 12/12" counted list entries, so an uncited source passed (verify run 2026-10-23).
+    body_text = rep.split("## Sources", 1)[0]
+    listed = {int(n) for n in re.findall(r"^\s*(\d+)\.\s", src_block, re.M)}
+    cited_in_body = {int(n) for grp in re.findall(r"\[(\d+(?:\s*[,\-]\s*\d+)*)\]", body_text) for n in re.findall(r"\d+", grp)}
+    uncited_listed = sorted(listed - cited_in_body) if "## Sources" in rep and listed and cited_in_body else []
     gap_heading = bool(re.search(r"^#+ .*(evidence gaps?|data limitations?)", rep, re.I | re.M))
     return {
         "gaps_total": len(gap_facets), "gaps_undisclosed": undisclosed_gap_facets(rep, gap_facets) if rep and gap_facets else [],
         "gap_meta": len(_REPORT_META_RE.findall(rep)), "wall_titles": [m for m in WALL_MARKERS if m in src_block.lower()],
-        "unrequested_gap_section": gap_heading and not gap_facets,
+        "unrequested_gap_section": gap_heading and not gap_facets, "uncited_listed": uncited_listed,
         # Advisory only: detecting WHICH figure is an unlabelled stand-in is too fuzzy for a completion check (a false fire costs a Builder pass).
         "gaps_no_proxy_label": bool(gap_facets) and bool(rep) and not re.search(r"\bproxy\b|closest (?:available|related)|related figure|not (?:the same as|a direct)", rep, re.I),
         "dir": os.path.basename(d.rstrip("/")), "evidence_only": bool(s.get("evidence_only")),
@@ -110,6 +115,8 @@ def verdict(r):
         flags.append(f"{len(r['gaps_undisclosed'])}/{r['gaps_total']} evidence gap(s) not disclosed in the report text: {r['gaps_undisclosed'][:3]}")
     if r["gap_meta"]:
         flags.append(f"{r['gap_meta']} meta-reference(s) to the findings file / gaps section in the report text")
+    if r["uncited_listed"]:
+        flags.append(f"Sources list entries never cited in the body: {r['uncited_listed']}")
     if r["gaps_no_proxy_label"]:
         flags.append("gaps recorded but the report never labels a stand-in figure as a proxy: check what fills each gap's place")
     if r["wall_titles"]:

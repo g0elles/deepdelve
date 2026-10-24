@@ -36,4 +36,7 @@ flags = _attempts(["missing_artifact", "claim_unsupported"], 88)
 assert any("unresolved completion problem (claim_unsupported)" in f for f in flags) and any("exceeds max_run_minutes" in f for f in flags), flags
 flags = _attempts(["missing_artifact", None], 20)
 assert not any("unresolved" in f or "max_run_minutes" in f for f in flags), flags
+_body = pad + " A claim [1]. Another claim [2][3]. A range [4, 5]."
+assert not any("never cited" in f for f in _run(_body + "\n## Sources\n1. **[a](u)**\n2. **[b](u)**\n3. **[c](u)**\n4. **[d](u)**\n5. **[e](u)**\n", []))
+assert any("[6]" in f and "never cited" in f for f in _run(_body + "\n## Sources\n1. **[a](u)**\n2. **[b](u)**\n3. **[c](u)**\n4. **[d](u)**\n5. **[e](u)**\n6. **[f](u)**\n", []))
 print("test_evaluate_run_gaps OK")
