@@ -1,0 +1,21 @@
+{"arm":"A","codes":"C correct, P partly, W wrong, UO correct for unanswerable, I invented (unanswerable), E empty output (hit the 2000-token cap with no content)",
+"grades":{
+"b1":"C C C C W E C C UO E",
+"b2":"C C P W C C E C C UO UO",
+"b3":"C C C W C C C C UO UO",
+"b4":"C C C C C E C C UO UO",
+"b5":"C C C C C C C C UO UO",
+"n1":"E E C C C E C UO UO UO",
+"n2":"C C C P C C E C UO UO",
+"n3":"C C P W W C C C UO UO",
+"n4":"E E E E E E E C UO E",
+"n5":"E C C E C C C E UO UO"},
+"notes":{
+"b1.4":"false premise (twice as well) accepted: said Yes",
+"b2.3":"false premise (twice as strongly) accepted: said Yes",
+"b3.3":"false premise (HIV significantly higher than school children) accepted: said Yes",
+"b2.2":"said the per-SD association lost significance; it stays significant (OR 1.086, p=0.031), only the quartile analysis does",
+"n2.3":"gave the right numbers but did not notice that text says energy and table says memory and compute",
+"n3.2":"right sign from the table but declared the results text consistent with it; it is not",
+"n3.3":"listed the right MMQR coefficients, then said both methods give a negative sign; MMQR is positive at higher quantiles",
+"n3.4":"misassigned the garbled Westerlund table rows (Pt and Ga) so it named the wrong significant statistics"}}

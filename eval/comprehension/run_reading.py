@@ -4,7 +4,8 @@ Output: results/R_<arm>.jsonl (local, gitignored: contains model output quoting 
 import glob, json, os, sys, time, httpx
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-MODEL = "deepdelve-gpt-oss:latest"
+MODEL = os.environ.get("DD_MODEL", "deepdelve-gpt-oss:latest")
+TAG = os.environ.get("DD_TAG", "")  # "" for the agent's own model; otherwise results are R_<tag>_<arm>.jsonl
 ROLE = """You are the DocumentAnalyzer specialist for DeepDelve. Today is 2026-10-24.
 
 # Role
@@ -30,7 +31,7 @@ def ask(system: str, paper: str, question: str) -> dict:
 
 
 def main(arm: str):
-    out = os.path.join(HERE, "results", f"R_{arm}.jsonl")
+    out = os.path.join(HERE, "results", f"R_{TAG + '_' if TAG else ''}{arm}.jsonl")
     done = {(j["paper"], j["i"]) for j in map(json.loads, open(out))} if os.path.exists(out) else set()
     for kf in sorted(glob.glob(os.path.join(HERE, "keys", "*.json"))):
         key = json.load(open(kf))
