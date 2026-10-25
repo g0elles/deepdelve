@@ -9,6 +9,7 @@ import prompts  # noqa: E402
 
 MODEL = os.environ.get("DD_MODEL", "deepdelve-gpt-oss:latest")
 TAG = os.environ.get("DD_TAG", "")
+THINK = {"false": False, "low": "low", "medium": "medium", "high": "high"}[os.environ.get("DD_THINK", "false")]  # the agent sends false (enable_thinking: false)
 MAN = {m["id"]: m for m in json.load(open(os.path.join(HERE, "papers", "manifest.json")))}
 
 
@@ -48,7 +49,7 @@ def main():
         task = f"Write final_report.md: a report on what this study found, how solid the evidence is, and what it leaves unanswered. Title of the study: {MAN[pid]['title']}"
         user = ("The contents of findings.md are below (you cannot call tools in this session, so treat it as already read). "
                 f"Write the complete final_report.md now and reply with only its markdown text.\n\n<findings.md>\n{f}</findings.md>")
-        body = {"model": MODEL, "stream": False, "think": False, "messages": [{"role": "system", "content": system(task)}, {"role": "user", "content": user}],
+        body = {"model": MODEL, "stream": False, "think": THINK, "messages": [{"role": "system", "content": system(task)}, {"role": "user", "content": user}],
                 "options": {"temperature": 0.2, "num_ctx": 65536, "seed": 42, "num_predict": 4000}}
         t0 = time.time()
         r = httpx.post("http://localhost:11434/api/chat", json=body, timeout=900).json()

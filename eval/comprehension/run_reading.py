@@ -6,6 +6,7 @@ import glob, json, os, sys, time, httpx
 HERE = os.path.dirname(os.path.abspath(__file__))
 MODEL = os.environ.get("DD_MODEL", "deepdelve-gpt-oss:latest")
 TAG = os.environ.get("DD_TAG", "")  # "" for the agent's own model; otherwise results are R_<tag>_<arm>.jsonl
+THINK = {"false": False, "low": "low", "medium": "medium", "high": "high"}[os.environ.get("DD_THINK", "false")]  # the agent sends false (enable_thinking: false)
 ROLE = """You are the DocumentAnalyzer specialist for DeepDelve. Today is 2026-10-24.
 
 # Role
@@ -23,7 +24,7 @@ EXTRA_B = "\nIf the document does not state the answer, say exactly 'NOT STATED'
 def ask(system: str, paper: str, question: str) -> dict:
     msgs = [{"role": "system", "content": system},
             {"role": "user", "content": f"<document>\n{paper}\n</document>\n\nResearch question: {question}"}]
-    body = {"model": MODEL, "messages": msgs, "stream": False, "think": False,
+    body = {"model": MODEL, "messages": msgs, "stream": False, "think": THINK,
             "options": {"temperature": 0.2, "num_ctx": 65536, "seed": 42, "num_predict": 2000}}
     t0 = time.time()
     r = httpx.post("http://localhost:11434/api/chat", json=body, timeout=900).json()
