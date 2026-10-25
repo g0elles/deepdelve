@@ -1,0 +1,115 @@
+{
+ "model": "deepdelve-gemma4-e4b",
+ "think": "false (real off)",
+ "note": "same rules as labels_W_gptoss.json; labelled after the gpt-oss sets (not blind).",
+ "reports": {
+  "b1": {
+   "units": 15,
+   "defect_units": 1,
+   "inline_citations": 11,
+   "sev3": 0,
+   "defects": [
+    "'notably impacted' overstates sev1"
+   ]
+  },
+  "b2": {
+   "units": 23,
+   "defect_units": 4,
+   "inline_citations": 20,
+   "sev3": 0,
+   "defects": [
+    "index named 'Muscle Impairment Index (IDI)' wrong expansions of MLI, CMI, IDI sev2",
+    "CMI called 'Cardiometabolic Impairment Index' sev1",
+    "'moderately suggestive' invented grade sev1",
+    "MLI expansion wrong sev1"
+   ]
+  },
+  "b3": {
+   "units": 20,
+   "defect_units": 4,
+   "inline_citations": 14,
+   "sev3": 0,
+   "defects": [
+    "'increased significantly' for exploratory trim-and-fill sev1",
+    "'comprehensive nature of the review' padding sev1",
+    "inconsistency attributed to the authors sev1",
+    "SCCmec expansion wrong sev1"
+   ]
+  },
+  "b4": {
+   "units": 17,
+   "defect_units": 0,
+   "inline_citations": 12,
+   "sev3": 0,
+   "defects": []
+  },
+  "b5": {
+   "units": 24,
+   "defect_units": 4,
+   "inline_citations": 14,
+   "sev3": 0,
+   "defects": [
+    "'promising avenue' background sev1",
+    "'strong diagnostic capabilities' sev1",
+    "'evidence is robust' overstated sev2",
+    "'suggests generalizability' from DLBCL-only external sets sev2"
+   ]
+  },
+  "n1": {
+   "units": 21,
+   "defect_units": 7,
+   "inline_citations": 20,
+   "sev3": 0,
+   "defects": [
+    "'substantial' suite sev1",
+    "duplicated gap sentence (padding) sev1",
+    "'robust' sev1",
+    "'significant methodological strength' sev1",
+    "'forces users to adopt' sev1",
+    "'evidence base is strong' sev1",
+    "'not possible' vs 'with caution' contradiction sev1"
+   ]
+  },
+  "n2": {
+   "units": 21,
+   "defect_units": 3,
+   "inline_citations": 15,
+   "sev3": 0,
+   "defects": [
+    "'unprecedented strain' / 'necessitating' paper's claim stated as fact sev1",
+    "'a finding echoed in Table 3' hides text-energy vs table-memory/compute mismatch sev2",
+    "'inevitably' sev1"
+   ]
+  },
+  "n3": {
+   "units": 33,
+   "defect_units": 3,
+   "inline_citations": 24,
+   "sev3": 0,
+   "defects": [
+    "'evidence is robust' overstated against its own gaps sev2",
+    "'cointegration clearly reported' sev1",
+    "multicollinearity stated without flagging the paper's 'all under 0.8' error sev1"
+   ]
+  },
+  "n4": {
+   "units": 21,
+   "defect_units": 2,
+   "inline_citations": 12,
+   "sev3": 0,
+   "defects": [
+    "'comprehensive review' sev1",
+    "'proved to be a unified tool' sev1"
+   ]
+  },
+  "n5": {
+   "units": 23,
+   "defect_units": 1,
+   "inline_citations": 17,
+   "sev3": 1,
+   "defects": [
+    "LSTM ablation called 'significantly less severe' than hierarchy removal, opposite of the numbers sev3"
+   ]
+  }
+ }
+}

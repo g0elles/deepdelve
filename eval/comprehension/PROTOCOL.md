@@ -54,3 +54,9 @@ Why: gpt-oss with think=false gets no reasoning instruction and runs at its defa
 * Writing: 71 of 349 units defective (20.3 percent; default 55 of 356, 15.4 percent), 0 severity 3, 14 severity 2 (13), 9 of 10 reports cite inline (7 of 10). Low effort does not improve writing; the defect rate is higher, mostly padding and invented "future work" lines, and labelling was not blind (done after the default set), so treat the gap as noise-to-worse, not as a verdict.
 * Reading: low effort fixes the empties but not the ability to refuse false premises or catch self-contradictions. Writing is a bottleneck under both settings (rule: more than 10 percent).
 * Files: grades_R_gptoss_low_A.json, labels_W_gptoss_low.json (texts stay local).
+
+## Result: gemma4:e4b (2026-10-24, think=false, which is a real off switch for this model; single run, one non-blind labeller)
+* Reading: 0 empty, 57 correct + 20 right "not stated" = 77, 13 partly, 11 wrong, 0 invented. About 9 s per answer. Weak spots: accepted 2 of 3 false premises, treated a non-significant AUC difference as significant, missed the paper's own inconsistencies, and on the garbled physics paper gave a wrong formula and said the metrics distinguish crystals from glass.
+* Writing: 29 of 218 units defective (13.3 percent), 1 severity 3 (n5: says the LSTM ablation hurt less than the hierarchy ablation, the opposite of the numbers), 10 of 10 reports cite inline. Reports are shorter and stay close to the findings; defects are mostly puffery and wrong acronym expansions.
+* Not a verdict: diagnostic only (Model Evaluation Standard not applied).
+* Files: grades_R_gemma4_A.json, labels_W_gemma4.json.
