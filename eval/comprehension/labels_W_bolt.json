@@ -1,0 +1,102 @@
+{
+ "model": "bolt-e4b (Nemotron 3.5 Bolt-E4B)",
+ "think": "false (real off)",
+ "note": "same rules as labels_W_gptoss.json; labelled after the other sets (not blind). inline_citations counts [1] markers. Reports stay close to the findings, flag the paper's own contradictions, and cite in every paragraph.",
+ "reports": {
+  "b1": {
+   "units": 16,
+   "defect_units": 2,
+   "inline_citations": 12,
+   "sev3": 0,
+   "defects": [
+    "'evidence strongly suggests a benefit' with I2 70% and a CI reaching -0.09 sev2",
+    "'the review explicitly states it does not make a comparison' attributes a statement the paper does not make sev1"
+   ]
+  },
+  "b2": {
+   "units": 12,
+   "defect_units": 3,
+   "inline_citations": 11,
+   "sev3": 0,
+   "defects": [
+    "index expanded as 'Combined Cardiometabolic and Muscle Impairment Index (IDI)', IDI is integrated discrimination improvement sev1",
+    "CMI and MLI expanded as 'Cardiometabolic Impairment' and 'Muscle Loss Impairment' sev1",
+    "cross-sectional result described as CKM 'progression' sev1"
+   ]
+  },
+  "b3": {
+   "units": 13,
+   "defect_units": 0,
+   "inline_citations": 13,
+   "sev3": 0,
+   "defects": []
+  },
+  "b4": {
+   "units": 11,
+   "defect_units": 1,
+   "inline_citations": 11,
+   "sev3": 0,
+   "defects": [
+    "'already near saturation' is the writer's inference sev1"
+   ]
+  },
+  "b5": {
+   "units": 15,
+   "defect_units": 3,
+   "inline_citations": 17,
+   "sev3": 0,
+   "defects": [
+    "another backbone given 'F1 0.935' (it is the AUC) so the Swin 'highest F1' claim contradicts itself sev2",
+    "'evidence suggests models provide accurate diagnosis' leans on the same caveated numbers sev1",
+    "limitation repeated twice, padding sev1"
+   ]
+  },
+  "n1": {
+   "units": 12,
+   "defect_units": 2,
+   "inline_citations": 11,
+   "sev3": 0,
+   "defects": [
+    "'also helps mitigate data contamination' not in the findings sev2",
+    "'evidence base is robust' unsupported sev2"
+   ]
+  },
+  "n2": {
+   "units": 13,
+   "defect_units": 2,
+   "inline_citations": 11,
+   "sev3": 0,
+   "defects": [
+    "'Key findings highlight the escalating energy demands' puffery sev1",
+    "'Quantization shows promise' puffery sev1"
+   ]
+  },
+  "n3": {
+   "units": 15,
+   "defect_units": 1,
+   "inline_citations": 13,
+   "sev3": 0,
+   "defects": [
+    "'Regarding specific policy levers' framing not in findings sev1"
+   ]
+  },
+  "n4": {
+   "units": 15,
+   "defect_units": 1,
+   "inline_citations": 12,
+   "sev3": 0,
+   "defects": [
+    "says alpha-quartz has H=0 although the findings give H=0.45 sev2"
+   ]
+  },
+  "n5": {
+   "units": 16,
+   "defect_units": 1,
+   "inline_citations": 15,
+   "sev3": 0,
+   "defects": [
+    "'significantly worse' for LSTM ablation, no test reported sev1"
+   ]
+  }
+ }
+}

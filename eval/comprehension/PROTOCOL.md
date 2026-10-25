@@ -72,3 +72,9 @@ Why: gpt-oss with think=false gets no reasoning instruction and runs at its defa
 * Writing: 82 of 283 units defective (29.0 percent), 1 severity 3 (confidence intervals for two antibiotics that are not in the findings), only 3 of 10 reports cite and those cite non-existent source numbers. Reports copy the findings almost verbatim and leak pipeline meta language ("as noted in the findings", two format notes inside the n4 report). The worst writer of the set.
 * Not a verdict: diagnostic only.
 * Files: grades_R_granite42_A.json, labels_W_granite42.json.
+
+## Result: Nemotron 3.5 Bolt-E4B (bolt-e4b, think=false real off, 2026-10-25)
+Gemma-4-E4B post-trained by NVIDIA, Q4_K_M, served through Ollama with the gemma4 renderer and parser (the imported GGUF had a generic template with no thinking switch; raw test: false 0 thinking characters and 74 tokens, true 527 characters and 242 tokens). Single run, one labeller.
+* Reading: 82 of 101 right (62 correct plus 20 right "not stated"), 13 partly, 6 wrong, 0 invented, 0 empty; 8.6 s per answer. Wrong: HIV vs school children significance, "all correlations under 0.8" (noticed 0.846 but called the claim accurate), crystal vs glass insensitivity, hierarchy vs LSTM ablation, identical ablation and PPO rows, garbled peak positions (n4).
+* Writing: 16 of 138 units defective (11.6 percent, rule 10 percent), 0 severity 3, 10 of 10 reports cite inline. Reports stay close to the findings and report the paper's own contradictions; defects are wrong acronym expansions, puffery and two unsupported lines.
+* Reading beats gemma4:e4b (82 vs 77 right, fewer wrong) at similar speed; below gemma4:12b (91).

@@ -1,0 +1,39 @@
+{
+ "arm": "A",
+ "think": "false (real off)",
+ "model": "bolt-e4b (Nemotron 3.5 Bolt-E4B Q4_K_M, gemma4 renderer)",
+ "codes": "as grades_R_A.json",
+ "grades": {
+  "b1": "C C P C C C C C UO UO",
+  "b2": "C C C C C C C C C P UO",
+  "b3": "C P C W C C C C UO UO",
+  "b4": "C P C C C C C C UO UO",
+  "b5": "C C C C C C P C UO UO",
+  "n1": "C C C C C C C UO UO UO",
+  "n2": "C C C P C P C C UO UO",
+  "n3": "C C P C C P C C UO UO",
+  "n4": "W P P C P W C C UO UO",
+  "n5": "C C C W P W C W UO UO"
+ },
+ "notes": {
+  "b1.2": "gave 29% without the abstract/results inconsistency",
+  "b2.9": "hedged, did not say NRI is not reported",
+  "b3.1": "saw the abstract differs but called the paper largely consistent",
+  "b3.3": "said HIV significantly higher (trap)",
+  "b4.1": "omitted pulses and voltage",
+  "b5.6": "omitted biopsy/single-hospital training caveat",
+  "n2.3": "did not notice text says energy, table says memory and compute",
+  "n2.5": "presented as evidence, key says single citation no numbers",
+  "n3.2": "did not flag the contradictory results paragraph",
+  "n3.5": "noted 0.846 in a parenthesis but called the claim accurate",
+  "n4.0": "garbled Q values, wrong PP position",
+  "n4.1": "right sign and weighting reasoning, no partial factors",
+  "n4.2": "HDG ordered by FSDP right, but called ring entropy ordered and missed density point",
+  "n4.4": "entropy formula lacks the minus sign",
+  "n4.5": "said they can distinguish crystal from glass (key: insensitive)",
+  "n5.3": "named hierarchy removal, key is LSTM removal (trap)",
+  "n5.4": "gave drops as percent, not percentage points",
+  "n5.5": "said much worse than PPO although numbers are identical (trap)",
+  "n5.7": "listed limitations of other systems, not the paper's own"
+ }
+}
