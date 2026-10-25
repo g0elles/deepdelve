@@ -1,0 +1,35 @@
+{
+ "arm": "A",
+ "think": "low",
+ "codes": "C correct, P partly, W wrong, UO correct for unanswerable, I invented (unanswerable), E empty output (hit the 2000-token cap with no content)",
+ "grades": {
+  "b1": "C C C C W C C C UO UO",
+  "b2": "C C C P C C C C C UO UO",
+  "b3": "C C C W C C C C UO UO",
+  "b4": "C C C P C C C C UO UO",
+  "b5": "C C C C C W C C UO UO",
+  "n1": "C C C C C C C UO I UO",
+  "n2": "C C C W C C C C UO UO",
+  "n3": "C C C P C C C C UO UO",
+  "n4": "P W W C C W C C UO I",
+  "n5": "C C C W P P C C UO UO"
+ },
+ "notes": {
+  "b1.4": "false premise accepted (said supported)",
+  "b2.3": "partly: gives both effects and notes circularity, but calls the OR roughly double without rejecting the premise",
+  "b3.3": "claimed a significant HIV vs school-children difference and non-overlapping intervals (they overlap)",
+  "b4.3": "partly: double-EP ZP-intact gain not mentioned",
+  "b5.5": "concluded Swin is significantly better; no pairwise test exists",
+  "n1.8": "invented kappa 0.92 and a quote",
+  "n2.3": "said text and table agree (text says energy, table says memory and compute)",
+  "n3.3": "missed the significant 0.50 quantile",
+  "n4.0": "PP given as 2.6 not about 3",
+  "n4.1": "weights mixed; invented mechanism",
+  "n4.2": "invented H values, wrong conclusion",
+  "n4.5": "said yes, they distinguish (they do not)",
+  "n4.9": "invented 12 keV",
+  "n5.3": "missed the paper's self-contradiction",
+  "n5.4": "did not note -18% is relative",
+  "n5.5": "table mix-up; did not say rows are identical"
+ }
+}

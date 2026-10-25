@@ -1,0 +1,158 @@
+{
+ "model": "deepdelve-gpt-oss",
+ "think": "low",
+ "note": "same labelling rules as labels_W_gptoss.json (me, against the findings file; not blind, labelled after the default-effort set). defect = unit with an unsupported, overstated, mismatched or wrong statement. Severity 1 outside background/extrapolation, 2 misleading in a way a careful reader could catch, 3 would mislead a scientist acting on it.",
+ "reports": {
+  "b1": {
+   "units": 29,
+   "defect_units": 4,
+   "inline_citations": 7,
+   "sev3": 0,
+   "defects": [
+    "'roughly twice the magnitude' sets two SMDs against each other sev2",
+    "'authors explicitly noted' a non-comparison the paper never discusses sev1",
+    "'robust ... influential study' overreach sev1",
+    "'limited by the small number of trials' not in findings sev1"
+   ]
+  },
+  "b2": {
+   "units": 41,
+   "defect_units": 10,
+   "inline_citations": 9,
+   "sev3": 0,
+   "defects": [
+    "'raised the hazard ratio by 1.11' wording sev1",
+    "invented primary aim sev1",
+    "CKM stage called 'CKD Stage' sev2",
+    "'associated with advanced CKD stages' in conclusion sev2",
+    "NHANES replication 'for CKD' sev1",
+    "'statistical rigor' padding sev1",
+    "'enhancing temporal validity' sev1",
+    "external validation invented gap sev1",
+    "cost-effectiveness invented gap sev1",
+    "'NRI would clarify' background sev1"
+   ]
+  },
+  "b3": {
+   "units": 42,
+   "defect_units": 9,
+   "inline_citations": 8,
+   "sev3": 0,
+   "defects": [
+    "'may underestimate true prevalence' overstates exploratory trim-and-fill sev2",
+    "'residual confounding' invented sev1",
+    "'limited power to detect subtle changes' invented sev1",
+    "'surveillance gaps' sev1",
+    "'evidence is moderate' invented grade sev1",
+    "'solid base' sev1",
+    "pediatric future work invented sev1",
+    "closing 'would enhance precision' sev1",
+    "background on MRSA worldwide sev1"
+   ]
+  },
+  "b4": {
+   "units": 28,
+   "defect_units": 9,
+   "inline_citations": 7,
+   "sev3": 0,
+   "defects": [
+    "'further improved' vs single ZP-free (94.1) sev1",
+    "GGTA1 result placed under CMAH heading, ambiguous sev1",
+    "'may inflate effect size' sev1",
+    "'potentially overestimating' attributed to authors sev1",
+    "'synergistic ... repeated electroporation and ZP removal' (paper says repeated electroporation and timing) sev2",
+    "phenotype/disease-resistance gap invented sev1",
+    "'B4GALNT2' mechanism gap inferred sev1",
+    "'translational potential' sev1",
+    "'safety profile unknown' overreach sev1"
+   ]
+  },
+  "b5": {
+   "units": 33,
+   "defect_units": 5,
+   "inline_citations": 8,
+   "sev3": 0,
+   "defects": [
+    "'convolutional-transformer' wrong (Swin) sev1",
+    "'assess clinical impact' padding sev1",
+    "'architectural refinement or data augmentation' invented sev1",
+    "'limited statistical rigor' overstates sev1",
+    "'real-time ... practical impact' padding sev1"
+   ]
+  },
+  "n1": {
+   "units": 33,
+   "defect_units": 8,
+   "inline_citations": 7,
+   "sev3": 0,
+   "defects": [
+    "'comprehensive exploration' sev1",
+    "'model-specific within a dataset' garbles 'comparable across models within a dataset' sev2",
+    "'emphasises peak performance rather than typical' sev1",
+    "'highlighting strengths and weaknesses' sev1",
+    "'directly sourced therefore internally consistent' non sequitur sev1",
+    "'limit generalisability' sev1",
+    "absence of overall ranking framed as a flaw against the paper's stated aim sev2",
+    "'reliability uncertain' sev1"
+   ]
+  },
+  "n2": {
+   "units": 34,
+   "defect_units": 5,
+   "inline_citations": 11,
+   "sev3": 0,
+   "defects": [
+    "'synthesizes industry reports, benchmarks' invented sev1",
+    "'Table 3 corroborates ... energy savings consistent' papers over text-energy vs table-memory mismatch sev2",
+    "'the paper notes that the units differ' sev1",
+    "'compelling argument' sev1",
+    "'future empirical work must address' sev1"
+   ]
+  },
+  "n3": {
+   "units": 36,
+   "defect_units": 7,
+   "inline_citations": 0,
+   "sev3": 0,
+   "defects": [
+    "'multivariate quantile regression' wrong expansion of MMQR sev2",
+    "'exceed 0.8 only for ... lnTI-lnURB (0.791)' sev2",
+    "'significant at 1% across most variables' overstated sev2",
+    "'solid for ... urbanization' overstated (3 of 5 quantiles, less stable) sev2",
+    "'potential endogeneity' invented sev1",
+    "'editorial oversights could affect other results' sev1",
+    "closing 'strengthen policy relevance' sev1"
+   ]
+  },
+  "n4": {
+   "units": 38,
+   "defect_units": 9,
+   "inline_citations": 7,
+   "sev3": 0,
+   "defects": [
+    "'comprehensive synthesis' sev1",
+    "'complementary insights into partial structure factors' sev1",
+    "'consistently observed, reinforcing robustness' invented sev2",
+    "'reliance on a single review article' framed as a weakness sev1",
+    "missing photon energy / thermal conductivity framed as evidence limits sev1",
+    "'hindering reproducibility' sev1",
+    "'key functional property unexplored' sev1",
+    "conclusion 'compelling' sev1",
+    "closing 'link to macroscopic behavior' sev1"
+   ]
+  },
+  "n5": {
+   "units": 35,
+   "defect_units": 5,
+   "inline_citations": 7,
+   "sev3": 0,
+   "defects": [
+    "'recommend instructional content' invented sev1",
+    "'identical row reduces model to flat baseline' misses that identical numbers are suspicious sev2",
+    "'potential confusion in the analysis' sev1",
+    "'affect real-time deployment feasibility' sev1",
+    "closing 'strengthen evidence' sev1"
+   ]
+  }
+ }
+}
