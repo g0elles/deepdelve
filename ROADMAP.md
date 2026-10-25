@@ -342,7 +342,7 @@ tracked in `session_status/CURRENT.md` until the next wiki pass picks it up.
   `/toggle_thinking` -> `config.save_config()`; fixed by stubbing save_config in that scenario (suite now leaves the file byte-identical).
 
 - **Completion-check escalation ladder is model-capability-agnostic, raised
-  `RESEARCH_small_model_agentic_reliability.md` Finding B (2026-08-27) — CLOSED 2026-09-11.**
+  `wiki page Research-Small-Model-Reliability` Finding B (2026-08-27) — CLOSED 2026-09-11.**
   `CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD` (`engine/completion_starvation.py`, default 3)
   is the one shared number `_capped` (every non-self-resolving completion check) and
   `_compute_force_whole_rebuild`'s escalation both use to decide when a run has re-litigated the

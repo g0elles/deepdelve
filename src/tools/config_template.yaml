@@ -267,7 +267,7 @@ settings:
   # into an acknowledged-gap/salvage report sooner instead of burning its whole attempt budget
   # re-litigating a problem its own history already shows it isn't going to fix -- trades
   # completeness for survivability inside a tight max_run_minutes budget. See
-  # RESEARCH_small_model_agentic_reliability.md Finding B (2026-08-27).
+  # wiki page Research-Small-Model-Reliability Finding B (2026-08-27).
   completion_check_escalation_threshold: 3
   # check_requested_count_shortfall (2026-08-28): ONE LEVEL UPSTREAM of coverage_check below --
   # that check verifies whether delegated tasks that WERE planned actually got a real source; this

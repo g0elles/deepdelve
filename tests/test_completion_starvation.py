@@ -148,7 +148,7 @@ def main():
 
     _capped_scenario()
 
-    # --- get_escalation_threshold (2026-09-11, RESEARCH_small_model_agentic_reliability.md
+    # --- get_escalation_threshold (2026-09-11, wiki page Research-Small-Model-Reliability
     # Finding B): settings.completion_check_escalation_threshold overrides the shared 3-strike
     # default so a known-weaker candidate config can bail into salvage sooner. Unset/absent must
     # be a true no-op (same default _capped_scenario above already pins); when set, _capped must
