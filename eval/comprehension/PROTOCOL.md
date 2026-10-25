@@ -66,3 +66,9 @@ Why: gpt-oss with think=false gets no reasoning instruction and runs at its defa
 * Writing: 25 of 213 units defective (11.7 percent, rule 10 percent), 0 severity 3, 10 of 10 reports cite inline. Defects mostly puffery, a few overstated strengths, one wrong acronym expansion (MMQR).
 * Not a verdict: diagnostic only (Model Evaluation Standard not applied).
 * Files: grades_R_gemma4_12b_A.json, labels_W_gemma4_12b.json.
+
+## Result: granite4.2:8b (2026-10-25, think=false verified as a real off on the raw API; single run, one non-blind labeller)
+* Reading: 0 empty, 63 correct + 21 right "not stated" = 84, 12 partly, 5 wrong, 0 invented. About 16 s per answer (slowest so far, answers are long). Wrong on the trap items (HIV vs school children, "all correlations under 0.8", ablation ranking) and the garbled physics paper.
+* Writing: 82 of 283 units defective (29.0 percent), 1 severity 3 (confidence intervals for two antibiotics that are not in the findings), only 3 of 10 reports cite and those cite non-existent source numbers. Reports copy the findings almost verbatim and leak pipeline meta language ("as noted in the findings", two format notes inside the n4 report). The worst writer of the set.
+* Not a verdict: diagnostic only.
+* Files: grades_R_granite42_A.json, labels_W_granite42.json.

@@ -1,0 +1,158 @@
+{
+ "model": "granite4.2:8b",
+ "think": "false (real off)",
+ "note": "same rules as labels_W_gptoss.json; labelled after the other sets (not blind). Granite reports copy the findings nearly verbatim, mostly lack inline citations, and several leak pipeline meta language.",
+ "reports": {
+  "b1": {
+   "units": 21,
+   "defect_units": 5,
+   "inline_citations": 0,
+   "sev3": 0,
+   "defects": [
+    "'small-to-moderate reduction' sev1",
+    "'occurred in sham conditions as well' sev1",
+    "I2 70 percent called 'moderate' sev1",
+    "'sufficient to describe an association' sev1",
+    "'variability in psychiatric symptoms' sev1"
+   ]
+  },
+  "b2": {
+   "units": 32,
+   "defect_units": 7,
+   "inline_citations": 0,
+   "sev3": 0,
+   "defects": [
+    "'CVKM' abbreviation sev1",
+    "'as noted in the findings' meta language sev1",
+    "'stronger evidence than cross-sectional alone' sev1",
+    "'supporting the reliability' sev1",
+    "'appropriate' avoidance of causal language sev1",
+    "'moderately solid' invented grade sev1",
+    "'typical limits of observational cohorts' sev1"
+   ]
+  },
+  "b3": {
+   "units": 18,
+   "defect_units": 4,
+   "inline_citations": 0,
+   "sev3": 1,
+   "defects": [
+    "invented confidence intervals for TMP-SMX and erythromycin (not in findings) sev3",
+    "'evidence moderate' invented grade sev1",
+    "'resistance patterns are clear' sev1",
+    "'the report does not provide' wrong subject sev1"
+   ]
+  },
+  "b4": {
+   "units": 26,
+   "defect_units": 12,
+   "inline_citations": 8,
+   "sev3": 0,
+   "defects": [
+    "[2] to [8] cite non-existent sources, 7 units sev2",
+    "'focusing on two genes' omits CMAH sev1",
+    "'based solely on the provided findings' meta sev1",
+    "'benefits interact rather than add' sev1",
+    "'appropriately temper claims' sev1",
+    "'they correctly note' sev1"
+   ]
+  },
+  "b5": {
+   "units": 29,
+   "defect_units": 8,
+   "inline_citations": 0,
+   "sev3": 0,
+   "defects": [
+    "'board-certified' invented sev1",
+    "garbled AUC range sentence sev2",
+    "'pathologists average for HL unknown but implied' sev1",
+    "'strong performance' sev1",
+    "'solid for DLBCL and FL' overstated (FL never externally tested) sev2",
+    "'informative' comparison sev1",
+    "'appropriate and clearly distinguished' sev1",
+    "'correctly identified as a limitation' sev1"
+   ]
+  },
+  "n1": {
+   "units": 20,
+   "defect_units": 10,
+   "inline_citations": 11,
+   "sev3": 0,
+   "defects": [
+    "wrong citation numbers [2] to [6], 6 units sev2",
+    "'8 completed datasets plus 2 test datasets in preparation' misstates the findings sev2",
+    "'limitations reflect design priorities' sev1",
+    "'genuine unanswered questions' sev1",
+    "'evidence directly supports' sev1"
+   ]
+  },
+  "n2": {
+   "units": 31,
+   "defect_units": 12,
+   "inline_citations": 0,
+   "sev3": 0,
+   "defects": [
+    "'solid' evidence for an argument paper without original data sev1",
+    "'well-grounded' sev1",
+    "'consistent with cited evidence' sev1",
+    "'omission is reasonable' sev1",
+    "'accurate and clearly noted in the findings' meta sev1",
+    "'precision avoids overstatement' sev1",
+    "'reasonable for a conceptual paper' sev1",
+    "'correctly avoids' sev1",
+    "'cautious wording appropriate' sev1",
+    "'as noted' meta sev1",
+    "'overall solid' sev1",
+    "'paper notes units differ' sev1"
+   ]
+  },
+  "n3": {
+   "units": 32,
+   "defect_units": 11,
+   "inline_citations": 0,
+   "sev3": 0,
+   "defects": [
+    "MMQR expanded wrongly sev2",
+    "FGLS expanded 'Fixed Least Squares' sev2",
+    "PCSE expanded wrongly sev2",
+    "'decrease monotonically' sev1",
+    "'less stable at lower quantiles' sev1",
+    "'MMQR effectively captures' sev1",
+    "'plausible behavioral pattern' speculation sev1",
+    "muddled cointegration null reading sev1",
+    "'readers cannot assess ... small-sample bias' extrapolation sev1",
+    "'confidence in generalizability limited' sev1",
+    "'full pattern is not converged' sev1"
+   ]
+  },
+  "n4": {
+   "units": 43,
+   "defect_units": 8,
+   "inline_citations": 14,
+   "sev3": 0,
+   "defects": [
+    "leaked note about findings.md into the report sev2",
+    "leaked output-format note into the report sev2",
+    "'evidence is solid' sev1",
+    "'not qualified with uncertainty in the source' meta sev1",
+    "'review nature strengthens confidence in reproducibility' sev2",
+    "'no contradictory or speculative statements' sev1",
+    "'authors do not quantify' sev1",
+    "'supported but not rigorously quantified' sev1"
+   ]
+  },
+  "n5": {
+   "units": 31,
+   "defect_units": 5,
+   "inline_citations": 0,
+   "sev3": 0,
+   "defects": [
+    "'mean reward 156.2%' and '218.4%' with percent signs sev1",
+    "'reward performance supported by a statistical test' (test is for accuracy only) sev2",
+    "'clarified in the findings' meta sev1",
+    "identical ablation and PPO rows read as 'identical' result without flagging sev2",
+    "'comprehensive' padding sev1"
+   ]
+  }
+ }
+}

@@ -1,0 +1,37 @@
+{
+ "arm": "A",
+ "think": "false (real off)",
+ "model": "granite4.2:8b",
+ "codes": "as grades_R_A.json",
+ "grades": {
+  "b1": "C C C C C C C C UO UO",
+  "b2": "C C C C C C C C C UO UO",
+  "b3": "C P C W C C C C UO UO",
+  "b4": "C C C P C C C C UO UO",
+  "b5": "P C C C C P C C UO UO",
+  "n1": "C C C C C C C UO UO UO",
+  "n2": "C C C P C C C C UO UO",
+  "n3": "C C C P C W P C UO UO",
+  "n4": "P P P C C W C C UO UO",
+  "n5": "C C C W P W C P UO UO"
+ },
+ "notes": {
+  "b3.1": "said the paper is consistent (missed abstract)",
+  "b3.3": "said HIV significantly higher",
+  "b4.3": "self-contradictory on single EP",
+  "b5.0": "mixed the two F1 values, no slide count",
+  "b5.5": "opened with Yes, then said no formal test",
+  "n2.3": "said same core claim, noted table adds memory/compute",
+  "n3.3": "listed 0.75 and 0.90 only",
+  "n3.5": "said accurate",
+  "n3.6": "missed 0.50",
+  "n4.0": "PP at 2.6 and in X-ray",
+  "n4.1": "swapped weights",
+  "n4.2": "mislabelled the glasses",
+  "n4.5": "said they distinguish",
+  "n5.3": "picked hierarchy as worst",
+  "n5.4": "said percentage decrease",
+  "n5.5": "confused rows",
+  "n5.7": "mixed limitations"
+ }
+}
