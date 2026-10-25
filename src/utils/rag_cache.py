@@ -1,5 +1,5 @@
 """
-Persistent cross-run cache of VERIFIED findings (ROADMAP.md "Strategic options" item 5,
+Persistent cross-run cache of VERIFIED findings (the wiki Roadmap page "Strategic options" item 5,
 RESEARCH.md §8, 2026-07-20) — real semantic retrieval via frozen sentence-embeddings, replacing
 the old exact-string-match `knowledge_cache`/`experience_cache` (deleted commit 929b987,
 2026-07-11).
@@ -123,7 +123,7 @@ def lookup(
     Isolated to the CURRENTLY configured model (2026-09-09 QA audit fix): a candidate entry whose
     recorded `model` (see save()) doesn't match settings.api.openai_model is excluded, regardless
     of how well it matches semantically. This is this project's own hard-learned, non-negotiable
-    rule (ROADMAP.md's "RAG-augmented small model" item): the deleted predecessor cache
+    rule (the wiki Roadmap page's "RAG-augmented small model" item): the deleted predecessor cache
     (knowledge_cache/experience_cache, commit 929b987) was confirmed live to contaminate model
     bake-off comparisons this same way. save() already recorded `model` per entry from the start,
     specifically for this purpose, but lookup() never actually filtered on it until this fix —

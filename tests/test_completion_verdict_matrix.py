@@ -488,7 +488,7 @@ def main():
           "final_report.md": (f"- el pais avanza de forma sostenida segun cifras oficiales [gov]({_SRC})\n"
                                "- No source in the available evidence directly states: Finland e-government usage statistics.\n")},
          "undisclosed_evidence_gap", "Finland digital public services approach", "", [], [], {"evidence_gaps": [{"facet": "Finland digital public services approach", "questions": ["Finland digital public services strategy 2024"]}, {"facet": "Finland citizen adoption rate of digital services", "questions": ["Finland e-government usage statistics"]}]}),
-        # 2026-10-23 (ARCHITECTURE.md §2 "Builder fixes do not stick"): replay-1 shape -- ONLY the Finland gap is disclosed, the
+        # 2026-10-23 (the wiki Architecture page §2 "Builder fixes do not stick"): replay-1 shape -- ONLY the Finland gap is disclosed, the
         # Estonia gap never is; the old one-phrase-clears-all rule passed this. Must FIRE, and name Estonia.
         ("undisclosed_evidence_gap_one_of_two_disclosed", True, {"findings.md": _FINDINGS_OK,
           "final_report.md": (f"- el pais avanza de forma sostenida segun cifras oficiales [gov]({_SRC})\n"

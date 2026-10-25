@@ -30,7 +30,7 @@ _SOURCE_TEXT = (
 _FINDINGS_OK = f"- hallado ({_SRC})"
 
 def main():
-    # --- create_local_agent characterization tests (ROADMAP.md Pending: "create_local_agent's
+    # --- create_local_agent characterization tests (the wiki Roadmap page Pending: "create_local_agent's
     # nested-closure god-function... zero direct test coverage"). These pin the CURRENT behavior
     # of delegate_tasks' pre-dispatch validation gauntlet and _run_single_task's bad-agent_id early
     # return -- the exact two closures the Pending entry names -- as a safety net before any future

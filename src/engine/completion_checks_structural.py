@@ -150,7 +150,7 @@ def check_missing_query_facet(ctx: Ctx) -> Optional[Verdict]:
     """Same family as check_requested_count_shortfall just above (did the Planner even scope this
     correctly at dispatch time, one layer before check_thin_coverage asks whether what WAS
     dispatched succeeded) -- catches gpt-oss:20b's documented, literature-validated tendency to
-    neglect the harder half of a multi-facet query (2026-08-29, see ROADMAP.md/wiki
+    neglect the harder half of a multi-facet query (2026-08-29, see the wiki Roadmap page/wiki
     Model-Bakeoff's "Passed" section note: "on multi facet queries it reliably abandons the harder
     half rather than fabricating... a genuine model capability limit, not a bug"). A prior
     dedicated investigation (RESEARCH.md §16-17) already fixed the part of this that was a genuine
@@ -269,7 +269,7 @@ def check_thin_coverage(ctx: Ctx) -> Optional[Verdict]:
 
     Capped via the shared _capped helper (2026-07-31, same landmine class as check_task_
     verification_flagged found the same night — this check is what motivated generalizing that
-    check's own one-off cap into a shared mechanism; see ARCHITECTURE.md for the full incident
+    check's own one-off cap into a shared mechanism; see the wiki Architecture page for the full incident
     writeup). This check sits ABOVE check_missing_findings/check_missing_artifact in
     COMPLETION_CHECKS and is not itself Builder/FindingsWriter-fixable — so without a cap, a run
     whose coverage never improves (a genuinely unfindable topic, not a model-capability problem)
@@ -338,7 +338,7 @@ def check_task_verification_flagged(ctx: Ctx) -> Optional[Verdict]:
     in this module, but a different failure with a different fix (redo with a different approach,
     not "delegate more"). Still one Verdict per attempt, same as every other check here (Phase 2 of
     the design -- actually independent per-task redispatch bypassing the Planner's own turn -- is
-    explicitly deferred, see ROADMAP.md Pending) -- but the directive names the SPECIFIC flagged
+    explicitly deferred, see the wiki Roadmap page Pending) -- but the directive names the SPECIFIC flagged
     task(s) rather than nudging the whole run generically.
 
     Capped via the shared _capped helper (2026-07-31 live incident, gpt-oss AND Ornith-1.0-9B both
@@ -355,7 +355,7 @@ def check_task_verification_flagged(ctx: Ctx) -> Optional[Verdict]:
     report built from real evidence. Once this check has said its piece 3 times (redo, acknowledge,
     force_whole_rebuild's own one extra escalated attempt -- see CONSECUTIVE_SAME_PROBLEM_
     ESCALATION_THRESHOLD), _capped returns None so the pipeline falls through to missing_findings/
-    missing_artifact -- see ARCHITECTURE.md for the full incident writeup and the standing test
+    missing_artifact -- see the wiki Architecture page for the full incident writeup and the standing test
     that enforces every non-self-resolving check in COMPLETION_CHECKS/GROUNDING_CHECKS calls
     _capped, not a hand-rolled equivalent."""
     cfg = config.get_setting("task_verification_check", {})
@@ -929,7 +929,7 @@ def gap_disclosure_sentence(gap: dict) -> str:
 
 def undisclosed_gap_facets(content: str, gaps: list) -> list:
     """Facets in `gaps` that `content` does not disclose; pure, so scripts/evaluate_run.py scores a finished report with the SAME rule."""
-    # Per-gap, same-sentence match (2026-10-23, ARCHITECTURE.md §2 "Builder fixes do not stick"): the old rule cleared EVERY gap on one
+    # Per-gap, same-sentence match (2026-10-23, the wiki Architecture page §2 "Builder fixes do not stick"): the old rule cleared EVERY gap on one
     # disclosure phrase within 400 chars of any one facet word, so a report disclosing only the Finland gap passed the Estonia gap too
     # (replay 1 never disclosed Estonia yet went clean), and a hollow "see the findings file" note could pass. A gap now counts as
     # disclosed only by a sentence that has a disclosure phrase, is not a meta-reference, and contains most of THAT gap's own facet words.
@@ -958,7 +958,7 @@ def check_undisclosed_evidence_gap(ctx: Ctx) -> Optional[Verdict]:
     figures -- no existing GROUNDING_CHECKS member catches this, since every cited figure really is grounded in a really-fetched source;
     the problem is that the report never says "adoption rate" was not found and instead lets the penetration figure stand in for it.
 
-    Builder-fixable (self-resolving, bucket 1 of ARCHITECTURE.md's invariant): the fix is always available -- add one disclosure
+    Builder-fixable (self-resolving, bucket 1 of the wiki Architecture page's invariant): the fix is always available -- add one disclosure
     sentence per gap -- so this needs no `_capped` escalation, same as `check_academic_citation_style_abandoned` right below it.
     Deliberately NOT in `_QUARANTINE_PROBLEMS`: the existing content isn't wrong, it's just missing one sentence, so Builder should
     AMEND it, not re-condition on a renamed-aside draft the way a genuinely poisoned `not_grounded`/`findings_ungrounded` artifact

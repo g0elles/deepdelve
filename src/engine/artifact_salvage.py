@@ -1,8 +1,8 @@
 # Artifact quarantine/restore/salvage helpers, extracted from engine/completion.py (2026-08-24,
-# ROADMAP.md Pending "completion.py's mixed responsibilities"). Disk-touching quarantine/restore/
+# the wiki Roadmap page Pending "completion.py's mixed responsibilities"). Disk-touching quarantine/restore/
 # salvage logic plus the writer/reader quota-headroom top-ups and the transient-Ollama-JSON-error
 # retry wrapper -- all free-standing, no dependency on completion.py's Ctx/Verdict types or the
-# check-list/starvation state machine (ARCHITECTURE.md section 1), which is why this group was
+# check-list/starvation state machine (the wiki Architecture page section 1), which is why this group was
 # chosen as the first, lowest-risk slice to split out: a straight move, not a behavior change.
 # engine/completion.py imports these back at module level, so every existing external import path
 # (e.g. engine/tui.py's `from engine.completion import _restore_quarantined_draft` re-export,

@@ -131,7 +131,7 @@ def _agent_routing_rejection_reason(
     declared_agent_id, caller_role_names: frozenset, prediction: tuple | None, min_confidence: float,
 ) -> str | None:
     """Pure decision logic for delegate_tasks's non-generative routing-classifier check (RESEARCH.md
-    §6, ROADMAP.md "Pending", 2026-07-20) — pulled out of delegate_tasks's own closure so it's
+    §6, the wiki Roadmap page "Pending", 2026-07-20) — pulled out of delegate_tasks's own closure so it's
     directly testable without needing the full async tool/contextvar machinery. Decided policy:
     reject-and-nudge, not silent override. Returns a rejection reason string if delegate_tasks
     should add this task to its error-accumulation list, or None if the task should proceed
@@ -162,7 +162,7 @@ def _agent_routing_rejection_reason(
 def _should_cache_finding(
     verification_warnings: str, new_urls: list, rag_cache_enabled: bool, finding_summary: str = "",
 ) -> bool:
-    """Pure decision logic for the RAG findings cache's write hook (ROADMAP.md "Strategic options"
+    """Pure decision logic for the RAG findings cache's write hook (the wiki Roadmap page "Strategic options"
     item 5, 2026-07-20) — pulled out of _run_single_task so it's directly testable without needing
     the full async tool/contextvar machinery, same pattern as _agent_routing_rejection_reason above.
 
@@ -328,7 +328,7 @@ def _extract_required_facets(query: str) -> list:
     """Distinct facets the query UNAMBIGUOUSLY enumerates as separately-required (e.g. 'compare
     Lisbon and Mexico City rent' -> [{'Lisbon'}, {'Mexico', 'City'}]) -- feeds
     check_missing_query_facet (completion_checks.py), a narrow structural tripwire for gpt-oss:20b's
-    documented tendency to neglect the harder half of a multi-facet query (see ROADMAP.md/wiki
+    documented tendency to neglect the harder half of a multi-facet query (see the wiki Roadmap page/wiki
     Model-Bakeoff's "Passed" section note).
 
     Deliberately conservative, mirroring `_extract_excluded_topics`/`_EXCLUSION_CUE_RE`'s own
@@ -1039,7 +1039,7 @@ async def iter_agent_stream(stream, deadline: float | None):
     deadline (time.monotonic()-based). Replaces a plain `async for` with a manually-driven
     stream.__aiter__() + asyncio.wait_for(..., timeout=remaining) loop so a stream that goes
     silent for a long time still gets cut off — a plain async-for only re-checks the deadline once
-    it actually receives an update (found live 2026-07-12, ROADMAP.md). deadline=None means
+    it actually receives an update (found live 2026-07-12, the wiki Roadmap page). deadline=None means
     unbounded: asyncio.wait_for(fut, timeout=None) is a plain unbounded await per the stdlib docs,
     so a TUI caller (no max_run_minutes) gets behavior identical to a plain async-for. Raises
     asyncio.TimeoutError to the caller on cutoff (does not swallow it) — callers own their own
@@ -1455,7 +1455,7 @@ async def _finalize_dispatch(
                                    follow_up_directions=follow_up_directions, agent_id=agent_id,
                                    top_level_task_name=top_level_task_name)
 
-    # RAG findings cache (ROADMAP.md "Strategic options" item 5, 2026-07-20): only cache
+    # RAG findings cache (the wiki Roadmap page "Strategic options" item 5, 2026-07-20): only cache
     # a finding that passed the EXACT SAME grounding+relevance gate above with zero
     # warnings — a cache entry is exactly as verified as a same-run finding, never less.
     # Deliberately caches the atomic (source_url, summary) pair, not a whole answer, so a
@@ -1475,7 +1475,7 @@ async def _finalize_dispatch(
     return f"## Result for {task_name}\n{final_text}\n---"
 
 
-# Extracted from create_local_agent's nested-closure body (2026-08-23, ROADMAP.md Pending
+# Extracted from create_local_agent's nested-closure body (2026-08-23, the wiki Roadmap page Pending
 # "create_local_agent's nested-closure god-function") -- these two used to be `_run_single_task`
 # and `delegate_tasks`, deeply nested closures capturing dozens of create_local_agent locals by
 # reference. Behavior is UNCHANGED: create_local_agent still builds a thin same-named closure for
@@ -1665,7 +1665,7 @@ async def _dispatch_single_task(
                 # already fetched something real (task_fetched_urls_ctx non-empty) but hasn't
                 # finished synthesizing it gets ONE deadline extension instead of being cut off
                 # mid-turn -- otherwise the real fetch and its summary permanently split across
-                # two un-mergeable findings entries (see ROADMAP.md's writeup). Bounded twice
+                # two un-mergeable findings entries (see the wiki Roadmap page's writeup). Bounded twice
                 # over: only fires once per dispatch (deadline_extended), and never past
                 # _sdk_timeout_ceiling_seconds minus a safety margin (see that variable's own
                 # comment for why).
@@ -1798,7 +1798,7 @@ async def _dispatch_single_task(
                         current_input = new_inputs
 
                     # Zero-synthesis retry (2026-08-19) -- Searcher/Analyzer instance of the
-                    # "zero trailing text" mechanism ARCHITECTURE.md already tracks (the writer-
+                    # "zero trailing text" mechanism the wiki Architecture page already tracks (the writer-
                     # role instance got its own bounded retry loop 2026-08-18,
                     # _WRITER_EMPTY_RETRY_ATTEMPTS; this is the source-level fix for the sibling
                     # case that was previously only ever DETECTED downstream via RunState.
@@ -2069,7 +2069,7 @@ def _reject_analyzer_input(i: int, t) -> str | None:
 
 def _reject_hallucinated_agent_id(i: int, t) -> str | None:
     """Non-generative routing classifier: hallucinated or misrouted agent_id."""
-    # Non-generative routing classifier (RESEARCH.md §6, ROADMAP.md "Pending", 2026-07-20)
+    # Non-generative routing classifier (RESEARCH.md §6, the wiki Roadmap page "Pending", 2026-07-20)
     # — catches a hallucinated agent_id ("searcher", "PeerReviewer", invented role names,
     # ~4.9% of real historical delegate_tasks calls) BEFORE dispatch, rather than only after
     # _run_single_task's own exact-string lookup fails per-task post-dispatch. Decision

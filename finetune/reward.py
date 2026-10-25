@@ -1,6 +1,6 @@
 """
 Reward functions for GRPO fine-tuning DeepDelve's Planner role against its own documented
-failure modes — see ROADMAP.md "Scoped fine-tuning plan (2026-07-18)" and the bake-off entries
+failure modes — see the wiki Roadmap page "Scoped fine-tuning plan (2026-07-18)" and the bake-off entries
 it references. Pure functions, no model/tokenizer/training-framework dependency, so they can be
 unit-tested here and reused directly as a GRPO reward_fn once training actually starts.
 

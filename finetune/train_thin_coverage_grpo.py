@@ -1,6 +1,6 @@
 """
 Real GRPO fine-tune of qwen3:4b (base: Qwen/Qwen3-4B) against thin_coverage_response_reward —
-the single sole fine-tuning target agreed for this project (see ROADMAP.md "Scoped fine-tuning
+the single sole fine-tuning target agreed for this project (see the wiki Roadmap page "Scoped fine-tuning
 plan"). LoRA only, no quantization needed (bf16 4B model comfortably fits this card's ~16GB VRAM
 budget alongside LoRA's small trainable footprint, and LoRA lets GRPO derive its reference model
 by disabling the adapter — no second full model copy needed).

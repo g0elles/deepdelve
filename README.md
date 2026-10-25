@@ -4,10 +4,10 @@ A locally-run, multi-agent deep research assistant built on the **Microsoft Agen
 
 A from-scratch rebuild of an earlier prototype that worked end-to-end but was unreliable beyond simple lookups. This README covers setup and day-to-day use. For depth, see:
 
-- [`ARCHITECTURE.md`](ARCHITECTURE.md): how the completion-check/writer-dispatch engine actually works. Read before touching `src/engine/completion.py` or anything resume-related.
-- [`METHODOLOGY.md`](METHODOLOGY.md): why the verification layer is built the way it is, and what's actually novel about it versus prior art.
-- [`ROADMAP.md`](ROADMAP.md): what's done, what's open, and the incident history.
-- [`MODELS.md`](MODELS.md) / the [wiki's Model Bake off](https://github.com/g0elles/deepdelve/wiki/Model-Bakeoff): the full local-model bake-off, why each candidate failed.
+- [Architecture (wiki)](https://github.com/g0elles/deepdelve/wiki/Architecture): how the completion-check/writer-dispatch engine actually works. Read before touching `src/engine/completion.py` or anything resume-related.
+- [Methodology (wiki)](https://github.com/g0elles/deepdelve/wiki/Methodology): why the verification layer is built the way it is, and what's actually novel about it versus prior art.
+- [Roadmap (wiki)](https://github.com/g0elles/deepdelve/wiki/Roadmap): what's done, what's open, and the incident history.
+- the [wiki's Model Bake off](https://github.com/g0elles/deepdelve/wiki/Model-Bakeoff): the full local-model bake-off, why each candidate failed.
 - [`diagrams/`](diagrams/): interactive HTML system diagrams (open directly in a browser) — the whole-project runtime architecture, the completion-check retry loop, and one research query's agent-to-agent call sequence.
 
 ## Architecture
@@ -60,7 +60,7 @@ flowchart TD
 - **FindingsWriter / Builder**: dispatched by the completion-check system, never by the Planner, in a fresh context. FindingsWriter writes `findings.md` from `RunState`'s structured results; Builder writes `final_report.md` from `findings.md`. Each gets a fresh `PeerReviewer` pass and one corrective re-dispatch if flagged.
 - **WebSearcher / AcademicSearcher**: search and fetch. Summaries are grounding-checked before they reach the Planner, not just at final-artifact time.
 - **DocumentAnalyzer / DataAnalyzer**: read/extract from downloaded files. `DataAnalyzer` alone has `extract_structured_data` for tables/code/JSON.
-- **Three auxiliary local models** run in-process on CPU, separate from the Ollama-served LLM: an NLI entailment checker, a topical-relevance reranker, and a sentence embedding model behind the RAG cache and an optional routing classifier. See `ARCHITECTURE.md` §1 for what each check actually catches.
+- **Three auxiliary local models** run in-process on CPU, separate from the Ollama-served LLM: an NLI entailment checker, a topical-relevance reranker, and a sentence embedding model behind the RAG cache and an optional routing classifier. See the wiki Architecture page §1 for what each check actually catches.
 
 Tool access is withheld from each parent so it's structurally forced to delegate rather than short-circuit the chain. FindingsWriter and Builder exist to keep a retry from growing the Planner's own conversation, see "Context management" below.
 
@@ -70,10 +70,10 @@ The Planner's conversation only ever grows across a run (no compaction in the un
 
 ## What changed from the prototype
 
-Full history, with live-test evidence for each fix, is in `ROADMAP.md`. The headline structural changes:
+Full history, with live-test evidence for each fix, is in the wiki Roadmap page. The headline structural changes:
 
-- **A layered grounding check** (`utils/grounding.py`) that cross-references every cited URL against what was actually fetched, catches non-URL and stub citations, checks per-claim (not per-line) support, flags cross-source contradictions, and runs an NLI entailment plus topical-relevance pass on top of plain term overlap (the NLI and topical passes currently skip claims cited with the default standard style's numbered `[N]` markers, see ROADMAP.md "Claim-support judge"; term overlap, figure, currency and uncited-claim checks do cover them). Full design and the exact check list live in `ARCHITECTURE.md` §1.
-- **The Write → Review → Fix loop** (`ARCHITECTURE.md` §2): a fresh-context `FindingsWriter`/`Builder` writes or rewrites an artifact, a fresh `PeerReviewer` checks it, one corrective re-dispatch if flagged, all outside the Planner's own conversation.
+- **A layered grounding check** (`utils/grounding.py`) that cross-references every cited URL against what was actually fetched, catches non-URL and stub citations, checks per-claim (not per-line) support, flags cross-source contradictions, and runs an NLI entailment plus topical-relevance pass on top of plain term overlap (the NLI and topical passes currently skip claims cited with the default standard style's numbered `[N]` markers, see ROADMAP.md "Claim-support judge"; term overlap, figure, currency and uncited-claim checks do cover them). Full design and the exact check list live in the wiki Architecture page §1.
+- **The Write → Review → Fix loop** (the wiki Architecture page §2): a fresh-context `FindingsWriter`/`Builder` writes or rewrites an artifact, a fresh `PeerReviewer` checks it, one corrective re-dispatch if flagged, all outside the Planner's own conversation.
 - **Coverage accounting** (`RunState.coverage()`): flags a report that's perfectly grounded yet thin because most of the Planner's own delegated research angles came back empty and got silently dropped.
 - **Independent per-dispatch wall-clock deadlines**: every sub-agent dispatch races its own timeout, separate from the run-wide budget, closing a gap where a single runaway generation had nothing watching it.
 - **Search-result diversity reranking, fetch-time metadata extraction, real-charset decoding, and full fetch provenance**: smaller reliability fixes that compound into fewer wasted turns and fewer mojibake-broken grounding checks.
@@ -119,7 +119,7 @@ or via environment variables (`OPENAI_API_BASE`, `OPENAI_MODEL`, `OPENAI_API_KEY
 <details>
 <summary>Non-default backends: Ollama's native endpoint, and hosted frontier APIs</summary>
 
-**`api.backend: "ollama"`** talks to Ollama's native `/api/chat` instead of its OpenAI-compat `/v1` endpoint. Confirmed live: the OpenAI-compat endpoint leaks a short reasoning field into tool-calling turns even with thinking disabled, while the native endpoint suppresses it cleanly for the same request. Only meaningful when actually running against Ollama. Full detail and a known landmine (Qwen3.5/3.6-family models need an explicit `PARSER`/`RENDERER` declaration on this path) in `ARCHITECTURE.md` §7.
+**`api.backend: "ollama"`** talks to Ollama's native `/api/chat` instead of its OpenAI-compat `/v1` endpoint. Confirmed live: the OpenAI-compat endpoint leaks a short reasoning field into tool-calling turns even with thinking disabled, while the native endpoint suppresses it cleanly for the same request. Only meaningful when actually running against Ollama. Full detail and a known landmine (Qwen3.5/3.6-family models need an explicit `PARSER`/`RENDERER` declaration on this path) in the wiki Architecture page §7.
 
 **`api.backend: "openai_hosted"`** is for a real hosted frontier API (DeepSeek, etc.) rather than local serving. The default backend's thinking-mode control is a local-serving convention a hosted API silently ignores; this backend looks up each provider's own documented toggle instead.
 
@@ -205,7 +205,7 @@ Three tabs: **Research** (submit, watch a per-agent timeline, cancel, view the r
 - `settings.mcp_servers`: wire in external MCP tools, scoped per sub-agent.
 - `settings.pdf_engine`: off by default; `"weasyprint"` or a real LaTeX engine to also produce `final_report.pdf` (needs the `pandoc` system binary either way).
 - `settings.api_password`: only relevant if exposing `src/api.py` beyond localhost.
-- `settings.specialist_model`: optional second, smaller model for leaf specialist roles only. A live A/B on this project's own hardware found this 4.2x slower and lower-quality than a single model, kept as an option for different hardware where two models can coexist without reload thrashing. Full trial history in `ROADMAP.md`'s bake-off log.
+- `settings.specialist_model`: optional second, smaller model for leaf specialist roles only. A live A/B on this project's own hardware found this 4.2x slower and lower-quality than a single model, kept as an option for different hardware where two models can coexist without reload thrashing. Full trial history in the wiki Roadmap page's bake-off log.
 
 ## Pipeline evidence runs
 

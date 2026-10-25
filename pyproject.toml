@@ -83,7 +83,7 @@ dev = ["ruff"]
 # Headless/headed-browser (Playwright) fetch fallback for pages that bot-wall a plain httpx GET
 # (Akamai/Cloudflare JS challenges, browser-version-sniffing blocks, or a headless-specific
 # fingerprint block — confirmed live 2026-07-14 against Springer/ScienceDirect/MDPI, see
-# ROADMAP.md and utils/browser_fetch.py). Optional because it's a genuinely heavy dependency: the
+# the wiki Roadmap page and utils/browser_fetch.py). Optional because it's a genuinely heavy dependency: the
 # pip package alone doesn't include a browser — `playwright install chromium` is a separate
 # ~150-300MB download. `pyvirtualdisplay` lets a real (non-headless) Chromium run under a virtual
 # X display on a display-less Linux server (needs the system `Xvfb` binary too — e.g. `apt install

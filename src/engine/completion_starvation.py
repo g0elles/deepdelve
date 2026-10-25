@@ -1,9 +1,9 @@
 # Starvation/capping state machine (group D of the completion.py decomposition plan, 2026-08-24)
-# -- see session_status/CURRENT.md and ROADMAP.md's completion.py entry. Moved out of
+# -- see session_status/CURRENT.md and the wiki Roadmap page's completion.py entry. Moved out of
 # engine/completion.py after a coverage audit added direct characterization tests for _capped/
 # _apply_starvation_yield/_collect_other_active_problems/_with_other_problems_addendum (the three
 # gaps a static-analysis-only test had left uncovered), per this project's standing rule that this
-# specific subsystem (ARCHITECTURE.md's flagged hazard -- 5 real bugs in one 2026-07-24 sitting)
+# specific subsystem (the wiki Architecture page's flagged hazard -- 5 real bugs in one 2026-07-24 sitting)
 # gets characterization tests BEFORE any mechanical move, not just after. Pure move, no rewrite --
 # verified with a before/after sorted-line-set diff, same discipline as groups A-C.
 from typing import Optional
@@ -106,7 +106,7 @@ def _capped(ctx: "Ctx", problem: str, verdict: Optional["Verdict"],  # noqa: F82
     true, permanently starving every check below it -- confirmed live twice the same night
     (check_task_verification_flagged starving check_missing_findings/check_missing_artifact;
     check_thin_coverage, one priority slot higher, doing the same thing).
-    See ARCHITECTURE.md's completion-check section for the full incident writeup and the standing
+    See the wiki Architecture page's completion-check section for the full incident writeup and the standing
     test (test_structural_checks.py) that enforces every non-self-resolving check in either list
     calls this -- a future check that skips it fails the suite immediately instead of being found
     via a live incident."""

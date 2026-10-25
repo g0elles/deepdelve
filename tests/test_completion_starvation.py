@@ -103,7 +103,7 @@ def main():
     # whatever's next instead of starving it forever. This was previously enforced only via a
     # static grep ("every non-self-resolving check calls _capped") -- no test exercised _capped's
     # OWN behavior directly, a gap flagged by the group-D coverage audit before any decomposition
-    # of the starvation/capping state machine was attempted (ARCHITECTURE.md's flagged hazard). ---
+    # of the starvation/capping state machine was attempted (the wiki Architecture page's flagged hazard). ---
     from engine.completion import _capped, CONSECUTIVE_SAME_PROBLEM_ESCALATION_THRESHOLD
 
     def _capped_scenario():

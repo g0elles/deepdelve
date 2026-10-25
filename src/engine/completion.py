@@ -10,7 +10,7 @@
 #
 # The check_* functions themselves, Ctx/Verdict, and their dedicated helpers moved to
 # engine/completion_checks.py (2026-08-24, group A of the completion.py decomposition plan -- see
-# session_status/CURRENT.md and ROADMAP.md's completion.py entry), then split further (2026-09-07,
+# session_status/CURRENT.md and the wiki Roadmap page's completion.py entry), then split further (2026-09-07,
 # ponytail-audit finding) into engine/completion_checks.py (shared core: Ctx/Verdict/
 # _citation_format_reminder), engine/completion_checks_structural.py (COMPLETION_CHECKS members),
 # and engine/completion_checks_grounding.py (GROUNDING_CHECKS members + _facet_coverage/
@@ -102,7 +102,7 @@ def _ablation_disabled(name: str) -> bool:
 # FIXABLE_PROBLEMS) that nothing in the type system enforced agreement on -- only a runtime test
 # (test_structural_checks.py) did. This is the project's own documented, admitted root cause of
 # its repeat bugs (swallowed-elif shipped twice, 8 separate starvation incidents, see
-# ARCHITECTURE.md section 1). Now one row per check (`_CheckSpec`), declared ONCE in priority
+# the wiki Architecture page section 1). Now one row per check (`_CheckSpec`), declared ONCE in priority
 # order below; every one of the 8 collections is DERIVED from this single table, so a new check
 # is one row, not up to 6 separately-remembered updates. Verified byte-for-byte equivalent to the
 # prior hand-typed collections before this consolidation (same membership, same COMPLETION_CHECKS/
@@ -196,7 +196,7 @@ _CHECK_SPECS = [
     _check_spec(check_report_underuses_findings, "report_underuses_findings", "grounding", builder_fixable=True),
     # Same breadth-not-accuracy category as its sibling above, one layer more specific (per-TASK
     # zero-coverage, not a flat ratio) -- see its own docstring (2026-07-29, RESEARCH.md Sec.14h).
-    # Deliberately NOT builder_fixable (see ARCHITECTURE.md section 1: the single combined-
+    # Deliberately NOT builder_fixable (see the wiki Architecture page section 1: the single combined-
     # instruction dispatch reproduced the exact evidence-crowding pattern this check exists to
     # catch, live-confirmed -- dispatched instead by its own bespoke per-facet branch,
     # _try_report_underuses_evidence_dispatch).
@@ -225,7 +225,7 @@ GROUNDING_CHECKS: list[Callable[[Ctx], Optional[Verdict]]] = [s.func for s in _C
 # (RunState.data["evidence_only"], set by --pipeline-evidence / /pipeline-evidence / API pipeline_evidence_dir) the research
 # tools are refused for the whole run (tools.core.check_quota), so these verdicts could never be satisfied and would only loop
 # the Planner; whether the fixed evidence is sufficient is the pipeline's own job (its coverage metrics and entity re-plan).
-# Writer-fixable and grounding checks are unaffected. See ARCHITECTURE.md section 2, "Evidence-only runs".
+# Writer-fixable and grounding checks are unaffected. See the wiki Architecture page section 2, "Evidence-only runs".
 _EVIDENCE_ONLY_SKIPPED_CHECKS = frozenset(s.func for s in _CHECK_SPECS if s.evidence_only_skip)
 
 
@@ -412,7 +412,7 @@ async def _detect_verdict(req_artifact: str, attempt: int, max_attempts: int,
         req_artifact=req_artifact,
         attempt=attempt,
         max_attempts=max_attempts,
-        # 2026-07-28 resume fix (ARCHITECTURE.md §4's own documented, previously-accepted
+        # 2026-07-28 resume fix (the wiki Architecture page §4's own documented, previously-accepted
         # gap): the live quota pool alone is always 0 at the start of a resumed process,
         # even when the interrupted run already delegated real research -- a resumed
         # Planner correctly told (via build_resume_input) not to re-delegate then gets
@@ -694,7 +694,7 @@ _CLAIM_UNSUPPORTED_BUILDER_DIRECTIVE = (
 
 
 def _standing_requirements(run_state) -> str:
-    """Invariants every Builder pass must keep true, appended to its fix instructions (ARCHITECTURE.md §2 'Builder fixes do not stick':
+    """Invariants every Builder pass must keep true, appended to its fix instructions (the wiki Architecture page §2 'Builder fixes do not stick':
     a fix for one problem silently dropped the evidence-gap disclosures an earlier pass had added). Invariants only, not a second problem."""
     gaps = (run_state.data or {}).get("evidence_gaps") if run_state is not None else None
     if not gaps:
@@ -1174,7 +1174,7 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
                 # case the original code fell through to the SAME classic inject-into-Planner
                 # path below, so a plain sequence of independent calls is behavior-identical to
                 # the original elif chain (the conditions are mutually exclusive by construction,
-                # see ARCHITECTURE.md section 1's "four tuples that must all agree").
+                # see the wiki Architecture page section 1's "four tuples that must all agree").
                 if await _try_builder_fixable_dispatch(
                     dispatch_task, problem, verdict, req_artifact, attempt, max_attempts, notify,
                     pool, run_state, force_whole_rebuild, caller_sub_agents, has_peer_reviewer,

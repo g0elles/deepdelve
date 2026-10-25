@@ -1,6 +1,6 @@
 """Bridges a stage-graph pipeline (pipeline/run.py) evidence table into RunState, so the
 EXISTING findings_writer_agent/builder_agent can write a report from it without the main agent's
-free-form delegate_tasks research loop ever running. See ROADMAP.md's stage-graph-pipeline Pending
+free-form delegate_tasks research loop ever running. See the wiki Roadmap page's stage-graph-pipeline Pending
 entry for why this exists and what it replaces (the evidence-gathering phase only, not the writer).
 """
 import hashlib

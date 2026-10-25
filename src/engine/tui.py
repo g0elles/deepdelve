@@ -348,7 +348,7 @@ class PromptInput(Input):
         self._history_index = -1
 
     def on_click(self, event: events.Click) -> None:
-        # Right-click paste (ROADMAP.md "TUI QoE improvements", 2026-07-14): the write-side
+        # Right-click paste (the wiki Roadmap page "TUI QoE improvements", 2026-07-14): the write-side
         # clipboard pattern (_copy_to_system_clipboard, try wl-copy/xclip before OSC52) has a
         # natural read-side mirror here -- reading the system clipboard from a terminal app has no
         # portable stdlib path, so this shells out the same way the write side does. button == 3
@@ -441,7 +441,7 @@ class AgentMessageWidget(Static):
     """Same click-to-copy affordance as UserMessageWidget (see _copy_to_system_clipboard below) --
     previously only the user's own prompt had this; the agent's actual answers/reports (what "the
     console" means in practice) required select-then-Ctrl+C, far less discoverable in a terminal
-    app (ROADMAP.md "TUI QoE improvements", 2026-07-14 usability finding)."""
+    app (the wiki Roadmap page "TUI QoE improvements", 2026-07-14 usability finding)."""
     def __init__(self, author: str):
         super().__init__(Markdown(f"**{author} (Click to Copy):** "), classes="agent-bubble")
         self.author = author
@@ -564,7 +564,7 @@ class SubAgentStatusWidget(Static):
     sub-agent's own completion callback fired — a stuck/hung sub-agent (the exact stall this
     project hit that same day) showed zero visual difference from a healthy one still working,
     for however many minutes it took; cosmetic on its own, but a real diagnostic gap once the
-    search-timeout fix (see ROADMAP.md) makes a genuine multi-minute hang something a user might
+    search-timeout fix (see the wiki Roadmap page) makes a genuine multi-minute hang something a user might
     actually need to notice mid-run rather than after killing it. Same animated-dots +
     elapsed-timer pattern as ProcessingWidget/ToolCallWidget, so all three now behave consistently."""
     DOTS_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
@@ -1758,7 +1758,7 @@ class BasicTuiAgent(App):
                 from tools.fs import session_dir_ctx
                 session_dir_ctx.reset(session_token)
             self._is_agent_running = False
-            # TUI QoE (ROADMAP.md "TUI QoE improvements"): notify() previously had zero non-
+            # TUI QoE (the wiki Roadmap page "TUI QoE improvements"): notify() previously had zero non-
             # clipboard call sites despite that backlog item explicitly naming "a run finished
             # while scrolled away" as the gap. Scoped to the single top-level run ending, not a
             # toast per sub-agent completion -- a real run this session dispatched 40+ sub-agents,
@@ -2078,7 +2078,7 @@ def _load_pipeline_evidence(run_state, evidence_dir: str) -> int:
     """--pipeline-evidence / `/pipeline-evidence` / API `pipeline_evidence_dir`: bridges a
     completed stage-graph pipeline run's evidence table (src/pipeline/run.py's evidence.json) into
     run_state, replacing the Planner's own delegate_tasks research phase for this run while leaving
-    findings_writer_agent/builder_agent and the completion checks unchanged (ROADMAP.md's
+    findings_writer_agent/builder_agent and the completion checks unchanged (the wiki Roadmap page's
     stage-graph-pipeline entry). Must run AFTER run_state_ctx is set. Returns findings added;
     raises on a missing/invalid evidence.json (callers surface it)."""
     from pipeline.bridge import seed_run_state_from_evidence

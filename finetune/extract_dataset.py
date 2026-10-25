@@ -1,5 +1,5 @@
 """
-Extracts (context, response) training examples for the fine-tuning plan in ROADMAP.md
+Extracts (context, response) training examples for the fine-tuning plan in the wiki Roadmap page
 ("Scoped fine-tuning plan (2026-07-18)") from this project's own real run history — no hand-
 authored scenarios needed. Two sources, cross-referenced:
 

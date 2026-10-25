@@ -1,5 +1,5 @@
 # Dispatch orchestration, extracted from engine/completion.py (2026-08-24, group C of the
-# completion.py decomposition plan -- see session_status/CURRENT.md and ROADMAP.md's completion.py
+# completion.py decomposition plan -- see session_status/CURRENT.md and the wiki Roadmap page's completion.py
 # entry). The Write->Review->Fix loop shared by Builder/FindingsWriter, its per-facet variants, and
 # engine-driven iterative deepening -- all fresh-context sub-agent dispatches bypassing the
 # Planner's own conversation, called by run_completion_check (still in engine/completion.py).
@@ -28,7 +28,7 @@ _BUILDER_WRITE_FIRST = ("\n\nREMINDER: reading is not fixing. After at most one 
 
 
 def _append_harness_gap_section(req_artifact: str, gaps: list) -> bool:
-    """Escalation for a second consecutive `undisclosed_evidence_gap` (ARCHITECTURE.md §2 "Builder fixes do not stick"): the Builder
+    """Escalation for a second consecutive `undisclosed_evidence_gap` (the wiki Architecture page §2 "Builder fixes do not stick"): the Builder
     has had a chance and the disclosure still is not in the file, so the harness appends it itself, labelled harness-written. Wording
     reuses the check's own template sentence, so the next check pass accepts it. Backend-agnostic (disk or in-memory)."""
     from tools.fs import _get_safe_path, _get_workspace_type, _IN_MEMORY_FS
@@ -57,7 +57,7 @@ def _review_fix_skipped(writer_role: str) -> bool:
 async def _redispatch_if_unchanged(dispatch_task, writer_role: str, req_artifact: str, before: Optional[str],
                                    instructions: str, attempt: int, label: str, notify) -> None:
     """Builder only. A pass that finishes without changing the artifact is invisible to the
-    existence check (ARCHITECTURE.md §2 "Builder fixes do not stick": the first gap-fix pass was
+    existence check (the wiki Architecture page §2 "Builder fixes do not stick": the first gap-fix pass was
     read-only in 3/3 replays). One re-dispatch that states the file was unchanged and demands the
     write as the first tool call; bounded at one so a model that never writes costs one extra pass."""
     if writer_role != "Builder" or before is None or get_workspace_file_content(req_artifact) != before:
@@ -205,7 +205,7 @@ async def _dispatch_writer_review_fix(dispatch_task, writer_role: str, req_artif
                 # a source file before ever writing) and the turn then ended immediately -- zero
                 # further tool calls, zero trailing text (the same "zero trailing text"
                 # synthesis-vanishing mechanism this project already tracks for Searcher/Analyzer
-                # turns, ARCHITECTURE.md §2's own writeup, now confirmed to also hit a writer
+                # turns, the wiki Architecture page §2's own writeup, now confirmed to also hit a writer
                 # role). Retrying with the exact SAME instructions gives the model no new signal
                 # to avoid repeating the identical first move -- self-correction literature
                 # (RESEARCH.md §18b) is specific that an unchanged retry mostly reproduces the
@@ -450,7 +450,7 @@ async def _dispatch_per_facet_findings_writer_fix(dispatch_task, dropped: list, 
     Differs from _dispatch_per_facet_builder_fix in WHAT gets scoped: Builder already has
     findings.md available to read (writer_gate_ctx doesn't apply to it), so its per-facet fix
     scopes which URLs to cite. FindingsWriter's evidence base IS its dispatch instructions (its
-    first message, per ARCHITECTURE.md §2) — there is no "read a file to find the real content"
+    first message, per the wiki Architecture page §2) — there is no "read a file to find the real content"
     step for it to narrow, so this scopes the EVIDENCE BLOB itself instead, via
     _build_findings_source_material's new task_names filter, giving each dispatch only that one
     facet's own findings (and only that facet's own fetched-URL cross-reference section) rather

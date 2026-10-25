@@ -65,7 +65,7 @@ settings:
     # actual OLLAMA_NUM_PARALLEL (or hosted-endpoint concurrency limit), not higher.
     max_concurrent_tasks: 3
   # Structural fix for the #1 unresolved reliability issue found via extensive live testing
-  # (README "Known limitation" / ROADMAP.md): across every model tried, the Searcher would
+  # (README "Known limitation" / the wiki Roadmap page): across every model tried, the Searcher would
   # reliably stop at search snippets and never call fetch_url_to_workspace, then fabricate
   # specifics the snippets didn't contain. web_search now auto-fetches the full content of its
   # top N results itself — there is no snippet-only path left to take. Costs one
@@ -95,7 +95,7 @@ settings:
   # References list — see src/prompts.py's ACADEMIC_REPORT_STYLE_INSTRUCTIONS /
   # ACADEMIC_CITATION_FORMAT_INSTRUCTIONS and utils/grounding.py's parse_academic_references.
   # "answer": a 1-3 sentence direct answer instead of a full report, for simple factual queries —
-  # ROADMAP.md candidate from dzhng/deep-research's writeFinalAnswer. Cites inline as
+  # the wiki Roadmap page candidate from dzhng/deep-research's writeFinalAnswer. Cites inline as
   # `(Source: [Title](URL))` on the answer's own sentence — no separate References section. Does
   # NOT relax any grounding check, only the report's SHAPE (see ANSWER_REPORT_STYLE_INSTRUCTIONS).
   # Orthogonal to --depth (that only changes tool budgets, this changes report SHAPE); set via
@@ -146,7 +146,7 @@ settings:
     # live 2026-07-14: real, citable papers on Springer, ScienceDirect, and MDPI were all getting
     # marked as fake/stub sources because the plain fetch never received real content (a stripped
     # shell, an "unsupported browser" block page, and a JS interstitial respectively) — see
-    # tools/web.py::_fetch_raw and ROADMAP.md. No-op with zero latency cost if Playwright isn't
+    # tools/web.py::_fetch_raw and the wiki Roadmap page. No-op with zero latency cost if Playwright isn't
     # installed (`pip install deepdelve[browser] && playwright install chromium`).
     headless_fallback: true
   quotas:
@@ -503,7 +503,7 @@ settings:
     # writes Pass 1 from memory — confirmed live). Laxer than the final-report check on purpose:
     # Pass-1 notes may legitimately mention extra search-snippet URLs that were never fetched.
     check_findings: true
-  # Non-generative routing classifier for delegate_tasks's agent_id (RESEARCH.md §6, ROADMAP.md
+  # Non-generative routing classifier for delegate_tasks's agent_id (RESEARCH.md §6, the wiki Roadmap page
   # "Planned", 2026-07-20) — a frozen sentence-embedding model + logistic regression trained
   # offline (finetune/train_agent_routing_classifier.py) on real historical (instructions,
   # agent_id) pairs from this project's own session logs. Motivation: ~4.9% of real historical
@@ -532,7 +532,7 @@ settings:
     # Override for testing a differently-trained artifact without touching the default path
     # (finetune/artifacts/agent_routing_classifier.joblib).
     artifact_path: null
-  # Persistent cross-run cache of VERIFIED findings (ROADMAP.md "Strategic options" item 5,
+  # Persistent cross-run cache of VERIFIED findings (the wiki Roadmap page "Strategic options" item 5,
   # RESEARCH.md §8, 2026-07-20) — real semantic retrieval via frozen sentence-embeddings
   # (all-MiniLM-L6-v2, already a proven dependency), exposed to WebSearcher/AcademicSearcher as the
   # search_verified_findings tool, so a topic already researched and verified in a past run doesn't

@@ -3,7 +3,7 @@ coverage before this file (confirmed via codegraph before this fix) -- this pins
 piece of logic added 2026-08-24: malformed-tool-call retry + QuotaAbortException handling in
 _run_research's stream-consumption loop, mirroring run_cli/run_agent's own already-tested copies
 of this exact pattern (engine/tui.py). Also pins _worker/_job_queue's single-flight guarantee
-(added after a QA audit flagged it as untested) -- ARCHITECTURE.md §5's whole safety argument for
+(added after a QA audit flagged it as untested) -- the wiki Architecture page §5's whole safety argument for
 api.py's module-level globals (_session, tui.py's session-log state) not being contextvar-safe is
 that the FIFO queue+worker never runs two jobs concurrently "by construction, not by a lock"; this
 was previously asserted only in prose, never verified.

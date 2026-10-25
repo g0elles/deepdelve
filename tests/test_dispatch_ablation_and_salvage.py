@@ -735,7 +735,7 @@ def main():
     contextvars.copy_context().run(_hard_cap_scenario)
 
 
-    # --- unchanged-artifact guard (2026-10-23, ARCHITECTURE.md §2 "Builder fixes do not stick"):
+    # --- unchanged-artifact guard (2026-10-23, the wiki Architecture page §2 "Builder fixes do not stick"):
     # a Builder pass that leaves the artifact byte-identical gets exactly one write-first
     # re-dispatch; a changed artifact, a non-Builder role, or a missing baseline gets none. ---
     def _unchanged_guard_scenario():

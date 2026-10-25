@@ -381,7 +381,7 @@ def _parse_html_content(content: bytes, charset_encoding: str | None, resp_url, 
 
     # Headless-browser retry for pages that bot-walled the plain httpx GET (Akamai/Cloudflare
     # JS challenges, browser-version-sniffing blocks — confirmed live 2026-07-14 against
-    # Springer/ScienceDirect/MDPI, see ROADMAP.md). Only engages when the plain fetch already
+    # Springer/ScienceDirect/MDPI, see the wiki Roadmap page). Only engages when the plain fetch already
     # looks like a stub, so it never adds latency to the common case. Re-runs the SAME
     # boilerplate-strip + markitdown/BeautifulSoup pipeline on the browser-rendered HTML rather
     # than duplicating parsing logic; only replaces md_content/metadata if the retry actually
@@ -1047,7 +1047,7 @@ async def _auto_fetch_top_results(results: list[dict], query: str, search_mode: 
     live testing, reliably did) stop after search and answer from snippets alone — snippets
     frequently don't contain the specific fact a query needs, so the model would fall back to
     fabricating from its own training knowledge instead. This was the single highest-confidence
-    unresolved item after a full test battery (see ROADMAP.md). Independently confirmed as the
+    unresolved item after a full test battery (see the wiki Roadmap page). Independently confirmed as the
     right fix by three separate reference sources: DelveAgent's grounding requirement, llm_wiki's
     "full content extraction, no truncation" search design, and CYC2002tommy's explicit "FULL-TEXT
     READING IS MANDATORY — NO ABSTRACT-ONLY SHORTCUTS" rule (same principle, applied to papers

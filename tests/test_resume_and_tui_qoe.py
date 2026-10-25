@@ -215,7 +215,7 @@ def main():
                         "conv_run_state_marker": app._conv_run_state.data.get("findings_written_citable_count") if app._conv_run_state else None,
                         # task_verification (2026-07-26, VERIMAP-inspired ledger) must survive
                         # resume the same way -- same "new run_state.data key, same carryover
-                        # allowlist trap" blast radius ARCHITECTURE.md warns about.
+                        # allowlist trap" blast radius the wiki Architecture page warns about.
                         "conv_run_state_task_verification": app._conv_run_state.data.get("task_verification") if app._conv_run_state else None,
                     })
                 app.run_agent = _fake_run_agent
@@ -407,7 +407,7 @@ def main():
         "both Builder-dispatch branches (classic and force_whole_rebuild) in "
         "_try_builder_fixable_dispatch must append _BUILDER_NO_DELEGATE_CLARIFICATION after verdict.inject")
 
-    # --- TUI QoE: widget maximize (2026-07-24) — ROADMAP.md flagged this as "likely already
+    # --- TUI QoE: widget maximize (2026-07-24) — the wiki Roadmap page flagged this as "likely already
     # works via Textual's default focus/ALLOW_MAXIMIZE mechanism (same category as the already-
     # confirmed Ctrl+C copy), needs live confirmation, not new code." Confirmed directly against
     # this project's own ToolCallWidget (a Collapsible wrapping two focusable RichLogs) rather
@@ -653,7 +653,7 @@ def main():
     assert cfg["settings"]["quotas"]["read_workspace_file"]["limit"] == 30  # dict quotas untouched
 
     # --- _resolve_tui_approval_requests must await an async tool_func.func, not stringify the
-    # coroutine (ROADMAP.md Pending item, found live 2026-09-11 via a real web_search approval) ---
+    # coroutine (the wiki Roadmap page Pending item, found live 2026-09-11 via a real web_search approval) ---
     _async_tool_approval_scenario()
 
 

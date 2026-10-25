@@ -93,7 +93,7 @@ one-claim-per-line citation dump instead of a written report.
   sufficient -- the two-part format still applies, just briefer.
 - For complex queries, include methodology and source quality notes."""
 
-# ATTRIBUTION (answer mode, ROADMAP.md candidate from dzhng/deep-research's writeFinalAnswer):
+# ATTRIBUTION (answer mode, the wiki Roadmap page candidate from dzhng/deep-research's writeFinalAnswer):
 # a concise exact-answer path for short factual queries instead of the full report artifact.
 # Deliberately does NOT touch engine/completion.py's two-pass (findings.md-then-report) discipline
 # or any grounding check — this only changes the SHAPE of final_report.md itself (a few sentences

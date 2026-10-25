@@ -1,5 +1,5 @@
 # Findings evidence-assembly, extracted from engine/completion.py (2026-08-24, group B of the
-# completion.py decomposition plan -- see session_status/CURRENT.md and ROADMAP.md's completion.py
+# completion.py decomposition plan -- see session_status/CURRENT.md and the wiki Roadmap page's completion.py
 # entry). Mechanical move: the task-verification ledger mutator, the citable-finding predicate, and
 # FindingsWriter's own evidence-blob assembly, none of which touch Ctx/Verdict or the check-list/
 # starvation machinery that stayed in completion.py.

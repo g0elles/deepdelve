@@ -592,7 +592,7 @@ def find_non_url_citations(text: str) -> list[str]:
     """Find claim-supporting attributions that aren't a real URL at all — a bare parenthetical
     like `(DANE, 2020)` or a `Source: Expert opinion from...` line — and so evade
     extract_cited_urls entirely, since it only recognizes `https?://` patterns. Confirmed live
-    (ROADMAP.md "Findings from live testing", SESSION_STATUS.md's tracked #1 open item): a report
+    (the wiki Roadmap page "Findings from live testing", SESSION_STATUS.md's tracked #1 open item): a report
     can have real, correctly-fetched URL citations for MOST claims while still smuggling in an
     unverifiable non-URL attribution for others (e.g. "Expert opinion from a cold storage facility
     manager in Colombia") — the URL-presence gate in real_grounding_problem only runs when there's
@@ -2121,7 +2121,7 @@ def academic_citation_existence_problem(content: str) -> str | None:
     """Checks academic `(Author, Year)` citations that already have a resolved URL (a bare
     non-URL citation is already caught earlier by find_non_url_citations/check_non_url_citation —
     this check's job is specifically the citations that pass the URL-presence gate but whose
-    author/year attribution may not correspond to a real paper at all). WHITEPAPER.md §3.4 case:
+    author/year attribution may not correspond to a real paper at all). the wiki Whitepaper page §3.4 case:
     structural exclusion of a fabricated/mismatched academic citation before it ever reaches
     FindingsWriter's evidence pool, via the same [SYSTEM VERIFICATION WARNING] + URL-scoped
     exclusion mechanism every other real_grounding_problem finding already uses."""

@@ -191,7 +191,7 @@ func2(params)
 def render_prompt(messages: list[dict], tools: list[dict] | None) -> str:
     """Manually renders the full conversation using MiniCPM4-MCP's own turn format (rather than
     relying on Ollama's /api/chat + our simplified Modelfile TEMPLATE, which only supports single
-    System/Prompt/Response turns - see ROADMAP.md/session notes on why the full jinja macro
+    System/Prompt/Response turns - see the wiki Roadmap page/session notes on why the full jinja macro
     couldn't be loaded into Ollama directly). Sent to Ollama's /api/generate with raw=True so
     Ollama does zero templating of its own; this function is the only source of truth for the
     prompt shape."""

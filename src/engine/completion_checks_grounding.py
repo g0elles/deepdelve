@@ -326,7 +326,7 @@ def find_duplicate_report_sections(report: str) -> list[str]:
     same figures. `BUILDER_INSTRUCTIONS`/`FINDINGS_WRITER_INSTRUCTIONS` were given the matching
     prompt-level fix the same day (anchor edits on content boundaries, never retype existing
     content into `new_string`) — this is the structural backstop, since this project's own history
-    (`ARCHITECTURE.md`, the no-progress-guard writeup, `writer_gate_ctx`'s own docstring) is
+    (`the wiki Architecture page`, the no-progress-guard writeup, `writer_gate_ctx`'s own docstring) is
     consistently skeptical that a prompt-only fix holds reliably on a small local model.
 
     Reuses `_content_word_overlap` — the same metric `_looks_like_renamed_task` uses for the
@@ -1049,7 +1049,7 @@ def check_propagated_ungrounded_content(ctx: Ctx) -> Optional[Verdict]:
 
     Capped via the shared _capped helper (2026-07-31, found by systematically auditing every
     GROUNDING_CHECKS/COMPLETION_CHECKS entry against the landmine class documented in
-    ARCHITECTURE.md -- not a live incident this time, the audit itself caught it first) -- an
+    the wiki Architecture page -- not a live incident this time, the audit itself caught it first) -- an
     unresolved propagated-content condition could otherwise permanently starve
     check_report_underuses_findings/evidence/check_not_grounded, positioned right after this one in
     GROUNDING_CHECKS, the same way check_task_verification_flagged and check_thin_coverage did

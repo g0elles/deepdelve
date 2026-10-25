@@ -341,7 +341,7 @@ def main():
     contextvars.copy_context().run(_quote_fidelity_scenario)
 
     # --- academic-style (Author, Year) citation dialect (eval/sales_forecasting_benchmark.md,
-    # ROADMAP.md "academic output mode") — same grounding guarantees as the default
+    # the wiki Roadmap page "academic output mode") — same grounding guarantees as the default
     # `- **[Title](URL)**` format, resolved through a parsed References-section map ---
     from utils.grounding import real_grounding_problem as _rgp
 
@@ -556,7 +556,7 @@ def main():
 
     contextvars.copy_context().run(_academic_citation_scenario)
 
-    # --- answer mode (ROADMAP.md candidate from dzhng/deep-research's writeFinalAnswer,
+    # --- answer mode (the wiki Roadmap page candidate from dzhng/deep-research's writeFinalAnswer,
     # 2026-07-12): a short direct-answer report shape, `(Source: [Title](URL))` inline citations.
     # Deliberately requires ZERO grounding.py changes — the format is just a different PLACEMENT
     # of the same `[Title](URL)` markdown link syntax the standard style already uses, and every

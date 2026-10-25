@@ -38,7 +38,7 @@ _SOURCE_TEXT = (
 _FINDINGS_OK = f"- hallado ({_SRC})"
 
 def main():
-    # --- Non-generative routing classifier for delegate_tasks (RESEARCH.md §6, ROADMAP.md
+    # --- Non-generative routing classifier for delegate_tasks (RESEARCH.md §6, the wiki Roadmap page
     # "Planned", 2026-07-20) — pins _agent_routing_rejection_reason's pure decision logic (the
     # decided "reject-and-nudge" policy) with a fake prediction, no real classifier artifact or
     # contextvar/async machinery needed. ---
@@ -82,7 +82,7 @@ def main():
 
     _agent_routing_rejection_scenario()
 
-    # --- RAG findings cache (ROADMAP.md "Strategic options" item 5, RESEARCH.md §8, 2026-07-20) —
+    # --- RAG findings cache (the wiki Roadmap page "Strategic options" item 5, RESEARCH.md §8, 2026-07-20) —
     # replaces the deleted knowledge_cache/experience_cache (929b987). Two scenarios: the pure
     # write-gate decision logic (no embeddings/network needed), and the real embedding-based
     # lookup/save round-trip (real tiny all-MiniLM-L6-v2 embeddings, same approach
@@ -164,7 +164,7 @@ def main():
             # Model isolation (2026-09-09 QA audit fix): the SAME entry, an otherwise-perfect
             # query, but the CURRENTLY configured model differs from the entry's recorded model --
             # must be excluded regardless of similarity/age. This is the non-negotiable rule
-            # ROADMAP.md's own history established (the deleted knowledge_cache/experience_cache's
+            # the wiki Roadmap page's own history established (the deleted knowledge_cache/experience_cache's
             # confirmed live contamination during model bake-off comparisons).
             _config.cfg["api"]["openai_model"] = "a-different-model"
             cross_model_hits = _rag_cache.lookup(
@@ -278,7 +278,7 @@ def main():
 
     # --- Standing audit: every non-self-resolving check in COMPLETION_CHECKS/GROUNDING_CHECKS
     # must call _capped (2026-07-31, the actual payoff of the night's structural fix -- see
-    # ARCHITECTURE.md). A check that returns a Verdict for a problem NOT in _BUILDER_FIXABLE_
+    # the wiki Architecture page). A check that returns a Verdict for a problem NOT in _BUILDER_FIXABLE_
     # PROBLEMS/_FINDINGS_WRITER_FIXABLE_PROBLEMS never dispatches a real Builder/FindingsWriter
     # fix on its own -- if it also never caps its own firing, it can win first-match on EVERY
     # attempt for as long as its condition holds, permanently starving every check below it. Six

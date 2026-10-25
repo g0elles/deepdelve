@@ -4,7 +4,7 @@ Run: venv/Scripts/python test_structural_checks.py (no framework needed).
 Thin orchestrator (2026-09-07 split, session_status/CURRENT.md carried-forward TODO): this file
 used to be one single 10,701-line `main()` holding all 199 test sections directly. Kept as one
 giant function since 2026-07-12's very first version, it grew alongside the engine it tests until
-it became the thing this project's own ARCHITECTURE.md warns about -- too large to hold in one
+it became the thing this project's own the wiki Architecture page warns about -- too large to hold in one
 head. Split into 19 topic files below, one `main()` each, called here in the EXACT original order
 (each is a pure move: verified via a sorted-line-set diff against the pre-split file showing every
 non-blank line identical, same order, before this split was kept). This file's own name and
