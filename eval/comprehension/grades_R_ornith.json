@@ -1,0 +1,13 @@
+{"arm":"A","model":"ornith-1.5:9b","codes":"C correct, P partly, W wrong, UO correct for unanswerable, I invented, E empty",
+"grades":{
+"b1":"C C C C C C C C UO UO",
+"b2":"C C C C C C C C C UO UO",
+"b3":"C C C P C C C C UO UO",
+"b4":"C C C C C C C C UO UO",
+"b5":"W C C C C C C C UO UO",
+"n1":"C C C C C C C UO UO UO",
+"n2":"C C C C C P C C UO UO",
+"n3":"C C C C C W C C UO UO",
+"n4":"C C C C C C P C UO UO",
+"n5":"C C C C P C C C UO UO"},
+"notes":{"b3.3":"said Yes, HIV significantly higher than school children, then noted no formal test and the meta-regression; mixed","b5.0":"said the internal test cohort had 1,605 slides (it has 382)","n2.5":"said the claim has no citation (it has one)","n3.5":"confirmed the paper's 'all correlations under 0.8' as accurate (0.846 is the dependent variable against energy intensity)","n4.6":"said the tetrahedron reproduces the PP in liquid CCl4 (it is the third peak Q3)","n5.4":"called the ablation drops differences relative to the full model without saying percentage points"}}
