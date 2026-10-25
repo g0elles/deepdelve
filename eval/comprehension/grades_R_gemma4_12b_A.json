@@ -1,0 +1,30 @@
+{
+ "arm": "A",
+ "think": "false (real off)",
+ "model": "gemma4:12b",
+ "codes": "as grades_R_A.json",
+ "grades": {
+  "b1": "C C C C C C C C UO UO",
+  "b2": "C C C C C C C C C UO UO",
+  "b3": "C C C W C C C C UO UO",
+  "b4": "C C C C C C C C UO UO",
+  "b5": "P C C C C C C C UO UO",
+  "n1": "C C C C C C C UO UO UO",
+  "n2": "C C C W C P C C UO UO",
+  "n3": "C C C C P W C C UO UO",
+  "n4": "C P C C C C C C UO UO",
+  "n5": "C C W C P C C P UO UO"
+ },
+ "notes": {
+  "b3.3": "said HIV significantly higher than school children",
+  "b5.0": "gave 1,910 as the testing cohort size (it is the whole dataset; cohort is 382)",
+  "n2.3": "said text and table are consistent",
+  "n2.5": "described the mechanism, not the single-citation evidence",
+  "n3.4": "said the results support the wording, no note of 2 of 4",
+  "n3.5": "said the statement is accurate",
+  "n4.1": "mechanism vague",
+  "n5.2": "supported 34.2%",
+  "n5.4": "did not explain points vs relative",
+  "n5.7": "mixed limitations of existing systems with the authors' own"
+ }
+}

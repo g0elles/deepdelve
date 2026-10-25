@@ -1,0 +1,112 @@
+{
+ "model": "gemma4:12b",
+ "think": "false (real off)",
+ "note": "same rules as labels_W_gptoss.json; labelled after the other sets (not blind).",
+ "reports": {
+  "b1": {
+   "units": 18,
+   "defect_units": 2,
+   "inline_citations": 10,
+   "sev3": 0,
+   "defects": [
+    "anxiety result called 'more statistically significant' (p went from 0.02 to 0.034) sev2",
+    "'variability in treatment responses across contexts' sev1"
+   ]
+  },
+  "b2": {
+   "units": 22,
+   "defect_units": 3,
+   "inline_citations": 17,
+   "sev3": 0,
+   "defects": [
+    "invented aim 'superior predictive power' sev1",
+    "'large prospective cohort' strength sev1",
+    "'largely due to circularity' (paper: partly) sev2"
+   ]
+  },
+  "b3": {
+   "units": 23,
+   "defect_units": 3,
+   "inline_citations": 17,
+   "sev3": 0,
+   "defects": [
+    "'comprehensive overview' sev1",
+    "HIV listed under 'significant predictors' sev1",
+    "cefoxitin method framed as a limitation sev1"
+   ]
+  },
+  "b4": {
+   "units": 25,
+   "defect_units": 2,
+   "inline_citations": 17,
+   "sev3": 0,
+   "defects": [
+    "'necessity depends on baseline efficiency' inference sev1",
+    "'evidence is solid' despite small groups sev1"
+   ]
+  },
+  "b5": {
+   "units": 19,
+   "defect_units": 3,
+   "inline_citations": 13,
+   "sev3": 0,
+   "defects": [
+    "intro 'match or exceed pathologists' sev1",
+    "'performed well on B-cell lymphomas' not in findings sev1",
+    "'solid within internal testing' sev1"
+   ]
+  },
+  "n1": {
+   "units": 18,
+   "defect_units": 3,
+   "inline_citations": 12,
+   "sev3": 0,
+   "defects": [
+    "'unlike general-purpose benchmarks' sev1",
+    "'to ensure accessibility and reuse' invented motive sev1",
+    "'evidence is robust' sev1"
+   ]
+  },
+  "n2": {
+   "units": 19,
+   "defect_units": 2,
+   "inline_citations": 13,
+   "sev3": 0,
+   "defects": [
+    "'critical sustainability concern' sev1",
+    "'hardware improvements are necessary' sev1"
+   ]
+  },
+  "n3": {
+   "units": 22,
+   "defect_units": 1,
+   "inline_citations": 16,
+   "sev3": 0,
+   "defects": [
+    "MMQR expanded as 'Modified Markov Quantile Regression' sev2"
+   ]
+  },
+  "n4": {
+   "units": 24,
+   "defect_units": 3,
+   "inline_citations": 20,
+   "sev3": 0,
+   "defects": [
+    "'comprehensive review' sev1",
+    "'advanced techniques to distinguish types of order' sev1",
+    "'detailed structural data' sev1"
+   ]
+  },
+  "n5": {
+   "units": 23,
+   "defect_units": 3,
+   "inline_citations": 17,
+   "sev3": 0,
+   "defects": [
+    "'robust in statistical significance' (no seeds or CIs) sev2",
+    "identical ablation and PPO rows read as 'performs similarly', not flagged as suspicious sev2",
+    "'critical for real-time classroom' sev1"
+   ]
+  }
+ }
+}

@@ -60,3 +60,9 @@ Why: gpt-oss with think=false gets no reasoning instruction and runs at its defa
 * Writing: 29 of 218 units defective (13.3 percent), 1 severity 3 (n5: says the LSTM ablation hurt less than the hierarchy ablation, the opposite of the numbers), 10 of 10 reports cite inline. Reports are shorter and stay close to the findings; defects are mostly puffery and wrong acronym expansions.
 * Not a verdict: diagnostic only (Model Evaluation Standard not applied).
 * Files: grades_R_gemma4_A.json, labels_W_gemma4.json.
+
+## Result: gemma4:12b (2026-10-24, think=false, real off switch verified on the raw API; single run, one non-blind labeller)
+* Reading: 0 empty, 70 correct + 21 right "not stated" = 91, 6 partly, 4 wrong, 0 invented. About 8 s per answer. Rejected the "twice as well" premise on both papers, caught the abstract-versus-results mismatch, named the LSTM ablation as worst and said the ring metrics do not separate crystals from glass. Wrong on 4 trap items (HIV vs school children significance, text/table quantization consistency, the 34.2 percent reward claim, the "all correlations under 0.8" claim).
+* Writing: 25 of 213 units defective (11.7 percent, rule 10 percent), 0 severity 3, 10 of 10 reports cite inline. Defects mostly puffery, a few overstated strengths, one wrong acronym expansion (MMQR).
+* Not a verdict: diagnostic only (Model Evaluation Standard not applied).
+* Files: grades_R_gemma4_12b_A.json, labels_W_gemma4_12b.json.
