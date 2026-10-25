@@ -1,7 +1,7 @@
 """Quarantine restore (engine/artifact_salvage.py): snapshots in numeric order beyond attempt 9, and the restored draft is the latest one with substance, not a later empty template."""
 import os, sys, tempfile
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 import config
 from engine import artifact_salvage as sv
 from tools import fs

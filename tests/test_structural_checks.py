@@ -49,7 +49,7 @@ File-to-topic map (in call order below):
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
 import test_orchestrator_extraction
 import test_grounding_gates_and_quotas

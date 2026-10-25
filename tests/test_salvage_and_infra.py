@@ -1,7 +1,7 @@
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
 
 # noqa: F401 -- common test-infra names available to every split file below, regardless of
@@ -125,7 +125,7 @@ def main():
     import importlib.util as _ilu
     import json as _json
     _spec = _ilu.spec_from_file_location(
-        "eval_evaluate", os.path.join(os.path.dirname(os.path.abspath(__file__)), "eval", "evaluate.py"))
+        "eval_evaluate", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "eval", "evaluate.py"))
     _ev = _ilu.module_from_spec(_spec)
     _spec.loader.exec_module(_ev)
 

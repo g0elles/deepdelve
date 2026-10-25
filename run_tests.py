@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Run every test_*.py in the repo (helpers live in support_for_tests.py so they are not discovered as tests) (offline, no model needed) and fail loudly. pytest is not installed, so this is the one entry point.
+"""Run every tests/test_*.py (helpers live in tests/support_for_tests.py so they are not discovered as tests) (offline, no model needed) and fail loudly. pytest is not installed, so this is the one entry point.
 
     python run_tests.py              # all files
     python run_tests.py --clean      # fresh HOME (no dependence on your ~/.deepdelve), model caches offline: what a clean clone sees
@@ -48,7 +48,7 @@ def main():
     ap.add_argument("--timeout", type=int, default=900)
     a = ap.parse_args()
 
-    files = sorted(f for f in glob.glob(os.path.join(ROOT, "test_*.py")) if a.k in os.path.basename(f))
+    files = sorted(f for f in glob.glob(os.path.join(ROOT, "tests", "test_*.py")) if a.k in os.path.basename(f))
     env = dict(os.environ)
     fresh_home = None
     if a.clean:

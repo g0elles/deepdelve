@@ -1,7 +1,7 @@
 """Reader notes (utils/reader_notes.py): the three detectors, the marked block, strip/append idempotence, parser neutrality, fail-open."""
 import os, sys, tempfile
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 from utils import reader_notes as rn
 from utils.grounding import parse_numbered_sources, extract_cited_urls
 

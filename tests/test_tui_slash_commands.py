@@ -10,7 +10,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 os.environ["HOME"] = tempfile.mkdtemp()  # Path.home() based paths (/sessions, persistence) land in a scratch dir
 
 import config  # noqa: E402

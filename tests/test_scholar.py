@@ -1,7 +1,7 @@
 """Scholarly tools (tools/scholar.py): JATS conversion, OpenAlex abstract rebuild, content-level labels, nothing saved when nothing real was obtained. Offline: _http_get is patched."""
 import asyncio, os, sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 import config
 from tools import scholar as sc, fs
 from utils.run_state import fetched_urls_ctx

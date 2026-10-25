@@ -1,5 +1,5 @@
 import json, os, sys, tempfile
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
 from evaluate_run import score, verdict, advisory
 
 GAPS = [{"facet": "Estonia citizen adoption of digital services"}, {"facet": "Finland citizen adoption of digital services"}]

@@ -1,7 +1,7 @@
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
 from utils.grounding import find_non_url_citations, find_uncited_claim_lines, extract_cited_urls
 from utils.run_state import record_fetched_url, reset_fetched_urls
@@ -1233,7 +1233,7 @@ def main():
         _config.cfg["settings"]["workspace"] = {"type": "memory"}
         saved_fs = dict(_IN_MEMORY_FS)
         run_dir = os.path.join(
-            os.path.dirname(__file__),
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             "research_output", "what_year_was_the_eiffel_tower_completed_20260714_215912")
         report_path = os.path.join(run_dir, "final_report.md")
         source_path = os.path.join(run_dir, "sources", "toureiffel_paris_history.md")

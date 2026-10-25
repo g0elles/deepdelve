@@ -1,7 +1,7 @@
 """MCP fetch capture (tools/mcp_loader.py::_wrap_capture_fetches): an opted-in fetch tool's article text lands in sources/ and its article URLs become recorded fetches; everything else passes through. Offline: a fake MCP tool."""
 import asyncio, json, os, sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 import config
 from agent_framework import Content
 from tools import fs

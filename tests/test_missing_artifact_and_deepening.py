@@ -1,7 +1,7 @@
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
 from utils.run_state import record_fetched_url, reset_fetched_urls
 
@@ -293,7 +293,7 @@ def main():
         from utils.run_state import RunState
         from engine.completion import Ctx
         run_dir = os.path.join(
-            os.path.dirname(__file__), "research_output",
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "research_output",
             "compare_the_current_experimental_status_of_two_sea_20260718_171236")
         state_path = os.path.join(run_dir, "_run_state.json")
         if not os.path.exists(state_path):
