@@ -918,13 +918,7 @@ _GAP_DISCLOSURE_RE = re.compile(
 _GAP_META_RE = re.compile(r'findings(?:\.md| file)|evidence gaps? section|data limitations? section', re.I)
 
 
-def gap_disclosure_sentence(gap: dict) -> str:
-    """The ONE wording for an evidence-gap disclosure, shared by the check's template, the Builder's standing requirement, the harness-written
-    section and the FindingsWriter note. Sub-question level and a statement about the NAMED quantity only (never "no evidence about the topic"):
-    the pipeline's gap judge is a binary exact-quantity test that is often right about the quantity and wrong about the topic (wiki page Research-Builder-Fix-Durability
-    Part 3), so a blanket "no evidence" contradicted the report's own cited body."""
-    qs = "; ".join(gap.get("questions") or []) or gap["facet"]
-    return f"No source in the available evidence directly states: {qs}."
+from utils.grounding import gap_disclosure_sentence  # noqa: E402,F401  (moved to utils.grounding; re-exported for existing importers)
 
 
 def undisclosed_gap_facets(content: str, gaps: list) -> list:

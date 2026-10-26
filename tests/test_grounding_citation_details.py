@@ -323,6 +323,17 @@ def main():
                 'radiation we see as scattered light." '
                 '[wiki](https://en.wikipedia.example.org/rayleigh)'
             ) == []
+            # A quote that spans a markdown link in the source: the pipeline stores it link-stripped (pipeline.run.norm), so the engine's
+            # check must compare the same way (compiled-writer smoke run 2026-10-26, three false positives).
+            _IN_MEMORY_FS["sources/wiki.md"] += (
+                "\n\nDesigned with refrigerant lines buried in the ground, [geothermal heat pump costs](https://x.example/g) "
+                "(including installation costs) range from $6,000 to $20,000 on average.[[3]](#cite_note-3)")
+            assert find_paraphrased_quotes(
+                '- "Designed with refrigerant lines buried in the ground, geothermal heat pump costs (including installation costs) '
+                'range from $6,000 to $20,000 on average." [wiki](https://en.wikipedia.example.org/rayleigh)') == []
+            assert find_paraphrased_quotes(
+                '- "Designed with refrigerant lines buried in the ground, geothermal heat pump costs (including installation costs) '
+                'range from $9,000 to $30,000 on average." [wiki](https://en.wikipedia.example.org/rayleigh)')  # a changed figure is still flagged
             # Short quoted span (<25 chars) -> below the noise-avoidance threshold, silent.
             assert find_paraphrased_quotes(
                 '- "invented words" [wiki](https://en.wikipedia.example.org/rayleigh)') == []

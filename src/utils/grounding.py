@@ -474,6 +474,19 @@ _NUMBERED_ENTRY_PREFIX_RE = re.compile(r'^[\s>]*[*_]*(\d+)[.):]')
 # not anchored to word boundaries beyond the brackets themselves -- a footnote-style "[3][7]" for a
 # multi-source claim (STANDARD_CITATION_FORMAT_INSTRUCTIONS' own example) must match both numbers
 # via .finditer, not just the first.
+GAP_DISCLOSURE_PREFIX = "No source in the available evidence directly states:"
+
+
+def gap_disclosure_sentence(gap: dict) -> str:
+    """The ONE wording for an evidence-gap disclosure, shared by the completion check's template, the Builder's standing requirement, the
+    harness-written section, the FindingsWriter note and the compiled writer. Sub-question level and a statement about the NAMED quantity only
+    (never "no evidence about the topic"): the pipeline's gap judge is a binary exact-quantity test that is often right about the quantity and
+    wrong about the topic (wiki page Research-Builder-Fix-Durability Part 3), so a blanket "no evidence" contradicted the report's own cited body.
+    Lives here (not in the engine) so utils and writer code can use it without importing the engine."""
+    qs = "; ".join(gap.get("questions") or []) or gap["facet"]
+    return f"{GAP_DISCLOSURE_PREFIX} {qs}."
+
+
 _NUMBERED_CITATION_RE = re.compile(r'\[(\d+)\]')
 
 
@@ -616,11 +629,14 @@ def find_non_url_citations(text: str) -> list[str]:
     if not text:
         return []
     ref_map = parse_academic_references(text)
+    numbered = parse_numbered_sources(text)
     hits = []
     for line in text.splitlines():
         stripped = line.strip()
         if "http" in line:
             continue
+        if any(n in numbered for n in _NUMBERED_CITATION_RE.findall(line)):
+            continue  # standard-style `[N]` resolving to a Sources entry with a URL IS the citation; a "(World Bank, 2025)" inside the line is the quoted source's own reference (compiled-writer skeleton replay 2026-10-26: 4 of 25 reports)
         # Skip the engine's own injected nudges (e.g. "[SYSTEM RELEVANCE WARNING: ... source ...]")
         # — confirmed live, a salvaged report can carry one of these across a turn boundary (see
         # _find_last_substantial_text), and its own use of the word "source" inside a warning ABOUT
@@ -882,6 +898,23 @@ def _currency_swapped(figure: str, digits: str, content_digits: str) -> bool:
     return bool(seen) and mine not in seen
 
 
+def _strip_md_links(text: str) -> str:
+    """Markdown link syntax removed the way the pipeline does before it stores a quote (pipeline.run.clean): footnote refs vanish, [text](url) -> text.
+    Adjacent links fuse ("[Lilly](u)[LLY](u)" -> "LillyLLY"), so a quote the pipeline kept can contain a token the raw page does not."""
+    text = re.sub(r"\[\[[^\]]*\]\]\([^)]*\)", "", text)
+    return re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
+
+
+def _figure_in_source(digits: str, suffix: str, content_digits: str, content_spaced: str) -> bool:
+    """`digits` (e.g. "330.3") present in the source as a whole number. A magnitude suffix the claim itself carries ("$330.3B", "EUR 800K")
+    is matched as written ("330.3B"): the figure regex stops before the letter, and a bare \\b-boundary search never matches digits that
+    are directly followed by one. Without a suffix the original whole-word rule applies."""
+    if suffix:
+        pat = rf'(?<![\d.]){re.escape(digits)}\s?{re.escape(suffix)}\b'
+        return bool(re.search(pat, content_digits, re.I) or re.search(pat, content_spaced, re.I))
+    return bool(re.search(rf'\b{re.escape(digits)}\b', content_digits) or re.search(rf'\b{re.escape(digits)}\b', content_spaced))
+
+
 def find_unsupported_specific_figures(text: str) -> list[str]:
     """A specific dollar figure, fee, day/month-count, or named-portal/program TOKEN (e.g. '$53',
     '300 days', 'MiConsulado') cited to a fetched source whose content never mentions it anywhere.
@@ -917,7 +950,7 @@ def find_unsupported_specific_figures(text: str) -> list[str]:
         files = _line_cited_files(line, fetched, ref_map)
         if not files:
             continue
-        content = "\n".join(_source_body(get_workspace_file_content(f) or "") for f in files)
+        content = _strip_md_links("\n".join(_source_body(get_workspace_file_content(f) or "") for f in files))
         if len(content.strip()) < 50:
             continue
         # Thousands-separator commas stripped from the SOURCE too (digit,digit only, so an
@@ -934,7 +967,8 @@ def find_unsupported_specific_figures(text: str) -> list[str]:
             digits = re.sub(r'[^\d.]', '', m.group(0))
             if len(digits.replace('.', '')) < 2:
                 continue  # single-digit figures are too generic a signal on their own
-            if not (re.search(rf'\b{re.escape(digits)}\b', content_digits) or re.search(rf'\b{re.escape(digits)}\b', content_spaced)):
+            sm = re.match(r'\s?([KkMmBbTt])\b', line[m.end():])
+            if not _figure_in_source(digits, sm.group(1) if sm else "", content_digits, content_spaced):
                 hits.append(m.group(0).strip())
             elif _currency_swapped(m.group(0), digits, content_digits):
                 hits.append(m.group(0).strip())
@@ -1001,6 +1035,9 @@ def _normalize_for_quote_match(text: str) -> str:
     source's raw HTML renders punctuation and how the model retyped it."""
     text = text.replace("’", "'").replace("‘", "'")
     text = text.replace("“", '"').replace("”", '"')
+    text = re.sub(r'\[\[[^\]]*\]\]\([^)]*\)', '', text)  # [[3]](#cite_note-4) footnote refs, dropped with no space left behind (pipeline.run.clean does the same)
+    text = re.sub(r'\[([^\]]*)\]\([^)]*\)', r'\1', text)  # [text](url) -> text: the pipeline verifies its quotes link-stripped, so a quote it kept can span a link
+    text = re.sub(r'\s?\[\d{1,3}\](?!\()', '', text)  # a page's own numeric reference marker ("week 3 [4]"); the compiled writer drops them from quotes, so both sides must ignore them
     text = re.sub(r'[*\[\]]', '', text)  # **bold** and [SQuAD]-style bracketed edits inside a quote (2026-10-17 audit: 5 Eiffel/SQuAD quotes flagged over these)
     return re.sub(r'\s+', ' ', text.strip().lower())
 
@@ -1110,6 +1147,8 @@ def find_uncited_claim_lines(report: str) -> list[str]:
             line = raw.strip()
             if len(line) < 30 or line.startswith(("#", ">", "[SYSTEM")):
                 continue
+            if GAP_DISCLOSURE_PREFIX in line:
+                continue  # an evidence-gap disclosure states what is NOT known; its question text can carry years or figures
             if any(n in numbered for n in _NUMBERED_CITATION_RE.findall(line) + re.findall(r'【(\d+)】', line)):
                 continue  # standard-style `[N]` that resolves to a Sources entry with a URL IS a citation on the line (2026-10-01 A/B: 4 cited lines flagged)
             if re.fullmatch(r'[|\s:\-]+', line):  # markdown table separator row
@@ -1175,6 +1214,23 @@ def _term_keys(terms: set) -> set:
     return out
 
 
+def _line_quote_is_verbatim(line: str, fetched: dict, ref_map: dict) -> bool:
+    """The line carries a quotation-marked span of 40+ characters that appears verbatim (find_paraphrased_quotes' own normalisation, ellipsis-split) in
+    a source the same line cites. Such a span is the source's own words, so the term-overlap heuristic has nothing left to add; where it disagrees
+    (a sentence glued to a preceding heading changes its capitalised phrase) the heuristic is the one that is wrong (compiled-writer skeleton replay,
+    2026-10-26: two verbatim quotes flagged claim_unsupported)."""
+    files = _line_cited_files(line, fetched, ref_map)
+    if not files:
+        return False
+    norm_content = _normalize_for_quote_match("\n".join(_source_body(get_workspace_file_content(f) or "") for f in files))
+    for m in _QUOTED_SPAN_RE.finditer(line):
+        quote = m.group(1).strip()
+        segs = [x.strip() for x in _ELLIPSIS_RE.split(quote) if len(x.strip()) >= 15]
+        if len(quote) >= 40 and segs and all(_normalize_for_quote_match(x) in norm_content for x in segs):
+            return True
+    return False
+
+
 def claim_grounding_problem(report: str) -> str | None:
     """Content-level check beyond URL-presence, CLAIM-scoped (this project's report format keeps
     a claim and its citation on one line, same as find_non_url_citations/find_unsupported_regulation_ids):
@@ -1203,6 +1259,8 @@ def claim_grounding_problem(report: str) -> str | None:
     unsupported = []
     source_terms_cache: dict = {}
     for line in prose.splitlines():
+        if _line_quote_is_verbatim(line, fetched, ref_map):
+            continue
         for segment in decompose_claim_segments(line):
             # A bare `- Source: [Title](url).` sub-bullet is a citation ATTRIBUTION, not a claim
             # (see _is_citation_only_line) -- skipping it here closes a false-positive class this
@@ -1230,7 +1288,7 @@ def claim_grounding_problem(report: str) -> str | None:
             for fn in files:
                 if fn not in source_terms_cache:
                     content = _source_body(get_workspace_file_content(fn) or "")
-                    source_terms_cache[fn] = extract_salient_terms(content) if len(content.strip()) >= 50 else None
+                    source_terms_cache[fn] = extract_salient_terms(_strip_md_links(content)) if len(content.strip()) >= 50 else None  # link-stripped like the pipeline's quotes: a proper-noun phrase split by link syntax in the page is whole in the quote
                 source_terms = source_terms_cache[fn]
                 if source_terms is None:
                     continue
@@ -1368,8 +1426,9 @@ def _extract_figure_claims(text: str) -> list[tuple[str, str]]:
     return [(s, f) for s, f, _ in _extract_figure_claims_ctx(text)]
 
 
-def find_cross_source_contradictions(report: str) -> list[str]:
-    """ROADMAP Phase 2 (FEVER-style cross-source disagreement detection, Thorne et al., NAACL
+def cross_source_hits(report: str) -> list[dict]:
+    """Structured form of find_cross_source_contradictions: one dict per hit (subject, figure, other_figure, cited_files, other_file).
+    ROADMAP Phase 2 (FEVER-style cross-source disagreement detection, Thorne et al., NAACL
     2018) — depends on Phase 1's claim segmentation (decompose_claim_segments). Distinct from
     every other check in this file: those verify a claim against ITS OWN cited source; this asks
     whether the CHOICE of source itself hid a real disagreement the reader was never told about.
@@ -1428,11 +1487,16 @@ def find_cross_source_contradictions(report: str) -> list[str]:
                         if key in seen:
                             continue
                         seen.add(key)
-                        hits.append(
-                            f"'{subject}': report states {figure!r} but a DIFFERENT fetched "
-                            f"source ({other_fn}) states {other_figure!r} for the same subject, "
-                            f"unmentioned in the report")
+                        hits.append({"subject": subject, "figure": figure, "other_figure": other_figure,
+                                     "cited_files": sorted(cited_files), "other_file": other_fn})
     return hits
+
+
+def find_cross_source_contradictions(report: str) -> list[str]:
+    """String form of cross_source_hits (see its docstring for the rule), as the completion check and the audit scripts consume it."""
+    return [f"'{h['subject']}': report states {h['figure']!r} but a DIFFERENT fetched "
+            f"source ({h['other_file']}) states {h['other_figure']!r} for the same subject, "
+            f"unmentioned in the report" for h in cross_source_hits(report)]
 
 
 _nli_model = None
