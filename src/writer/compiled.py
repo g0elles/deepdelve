@@ -104,6 +104,10 @@ def names(text: str) -> list[str]:
         if w and w[0].isupper() and any(ch.isalpha() for ch in w):
             run += gap + [w]
             gap = []
+            if tok.rstrip("\"'\u201d\u2019)]}").endswith((".", "!", "?")):   # a sentence end closes the name
+                if len(run) >= 2:
+                    out.append(" ".join(run))
+                run = []
         elif run and w and w.islower() and len(w) <= 3:
             gap.append(w)
         else:

@@ -16,7 +16,7 @@ MAN = {m["id"]: m for m in json.load(open(os.path.join(HERE, "papers", "manifest
 
 def sampling(predict_default: int) -> dict:
     """Per-model sampling from env (defaults reproduce the earlier runs: temperature 0.2, seed 42). DD_TEMP, DD_TOP_P, DD_TOP_K, DD_MIN_P, DD_PRESENCE, DD_REPEAT, DD_PREDICT."""
-    o = {"temperature": float(os.environ.get("DD_TEMP", 0.2)), "num_ctx": int(os.environ.get("DD_CTX", 65536)), "seed": 42,
+    o = {"temperature": float(os.environ.get("DD_TEMP", 0.2)), "num_ctx": int(os.environ.get("DD_CTX", 65536)), "seed": int(os.environ.get("DD_SEED", 42)),
          "num_predict": int(os.environ.get("DD_PREDICT", predict_default))}
     for env, opt, cast in (("DD_TOP_P", "top_p", float), ("DD_TOP_K", "top_k", int), ("DD_MIN_P", "min_p", float), ("DD_PRESENCE", "presence_penalty", float), ("DD_REPEAT", "repeat_penalty", float)):
         if os.environ.get(env):
