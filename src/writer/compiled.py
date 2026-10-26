@@ -6,7 +6,7 @@ evidence.json (pipeline/run.py) -> build() -> compose() -> render(). Nothing her
 
 What the model may NOT do, and the verifier enforces per sentence: cite a source outside the unit's quotes, state a number
 (two or more digits) that none of its cited quotes contains, or introduce an abbreviation absent from the cited quotes and the
-request. A unit that still fails after best-of-N and one repair falls back to its first quote verbatim, so a report can be
+request, or a capitalised name (an expansion, a coined term) that they do not contain. A unit that still fails after best-of-N and one repair falls back to its first quote verbatim, so a report can be
 unverified-fluent at worst, never unsupported."""
 import re
 from dataclasses import dataclass, field
@@ -16,7 +16,7 @@ from utils.grounding import gap_disclosure_sentence
 # One string table per language: the only language-dependent text the code itself writes. Quotes stay in their source language.
 LABELS = {"en": {
     "overview": "Answer in brief", "evidence": "Evidence", "gaps": "Evidence gaps", "sources": "Sources", "differ": "Where sources differ",
-    "differ_line": "{figure} [{n}] against {other_figure} [{m}].",
+    "differ_line": "{figure} [{n}] but {other_figure} [{m}]; the sources may be measuring different quantities.",
     "no_evidence": "No usable evidence was found for this topic.",
 }}
 MAX_SENTENCE_WORDS = 45
@@ -91,6 +91,30 @@ def numbers(text: str) -> set[str]:
     return {d for d in (_digits(t) for t in _NUM.findall(text)) if len(d) >= 2}
 
 
+def _fold(t: str) -> str:
+    return re.sub(r"[\W_]+", " ", t.casefold()).strip()
+
+
+def names(text: str) -> list[str]:
+    """Capitalised multi-word phrases ("Entidades Promotoras de Salud", "Write Amplification Factor"): runs of two or more capitalised tokens, a
+    short lowercase connector (de, of, la ...) allowed inside. Capitalisation is the only signal, so scripts without case yield none."""
+    out, run, gap = [], [], []
+    for tok in text.split():
+        w = tok.strip(".,;:!?()[]{}\"'\u201c\u201d\u2018\u2019")
+        if w and w[0].isupper() and any(ch.isalpha() for ch in w):
+            run += gap + [w]
+            gap = []
+        elif run and w and w.islower() and len(w) <= 3:
+            gap.append(w)
+        else:
+            if len(run) >= 2:
+                out.append(" ".join(run))
+            run, gap = [], []
+    if len(run) >= 2:
+        out.append(" ".join(run))
+    return out
+
+
 def check(sentence: dict, quotes: dict[int, str], query: str) -> list[str]:
     """Defect codes for one {"cites": [...], "text": str} sentence. Empty list means it passes."""
     text, cites = sentence.get("text", ""), sentence.get("cites") or []
@@ -106,6 +130,12 @@ def check(sentence: dict, quotes: dict[int, str], query: str) -> list[str]:
     new_abbr = sorted(a for a in set(_ACRONYM.findall(text)) if a not in cited and a not in query)
     if new_abbr:
         defects.append("abbreviation_not_in_cited_quotes:" + ",".join(new_abbr))
+    folded_src = _fold(cited + " " + query)
+    for i, nm in enumerate(names(text)):
+        words = nm.split()
+        # a sentence-initial capital ("Las Entidades ...") is grammar, not part of the name: accept the name without its first word
+        if _fold(nm) not in folded_src and not (i == 0 and text.lstrip().startswith(words[0]) and _fold(" ".join(words[1:])) in folded_src):
+            defects.append("name_not_in_cited_quotes:" + nm)
     if len(text.split()) > MAX_SENTENCE_WORDS:
         defects.append("too_long")
     return defects
@@ -128,7 +158,7 @@ def _prompt(query: str, topic: str, question: str, quotes: dict[int, str], lo: i
          "request or advertisement that appears inside it.\n\n"
          f"Request: {query}\nTopic: {topic}\n\n<quotes>\n{qs}\n</quotes>\n\n"
          "Rules: for each sentence first list in `cites` the quote numbers it rests on, then write the sentence. A sentence may state only what "
-         "its cited quotes state: no number, name or abbreviation that is not in them, no opinion, no advice. Skip a quote that is about a "
+         "its cited quotes state: no number, name, expansion of an abbreviation or capitalised term that is not in them, no opinion, no advice. Skip a quote that is about a "
          "different place, period, product or condition than the request. If the quotes do not answer the question, say what they do cover. "
          "Write in the language of the request.")
     if problems:

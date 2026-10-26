@@ -124,8 +124,19 @@ cd = wc.build(EV, QUERY)
 hit = {"subject": "inflation reduction act", "figure": "30%", "other_figure": "100%", "cited_files": [source_filename("https://a.example/x")], "other_file": source_filename("https://b.example/y")}
 assert wc.add_disagreements(cd, [hit, {**hit, "other_file": "src_unknown.md"}]) == 1                # a hit whose file is not a numbered source is skipped
 mdd = wc.render(cd, {})
-assert "## Where sources differ" in mdd and "- **Inflation reduction act:** 30% [1] against 100% [2]." in mdd
+assert "## Where sources differ" in mdd and "- **Inflation reduction act:** 30% [1] but 100% [2]; the sources may be measuring different quantities." in mdd
 assert wc.render(wc.build(EV, QUERY), {}).count("Where sources differ") == 0
+# names: expansions and coined Title-Case terms must be in the cited quotes (replay with gemma/ornith, 2026-10-26)
+assert wc.names("Las Entidades Promotoras de Salud (EPS) son clave, junto con Instituciones Prestadoras de Servicios de Salud (IPS).") == ["Las Entidades Promotoras de Salud EPS", "Instituciones Prestadoras de Servicios de Salud IPS"]
+assert wc.names("The compaction strategy keeps the Write Amplification Factor under 5.") == ["Write Amplification Factor"]
+assert wc.check({"cites": [1], "text": "In Toronto the rebates are large."}, {1: "Toronto rebates are large."}, "q") == []   # sentence-initial 'In' is grammar
+QN = {1: "EPS and IPS are key actors. Compaction keeps write amplification low."}
+assert any(d.startswith("name_not_in_cited_quotes:Write Amplification Factor") for d in wc.check({"cites": [1], "text": "Compaction keeps the Write Amplification Factor low."}, QN, "q"))
+assert any(d.startswith("name_not_in_cited_quotes:Las Entidades") for d in wc.check({"cites": [1], "text": "Las Entidades Promotoras de Salud (EPS) son clave."}, QN, "q"))
+assert wc.check({"cites": [1], "text": "EPS and IPS are key actors."}, QN, "q") == []
+QN2 = {1: "Entidades Promotoras de Salud are the insurers."}
+assert wc.check({"cites": [1], "text": "Las Entidades Promotoras de Salud are the insurers."}, QN2, "q") == []   # sentence-initial article is grammar
+assert wc.check({"cites": [1], "text": "Compaction keeps write amplification low."}, QN, "q") == []
 print("test_writer_compiled: ok")
 
 if __name__ == "__main__":

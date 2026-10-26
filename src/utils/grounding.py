@@ -1258,6 +1258,7 @@ def claim_grounding_problem(report: str) -> str | None:
 
     unsupported = []
     source_terms_cache: dict = {}
+    source_text_cache: dict = {}
     for line in prose.splitlines():
         if _line_quote_is_verbatim(line, fetched, ref_map):
             continue
@@ -1294,6 +1295,13 @@ def claim_grounding_problem(report: str) -> str | None:
                     continue
                 checkable = True
                 if _term_keys(seg_terms) & _term_keys(source_terms):
+                    supported = True
+                    break
+                # Case-folded containment is overlap too: a sentence-initial article makes a phrase ("El Ministerio") that the page only has
+                # mid-sentence ("el Ministerio de Salud"), which the capitalised-phrase sets never match (Spanish compiled-writer replay 2026-10-26).
+                if fn not in source_text_cache:
+                    source_text_cache[fn] = " ".join(_strip_md_links(_source_body(get_workspace_file_content(fn) or "")).casefold().split())
+                if any(" ".join(t.casefold().split()) in source_text_cache[fn] for t in seg_terms if len(t) >= 6):
                     supported = True
                     break
             if checkable and not supported:
