@@ -119,6 +119,9 @@ def names(text: str) -> list[str]:
     return out
 
 
+_META = re.compile(r"\b(?:the|these|those)\s+(?:provided\s+|given\s+)?(?:quotes?|text|excerpts?)\b|\bprovided\s+(?:quotes?|text)\b", re.I)
+
+
 def check(sentence: dict, quotes: dict[int, str], query: str) -> list[str]:
     """Defect codes for one {"cites": [...], "text": str} sentence. Empty list means it passes."""
     text, cites = sentence.get("text", ""), sentence.get("cites") or []
@@ -140,6 +143,8 @@ def check(sentence: dict, quotes: dict[int, str], query: str) -> list[str]:
         # a sentence-initial capital ("Las Entidades ...") is grammar, not part of the name: accept the name without its first word
         if _fold(nm) not in folded_src and not (i == 0 and text.lstrip().startswith(words[0]) and _fold(" ".join(words[1:])) in folded_src):
             defects.append("name_not_in_cited_quotes:" + nm)
+    if _META.search(text):
+        defects.append("describes_the_quotes_not_the_topic")
     if len(text.split()) > MAX_SENTENCE_WORDS:
         defects.append("too_long")
     return defects
@@ -164,6 +169,7 @@ def _prompt(query: str, topic: str, question: str, quotes: dict[int, str], lo: i
          "Rules: for each sentence first list in `cites` the quote numbers it rests on, then write the sentence. A sentence may state only what "
          "its cited quotes state: no number, name, expansion of an abbreviation or capitalised term that is not in them, no opinion, no advice. Skip a quote that is about a "
          "different place, period, product or condition than the request. If the quotes do not answer the question, say what they do cover. "
+         "Never describe the quotes, the text or the source themselves (\"the provided quotes\", \"the source states\"), and never say what is missing or unanswered: gaps are listed by the report separately. "
          "Write in the language of the request.")
     if problems:
         p += "\n\nYour previous draft had these problems, fix every one: " + "; ".join(problems)
@@ -224,7 +230,7 @@ def compose(c: Compiled, llm, n_drafts: int = 1, lang: str = "en") -> tuple[dict
     written = {}
     ov_quotes = [q for f in c.facets for q in f.quotes[:2]]
     if ov_quotes:
-        written["overview"] = write_unit(llm, c.query, "the whole request", c.query, ov_quotes, 2, 4, n_drafts, stats)
+        written["overview"] = write_unit(llm, c.query, "the whole request", "What are the main findings that bear on the request?", ov_quotes, 2, 4, n_drafts, stats)
         stats["units"] += 1
     for f in c.facets:
         if f.quotes:

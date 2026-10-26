@@ -92,7 +92,7 @@ def arm_compiled(drafts):
     return run
 
 
-ARMS = {"A1": arm_a1, "A2": arm_a2, "A3": arm_compiled(1), "A4": arm_compiled(3)}
+ARMS = {"A1": arm_a1, "A2": arm_a2, "A3": arm_compiled(1), "A4": arm_compiled(3), "A3b": arm_compiled(1), "A4b": arm_compiled(3)}  # b: overview prompt fixed after stage 1 (post hoc)
 
 
 def metrics(text: str, fs, pid: str) -> dict:

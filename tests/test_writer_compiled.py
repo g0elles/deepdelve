@@ -137,7 +137,11 @@ assert wc.check({"cites": [1], "text": "EPS and IPS are key actors."}, QN, "q") 
 QN2 = {1: "Entidades Promotoras de Salud are the insurers."}
 assert wc.check({"cites": [1], "text": "Las Entidades Promotoras de Salud are the insurers."}, QN2, "q") == []   # sentence-initial article is grammar
 assert wc.check({"cites": [1], "text": "Compaction keeps write amplification low."}, QN, "q") == []
+QM = {1: "Prevalence was 7.3% in 20 studies."}
+assert "describes_the_quotes_not_the_topic" in wc.check({"cites": [1], "text": "The provided quotes do not state what is unanswered."}, QM, "x")
+assert wc.check({"cites": [1], "text": "Prevalence was 7.3% in 20 studies."}, QM, "x") == []
 print("test_writer_compiled: ok")
 
 if __name__ == "__main__":
     pass
+
