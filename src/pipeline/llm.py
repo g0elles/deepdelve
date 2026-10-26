@@ -1,6 +1,8 @@
 import json
 import urllib.request
 
+from utils.thinking import minimal_think
+
 OLLAMA_URL = "http://localhost:11434/api/chat"
 
 
@@ -11,6 +13,8 @@ def call_json(model: str, prompt: str, schema: dict, num_ctx: int = 16384, retri
         "options": {"temperature": 0, "num_ctx": num_ctx},
         "messages": [{"role": "user", "content": prompt}],
     }
+    if think == "minimal":  # intent, resolved to this model's own control (levels, boolean, or none): utils/thinking.py
+        think = minimal_think(model)
     if think is not None:
         body["think"] = think
     last = None

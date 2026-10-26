@@ -771,6 +771,8 @@ def _get_default_options():
         effort = config.get_setting("thinking_effort", None)
         if effort is not None and effort not in ("low", "medium", "high"):
             raise ValueError(f"settings.thinking_effort must be low, medium, high or unset, got {effort!r}")
+        from utils.thinking import check_setting  # loud on a level set for a boolean model; warns when a level model has no effort set
+        check_setting(config.cfg.get("api", {}).get("openai_model", ""), effort, config.cfg.get("api", {}).get("openai_base_url", "http://localhost:11434").removesuffix("/v1"))
         options["think"] = effort if effort else config.get_setting("enable_thinking", False)
         # OllamaChatOptions.max_tokens auto-translates to options.num_predict (confirmed at the
         # installed agent_framework_ollama source) -- this path was never affected by the

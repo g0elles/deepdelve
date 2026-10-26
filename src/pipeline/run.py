@@ -128,7 +128,7 @@ def judge(model: str, facet: dict, cands: list[tuple[str, str]]) -> list[int] | 
          f"about a differently-named variant or extension of this facet's subject (e.g. 'Paxos Commit' is not "
          f"'Paxos', 'Multi-Raft' is not 'Raft') unless the facet's own name or questions ask about that variant.")
     try:
-        return [i for i in call_json(model, p, JUDGE_SCHEMA, think="low", timeout=120)["keep"] if 0 <= i < len(cands)]
+        return [i for i in call_json(model, p, JUDGE_SCHEMA, think="minimal", timeout=120)["keep"] if 0 <= i < len(cands)]
     except Exception:
         return None
 
@@ -153,7 +153,7 @@ def facet_unanswered(model: str, query: str, facet: dict, quotes: list[str]) -> 
     # it fixed 1 false gap (Finland platform architecture) but turned a correctly answered mechanism facet (h22 f1, 3 of 3) into false gaps. It was shipped on a
     # 10-question hand check with no A/B; judge prompt changes need the labelled question set (ROADMAP/CURRENT) first.
     try:
-        ans = call_json(model, p, ANSWER_SCHEMA, think="low", timeout=180)["answers"]
+        ans = call_json(model, p, ANSWER_SCHEMA, think="minimal", timeout=180)["answers"]
         answered = {a["q"] for a in ans if isinstance(a.get("quote"), int) and a["quote"] >= 0}
         return [i for i in range(len(facet["questions"])) if i not in answered]
     except Exception:
@@ -168,7 +168,7 @@ def reformulate_question(model: str, facet_name: str, question: str) -> list[str
          f"Give 1-2 DIFFERENT search queries, using different terms/angle (not just a reword), likely to find a page that directly "
          f"answers this question when the first phrasing did not.")
     try:
-        qs = call_json(model, p, REFORMULATE_SCHEMA, think="low", timeout=60)["queries"]
+        qs = call_json(model, p, REFORMULATE_SCHEMA, think="minimal", timeout=60)["queries"]
         return [drop_years(q, question) or q for q in qs if isinstance(q, str) and q.strip()][:2]
     except Exception:
         return []
@@ -385,7 +385,7 @@ def _plan(model: str, query: str, hint: str = "") -> list[dict]:
          f"benefits vs harms): one facet per outcome, and the sources will show which direction it went. "
          f"Set `entity` to the one named place, country, organization, person, technology or method the facet is about "
          f"(e.g. a city, a country, a data structure), or \"\" if the facet is not about one specific named entity.\n\nRequest: {query}{hint}")
-    facets = call_json(model, p, PLAN_SCHEMA, think="low")["facets"]  # gpt-oss: default reasoning + `format` can run >5 min and return empty JSON (q06, q21)
+    facets = call_json(model, p, PLAN_SCHEMA, think="minimal")["facets"]  # gpt-oss: default reasoning + `format` can run >5 min and return empty JSON (q06, q21)
     for f in facets:
         f["questions"] = [drop_years(q, query) or q for q in f["questions"]]
     return facets
