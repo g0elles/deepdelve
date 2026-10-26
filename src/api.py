@@ -41,7 +41,7 @@ import engine.orchestrator as orchestrator_module
 from engine.orchestrator import create_local_agent, build_quota_pool
 from engine.tui import (
     _slugify_run_dir_name, _current_run_dir, _ingest_local_doc, _write_bibliography, _export_pdf,
-    _looks_like_tool_error, _load_pipeline_evidence, PIPELINE_EVIDENCE_PROMPT, apply_depth_preset, load_resume_state, build_resume_input,
+    _looks_like_tool_error, _load_pipeline_evidence, _compile_pipeline_report, PIPELINE_EVIDENCE_PROMPT, apply_depth_preset, load_resume_state, build_resume_input,
     _scale_resume_quota_pool,
 )
 from engine.run_loop import RunLoopSurface, run_agent_loop
@@ -131,6 +131,8 @@ async def _run_research(run_id: str, query: str, opts: dict, events: asyncio.Que
         apply_depth_preset(config.cfg, opts["depth"])
     if opts.get("style"):
         config.cfg.setdefault("settings", {})["report_style"] = opts["style"]
+    if opts.get("writer_mode") in ("agents", "compiled"):
+        config.cfg.setdefault("settings", {})["writer_mode"] = opts["writer_mode"]
 
     quota_pool = build_quota_pool()
     if mode == "resume":
@@ -232,6 +234,9 @@ async def _run_research(run_id: str, query: str, opts: dict, events: asyncio.Que
             if opts.get("pipeline_evidence_dir"):
                 added = _load_pipeline_evidence(run_state, opts["pipeline_evidence_dir"])
                 await events.put({"type": "system", "text": f"Pipeline evidence loaded: {added} findings. Skipping the agent's own research phase."})
+                compiled_stats = await asyncio.to_thread(_compile_pipeline_report, run_state, opts["pipeline_evidence_dir"])
+                if compiled_stats is not None:
+                    await events.put({"type": "system", "text": f"Compiled writer wrote findings.md and the report: {compiled_stats}"})
                 current_input += PIPELINE_EVIDENCE_PROMPT
 
         from engine.orchestrator import get_context_budget
@@ -326,6 +331,7 @@ async def start_research(
     query: str = Form(...),
     depth: Optional[str] = Form(None),
     style: Optional[str] = Form(None),
+    writer_mode: Optional[str] = Form(None),
     seed_urls: list[str] = Form(default=[]),
     pipeline_evidence_dir: Optional[str] = Form(None),
     files: list[UploadFile] = File(default=[]),
@@ -362,7 +368,7 @@ async def start_research(
 
     _jobs[run_id] = {"status": "queued", "queue": asyncio.Queue(), "error": None, "task": None, "query": query}
     await _job_queue.put((run_id, query, {
-        "mode": "fresh", "depth": depth, "style": style,
+        "mode": "fresh", "depth": depth, "style": style, "writer_mode": writer_mode,
         "seed_urls": seed_urls, "seed_doc_paths": seed_doc_paths,
         "pipeline_evidence_dir": pipeline_evidence_dir,
     }))

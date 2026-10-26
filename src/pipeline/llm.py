@@ -6,11 +6,11 @@ from utils.thinking import minimal_think
 OLLAMA_URL = "http://localhost:11434/api/chat"
 
 
-def call_json(model: str, prompt: str, schema: dict, num_ctx: int = 16384, retries: int = 1, think=None, timeout: int = 90) -> dict:
+def call_json(model: str, prompt: str, schema: dict, num_ctx: int = 16384, retries: int = 1, think=None, timeout: int = 90, temperature: float = 0, seed: int | None = None) -> dict:
     """Schema-constrained call. Uses `format` and NO `tools` (Ollama #13750 breaks the combo)."""
     body = {
         "model": model, "stream": False, "format": schema,
-        "options": {"temperature": 0, "num_ctx": num_ctx},
+        "options": {"temperature": temperature, "num_ctx": num_ctx, **({"seed": seed} if seed is not None else {})},
         "messages": [{"role": "user", "content": prompt}],
     }
     if think == "minimal":  # intent, resolved to this model's own control (levels, boolean, or none): utils/thinking.py

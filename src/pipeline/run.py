@@ -635,11 +635,15 @@ def run(query: str, model: str, out: Path, topk: int, extractor: str = "ce", jud
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("query")
-    ap.add_argument("--model", default="deepdelve-gpt-oss:latest")
+    ap.add_argument("--model", default=None, help="Ollama model; default: api.openai_model from the config (see the wiki Default Model page)")
     ap.add_argument("--out", default="")
     ap.add_argument("--topk", type=int, default=3)
     ap.add_argument("--no-judge", action="store_true", help="skip the LLM relevance judge after the CE stage")
     ap.add_argument("--extractor", choices=["ce", "bm25", "llm"], default="ce")
     a = ap.parse_args()
     out = Path(a.out or f"research_output/pipeline_{int(time.time())}")
+    if not a.model:
+        import config
+        config.load_config()
+        a.model = config.cfg["api"]["openai_model"]
     print(json.dumps(run(a.query, a.model, out, a.topk, a.extractor, not a.no_judge), indent=1))

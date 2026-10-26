@@ -162,6 +162,7 @@ python src/app.py --prompt "..." --style academic        # literature-review pap
 python src/app.py --prompt "..." --seed-url https://...  # pre-fetch known-good sources (repeatable)
 python src/app.py --prompt "..." --seed-doc ./notes.pdf  # load a local file (PDF/DOCX/XLSX/PPTX/txt/md) into the run (repeatable)
 python src/app.py --prompt "..." --pipeline-evidence <dir>  # use a stage-graph pipeline evidence.json instead of the agent's own research (research tools are locked for the run)
+python src/app.py --prompt "..." --pipeline-evidence <dir> --writer-mode compiled  # experimental: code renders quotes, figures, citations and gaps; the model writes only verified connecting sentences (TUI: /writer-mode, API: writer_mode)
 python src/app.py --resume-run <run_folder>              # reattach an interrupted run, fresh budget
 python src/app.py --list-runs                            # workspace runs + report status
 ```
@@ -209,7 +210,7 @@ Three tabs: **Research** (submit, watch a per-agent timeline, cancel, view the r
 
 ## Pipeline evidence runs
 
-`--pipeline-evidence <dir>` (CLI), `/pipeline-evidence <dir>` (TUI, queued for the next run) and the API field `pipeline_evidence_dir` load a stage-graph pipeline run's `evidence.json` (`python -m pipeline.run "<query>" --out <dir>`, from `src/`) in place of the Planner's own research. The run is then **evidence-only**: `delegate_tasks`, `web_search` and `fetch_url_to_workspace` are refused for the whole run (also after `--resume-run`), the research-remedy completion checks are skipped, and the writer roles work from the loaded evidence. Page titles come from the pipeline's own fetch.
+`--pipeline-evidence <dir>` (CLI), `/pipeline-evidence <dir>` (TUI, queued for the next run) and the API field `pipeline_evidence_dir` load a stage-graph pipeline run's `evidence.json` (`python -m pipeline.run "<query>" --out <dir>`, from `src/`) in place of the Planner's own research. The run is then **evidence-only**: `delegate_tasks`, `web_search` and `fetch_url_to_workspace` are refused for the whole run (also after `--resume-run`), the research-remedy completion checks are skipped, and the writer roles work from the loaded evidence. Page titles come from the pipeline's own fetch. With `--writer-mode compiled` (`settings.writer_mode`, session-only; TUI `/writer-mode`, API field `writer_mode`) the report is written by `src/writer/compiled.py` instead of FindingsWriter/Builder: headings, verbatim quotes, citation numbers, gaps and the source list come from code, and the model writes only short sentences that must cite the unit's own quotes and may not state a figure or abbreviation that its cited quotes lack (a failing unit is repaired once, then replaced by its first quote). Ollama only; the completion checks still run afterwards. Design and pre-registered test: wiki Writer Role A/B Protocol.
 
 ## Testing
 

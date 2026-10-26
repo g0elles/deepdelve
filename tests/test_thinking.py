@@ -36,7 +36,6 @@ class R:
     def read(s): return b'{"message": {"content": "{}"}}'
     def __enter__(s): return s
     def __exit__(s, *a): pass
-import urllib.request
 llm.urllib.request.urlopen = lambda req, timeout=0: (sent.append(__import__("json").loads(req.data)), R(None))[1]
 th._cache.clear(); th._cache[("http://localhost:11434", "m")] = ("bool", [])
 llm.call_json("m", "p", {}, think="minimal"); assert sent[-1]["think"] is False

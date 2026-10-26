@@ -9,6 +9,11 @@ from pathlib import Path
 from utils.run_state import fallback_title as _fallback_title, record_fetched_url
 
 
+def source_filename(url: str) -> str:
+    """The saved-source filename of a pipeline-fetched URL (pipeline/run.py writes it, the bridge copies it, findings.md names it)."""
+    return f"src_{hashlib.sha1(url.encode()).hexdigest()[:8]}.md"
+
+
 def seed_run_state_from_evidence(run_state, facets: list[dict], evidence: dict, sources_dir: Path, titles: dict | None = None) -> int:
     """For each kept (facet, url, quotes) triple: registers the url as fetched (copying its saved
     source content into the run's own workspace so a citation resolves to a real file, same as a
@@ -29,7 +34,7 @@ def seed_run_state_from_evidence(run_state, facets: list[dict], evidence: dict, 
                 continue
             if url not in seen_urls:
                 seen_urls.add(url)
-                fname = f"src_{hashlib.sha1(url.encode()).hexdigest()[:8]}.md"
+                fname = source_filename(url)
                 src_path = sources_dir / fname
                 if src_path.exists():
                     dst = _get_safe_path(fname)

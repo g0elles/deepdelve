@@ -795,7 +795,7 @@ class BasicTuiAgent(App):
     #command-list { height: auto; max-height: 15; padding: 0 1; }
     """
 
-    SLASH_COMMANDS = [("/stop", "Stop execution"), ("/new", "New conversation"), ("/exit", "Quit app"), ("/toggle_thinking", "Toggle reasoning trace capability"), ("/toggle_persistence", "Toggle session history saving"), ("/toggle_headless_fetch", "Toggle headless-browser retry for bot-blocked fetches"), ("/depth", "Set research depth: quick|standard|deep"), ("/style", "Set report style: standard|academic|answer"), ("/seed-url", "Queue a URL to pre-fetch before the next run (repeatable)"), ("/seed-doc", "Queue a local file to load before the next run (repeatable)"), ("/pipeline-evidence", "Use a stage-graph pipeline evidence dir instead of the agent's own research"), ("/config", "Show current configuration"), ("/files", "Browse memory workspace files"), ("/sessions", "List saved sessions"), ("/resume", "Resume a saved session"), ("/resume-run", "Reattach an interrupted research run")]
+    SLASH_COMMANDS = [("/stop", "Stop execution"), ("/new", "New conversation"), ("/exit", "Quit app"), ("/toggle_thinking", "Toggle reasoning trace capability"), ("/toggle_persistence", "Toggle session history saving"), ("/toggle_headless_fetch", "Toggle headless-browser retry for bot-blocked fetches"), ("/depth", "Set research depth: quick|standard|deep"), ("/style", "Set report style: standard|academic|answer"), ("/writer-mode", "Set the writer for pipeline-evidence runs: agents|compiled"), ("/seed-url", "Queue a URL to pre-fetch before the next run (repeatable)"), ("/seed-doc", "Queue a local file to load before the next run (repeatable)"), ("/pipeline-evidence", "Use a stage-graph pipeline evidence dir instead of the agent's own research"), ("/config", "Show current configuration"), ("/files", "Browse memory workspace files"), ("/sessions", "List saved sessions"), ("/resume", "Resume a saved session"), ("/resume-run", "Reattach an interrupted research run")]
     def __init__(self, builder, session_to_resume: str = None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.builder = builder
@@ -932,6 +932,7 @@ class BasicTuiAgent(App):
     _PREFIX_COMMANDS = (
         ("/depth", "_cmd_depth"),
         ("/style", "_cmd_style"),
+        ("/writer-mode", "_cmd_writer_mode"),
         ("/seed-url", "_cmd_seed_url"),
         ("/seed-doc", "_cmd_seed_doc"),
         ("/pipeline-evidence", "_cmd_pipeline_evidence"),
@@ -1067,6 +1068,16 @@ class BasicTuiAgent(App):
         else:
             config.cfg.setdefault("settings", {})["report_style"] = arg
             chat.mount(Static(Markdown(f"**System:**\nReport style set to **{arg}** for the next run."), classes="agent-bubble"))
+        chat.scroll_end(animate=False)
+
+    async def _cmd_writer_mode(self, query: str) -> None:
+        arg = query[len("/writer-mode"):].strip().lower()
+        chat = self.query_one("#chat-container", VerticalScroll)
+        if arg not in ("agents", "compiled"):
+            chat.mount(Static(Markdown(f"**System:**\nUsage: `/writer-mode agents|compiled` (got `{arg or '(none)'}`). `compiled` only applies to runs that load `/pipeline-evidence`."), classes="agent-bubble"))
+        else:
+            config.cfg.setdefault("settings", {})["writer_mode"] = arg
+            chat.mount(Static(Markdown(f"**System:**\nWriter mode set to **{arg}** for the next run."), classes="agent-bubble"))
         chat.scroll_end(animate=False)
 
     async def _cmd_seed_url(self, query: str) -> None:
@@ -1593,6 +1604,9 @@ class BasicTuiAgent(App):
                 try:
                     added = _load_pipeline_evidence(run_state, self._pending_pipeline_evidence)
                     chat.mount(Static(Markdown(f"**System:**\nPipeline evidence loaded: {added} findings. Skipping the agent's own research phase."), classes="agent-bubble"))
+                    compiled_stats = await asyncio.to_thread(_compile_pipeline_report, run_state, self._pending_pipeline_evidence)
+                    if compiled_stats is not None:
+                        chat.mount(Static(Markdown(f"**System:**\nCompiled writer wrote findings.md and the report: {compiled_stats}"), classes="agent-bubble"))
                     current_input += PIPELINE_EVIDENCE_PROMPT
                 except Exception as e:
                     chat.mount(Static(Markdown(f"**System:**\nPipeline evidence FAILED: {e}"), classes="agent-bubble"))
@@ -2098,6 +2112,34 @@ def _load_pipeline_evidence(run_state, evidence_dir: str) -> int:
         ]
     run_state.save()
     return added
+
+
+def _compile_pipeline_report(run_state, evidence_dir: str):
+    """settings.writer_mode == "compiled" (CLI --writer-mode, TUI /writer-mode, API writer_mode): writes findings.md and the required
+    artifact straight from the loaded evidence table with writer/compiled.py (code renders quotes, figures, citation numbers and gaps;
+    the model writes only verified connecting sentences), so the FindingsWriter/Builder dispatches have nothing to rewrite and the
+    completion checks verify the result as usual. Blocking (model calls): callers run it with asyncio.to_thread. Ollama only, like
+    pipeline/llm.py. Returns the writer's stats, or None when the mode is "agents" (the default)."""
+    if config.get_setting("writer_mode", "agents") != "compiled":
+        return None
+    from writer import compiled as wc
+    from pipeline.llm import call_json
+    from tools.fs import write_workspace_file
+    ev = json.loads((Path(evidence_dir).expanduser() / "evidence.json").read_text())
+    model = config.cfg["api"]["openai_model"]
+    c = wc.build(ev, run_state.data.get("query") or "")
+    llm = lambda prompt, schema, temperature, seed: call_json(model, prompt, schema, think="minimal", timeout=180, temperature=temperature, seed=seed)
+    written, stats = wc.compose(c, llm, int(config.get_setting("writer_drafts", 1)))
+    report = wc.render(c, written)
+    from utils.grounding import cross_source_hits
+    if wc.add_disagreements(c, cross_source_hits(report)):  # sources that disagree on a figure: name both in code instead of asking an agent to
+        stats["disagreements"] = len(c.disagreements)
+        report = wc.render(c, written)
+    write_workspace_file.func(filename="findings.md", content=wc.render_findings(c))
+    write_workspace_file.func(filename=config.get_required_artifact() or "final_report.md", content=report)
+    run_state.data["compiled_writer"] = stats
+    run_state.save()
+    return stats
 
 
 def _ingest_local_doc(path: str) -> tuple[bool, str]:
@@ -2665,6 +2707,9 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
                 f"\033[93m[System] Pipeline evidence loaded: {added} findings from "
                 f"{pipeline_evidence_dir}. Skipping the agent's own research phase.\033[0m\n"
             )
+            compiled_stats = await asyncio.to_thread(_compile_pipeline_report, run_state, pipeline_evidence_dir)
+            if compiled_stats is not None:
+                sys.stdout.write(f"\033[93m[System] Compiled writer wrote findings.md and the report: {compiled_stats}\033[0m\n")
             current_input += PIPELINE_EVIDENCE_PROMPT
 
         # Context-budget guard for the Planner stream (see orchestrator.get_context_budget) —
@@ -2802,6 +2847,10 @@ def cli_main(builder):
                              "run's workspace before research starts (repeatable). Headless mode.")
     parser.add_argument("--list-runs", action="store_true",
                         help="List research runs in the workspace dir (report status, date) and exit.")
+    parser.add_argument("--writer-mode", choices=["agents", "compiled"], default=None,
+                        help="With --pipeline-evidence: agents (default, FindingsWriter/Builder write the report) or "
+                             "compiled (code renders quotes, figures, citations and gaps; the model writes only verified "
+                             "connecting sentences; src/writer/compiled.py). Experimental.")
     parser.add_argument("--pipeline-evidence", type=str, default=None, metavar="DIR",
                         help="Skip the agent's own research phase and write findings/report "
                              "straight from a completed stage-graph pipeline run's evidence.json "
@@ -2818,6 +2867,9 @@ def cli_main(builder):
 
     if args.style:
         config.cfg.setdefault("settings", {})["report_style"] = args.style
+
+    if args.writer_mode:
+        config.cfg.setdefault("settings", {})["writer_mode"] = args.writer_mode
 
     if args.list_runs:
         base = config.get_workspace_dir()
