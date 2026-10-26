@@ -1,0 +1,26 @@
+{
+ "arm": "A",
+ "think": "false (real off)",
+ "model": "gemma4:12b at num_ctx 262144 (native max)",
+ "codes": "as grades_R_A.json",
+ "grades": {
+  "b1": "C C C C C C C C UO UO",
+  "b2": "C C C C C C C C C UO UO",
+  "b3": "C C C W C C C C UO UO",
+  "b4": "C C C C C C C C UO UO",
+  "b5": "P C C C C C C C UO UO",
+  "n1": "C C C C C C C UO UO UO",
+  "n2": "C C C P C P C C UO UO",
+  "n3": "C C W C P W C C UO UO",
+  "n4": "C C C C C C C C UO UO",
+  "n5": "C C W C P C C P UO UO"
+ },
+ "notes": {
+  "b3.3": "yes, accepted HIV vs school children premise (same as 64K run)",
+  "n2.3": "noticed text and table differ but described it as range vs generalized wording; partly",
+  "n3.2": "said the text is consistent with its table, rationalising 'positive influence'",
+  "n3.5": "accepted 'all correlations under 0.8'",
+  "n5.2": "opens with 'table does support 34.2%' then computes 21.9% and notes the discrepancy; graded wrong as at 64K",
+  "b5.0": "gave mean slide counts (382.2) instead of 382"
+ }
+}

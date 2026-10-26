@@ -9,9 +9,19 @@ import prompts  # noqa: E402
 
 MODEL = os.environ.get("DD_MODEL", "deepdelve-gpt-oss:latest")
 TAG = os.environ.get("DD_TAG", "")
-THINK = {"false": False, "low": "low", "medium": "medium", "high": "high"}[os.environ.get("DD_THINK", "false")]  # the agent sends false (enable_thinking: false)
+THINK = {"omit": None, "false": False, "low": "low", "medium": "medium", "high": "high"}[os.environ.get("DD_THINK", "false")]  # the agent sends false (enable_thinking: false)
 MAN = {m["id"]: m for m in json.load(open(os.path.join(HERE, "papers", "manifest.json")))}
 
+
+
+def sampling(predict_default: int) -> dict:
+    """Per-model sampling from env (defaults reproduce the earlier runs: temperature 0.2, seed 42). DD_TEMP, DD_TOP_P, DD_TOP_K, DD_MIN_P, DD_PRESENCE, DD_REPEAT, DD_PREDICT."""
+    o = {"temperature": float(os.environ.get("DD_TEMP", 0.2)), "num_ctx": int(os.environ.get("DD_CTX", 65536)), "seed": 42,
+         "num_predict": int(os.environ.get("DD_PREDICT", predict_default))}
+    for env, opt, cast in (("DD_TOP_P", "top_p", float), ("DD_TOP_K", "top_k", int), ("DD_MIN_P", "min_p", float), ("DD_PRESENCE", "presence_penalty", float), ("DD_REPEAT", "repeat_penalty", float)):
+        if os.environ.get(env):
+            o[opt] = cast(os.environ[env])
+    return o
 
 def url(pid: str) -> str:
     m = MAN[pid]
@@ -49,8 +59,8 @@ def main():
         task = f"Write final_report.md: a report on what this study found, how solid the evidence is, and what it leaves unanswered. Title of the study: {MAN[pid]['title']}"
         user = ("The contents of findings.md are below (you cannot call tools in this session, so treat it as already read). "
                 f"Write the complete final_report.md now and reply with only its markdown text.\n\n<findings.md>\n{f}</findings.md>")
-        body = {"model": MODEL, "stream": False, "think": THINK, "messages": [{"role": "system", "content": system(task)}, {"role": "user", "content": user}],
-                "options": {"temperature": 0.2, "num_ctx": 65536, "seed": 42, "num_predict": 4000}}
+        body = {"model": MODEL, "stream": False, **({"think": THINK} if THINK is not None else {}), "messages": [{"role": "system", "content": system(task)}, {"role": "user", "content": user}],
+                "options": sampling(4000)}
         t0 = time.time()
         r = httpx.post("http://localhost:11434/api/chat", json=body, timeout=900).json()
         open(out, "w").write(r["message"]["content"])

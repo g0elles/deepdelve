@@ -1,0 +1,109 @@
+{
+ "model": "gemma4:12b at num_ctx 262144",
+ "think": "false (real off)",
+ "note": "same rules as labels_W_gptoss.json; labelled after the other sets (not blind).",
+ "reports": {
+  "b1": {
+   "units": 18,
+   "defect_units": 2,
+   "inline_citations": 10,
+   "sev3": 0,
+   "defects": [
+    "'more precise' for the anxiety effect not in findings sev1",
+    "'authors emphasize several critical limitations' puffery sev1"
+   ]
+  },
+  "b2": {
+   "units": 23,
+   "defect_units": 1,
+   "inline_citations": 16,
+   "sev3": 0,
+   "defects": [
+    "aim sentence (superior predictive power) framed beyond findings sev1"
+   ]
+  },
+  "b3": {
+   "units": 24,
+   "defect_units": 1,
+   "inline_citations": 16,
+   "sev3": 0,
+   "defects": [
+    "'comprehensive overview of ... clinical implications' sev1"
+   ]
+  },
+  "b4": {
+   "units": 21,
+   "defect_units": 2,
+   "inline_citations": 14,
+   "sev3": 0,
+   "defects": [
+    "'combining double electroporation with ZP removal significantly enhances' overstates: the combination was not tested as significant sev2",
+    "'effective tools for increasing editing efficiency' despite no effect on CMAH sev1"
+   ]
+  },
+  "b5": {
+   "units": 23,
+   "defect_units": 5,
+   "inline_citations": 15,
+   "sev3": 0,
+   "defects": [
+    "'match or exceed pathologists' aim framing sev1",
+    "'may impact generalizability' speculation sev1",
+    "'robust ... particularly for B-cell lymphomas' sev1",
+    "external drop 'likely due to' single-centre training, a cause not in findings sev1",
+    "gap line leak 'The source does not state' sev1"
+   ]
+  },
+  "n1": {
+   "units": 17,
+   "defect_units": 3,
+   "inline_citations": 16,
+   "sev3": 0,
+   "defects": [
+    "'designed to surface how models handle nuanced scholarly material' sev1",
+    "'to ensure the integrity of the evaluation' framing sev1",
+    "'evidence ... is robust' sev1"
+   ]
+  },
+  "n2": {
+   "units": 21,
+   "defect_units": 2,
+   "inline_citations": 14,
+   "sev3": 0,
+   "defects": [
+    "'looming sustainability crisis' puffery sev1",
+    "2x-4x memory/compute table presented as 'supporting' the text's energy claim, hiding the text/table difference sev1"
+   ]
+  },
+  "n3": {
+   "units": 20,
+   "defect_units": 1,
+   "inline_citations": 16,
+   "sev3": 0,
+   "defects": [
+    "MMQR expanded as 'Modified Markov Quantile Regression' sev1"
+   ]
+  },
+  "n4": {
+   "units": 22,
+   "defect_units": 2,
+   "inline_citations": 14,
+   "sev3": 0,
+   "defects": [
+    "'comprehensive review' puffery sev1",
+    "'robust framework' sev1"
+   ]
+  },
+  "n5": {
+   "units": 24,
+   "defect_units": 3,
+   "inline_citations": 14,
+   "sev3": 0,
+   "defects": [
+    "'improve educational pathways and student engagement' not in findings sev1",
+    "'state-of-the-art SAKT baseline' sev1",
+    "latency 'necessary to determine feasibility for real-time deployment' speculation sev1"
+   ]
+  }
+ }
+}

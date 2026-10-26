@@ -6,7 +6,7 @@ import glob, json, os, sys, time, httpx
 HERE = os.path.dirname(os.path.abspath(__file__))
 MODEL = os.environ.get("DD_MODEL", "deepdelve-gpt-oss:latest")
 TAG = os.environ.get("DD_TAG", "")  # "" for the agent's own model; otherwise results are R_<tag>_<arm>.jsonl
-THINK = {"false": False, "low": "low", "medium": "medium", "high": "high"}[os.environ.get("DD_THINK", "false")]  # the agent sends false (enable_thinking: false)
+THINK = {"omit": None, "false": False, "low": "low", "medium": "medium", "high": "high"}[os.environ.get("DD_THINK", "false")]  # the agent sends false (enable_thinking: false)
 ROLE = """You are the DocumentAnalyzer specialist for DeepDelve. Today is 2026-10-24.
 
 # Role
@@ -21,11 +21,21 @@ A concise answer to the research question, including:
 EXTRA_B = "\nIf the document does not state the answer, say exactly 'NOT STATED' and do not guess.\n"
 
 
+
+def sampling(predict_default: int) -> dict:
+    """Per-model sampling from env (defaults reproduce the earlier runs: temperature 0.2, seed 42). DD_TEMP, DD_TOP_P, DD_TOP_K, DD_MIN_P, DD_PRESENCE, DD_REPEAT, DD_PREDICT."""
+    o = {"temperature": float(os.environ.get("DD_TEMP", 0.2)), "num_ctx": int(os.environ.get("DD_CTX", 65536)), "seed": 42,
+         "num_predict": int(os.environ.get("DD_PREDICT", predict_default))}
+    for env, opt, cast in (("DD_TOP_P", "top_p", float), ("DD_TOP_K", "top_k", int), ("DD_MIN_P", "min_p", float), ("DD_PRESENCE", "presence_penalty", float), ("DD_REPEAT", "repeat_penalty", float)):
+        if os.environ.get(env):
+            o[opt] = cast(os.environ[env])
+    return o
+
 def ask(system: str, paper: str, question: str) -> dict:
     msgs = [{"role": "system", "content": system},
             {"role": "user", "content": f"<document>\n{paper}\n</document>\n\nResearch question: {question}"}]
-    body = {"model": MODEL, "messages": msgs, "stream": False, "think": THINK,
-            "options": {"temperature": 0.2, "num_ctx": 65536, "seed": 42, "num_predict": 2000}}
+    body = {"model": MODEL, "messages": msgs, "stream": False, **({"think": THINK} if THINK is not None else {}),
+            "options": sampling(2000)}
     t0 = time.time()
     r = httpx.post("http://localhost:11434/api/chat", json=body, timeout=900).json()
     return {"answer": r["message"]["content"], "eval_count": r.get("eval_count"), "prompt_eval_count": r.get("prompt_eval_count"), "secs": round(time.time() - t0, 1)}

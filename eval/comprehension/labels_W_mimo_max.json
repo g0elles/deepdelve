@@ -1,0 +1,142 @@
+{
+ "model": "MiMo-V2.6-Distill-Qwen-9B Q8_0 at num_ctx 262144",
+ "think": "false",
+ "note": "same rules as labels_W_gptoss.json; labelled after the other sets (not blind). Reports are about 70 percent longer than other models' and add many evaluative sentences; n4 has no inline citations.",
+ "reports": {
+  "b1": {
+   "units": 45,
+   "defect_units": 8,
+   "inline_citations": 17,
+   "sev3": 0,
+   "defects": [
+    "'underpowered' sleep analysis, speculation sev1",
+    "anxiety 'sensitive to a single study ... warrants caution' (2 units) sev1",
+    "Desmyter change 'may reflect passage of time' sev1",
+    "'gaps are material for completeness and independence' sev1",
+    "'not yet sufficient to support clinical use' beyond findings sev1",
+    "gap lines leak 'The source does not state an answer' (2 units) sev1"
+   ]
+  },
+  "b2": {
+   "units": 34,
+   "defect_units": 4,
+   "inline_citations": 17,
+   "sev3": 0,
+   "defects": [
+    "'attenuated to the point of non-significance' (per-SD OR 1.086 CI 1.008-1.171 stays significant; only the quartile result did) sev2",
+    "'components act additively' contradicts 'no additive interaction' sev2",
+    "gap lines leak 'The source does not report/state' (2 units) sev1"
+   ]
+  },
+  "b3": {
+   "units": 31,
+   "defect_units": 4,
+   "inline_citations": 13,
+   "sev3": 0,
+   "defects": [
+    "'treat the Results table values as more defensible' advice sev1",
+    "'should not be presented as an alternative estimate' sev1",
+    "'trim-and-fill is the only sensitivity check reported' unsupported sev1",
+    "'concerns that the authors do not address' unsupported sev1"
+   ]
+  },
+  "b4": {
+   "units": 25,
+   "defect_units": 2,
+   "inline_citations": 11,
+   "sev3": 0,
+   "defects": [
+    "conclusion says the combination 'improves' editing; the combination was not shown significant sev2",
+    "'why B4GALNT2 blastocyst formation was not affected' mechanism question not in findings sev1"
+   ]
+  },
+  "b5": {
+   "units": 46,
+   "defect_units": 12,
+   "inline_citations": 24,
+   "sev3": 0,
+   "defects": [
+    "'published in Medicine (Baltimore) in 2025' invented venue sev2",
+    "InceptionV3 given F1 0.935 (that is its AUC) sev2",
+    "'no secondary literature ... in the compiled findings' leak sev1",
+    "'at or above pathologist level for the two B-cell subtypes' not in findings sev1",
+    "'can diagnose DLBCL and FL at a comparable level' overclaim sev1",
+    "'encouraging' sev1",
+    "'not yet a reliable standalone tool' inference sev1",
+    "'drop in accuracy is consistent with this limitation' sev1",
+    "'feasibility demonstration' framing sev1",
+    "'no comparison against other published systems' unsupported sev1",
+    "'no replication, no independent evaluation' sev1",
+    "central-question framing sev1"
+   ]
+  },
+  "n1": {
+   "units": 26,
+   "defect_units": 3,
+   "inline_citations": 11,
+   "sev3": 0,
+   "defects": [
+    "'substantial scale' puffery sev1",
+    "'evidence strongest at within-dataset best-case' judgement sev1",
+    "'gaps are consistent with design priorities' speculation sev1"
+   ]
+  },
+  "n2": {
+   "units": 54,
+   "defect_units": 16,
+   "inline_citations": 22,
+   "sev3": 0,
+   "defects": [
+    "'ground the argument in a well-known example' sev1",
+    "'notable methodological choice ... avoids the common error' puffery sev1",
+    "migration 'materially affect the environmental impact' sev1",
+    "'core argument is 3D hybrid parallelism scales' misstates the core sev1",
+    "'persuasive but largely inferential' and 'legitimate approach' (2 units) sev1",
+    "'candid about its own limits' despite no limitations section (2 units) sev1",
+    "bandwidth 'a strength / methodological virtue / attentive' (2 units) puffery sev1",
+    "'significant gap ... core component' and 'important ... depends on' (2 units) sev1",
+    "conclusion puffery 'clear and well-reasoned', 'credible, well-sourced', 'genuine strength', 'reasonable synthesis' (4 units) sev1",
+    "'future work should address' sev1"
+   ]
+  },
+  "n3": {
+   "units": 40,
+   "defect_units": 6,
+   "inline_citations": 34,
+   "sev3": 0,
+   "defects": [
+    "MMQR expanded as 'Multivariate Markov-Switching Quantile Regression' sev1",
+    "'substantive contribution' framing sev1",
+    "'principal empirical result' sev1",
+    "Westerlund 'two of the four variables' (statistics) sev1",
+    "'two non-significant variables left unaddressed' unsupported sev1",
+    "'most consequential gap for policy' sev1"
+   ]
+  },
+  "n4": {
+   "units": 35,
+   "defect_units": 7,
+   "inline_citations": 0,
+   "sev3": 0,
+   "defects": [
+    "no inline citation anywhere in the report (35 units uncited) sev1 (not counted in the defect total)",
+    "'value lies in synthesis, not a novel dataset' sev1",
+    "'two measures can point in opposite directions ... obscure the physics' embellishment sev1",
+    "'measurement-geometry effect rather than difference in structure' sev1",
+    "'key result' for the FSDP vs ring-entropy point sev1",
+    "'central contribution' sev1",
+    "'negative or partial results ... do not establish a positive description' sev1",
+    "'gaps matter for reproducibility ... cannot be replicated' sev1"
+   ]
+  },
+  "n5": {
+   "units": 34,
+   "defect_units": 1,
+   "inline_citations": 22,
+   "sev3": 0,
+   "defects": [
+    "'reasonably strong' evidence for accuracy claim sev1"
+   ]
+  }
+ }
+}

@@ -1,0 +1,27 @@
+{
+ "arm": "A",
+ "think": "false (template appends an empty think block)",
+ "model": "MiMo-V2.6-Distill-Qwen-9B Q8_0 at num_ctx 262144 (native max, 14 GB)",
+ "codes": "as grades_R_A.json",
+ "grades": {
+  "b1": "C C C C C C C C UO UO",
+  "b2": "C C C C C C C C C UO UO",
+  "b3": "C W C C C C C C UO UO",
+  "b4": "C C C C C C C C UO UO",
+  "b5": "C C C C C C C C UO UO",
+  "n1": "C C C C C C C UO UO UO",
+  "n2": "C C C P C P C C UO UO",
+  "n3": "C C C C P C C C UO UO",
+  "n4": "C C C C C C C C UO UO",
+  "n5": "C C P W P C C C UO UO"
+ },
+ "notes": {
+  "b3.1": "said the paper is internally consistent; the abstract differs",
+  "n2.3": "said text and table state the same thing while noting the table broadens to memory and compute",
+  "n2.5": "said the paper gives no citation for the claim; there is one citation and no numbers",
+  "n3.4": "said only Gt was significant; Pt is too",
+  "n5.2": "No, but gave 22.6 percent next to 21.9",
+  "n5.3": "called the hierarchy ablation the worst; Table 2 shows the LSTM ablation is",
+  "n5.4": "explained as drops from 91.4 without saying percentage points vs relative"
+ }
+}

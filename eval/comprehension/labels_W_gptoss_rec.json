@@ -1,0 +1,151 @@
+{
+ "model": "deepdelve-gpt-oss (gpt-oss 20B) at the named level medium, num_ctx 65536, temperature 1.0, top_p 1.0, top_k 0, num_predict 16384",
+ "think": "medium",
+ "note": "same rules as labels_W_gptoss.json; labelled after the other sets (not blind). Reports are grounded in the findings and rarely invent sources; defects are mostly fabricated quantities in tables (confidence intervals, an ablation row, participant counts), an invented index/method name, and evaluative filler.",
+ "reports": {
+  "b1": {
+   "units": 33,
+   "defect_units": 12,
+   "inline_citations": 6,
+   "sev3": 2,
+   "defects": [
+    "'8 RCTs, 423 participants' invented sev3",
+    "depression CI '-1.62 to -0.51', p<0.01 invented sev3",
+    "'Anhedonic depression severity' mislabel sev2",
+    "'heterogeneity remained high even after removing Qin' (it fell to about 30 percent) sev2",
+    "'gains in anxiety and depression more pronounced' while saying the review refrained from comparing sev2",
+    "'individual trials did not flag major safety concerns' invented sev2",
+    "background intro, long-term and stimulation-parameter rows, conclusion on secondary outcomes sev1 (about 4 units)"
+   ]
+  },
+  "b2": {
+   "units": 36,
+   "defect_units": 8,
+   "inline_citations": 13,
+   "sev3": 0,
+   "defects": [
+    "index renamed 'CCM-MI' sev1",
+    "'Adjusted for established risk factors / Comprehensive', 'Adequate', 'Robust' ratings sev1 (3 units)",
+    "'limits interpretability outside a CKM population' sev1",
+    "'External prospective validation: none' and 'prospective reliability of muscle component not evaluated' sev1 (2 units)",
+    "'moderate evidence' sev1"
+   ]
+  },
+  "b3": {
+   "units": 37,
+   "defect_units": 4,
+   "inline_citations": 11,
+   "sev3": 2,
+   "defects": [
+    "trimethoprim-sulfamethoxazole CI '42.61-57.52' invented sev3",
+    "erythromycin CI '36.09-53.01' invented sev3",
+    "'resistance remains a substantial concern' sev1",
+    "'persistent carriage across diverse contexts' sev1"
+   ]
+  },
+  "b4": {
+   "units": 38,
+   "defect_units": 7,
+   "inline_citations": 8,
+   "sev3": 0,
+   "defects": [
+    "'biopharming' intro sev1",
+    "'about 20 embryos per condition' sev1",
+    "'convincingly shows' overclaim sev1",
+    "'authors speculate repeated electroporation may facilitate gene-dependent differences' sev1",
+    "two invented future-direction items (organogenesis, adult health) sev1",
+    "'promising route to uniform knockout pigs' sev1",
+    "'control of confounding' framing sev1"
+   ]
+  },
+  "b5": {
+   "units": 54,
+   "defect_units": 7,
+   "inline_citations": 8,
+   "sev3": 0,
+   "defects": [
+    "'centroblastic or lacunar cells central to HL' invented sev2",
+    "'well-designed ... rigorous ... can match experienced pathologists for DLBCL and FL' overclaim sev2",
+    "'digital pathology increasingly explored' intro sev1",
+    "'may over-estimate generalizability' sev1",
+    "'may have biased their grading' sev1",
+    "'these constraints temper the claim ready for clinical deployment' sev1"
+   ]
+  },
+  "n1": {
+   "units": 33,
+   "defect_units": 7,
+   "inline_citations": 8,
+   "sev3": 0,
+   "defects": [
+    "'created to provide transparent, reproducible, diagnostically useful' sev1",
+    "'peer-reviewed article' sev1",
+    "'robust within the context of the article' sev1",
+    "'comprehensive overview' sev1",
+    "'enhances interpretability and trust' sev1",
+    "'carefully considered, transparent framework' sev1",
+    "'future studies to enlarge the scope' sev1"
+   ]
+  },
+  "n2": {
+   "units": 34,
+   "defect_units": 8,
+   "inline_citations": 15,
+   "sev3": 0,
+   "defects": [
+    "1.5 percent of worldwide electricity restated as 'global residential and commercial power use' sev2",
+    "'energy-use figures consistent with industry reports' not in findings sev2",
+    "'underscoring the magnitude of the problem' sev1",
+    "'authors favor distributed architectures, no rebuttal' sev1",
+    "'no code repositories or calibration procedures' sev1",
+    "'articulate overview, plausible metrics' sev1",
+    "'single secondary source that aggregates external studies' sev1"
+   ]
+  },
+  "n3": {
+   "units": 49,
+   "defect_units": 11,
+   "inline_citations": 11,
+   "sev3": 0,
+   "defects": [
+    "MMQR expanded as 'Mixed-Median Quantile Regression' sev1",
+    "'the causal mechanisms vary' sev1",
+    "PCSE called 'non-significant positive coefficient (-0.100)' sev2",
+    "'promoting renewables, urban planning, investment in innovation' as the paper's policy recommendations invented sev2",
+    "'instrumental variables, difference-in-differences' suggestions sev1",
+    "WDI reliability and measurement-error commentary sev1",
+    "'omission of carbon taxes questions causal validity' sev1",
+    "'valuable descriptive insights' sev1",
+    "'sign discrepancy suggests caution in causality' sev1"
+   ]
+  },
+  "n4": {
+   "units": 36,
+   "defect_units": 8,
+   "inline_citations": 7,
+   "sev3": 0,
+   "defects": [
+    "'comprehensive review' sev1",
+    "'toy model' sev1",
+    "evidence-strength paragraph invents multiple datasets, differing settings and 'well established' ring statistics (4 units) sev2",
+    "'compelling but qualitative' sev1",
+    "'moderately strong' sev1"
+   ]
+  },
+  "n5": {
+   "units": 36,
+   "defect_units": 7,
+   "inline_citations": 11,
+   "sev3": 1,
+   "defects": [
+    "invented ablation row 'No interaction policy 88.5/235.1/30.2' sev3",
+    "'mean reward, a composite metric of cumulative success over a study session' invented sev2",
+    "'proposes an interpretable knowledge-state representation' invented sev2",
+    "'virtual classrooms have become ubiquitous' sev1",
+    "'GPU cluster' sev1",
+    "'four key ablations' sev1",
+    "'affective, socio-cognitive' sev1"
+   ]
+  }
+ }
+}

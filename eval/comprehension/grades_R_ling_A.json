@@ -1,0 +1,40 @@
+{
+ "arm": "A",
+ "think": "false (real off)",
+ "model": "Ling-3.0-tiny Q8_0 (hf.co/inclusionAI/Ling-3.0-tiny-GGUF:Q8_0)",
+ "codes": "as grades_R_A.json",
+ "grades": {
+  "b1": "C C C C C C C C UO UO",
+  "b2": "C C C W C C C C C P UO",
+  "b3": "C W C W C C C C UO I",
+  "b4": "P C C W C C C C UO UO",
+  "b5": "P C P C C C C C UO UO",
+  "n1": "C C C C C C C UO UO UO",
+  "n2": "C P C P C C C C UO UO",
+  "n3": "C C C P C W P C UO UO",
+  "n4": "W C P C W W C C UO UO",
+  "n5": "C C C P C C C C UO UO"
+ },
+ "notes": {
+  "b1.2": "gave 30% (Results figure) without the abstract/results inconsistency; graded correct",
+  "b2.3": "said yes, the paper shows twice as strong (premise accepted)",
+  "b2.9": "gave IDI instead of saying NRI is not reported",
+  "b3.1": "said the paper is consistent with itself; the abstract differs",
+  "b3.3": "accepted the HIV vs school children premise",
+  "b3.9": "invented: gave the school-children figure for under-fives",
+  "b4.0": "one of four fractions wrong (6/19 for 8/19)",
+  "b4.3": "reversed which group ZP removal helped",
+  "b5.0": "metrics right, slide count wrong (1910 for 382)",
+  "b5.2": "conditions right, but offered Fleiss kappa as the significance test",
+  "n2.1": "asserted the paper compares the two",
+  "n2.3": "said text and table agree; text says energy, table says memory and compute",
+  "n3.3": "sign of FGLS/PCSE wrong ('positive' with a negative coefficient)",
+  "n3.5": "accepted 'all correlations under 0.8'",
+  "n3.6": "vague on which quantiles, garbled robustness",
+  "n4.0": "principal peak at 2.6 and in X-ray data (key: 3, neutron only)",
+  "n4.2": "read highest ring entropy as most ordered",
+  "n4.4": "entropy formula garbled; alpha-quartz given H=0 (key 0.45)",
+  "n4.5": "answered yes while quoting the insensitivity statement",
+  "n5.3": "said the text agrees; it contradicts itself"
+ }
+}

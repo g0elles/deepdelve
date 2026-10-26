@@ -1,0 +1,28 @@
+{
+ "arm": "A",
+ "think": "false (no off switch; template always opens <think>, reasoning stays in the answer)",
+ "model": "Tongyi-DeepResearch-30B-A3B IQ3_XS at num_ctx 49152, temperature 0.6, top_p 0.95, presence_penalty 1.1, num_predict 10000 (official repo defaults)",
+ "codes": "as grades_R_A.json; graded on the final answer after </think>",
+ "grades": {
+  "b1": "C C C C C C C C UO UO",
+  "b2": "C C C C C C C C C UO UO",
+  "b3": "C C C P C C C C UO UO",
+  "b4": "C C C C C C C C UO UO",
+  "b5": "C C C C C W C C UO UO",
+  "n1": "C C C C C C C UO UO UO",
+  "n2": "C C C P C C C C UO UO",
+  "n3": "C C C C P C C W UO UO",
+  "n4": "C C W C C C C C UO UO",
+  "n5": "C C C C P C C C UO UO"
+ },
+ "notes": {
+  "b3.3": "yes, with a caveat that significance cannot be tested",
+  "n2.3": "listed text and table as separate claims but concluded they are consistent",
+  "n3.4": "named Gt and Pt but called the interpretation sound",
+  "n3.7": "said the paper discusses limitations",
+  "n4.2": "said HDG has the lowest ring entropy (key: highest at 7.7 GPa)",
+  "n5.4": "explained as drops without separating percentage points from relative",
+  "b5.5": "said the paper shows Swin outperformed, no significance caveat seen",
+  "b2.5": "correct; one trailing sentence about longitudinal waves refers to CHARLS"
+ }
+}

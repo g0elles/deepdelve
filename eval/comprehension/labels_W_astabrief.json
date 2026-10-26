@@ -1,0 +1,6 @@
+{
+ "model": "AstaBrief 8B Q8_0 (alias astabrief-native) in the project Builder prompt, thinking left at default",
+ "note": "Not labelled unit by unit. The model is outside its trained prompt format here. Usable report text after the reasoning: b1 yes (no reasoning block), b2 EMPTY, b3 only a reference list (215 chars, fabricated 'Mank et al.'), b4 a question-and-answer list (1990 chars, no report), b5 yes, n1 yes, n2 EMPTY, n3 yes, n4 yes (runaway, 617 units), n5 yes. 2 of 10 empty and 2 of 10 not a report.",
+ "thinking_off_arm": "astabrief_nt (project prompt, think=false): 10/10 reports differ from the thinking-on set but are no better. n4 is two echoed gap lines, n1 runs away (1749 units), n3 is 22 units, b1 opens with invented background on rTMS and depression, 5 of 10 contain no inline citations. Not labelled unit by unit; unusable as a strict-evidence writer in the project prompt either way.",
+ "native_prompt_thinking_off": "astabrief_native_nt (native prompt, think=false) is byte-identical to astabrief_native (thinking default) for all 10 reports: under its own prompt the model does not think, so the flag changes nothing and labels_W_astabrief_native.json covers both."
+}

@@ -1,0 +1,136 @@
+{
+ "model": "Ling-3.0-tiny Q8_0",
+ "think": "false (real off)",
+ "note": "same rules as labels_W_gptoss.json; labelled after the other sets (not blind). Reports copy the findings closely, including the gap lines verbatim ('The source does not state the answer to'), and add interpretive tail sentences.",
+ "reports": {
+  "b1": {
+   "units": 34,
+   "defect_units": 8,
+   "inline_citations": 11,
+   "sev3": 0,
+   "defects": [
+    "'fixed or random-effects model' and 'assessed efficacy and safety' not in findings (safety was not pooled) sev2",
+    "'moderate-to-large effect' with CI reaching -0.09 sev1",
+    "invented primary/secondary outcome framing sev1",
+    "Huang et al. 'may have contributed'/'introduced' heterogeneity, speculation (2 units) sev1",
+    "'weakens the case for iTBS as a targeted intervention' overreach sev1",
+    "gap lines leak pipeline wording 'The source does not state the answer to' (2 units) sev1"
+   ]
+  },
+  "b2": {
+   "units": 34,
+   "defect_units": 10,
+   "inline_citations": 13,
+   "sev3": 0,
+   "defects": [
+    "CHARLS expanded as 'China Kadoorie Biobank' (it is the China Health and Retirement Longitudinal Study) sev2",
+    "NHANES called a Chinese cohort sev2",
+    "'two prospective cohorts' contradicts NHANES cross-sectional sev1",
+    "'CMI' expanded as the combined index and 'IDI' used for the index, both wrong acronyms (3 units) sev1",
+    "leak 'drawn exclusively from findings.md' sev1",
+    "0.934 labelled additive interaction (it is the binary multiplicative p) sev1",
+    "'explicitly notes' attributes a statement to the paper sev1",
+    "aim sentence invented sev1"
+   ]
+  },
+  "b3": {
+   "units": 29,
+   "defect_units": 5,
+   "inline_citations": 13,
+   "sev3": 0,
+   "defects": [
+    "'authors noted ... moderate number of studies' unsupported sev1",
+    "'authors did not explicitly address this discrepancy' unsupported sev1",
+    "wound/respiratory/skin ORs attributed to the Discussion sev1",
+    "gap lines leak 'The source does not state' (2 units) sev1"
+   ]
+  },
+  "b4": {
+   "units": 25,
+   "defect_units": 4,
+   "inline_citations": 9,
+   "sev3": 0,
+   "defects": [
+    "GGTA1 'porcine-specific' and B4GALNT2 'broadly expressed' invented sev2",
+    "CMAH result relabelled as B4GALNT2 sev2",
+    "'all blastocysts mutated in every group' generalised from CMAH, contradicts GGTA1 42.1% sev2",
+    "intro frames 'combined' effect as improving outcomes beyond findings sev1"
+   ]
+  },
+  "b5": {
+   "units": 24,
+   "defect_units": 4,
+   "inline_citations": 12,
+   "sev3": 0,
+   "defects": [
+    "'published in Nature Medicine' invented sev2",
+    "TCIA expanded as 'Clinical Trials and Information Archive' sev1",
+    "gap lines leak 'The source does not state' (2 units) sev1",
+    "'generalizability across subtypes' not in findings sev1"
+   ]
+  },
+  "n1": {
+   "units": 26,
+   "defect_units": 7,
+   "inline_citations": 13,
+   "sev3": 0,
+   "defects": [
+    "'created to address a specific gap' unsupported sev1",
+    "dual licensing 'reflects different IP sensitivities' invented sev2",
+    "'can be misleading' speculation sev1",
+    "'deliberate design choice to avoid false impression' sev1",
+    "'limit definitive conclusions about practical value' sev1",
+    "gap lines leak 'The source does not state' sev1",
+    "'reliability of the evaluation criteria' sev1"
+   ]
+  },
+  "n2": {
+   "units": 32,
+   "defect_units": 4,
+   "inline_citations": 13,
+   "sev3": 0,
+   "defects": [
+    "415 TWh figure called a projection not measured sev1",
+    "'modest but meaningful ... underscores the value of distributed architectures' sev1",
+    "'notable limitation of presentation' sev1",
+    "'gaps mean the case is incomplete' sev1"
+   ]
+  },
+  "n3": {
+   "units": 33,
+   "defect_units": 7,
+   "inline_citations": 19,
+   "sev3": 1,
+   "defects": [
+    "MMQR expanded as 'multivariate quantile regression' sev1",
+    "'200 years of data' sev2",
+    "'relationship between energy intensity and economic growth is more pronounced' garbled sev1",
+    "'clear inverse relationship' for positive coefficients, opposite of the numbers sev3",
+    "intro says limitations are explored but the paper has none sev1",
+    "gap lines leak 'The source does not' (2 units) sev1"
+   ]
+  },
+  "n4": {
+   "units": 30,
+   "defect_units": 5,
+   "inline_citations": 13,
+   "sev3": 1,
+   "defects": [
+    "CDG 'exhibits higher ring entropy' is the opposite of the finding (HDG highest) sev3",
+    "'complementary insights' puffery sev1",
+    "'underscoring the complexity of amorphous materials' sev1",
+    "'limitations of density as a sole measure' sev1",
+    "'less ordered' framing repeats the reversal sev1"
+   ]
+  },
+  "n5": {
+   "units": 28,
+   "defect_units": 2,
+   "inline_citations": 9,
+   "sev3": 0,
+   "defects": [
+    "gap lines leak 'The source does not state' (2 units) sev1"
+   ]
+  }
+ }
+}

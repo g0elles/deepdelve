@@ -1,0 +1,31 @@
+{
+ "arm": "A",
+ "think": "medium (named level, the project thinking_effort fix)",
+ "model": "deepdelve-gpt-oss:latest (gpt-oss 20B) at num_ctx 65536, temperature 1.0, top_p 1.0, top_k 0, num_predict 16384 (OpenAI README sampling)",
+ "codes": "as grades_R_A.json",
+ "grades": {
+  "b1": "C C C C W C C C UO UO",
+  "b2": "C C C W C C C C C UO UO",
+  "b3": "C C C C C C C C UO UO",
+  "b4": "C C C C C C C C UO UO",
+  "b5": "C P C C C C C C UO UO",
+  "n1": "C C C C C C C UO UO UO",
+  "n2": "C C C P C P C C UO UO",
+  "n3": "C C C C C C C C UO UO",
+  "n4": "W C W C C W C C UO I",
+  "n5": "C C C P P C C C UO UO"
+ },
+ "notes": {
+  "b1.4": "said yes (twice as large)",
+  "b2.3": "said yes",
+  "b5.1": "added an invented SD of 0.012",
+  "n2.3": "said text and table state the same thing",
+  "n2.5": "added an unsupported reference [9] as support",
+  "n4.0": "swapped FSDP (1.5) and PP (3.1) and the data types",
+  "n4.2": "read larger H as more ordered, saying ring entropy agrees with FSDP",
+  "n4.5": "said yes, they separate crystal from glass",
+  "n4.9": "invented a 30 keV photon energy",
+  "n5.3": "said the text agrees and missed the self-contradiction",
+  "n5.4": "gave the drops without separating percentage points from relative"
+ }
+}

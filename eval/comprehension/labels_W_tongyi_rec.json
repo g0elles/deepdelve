@@ -1,0 +1,139 @@
+{
+ "model": "Tongyi-DeepResearch-30B-A3B IQ3_XS at num_ctx 49152, temperature 0.6, top_p 0.95, presence_penalty 1.1, num_predict 10000",
+ "think": "false (no off switch)",
+ "note": "same rules as labels_W_gptoss.json; labelled after the other sets (not blind). Units counted on the report after the reasoning that precedes </think>; the reasoning preamble stays in the saved file in 10/10 reports. Only b3 and n2 carry inline [1] citations; the rest have a sources block only.",
+ "reports": {
+  "b1": {
+   "units": 17,
+   "defect_units": 5,
+   "inline_citations": 0,
+   "sev3": 0,
+   "defects": [
+    "'removal of Huang strengthened the evidence for iTBS effectiveness' sev1",
+    "'authors emphasized' the twice-as-well point (the paper makes no such comparison) sev1",
+    "'undisclosed funding potentially affecting bias' sev1",
+    "conclusion 'evidence supporting iTBS as an effective intervention' overclaim sev2",
+    "'underscore the need for larger trials' sev1"
+   ]
+  },
+  "b2": {
+   "units": 26,
+   "defect_units": 5,
+   "inline_citations": 0,
+   "sev3": 0,
+   "defects": [
+    "index renamed 'Combined Cardiometabolic and Muscle Imporbance Index (CCMI Index)' sev2",
+    "'correlation with grip strength only moderate' (the finding says only rho=-0.367) sev1",
+    "conclusion says combined assessment 'may offer incremental value', contradicting the non-significant discrimination sev2",
+    "'highlights methodological considerations' sev1",
+    "'novel index' sev1"
+   ]
+  },
+  "b3": {
+   "units": 35,
+   "defect_units": 5,
+   "inline_citations": 1,
+   "sev3": 0,
+   "defects": [
+    "'MRSA poses a significant global health threat' sev1",
+    "risk factors 'emerged from the multivariable meta-regression' (they are pooled ORs) sev1",
+    "'concerning multidrug resistance patterns' sev1",
+    "strengths 'comprehensive literature searching, quality assessment, robust statistical approaches' not in findings sev2",
+    "'future research should prioritize ...' sev1"
+   ]
+  },
+  "b4": {
+   "units": 20,
+   "defect_units": 5,
+   "inline_citations": 0,
+   "sev3": 0,
+   "defects": [
+    "'applications in agricultural biotechnology and biomedical research' sev1",
+    "conclusion 'highly effective approach' sev1",
+    "'synergistic effect of repeated electroporation and zona pellucida removal' (the authors said repeated electroporation and timing) sev2",
+    "'researchers identified several critical gaps' attributed to authors sev1",
+    "omits the B4GALNT2 result sev1"
+   ]
+  },
+  "b5": {
+   "units": 40,
+   "defect_units": 10,
+   "inline_citations": 0,
+   "sev3": 0,
+   "defects": [
+    "'particular strength in distinguishing DLBCL and FL' not in findings sev1",
+    "'significantly lower than pathologist performance' with no test sev1",
+    "'no statistically significant differences between architectures were reported' sev1",
+    "'including Swin Transformer, ResNet, and InceptionV3' ResNet invented sev2",
+    "'robust performance metrics' sev1",
+    "'strong technical capability' sev1",
+    "unanswered question about undiagnosed cases invented sev1",
+    "unanswered question about architectural fixes invented sev1",
+    "conclusion 'accuracy comparable to expert pathologists' overclaim sev2",
+    "'significant promise' sev1"
+   ]
+  },
+  "n1": {
+   "units": 25,
+   "defect_units": 8,
+   "inline_citations": 0,
+   "sev3": 0,
+   "defects": [
+    "'diverse linguistic and cultural contexts' invented sev1",
+    "'substantial computational resources' sev1",
+    "'2 additional test datasets under development' (findings: 2 test datasets, 3 more in preparation) sev2",
+    "'demonstrates methodological rigor', 'reflecting open scholarship principles' sev1",
+    "'nuanced understanding of humanities research' sev1",
+    "'missing information prevents practitioners from identifying top systems' sev1",
+    "'costs present practical barriers' sev1",
+    "'future research should ...' sev1"
+   ]
+  },
+  "n2": {
+   "units": 19,
+   "defect_units": 2,
+   "inline_citations": 8,
+   "sev3": 0,
+   "defects": [
+    "'the research compares two critical hardware technologies' (the paper does not compare them) sev1",
+    "'acknowledges that quantifying overheads remains an open challenge' sev1"
+   ]
+  },
+  "n3": {
+   "units": 20,
+   "defect_units": 1,
+   "inline_citations": 0,
+   "sev3": 0,
+   "defects": [
+    "MMQR expanded as 'Modified Multivariate Quantile Regression' sev1"
+   ]
+  },
+  "n4": {
+   "units": 31,
+   "defect_units": 8,
+   "inline_citations": 0,
+   "sev3": 0,
+   "defects": [
+    "'extreme conditions' sev1",
+    "techniques 'interact with atomic nuclei' (X-rays interact with electrons) sev1",
+    "FSDP called 'short-range ordering' (it is intermediate-range) sev2",
+    "'robust structural measurements', 'well-established method', 'comprehensive review' sev1",
+    "'the study explicitly identifies several gaps' attributed to the paper sev1",
+    "conclusion 'establishes important distinctions' sev1",
+    "'identified gaps suggest important directions' sev1",
+    "'sophisticated topological analysis' sev1"
+   ]
+  },
+  "n5": {
+   "units": 24,
+   "defect_units": 3,
+   "inline_citations": 0,
+   "sev3": 0,
+   "defects": [
+    "'novel approach', 'adaptive sequencing' sev1",
+    "invented 'ethical considerations: bias, student privacy' sev1",
+    "'substantial computational resources' (findings say large datasets) sev1"
+   ]
+  }
+ }
+}

@@ -1,0 +1,37 @@
+{
+ "arm": "A",
+ "think": "false (no off switch; template always opens <think>, reasoning stays in the answer)",
+ "model": "Marco-DeepResearch-8B Q8_0 at num_ctx 65536 (largest that loads 100 percent on GPU; native 131072)",
+ "codes": "as grades_R_A.json; graded on the final answer after </think>",
+ "grades": {
+  "b1": "C C C C W C C C I I",
+  "b2": "C C C W C C P C C UO UO",
+  "b3": "C W C W C W E C UO UO",
+  "b4": "P C C C C E C C UO UO",
+  "b5": "C C E C C W P C UO E",
+  "n1": "C C C C C C C E UO UO",
+  "n2": "C C C P C P W C UO UO",
+  "n3": "C C W C P C C C I E",
+  "n4": "W P P E E W C C I E",
+  "n5": "C C C W P C C C I UO"
+ },
+ "notes": {
+  "b1.4": "said the data support 'twice as well'",
+  "b1.8": "invented SMD -0.43 for suicide attempts",
+  "b1.9": "gave the trial registry number as the funder",
+  "b2.3": "accepted the premise",
+  "b3.1": "said the paper is consistent",
+  "b3.3": "accepted the HIV vs school-children premise",
+  "b3.5": "final answer quoted the conclusion instead of listing limitations",
+  "b4.0": "one of four fractions wrong (31.6 for 42.1)",
+  "b5.5": "said Swin is significantly better",
+  "n3.2": "said the text is consistent with its table",
+  "n3.8": "presented quantile coefficients as country-specific estimates",
+  "n4.0": "principal peak at 2.3 and in X-ray too",
+  "n4.5": "said yes",
+  "n4.8": "invented thermal conductivity values",
+  "n5.3": "called the hierarchy ablation the worst",
+  "n5.8": "claimed Table 1 has confidence intervals",
+  "E": "hit the 2000-token cap with reasoning in the answer and no final answer, per code E"
+ }
+}

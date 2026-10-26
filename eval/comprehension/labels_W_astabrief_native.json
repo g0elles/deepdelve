@@ -1,0 +1,131 @@
+{
+ "model": "AstaBrief 8B Q8_0 (alias astabrief-native, model's own chat template), native SFT prompt, temperature 0.7 top_p 0.95",
+ "think": "unset (model thinks by default; native output carries no think text)",
+ "note": "ESTIMATED labels: defect_units were counted by section from a full read, not sentence by sentence, because the native reports are long (650 units) and defect-dense; treat the rate as approximate (plus or minus 5 points). Citations exist in 10/10 reports but many point to fabricated sources (fake keys, a fake Zenodo URL, invented references and authors).",
+ "reports": {
+  "b1": {
+   "units": 43,
+   "defect_units": 19,
+   "inline_citations": 19,
+   "sev3": 4,
+   "defects": [
+    "fabricated effect sizes for anxiety, negative mood and general psychiatric symptoms (3 units, sev3) and a made-up CI and p for depression severity (sev2)",
+    "'meta-analysis of four small trials' (findings give no trial count) sev2",
+    "'Qin et al. 2021 showed very large effects in both directions and drove most heterogeneity' invented sev2",
+    "risk of bias, lack of blinding, publication bias and very short follow-up invented (sev2 each)",
+    "'type S and type M errors' and background paragraph invented sev1"
+   ]
+  },
+  "b2": {
+   "units": 90,
+   "defect_units": 60,
+   "inline_citations": 11,
+   "sev3": 8,
+   "defects": [
+    "invented a third cohort 'Atherosclerosis Risk in Communities Study (ARIC)' sev3",
+    "fake citation keys '[266794073|Sui]' used for several sentences sev3",
+    "invented NHANES beta coefficients 0.11 to 0.24, OR 1.84-2.24, OR 2.05, c-index 0.601 sev3",
+    "'CCMI' renamed index sev1",
+    "7 invented 'unanswered questions' and a whole 'Clinical Implications' section (about 25 units) with invented author quotations sev2"
+   ]
+  },
+  "b3": {
+   "units": 47,
+   "defect_units": 20,
+   "inline_citations": 27,
+   "sev3": 5,
+   "defects": [
+    "invented overall resistance 68.66 percent and trim-and-fill 81.84 percent sev3",
+    "invented site-of-sampling prevalences (0.86 percent wound swabs, 29.6 percent blood stream) sev3",
+    "'no subgroup differed significantly from the overall effect' invented sev2",
+    "'risk factors surgical admission, chronic illness ... did not reach significance' invented sev2",
+    "policy conclusions sev1"
+   ]
+  },
+  "b4": {
+   "units": 44,
+   "defect_units": 18,
+   "inline_citations": 24,
+   "sev3": 3,
+   "defects": [
+    "'GGTA pigs: germline-transmissible African swine fever resistance' invented sev3",
+    "'n=19 and n=18, both 19/19, two replicates' invented sev3",
+    "'double electroporation yielded 100 percent regardless of ZP' (89.5 percent with ZP intact) sev2",
+    "'well-controlled, clear mechanistic insights' sev1",
+    "unaddressed scale-up and viability concerns invented sev1"
+   ]
+  },
+  "b5": {
+   "units": 63,
+   "defect_units": 25,
+   "inline_citations": 33,
+   "sev3": 1,
+   "defects": [
+    "fake citation '[24]' sev3",
+    "'unfair diagnostic advantage not present in real clinical workflows' sev1",
+    "'excellent', 'robust', 'expert-level diagnostic performance', 'important step forward' (about 15 units of puffery and overclaim) sev1-2"
+   ]
+  },
+  "n1": {
+   "units": 29,
+   "defect_units": 15,
+   "inline_citations": 34,
+   "sev3": 2,
+   "defects": [
+    "all citations point to a fake Zenodo URL sev3",
+    "invented author 'Lasebe et al.' sev3",
+    "'full auditability', 'dataset normalization', 'rigorous transparency' strengths not in findings sev1",
+    "implicit-questions bullet invented sev1"
+   ]
+  },
+  "n2": {
+   "units": 42,
+   "defect_units": 14,
+   "inline_citations": 31,
+   "sev3": 0,
+   "defects": [
+    "'peer-reviewed performance results' and 'quotes hardware datasheets' invented sev2",
+    "'independent validation' from one cited work sev1",
+    "limitation bullets on control planes, security layers, heterogeneity invented sev1",
+    "conclusion puffery 'compelling', 'strong case', 'multiple validated mechanisms' sev1"
+   ]
+  },
+  "n3": {
+   "units": 160,
+   "defect_units": 32,
+   "inline_citations": 13,
+   "sev3": 18,
+   "defects": [
+    "18 fabricated references (e.g. 'Greenidge 2025', Wager & Athey, Cattan et al.) listed as sources sev3 each",
+    "'energy intensity and GDP generally reduce emissions at the lower end' in TLDR sev2",
+    "invented sectoral and urban/rural gap bullet sev1",
+    "policy implications section sev1"
+   ]
+  },
+  "n4": {
+   "units": 93,
+   "defect_units": 40,
+   "inline_citations": 12,
+   "sev3": 5,
+   "defects": [
+    "invented source 'Roux et al., 2006' with citation counts as the reference key sev3",
+    "'research conducted 1998 to 2004' and '2006 review' invented sev3",
+    "'FSDP correlates with ring persistence, principal peak corresponds to ring entropy' invented sev2",
+    "'(LLM Memory)' filler unanswered question sev2",
+    "methodology paragraphs of generic text sev1"
+   ]
+  },
+  "n5": {
+   "units": 39,
+   "defect_units": 8,
+   "inline_citations": 21,
+   "sev3": 0,
+   "defects": [
+    "'supporting the null hypothesis that HRL-VCO is better' sev2",
+    "empty 'Practical Implications' section sev1",
+    "federated learning and multimodal sensing future directions invented sev1",
+    "'internal validity is high', 'strong signal-to-noise' sev1"
+   ]
+  }
+ }
+}
