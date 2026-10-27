@@ -32,5 +32,5 @@ for i, it in enumerate(items, 1):
         body = re.sub(r'^- (?:"|\*\*).*$\n?', "", body, flags=re.M)
     fs = "\n".join(f"[{n}] {t}" for n, t, _ in ra.findings_of(key))
     open(f"{HERE}/out/blind/{it['id']}.md", "w").write(f"FINDINGS (every entry is true; 'Gap' entries say what the source does not state)\n{fs}\n\nREPORT\n{body.strip()}\n")
-json.dump(items, open(f"{HERE}/out/blind_map{suffix if only else ""}.json", "w"), indent=1)
+json.dump(items, open(f"{HERE}/out/blind_map{suffix if only else ''}.json", "w"), indent=1)
 print(len(items), "packets in", f"{HERE}/out/blind")
