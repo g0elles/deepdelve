@@ -18,8 +18,11 @@ def wilson(k, n, z=1.96):
 
 
 def main():
-    amap = {i["id"]: i for i in json.load(open(f"{HERE}/out/blind_map.json"))}
-    labels = json.load(open(f"{HERE}/out/labels_seed0.json"))
+    amap, labels = {}, {}
+    for suffix in ("", "_b", "_s1", "_s2"):      # "_b": post-hoc arms A3b/A4b; "_s1", "_s2": later seeds of the cells that needed them
+        if os.path.exists(f"{HERE}/out/blind_map{suffix}.json"):
+            amap.update({i["id"]: i for i in json.load(open(f"{HERE}/out/blind_map{suffix}.json"))})
+            labels.update(json.load(open(f"{HERE}/out/labels_seed0{suffix}.json")))
     cell = collections.defaultdict(lambda: {"units": 0, "defects": 0, "sev3": 0, "reports": 0})
     for rid, lab in labels.items():
         it = amap[rid]
