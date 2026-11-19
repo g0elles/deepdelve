@@ -418,7 +418,7 @@ def test_drop_years_strips_only_years_the_request_did_not_contain():
 
 def test_judge_scope_prompt():
     """Empty query: the prompt is byte-identical to the unscoped judge (literal captured before the 2026-11-18 change). With a query: the
-    request leads and the scope rule is appended. select_ce forwards its query."""
+    request leads and the scope rule is appended. select_ce does NOT forward its query (scoped prompt failed its A/B)."""
     import pipeline.run as R
     seen_p = []
     real = R.call_json
@@ -440,7 +440,7 @@ def test_judge_scope_prompt():
         R.select_ce("heat pump cost in cold climates", facets, seen, list(seen), {"f1": {}}, {}, {}, cfg={"judge": "m"})
     finally:
         R.judge = real_judge
-    assert got == ["heat pump cost in cold climates"], got
+    assert got == [""], got   # production does not pass the request: the scoped prompt failed its A/B (2026-11-18)
 
 
 if __name__ == "__main__":

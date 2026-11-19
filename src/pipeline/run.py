@@ -167,8 +167,8 @@ def bm25_top(sents: list[str], query: str, k: int, k1: float = 1.5, b: float = 0
 
 def judge(model: str, facet: dict, cands: list[tuple[str, str]], query: str = "") -> list[int] | None:
     """Kept indexes; [] is a real "nothing relevant" verdict, None means the call failed. With `query`, the judge also sees the request and
-    skips candidates outside its scope (smoke 2026-11-14: a "mild winters" cost quote kept for a cold-climate request). Empty `query` keeps
-    the prompt byte-identical to the unscoped one (eval/judge_cases/ab_relevance.py compares the two)."""
+    skips candidates outside its scope. EXPERIMENTAL: no production caller passes it (its A/B failed 2026-11-18, see select_ce); empty
+    `query` is the shipped prompt. eval/judge_cases/ab_relevance.py compares the two."""
     lst = "\n".join(f"{i}. {t}" for i, (_, t) in enumerate(cands))
     p = (f"Request: {query}\n" if query else "") + (f"Facet: {facet['name']}\nQuestions: {'; '.join(facet['questions'])}\n\nCandidate sentences:\n{lst}\n\n"
          f"Return the numbers of candidates that state a specific fact (a date, number, named law, "
@@ -538,7 +538,9 @@ def select_ce(query, facets, seen, urls, evidence, owner, funnel, cfg=None):
         ranked = ranked[:JUDGE_N if cfg.get("judge") else PER_JUDGE]
         if cfg.get("judge") and ranked:
             # LLM judge: precision 0.67 / recall 0.68 vs CE-only 0.36 / 1.0 on the hand-labeled Spanish sheet. None on error -> keep all; [] is a real "nothing relevant" verdict.
-            keep = judge(cfg["judge"], f, [(u, t) for _, u, t in ranked], query)
+            # no query: the scoped prompt failed its A/B (2026-11-18, ornith-1.5:9b: out-of-scope kept 32 -> 28 of 44, bar <= 16;
+            # in-scope kept 267 -> 225). judge(query=...) stays for eval/judge_cases/ab_relevance.py only.
+            keep = judge(cfg["judge"], f, [(u, t) for _, u, t in ranked])
             ranked = [ranked[i] for i in keep] if keep is not None else ranked
         for sc, u, t in ranked[:PER_JUDGE]:
             owner.setdefault(t, f["id"])
@@ -618,7 +620,7 @@ def run(query: str, model: str, out: Path, topk: int, extractor: str = "ce", jud
             cands = sorted(cands, key=lambda z: -z[0])[:PER_JUDGE]
             if not cands:
                 continue
-            keep = judge(model, f, [(u, t) for _, u, t in cands], query) or []  # bm25 extractor: a failed judge call keeps nothing
+            keep = judge(model, f, [(u, t) for _, u, t in cands]) or []  # bm25 extractor: a failed judge call keeps nothing
             calls += 1
             emitted_total += len(cands)
             kept_total += len(keep)

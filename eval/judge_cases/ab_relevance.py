@@ -40,6 +40,7 @@ def run_judge(judge, model: str, rows: list[dict], facet: dict, query: str) -> d
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True)
+    ap.add_argument("--dump", help="write every scope-set row with each variant's keep decision to this jsonl (for diagnosis)")
     a = ap.parse_args()
     sys.path.insert(0, os.path.join(ROOT, "src"))
     import yaml
@@ -51,6 +52,7 @@ def main():
     unlabelled = sum(1 for r in scope if r.get("label") not in ("in", "out", "general"))
     if unlabelled:
         sys.exit(f"{unlabelled} scope candidates have no in|out|general label; label them before any model run")
+    decisions = {}
     for name, use_query in (("current", False), ("scoped", True)):
         kept = {}
         for (q, fname), rs in groups(rec, lambda r: (r["q"], r["facet"])).items():
@@ -60,9 +62,13 @@ def main():
             kept = {}
             for (q, fname), rs in groups(scope, lambda r: (r["query"], r["facet"])).items():
                 kept |= run_judge(R.judge, a.model, rs, {"name": fname, "questions": rs[0].get("questions") or [fname]}, q if use_query else "")
+            decisions[name] = kept
             line["scope_set_kept"] = {lab: sum(1 for r in scope if kept[id(r)] and r["label"] == lab) for lab in ("in", "out", "general")}
             line["scope_set_total"] = dict(collections.Counter(r["label"] for r in scope))
         print(json.dumps(line), flush=True)
+    if a.dump and scope:
+        with open(a.dump, "w") as fh:
+            fh.writelines(json.dumps({**r, **{v: decisions[v][id(r)] for v in decisions}}, ensure_ascii=False) + "\n" for r in scope)
 
 
 if __name__ == "__main__":
