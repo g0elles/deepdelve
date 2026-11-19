@@ -57,7 +57,7 @@ class Seams:
     def fetch(self, url):
         self.fetches.append(url)
         txt = TEXT.get(url)
-        return (txt, "Title of " + url.split("/")[2]) if txt else (None, "")
+        return (txt, "Title of " + url.split("/")[2], "2024-03-05") if txt else (None, "", None)
 
     def judge(self, model, facet, cands):
         self.judges.append((facet["id"], len(cands)))
@@ -108,6 +108,9 @@ def test_bm25_happy_path_files_and_metrics():
     assert set(ev["evidence"]["f1"]) == {URLS["fi"], URLS["fi2"]}, ev["evidence"]["f1"]
     assert set(ev["evidence"]["f2"]) == {URLS["ee"]}, ev["evidence"]["f2"]
     assert len(srcs) == 3, srcs  # one src_*.md per fetched page that had text, none for the dead URL
+    assert {"uncovered", "comparison", "dates", "spans"} <= set(ev), sorted(ev)
+    assert set(ev["dates"].values()) == {"2024-03-05"}
+    assert set(ev["spans"]) == {"f1", "f2"} and m["quotes_total"] >= m["quotes_located"] > 0
     assert m["sources_fetched"] == 3 and m["gather"]["fetch_fail"] >= 1 and m["gather"]["fetch_ok"] == 3
     assert m["facets"] == 2 and m["facets_covered_2src"] == 1 and m["coverage"] == 0.5
     assert m["sources_per_facet"] == {"f1": 2, "f2": 1}

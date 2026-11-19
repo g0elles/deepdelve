@@ -140,6 +140,39 @@ assert wc.check({"cites": [1], "text": "Compaction keeps write amplification low
 QM = {1: "Prevalence was 7.3% in 20 studies."}
 assert "describes_the_quotes_not_the_topic" in wc.check({"cites": [1], "text": "The provided quotes do not state what is unanswered."}, QM, "x")
 assert wc.check({"cites": [1], "text": "Prevalence was 7.3% in 20 studies."}, QM, "x") == []
+# meaning rules (publish path design, Phase 2)
+QF = {1: "Annual costs fell to $57 billion by 2030."}
+assert "figure_context:57" in wc.check({"cites": [1], "text": "It cut costs by $57 billion."}, QF, "q")
+assert not any(d.startswith("figure_context") for d in wc.check({"cites": [1], "text": "Costs fell to $57 billion."}, QF, "q"))
+assert not any(d.startswith("figure_context") for d in wc.check({"cites": [1], "text": "Spending rose 57 12."}, {1: "Spending fell to 57 billion and 12 more."}, "q"))
+assert not any(d.startswith("figure_context") for d in wc.check({"cites": [1], "text": "Levels dropped by over 20 percent."}, {1: "Levels dropped more than 20 percent."}, "q"))
+QH = {1: "Exposure to X may be associated with Y in adults."}
+assert "hedge_dropped" in wc.check({"cites": [1], "text": "X causes Y in adults."}, QH, "q")
+assert "hedge_dropped" not in wc.check({"cites": [1], "text": "X may cause Y in adults."}, QH, "q")
+QY = {1: "Completion is expected in 2024.", 2: "By 2026 the line was still unfinished."}
+assert "stale_year:2024" in wc.check({"cites": [1], "text": "Completion is expected in 2024."}, QY, "q")
+assert not any(d.startswith("stale_year") for d in wc.check({"cites": [1], "text": "Completion is expected in 2024."}, {1: QY[1]}, "q"))
+# build reads spans/dates/uncovered/comparison, and tolerates their absence (EV has none)
+assert c.uncovered == [] and c.comparison is False and c.dates == {} and c.facets[0].quotes[0].span is None
+EV2 = {**EV, "spans": {"f1": {"https://a.example/x": {"Traffic fell 16% in the first eight weeks.": [10, 52]}}},
+       "dates": {"https://a.example/x": "2024-03-05"}, "uncovered": ["emissions"], "comparison": True}
+c2 = wc.build(EV2, QUERY)
+assert c2.facets[0].quotes[0].span == (10, 52) and c2.dates and c2.uncovered == ["emissions"] and c2.comparison
+md2 = wc.render(c2, {"f1": [{"cites": [1], "text": "Traffic fell 16%."}]})
+assert '- "Traffic fell 16% in the first eight weeks." [1]\n' in md2 and "<!--" not in md2
+assert "1. [Study A](https://a.example/x), 2024-03-05" in md2 and "2. [https://b.example/y](https://b.example/y)\n" in md2
+assert md2.index("## Evidence gaps") < md2.index("## Not covered") < md2.index("## Sources")
+assert "No facet covered these words of the request: emissions." in md2 and "Comparison asked for" in md2
+crossed = wc.render(c2, {"overview": [{"cites": [1, 2], "text": "Traffic and air both improved."}]})
+assert "Comparison asked for" not in crossed                                                  # a sentence cites sources from two facets
+assert "## Not covered" not in wc.render(c, {})
+# smoke 2026-11-14 regressions: abbreviation dots and hyphens fold away; of/at are not meaning prepositions; fallback picks the relevant quote
+assert wc.check({"cites": [1], "text": "Population-weighted U.S. averages show reductions."}, {1: "the population weighted US averages show reductions"}, "q") == []
+assert wc.check({"cites": [1], "text": "A furnace costs at $1,128 a year."}, {1: "an annual cost of $1,128"}, "q") == []
+assert "figure_context:57" in wc.check({"cites": [1], "text": "Spending was cut by $57 billion."}, {1: "spending fell to $57 billion"}, "q")
+fq = [wc.Quote(1, "Mild winters suit many homes.", "f"), wc.Quote(2, "Heat pumps cost less to run than gas furnaces.", "f")]
+assert wc._most_relevant(fq, "heat pumps versus gas furnaces", "running cost").n == 2
+assert wc._most_relevant(fq[:1], "zzz", "zzz").n == 1                                        # no overlap: plan order
 print("test_writer_compiled: ok")
 
 if __name__ == "__main__":

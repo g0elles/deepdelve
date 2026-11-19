@@ -67,6 +67,9 @@ NO_HINTS = ("No automatic hints were raised. This does not mean the report is fr
             "(a figure that is not in its cited source, a body with no inline citations, a date that has already passed).")
 
 
+EXTRA_PREFIX = "Completion check (advisory on compiled runs): "
+
+
 def format_block(notes: list) -> str:
     body = "\n".join(f"- {n}" for n in notes) if notes else NO_HINTS
     return f"\n\n{BEGIN}\n{HEADING}\n\n{INTRO}\n\n{body}\n{END}\n"
@@ -230,9 +233,10 @@ def strip_from_artifact(req_artifact: str) -> bool:
         return False
 
 
-def append_to_artifact(req_artifact: str, fetched_urls: list, started_at: float):
+def append_to_artifact(req_artifact: str, fetched_urls: list, started_at: float, extra: list | None = None):
     """Compute and append the notes block (always, even with no hints); returns the number of hints in it, or None when nothing was written (no report, or any error: the
-    report is then left untouched). Fail-open."""
+    report is then left untouched). Fail-open. `extra`: completion-check problems kept as notes on compiled runs (engine/completion.py), put first, one line each,
+    with URLs replaced so the citation/bibliography parsers read the report the same with and without the block (wiki Architecture section 6)."""
     try:
         from tools.fs import get_workspace_file_content
         path = _path(req_artifact)
@@ -248,6 +252,7 @@ def append_to_artifact(req_artifact: str, fetched_urls: list, started_at: float)
                 all_sources[fn] = txt
         n2text = {n: all_sources[url2file[u]] for n, u in source_numbers(report).items() if url2file.get(u) in all_sources}
         notes = compute_notes(report, n2text, all_sources, started_at or time.time())
+        notes = [EXTRA_PREFIX + re.sub(r"https?://\S+", "(a source)", " ".join(str(e).split()))[:400] for e in (extra or [])] + notes
         with open(path, "w", encoding="utf-8") as f:
             f.write(report.rstrip("\n") + format_block(notes))
         return len(notes)

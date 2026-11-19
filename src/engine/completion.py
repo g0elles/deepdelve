@@ -1108,6 +1108,21 @@ async def run_completion_check(query: str, current_input, run_state: "RunState",
             run_state.record_attempt(attempt, problem, len(get_fetched_urls()),
                                       detail=verdict.warning if verdict else None)
 
+            if verdict and run_state.data.get("compiled_writer"):
+                # Compiled report (writer/compiled.py, settings.writer_mode "compiled"): code-rendered quotes plus verifier-checked sentences.
+                # A Builder/FindingsWriter rewrite would replace verified text with unverified text and a Planner nudge has nothing to fix, so a
+                # failing check is advisory here: kept for the reader notes (run_loop -> reader_notes.append_to_artifact `extra`), no quarantine,
+                # no dispatch. Same exit as the final-verdict path below. check_notes lives inside the existing compiled_writer dict: no new
+                # top-level RunState.data key, so the resume carryover allowlist (wiki Architecture section 3) is untouched.
+                notes = run_state.data["compiled_writer"].setdefault("check_notes", [])
+                line = f"{problem}: {verdict.warning}"
+                if line not in notes:
+                    notes.append(line)
+                notify(f"**System (final):** compiled report: completion check `{problem}` recorded as a reader note; no rewrite dispatched.")
+                run_state.set_plan(get_workspace_file_content("_todos.md") or "")
+                run_state.save()
+                return False, current_input
+
             # Escalate early rather than granting the full attempt budget to a nudge that's already
             # proven ineffective. Confirmed live 2026-07-12: missing_artifact repeated 5 times
             # verbatim in one run — the model answered each one with confident "no further action

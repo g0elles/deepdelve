@@ -38,14 +38,58 @@ def chk_cheap_grounding(run):
     return cheap_grounding_problems(run.report, {}, run.fetched)
 
 
-CHECKS = {"cross_source_contradiction": chk_cross_source_contradiction, "cheap_grounding": chk_cheap_grounding}
+def claims(report):
+    """(C<k>, claim text, [n, ...]) numbered exactly as claim_sheet.py numbers them, plus the report's [n] -> url map."""
+    import re
+    from utils.grounding import decompose_claim_segments
+    prose, srcs = (re.split(r"\n#{1,3} Sources", report, maxsplit=1) + [""])[:2]
+    nm = {int(m.group(1)): m.group(2).rstrip("/") for m in (re.match(r"\s*(\d+)\.\s.*?\((https?://[^)\s]+)\)", ln) for ln in srcs.splitlines()) if m}
+    out, k = [], 0
+    for line in prose.splitlines():
+        if line.startswith("#"):
+            continue
+        for seg in decompose_claim_segments(line):
+            claim = re.sub(r"\[\d+\]", "", seg).strip("-*|. ").replace("**", "").strip()
+            if len(claim) >= 25:
+                k += 1
+                out.append((f"C{k}", claim, [int(n) for n in re.findall(r"\[(\d+)\]", seg)]))
+    return out, nm
+
+
+def chk_compiled_verifier(run):
+    """The compiled writer's figure_context rule, with each cited source's whole saved page as the quote. Only the figure rule is
+    reported: hedge_dropped and stale_year read the whole page as the quote and would fire on any page with "may" or a recent year."""
+    from writer.compiled import check
+    cl, nm = claims(run.report)
+    u2f = {(e.get("url") or "").rstrip("/"): os.path.basename(e.get("filename") or "") for e in run.fetched if isinstance(e, dict)}
+    out = []
+    for cid, claim, cites in cl:
+        pages = {n: run.sources.get(u2f.get(nm.get(n, ""), "")) for n in cites}
+        pages = {n: t for n, t in pages.items() if t}
+        if pages:
+            out += [f"{cid}:{d}" for d in check({"cites": list(pages), "text": claim}, pages, run.query) if d.startswith("figure_context")]
+    return out
+
+
+CHECKS = {"cross_source_contradiction": chk_cross_source_contradiction, "cheap_grounding": chk_cheap_grounding, "compiled_verifier": chk_compiled_verifier}
 # detector name -> defect types it is meant to catch; filled by the shadow detectors in detectors.py
-TARGETS = {"cross_source_contradiction": {"C5"}, "cheap_grounding": {"C1", "C2"}}
+TARGETS = {"cross_source_contradiction": {"C5"}, "cheap_grounding": {"C1", "C2"}, "compiled_verifier": {"C1"}}
 try:
     from detectors import DETECTORS, DETECTOR_TARGETS
     CHECKS.update(DETECTORS); TARGETS.update(DETECTOR_TARGETS)
 except ImportError:
     pass
+
+
+def unit_ids(unit):
+    """"C19-C21" -> {C19, C20, C21}; "C4/C5" -> {C4, C5}; Q* units (question-level) -> none."""
+    import re
+    ids = set()
+    for part in re.split(r"[/,\s]+", unit or ""):
+        m = re.fullmatch(r"C(\d+)(?:-C?(\d+))?", part)
+        if m:
+            ids |= {f"C{i}" for i in range(int(m.group(1)), int(m.group(2) or m.group(1)) + 1)}
+    return ids
 
 
 def labels():
@@ -77,6 +121,15 @@ def main(names):
             hit = [k for k in pos if fired[n][k] and not str(fired[n][k][0]).startswith("ERROR")]
             fp_runs = [k for k in RUNS if k not in pos and fired[n][k] and not str(fired[n][k][0]).startswith("ERROR")]
             print(f"runs with a labelled {sorted(tg)} defect: {len(pos)}; check fired on {len(hit)} of them; fired on {len(fp_runs)} runs with none ({fp_runs})")
+            unit_level = [(k, x.split(":", 1)[0]) for k in RUNS for x in fired[n][k] if str(x)[:1] == "C" and ":" in str(x)]
+            if unit_level:  # findings named "C<k>:<code>": score per claim (stage-J records ignored)
+                any_lab = {k: set().union(*(unit_ids(d["unit"]) for d in lab[k] if d.get("stage") != "J")) for k in RUNS}
+                tgt_lab = {k: set().union(*(unit_ids(d["unit"]) for d in lab[k] if d.get("stage") != "J" and d["type"] in tg)) for k in RUNS}
+                fu = set(unit_level)
+                tp = sum(u in tgt_lab[k] for k, u in fu)
+                fa = sum(u not in any_lab[k] for k, u in fu)
+                print(f"claim level: fired on {len(fu)} claims; {tp} carry a labelled {sorted(tg)} defect "
+                      f"(of {sum(len(v) for v in tgt_lab.values())}); {fa} are labelled-correct claims")
 
 
 if __name__ == "__main__":

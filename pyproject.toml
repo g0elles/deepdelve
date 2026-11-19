@@ -34,6 +34,8 @@ dependencies = [
     # transitively via agent-framework, which is fragile — declare it explicitly so this doesn't
     # silently break if agent-framework ever drops or reshuffles its own pydantic dependency.
     "pydantic>=2.13.4,<3.0.0",
+    # writer/verify_view.py renders final_report.html. Already installed via textual/rich; declared because it is imported directly.
+    "markdown-it-py>=4.2,<5.0",
     # First ML/NLP inference dependency this project has ever taken on (2026-07-12) — used only
     # for utils/grounding.py's nli_unsupported_problem (settings.grounding_check.nli_verify), a
     # small CPU-only NLI entailment classifier that verifies a claim is actually supported by its

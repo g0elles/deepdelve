@@ -208,7 +208,7 @@ def get_verified_cache_urls() -> list[str]:
     return verified_cache_urls_ctx.get() or []
 
 
-def build_bibliography(report_text: str, fetched_urls: list[dict]) -> str:
+def build_bibliography(report_text: str, fetched_urls: list[dict], meta: dict[str, dict] | None = None) -> str:
     """BibTeX bibliography of every source `report_text` ACTUALLY cites, cross-referenced against
     `fetched_urls` only for title metadata. Deliberately NOT built from `fetched_urls` alone: most
     fetched URLs never make it into the final report (rejected stubs, sources dropped in a
@@ -216,7 +216,9 @@ def build_bibliography(report_text: str, fetched_urls: list[dict]) -> str:
     sources the report never uses — see the 2026-08-02 audit/plan that motivated this function.
     Reuses grounding.py's own citation-extraction (the same logic every grounding check already
     trusts) instead of a second, drifting implementation. Local import: grounding.py imports FROM
-    this module, so importing it back at top level would be circular."""
+    this module, so importing it back at top level would be circular.
+    `meta` ({url: tools.scholar.resolve_doi result}): a cited URL with a DOI becomes an @article with doi/year/journal and, when OpenAlex
+    flags it, a retraction note; everything else stays the @misc entry."""
     from utils.grounding import extract_cited_urls, parse_academic_references, _urls_prefix_match
 
     cited = set(extract_cited_urls(report_text or ""))
@@ -233,6 +235,12 @@ def build_bibliography(report_text: str, fetched_urls: list[dict]) -> str:
                 return entry.get("title")
         return None
 
+    def _lookup_meta(url: str) -> dict:
+        return next((m for u, m in (meta or {}).items() if m and (u == url or _urls_prefix_match(url, u))), {})
+
+    def _tex(s) -> str:
+        return re.sub(r"([{}&%])", r"\\\1", str(s))
+
     access_date = time.strftime("%Y-%m-%d")
     entries = []
     seen_keys = set()
@@ -245,6 +253,13 @@ def build_bibliography(report_text: str, fetched_urls: list[dict]) -> str:
             key += "x"
         seen_keys.add(key)
         safe_title = title.replace("{", "").replace("}", "")
+        m = _lookup_meta(url)
+        if m.get("doi"):
+            note = f"Accessed: {access_date}" + ("; RETRACTED according to OpenAlex" if m.get("retracted") else "")
+            fields = [f"title = {{{_tex(title)}}}", f"doi = {{{m['doi']}}}"] + ([f"year = {{{m['year']}}}"] if m.get("year") else []) \
+                + ([f"journal = {{{_tex(m['venue'])}}}"] if m.get("venue") else []) + [f"url = {{{url}}}", f"note = {{{note}}}"]
+            entries.append(f"@article{{{key},\n  " + ",\n  ".join(fields) + "\n}")
+            continue
         entries.append(
             f"@misc{{{key},\n"
             f"  title = {{{safe_title}}},\n"

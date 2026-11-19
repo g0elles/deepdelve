@@ -6,7 +6,7 @@ evidence.json (pipeline/run.py) -> build() -> compose() -> render(). Nothing her
 
 What the model may NOT do, and the verifier enforces per sentence: cite a source outside the unit's quotes, state a number
 (two or more digits) that none of its cited quotes contains, or introduce an abbreviation absent from the cited quotes and the
-request, or a capitalised name (an expansion, a coined term) that they do not contain. A unit that still fails after best-of-N and one repair falls back to its first quote verbatim, so a report can be
+request, or a capitalised name (an expansion, a coined term) that they do not contain. A unit that still fails after best-of-N and one repair falls back to its most request-relevant quote verbatim, so a report can be
 unverified-fluent at worst, never unsupported."""
 import re
 from dataclasses import dataclass, field
@@ -18,6 +18,8 @@ LABELS = {"en": {
     "overview": "Answer in brief", "evidence": "Evidence", "gaps": "Evidence gaps", "sources": "Sources", "differ": "Where sources differ",
     "differ_line": "{figure} [{n}] but {other_figure} [{m}]; the sources may be measuring different quantities.",
     "no_evidence": "No usable evidence was found for this topic.",
+    "not_covered": "Not covered", "not_covered_words": "No facet covered these words of the request: {words}.",
+    "comparison_line": "Comparison asked for: figures are listed per side; no like-for-like comparison was verified.",
 }}
 MAX_SENTENCE_WORDS = 45
 MAX_QUOTE_CHARS = 14000   # per call: ~3.5k tokens, so the prompt always fits num_ctx (Ollama silently drops the TOP of an overflowing prompt, i.e. the instructions)
@@ -25,6 +27,14 @@ _BOTWALL_TITLE = re.compile(r"just a moment|checking your browser|are you a robo
 _PAGE_REF = re.compile(r"\s?\[\d{1,3}\]")   # the source page's own reference marker ("week 3 [4]"); in a report it would read as a citation to OUR source 4
 _NUM = re.compile(r"\d[\d,.]*\d|\d")
 _ACRONYM = re.compile(r"\b[A-Z]{2,6}\b")
+# ponytail: English word lists for the four meaning rules below; other languages pass them silently (a LABELS-style table per language when needed)
+_PREPS = re.compile(r"^(to|by|from|over|under|than)$", re.I)  # of/at frame a figure the same way ("cost of $1.1" = "cost at $1.1"): not meaning rules
+_HEDGE = re.compile(r"\b(may|might|could|suggests?|associated with|correlated with|estimated|preliminary|not significant)\b", re.I)
+_CAUSAL = re.compile(r"\b(causes?|caused|proves?|proved|demonstrates?|demonstrated|leads? to|led to|confirms?|confirmed)\b", re.I)
+_STATUS = re.compile(r"\b(is|are|remains?|currently|expected|planned|will)\b", re.I)
+_YEAR = re.compile(r"\b(?:19|20)\d{2}\b")
+_SCALE = {"%": "%", "percent": "%", "points": "points", "thousand": "thousand", "million": "million", "billion": "billion", "trillion": "trillion"}
+_CITE = re.compile(r"\[\d{1,3}\]")
 
 
 @dataclass
@@ -32,6 +42,7 @@ class Quote:
     n: int          # source number the citation [n] refers to
     text: str       # literal quote, as the pipeline verified it
     facet: str
+    span: tuple[int, int] | None = None  # [start, end) of the raw quote in the saved source file (pipeline quote_span)
 
 
 @dataclass
@@ -48,22 +59,28 @@ class Compiled:
     facets: list[Facet]
     sources: list[tuple[int, str, str]]  # (n, url, title)
     disagreements: list[dict] = field(default_factory=list)  # filled by add_disagreements
+    uncovered: list[str] = field(default_factory=list)       # request words no facet covers (pipeline _uncovered)
+    comparison: bool = False                                  # the request asks for a comparison
+    dates: dict[str, str] = field(default_factory=dict)       # url -> published YYYY-MM-DD
 
 
 def build(evidence: dict, query: str) -> Compiled:
     """Number sources by first appearance across facets, in plan order, so the numbers are stable and code-owned."""
     nums: dict[str, int] = {}
     titles = evidence.get("titles") or {}
+    spans = evidence.get("spans") or {}
     facets = []
     for f in evidence["facets"]:
         fc = Facet(f["id"], f["name"], unanswered=list((evidence.get("unanswered_facets") or {}).get(f["id"], [])))
         for url, quotes in (evidence["evidence"].get(f["id"]) or {}).items():
             n = nums.setdefault(url, len(nums) + 1)
-            fc.quotes += [Quote(n, _PAGE_REF.sub("", q), f["id"]) for q in quotes if q.strip()]
+            sp = (spans.get(f["id"]) or {}).get(url) or {}
+            fc.quotes += [Quote(n, _PAGE_REF.sub("", q), f["id"], tuple(sp[q]) if sp.get(q) else None) for q in quotes if q.strip()]
         facets.append(fc)
     # a bot-wall page title ("Just a moment...") can be captured for a URL whose body later fetched fine: show the URL, not the wall
     sources = [(n, url, url if _BOTWALL_TITLE.search(titles.get(url) or "") else (titles.get(url) or url)) for url, n in nums.items()]
-    return Compiled(query, facets, sources)
+    return Compiled(query, facets, sources, uncovered=list(evidence.get("uncovered") or []),
+                    comparison=bool(evidence.get("comparison")), dates=dict(evidence.get("dates") or {}))
 
 
 def add_disagreements(c: Compiled, hits: list[dict]) -> int:
@@ -92,7 +109,19 @@ def numbers(text: str) -> set[str]:
 
 
 def _fold(t: str) -> str:
-    return re.sub(r"[\W_]+", " ", t.casefold()).strip()
+    """Casefold, drop abbreviation dots ("U.S." = "US"), every other non-word run (hyphen, slash) becomes one space."""
+    return re.sub(r"[\W_]+", " ", t.casefold().replace(".", "")).strip()
+
+
+def _terms(t: str) -> set[str]:
+    return {w for w in _fold(t).split() if len(w) >= 4}
+
+
+def _most_relevant(quotes: list[Quote], query: str, question: str) -> Quote:
+    """The quote sharing the most words of four or more letters with the request and the unit question; ties keep plan order.
+    ponytail: word overlap, no stemming or embeddings; a reranker score when the evidence starts carrying one."""
+    want = _terms(query + " " + question)
+    return max(quotes, key=lambda q: len(_terms(q.text) & want))
 
 
 def names(text: str) -> list[str]:
@@ -122,6 +151,36 @@ def names(text: str) -> list[str]:
 _META = re.compile(r"\b(?:the|these|those)\s+(?:provided\s+|given\s+)?(?:quotes?|text|excerpts?)\b|\bprovided\s+(?:quotes?|text)\b", re.I)
 
 
+def _figure_tokens(t: str) -> list[tuple[str, str | None, str | None]]:
+    """(key, prev preposition or None, scale word or None) per non-year figure token of two or more digits. A glued "%" counts as the scale word."""
+    toks = [w.strip(".,;:()\"'*_[]") for w in _CITE.sub(" ", t).split()]
+    out = []
+    for i, w in enumerate(toks):
+        m = _NUM.search(w)
+        if not m or len(_digits(m.group())) < 2 or _YEAR.fullmatch(m.group()):  # a year is a date, stale_year's job
+            continue
+        prev = toks[i - 1].casefold() if i and _PREPS.match(toks[i - 1]) else None
+        if prev == "than" and i > 1:  # "more than 20" says what "over 20" says
+            prev = {"more": "over", "less": "under", "fewer": "under"}.get(toks[i - 2].casefold(), prev)
+        nxt = "%" if w.endswith("%") else _SCALE.get(toks[i + 1].casefold() if i + 1 < len(toks) else "")
+        out.append((m.group().replace(",", ""), prev, nxt))
+    return out
+
+
+def _figure_context(text: str, cited: list[str]) -> list[str]:
+    """A figure the sentence frames differently from every cited quote holding it ("cut by $57 billion" vs "fell to $57 billion",
+    "57 million" vs "57 billion"). Conflict only: a side with no preposition or no scale word does not decide."""
+    q_toks = [ft for q in cited for ft in _figure_tokens(q)]
+    bad = []
+    for key, prev, nxt in _figure_tokens(text):
+        same = [ft for ft in q_toks if ft[0] == key]
+        if (prev is None and nxt is None) or not same:  # no context to compare; an absent figure is figure_not_in_cited_quotes' job
+            continue
+        if all((prev and p and p != prev) or (nxt and n and n != nxt) for _, p, n in same):
+            bad.append("figure_context:" + _digits(key))
+    return bad
+
+
 def check(sentence: dict, quotes: dict[int, str], query: str) -> list[str]:
     """Defect codes for one {"cites": [...], "text": str} sentence. Empty list means it passes."""
     text, cites = sentence.get("text", ""), sentence.get("cites") or []
@@ -147,6 +206,13 @@ def check(sentence: dict, quotes: dict[int, str], query: str) -> list[str]:
         defects.append("describes_the_quotes_not_the_topic")
     if len(text.split()) > MAX_SENTENCE_WORDS:
         defects.append("too_long")
+    defects += _figure_context(text, [quotes[c] for c in cites if c in quotes])
+    plain = _CITE.sub(" ", text)
+    if _HEDGE.search(cited) and not _HEDGE.search(plain) and _CAUSAL.search(plain):
+        defects.append("hedge_dropped")
+    years, unit_years = [int(y) for y in _YEAR.findall(plain)], [int(y) for y in _YEAR.findall(" ".join(quotes.values()))]
+    if years and unit_years and min(years) < max(unit_years) and _STATUS.search(plain):
+        defects.append(f"stale_year:{min(years)}")
     return defects
 
 
@@ -219,7 +285,7 @@ def write_unit(llm, query: str, topic: str, question: str, quotes: list[Quote], 
                 best, best_defects = again, d2
     if best is None or best_defects:
         stats["fallbacks"] = stats.get("fallbacks", 0) + 1
-        q = quotes[0]
+        q = _most_relevant(quotes, query, question)
         return [{"cites": [q.n], "text": q.text, "extractive": True}]
     return [{**s, "extractive": False} for s in best]
 
@@ -253,6 +319,8 @@ def render(c: Compiled, written: dict, lang: str = "en") -> str:
         out += [f"## {f.name}", ""]
         if f.id in written:
             out += [_sentences(written[f.id]), "", f"**{L['evidence']}**", ""]
+            # no span marker in the report: digits in it read as claim terms to the grounding checks (skeleton replay 2026-11-14, 4 of 33
+            # reports); writer/verify_view.py maps each bullet back to Quote.span through evidence.json instead
             out += [f"- \"{q.text.strip()}\" [{q.n}]" for q in f.quotes]
         else:
             out.append(L["no_evidence"])
@@ -267,8 +335,19 @@ def render(c: Compiled, written: dict, lang: str = "en") -> str:
         out += [f"## {L['gaps']}", ""]
         out += [f"- **{f.name}:** {gap_disclosure_sentence({'facet': f.name, 'questions': f.unanswered})}" for f in gaps]  # the engine's own wording and shape
         out.append("")
+    words = [L["not_covered_words"].format(words=", ".join(c.uncovered))] if c.uncovered else []
+    if c.comparison and not c.disagreements:
+        fac: dict[int, set[str]] = {}
+        for f in c.facets:
+            for q in f.quotes:
+                fac.setdefault(q.n, set()).add(f.id)
+        crossed = any(len(set().union(*(fac.get(n, set()) for n in s["cites"]))) >= 2 for items in written.values() for s in items if s["cites"])
+        if not crossed:
+            words.append(L["comparison_line"])
+    if words:
+        out += [f"## {L['not_covered']}", ""] + words + [""]
     out += [f"## {L['sources']}", ""]
-    out += [f"{n}. [{title}]({url})" for n, url, title in c.sources]
+    out += [f"{n}. [{title}]({url})" + (f", {c.dates[url]}" if c.dates.get(url) else "") for n, url, title in c.sources]
     return "\n".join(out) + "\n"
 
 

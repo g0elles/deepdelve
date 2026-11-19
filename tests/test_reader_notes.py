@@ -57,6 +57,12 @@ try:
     txt = open(rp).read()
     assert txt.count(rn.BEGIN) == 1 and rn.NO_HINTS in txt and "does not mean the report is free of errors" in txt
     assert rn.strip_from_artifact("final_report.md") is True and rn.BEGIN not in open(rp).read()
+    # compiled runs: completion-check problems come first, prefixed, one line, URLs replaced (parsers must read the report the same)
+    assert rn.append_to_artifact("final_report.md", [], t_2026_10, ["claim_unsupported: see\nhttps://x.org/p for detail"]) == 1
+    txt = open(rp).read()
+    assert "- " + rn.EXTRA_PREFIX + "claim_unsupported: see (a source) for detail" in txt and "x.org" not in rn.strip_block(txt).join(["", ""]) + txt.split(rn.BEGIN)[1]
+    assert extract_cited_urls(txt) == extract_cited_urls(rn.strip_block(txt))
+    assert rn.strip_from_artifact("final_report.md") is True
 finally:
     rn._path = orig_path
 # 9. wiring pins: the completion pipeline strips the block first, and the shared loop appends it (a refactor that drops either fails here)

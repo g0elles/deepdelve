@@ -40,7 +40,7 @@ from agent_framework import Message
 import engine.orchestrator as orchestrator_module
 from engine.orchestrator import create_local_agent, build_quota_pool
 from engine.tui import (
-    _slugify_run_dir_name, _current_run_dir, _ingest_local_doc, _write_bibliography, _export_pdf,
+    _slugify_run_dir_name, _current_run_dir, _ingest_local_doc, _write_bibliography, _write_verify_view, _export_pdf,
     _looks_like_tool_error, _load_pipeline_evidence, _compile_pipeline_report, PIPELINE_EVIDENCE_PROMPT, apply_depth_preset, load_resume_state, build_resume_input,
     _scale_resume_quota_pool,
 )
@@ -298,7 +298,7 @@ async def _run_research(run_id: str, query: str, opts: dict, events: asyncio.Que
         await run_agent_loop(agent, session, current_input, surface)
 
         run_state.save()
-        _write_bibliography(run_state)
+        _write_verify_view(run_state, _write_bibliography(run_state))
         pdf_path, pdf_err = _export_pdf(run_id)
         if pdf_err:
             await events.put({"type": "system", "text": f"PDF export skipped: {pdf_err}"})

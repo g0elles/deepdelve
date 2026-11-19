@@ -44,6 +44,49 @@ def norm(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", s.casefold()).strip()
 
 
+def norm_map(s: str) -> tuple[str, list[int]]:
+    """norm(s) plus, per output character, the index in s of the source character it came from."""
+    out, idx, i, n = [], [], 0, len(s)
+    foot, link = re.compile(r"\[\[[^\]]*\]\]\([^)]*\)"), re.compile(r"\[([^\]]*)\]\([^)]*\)")
+    while i < n:
+        m = foot.match(s, i) if s[i] == "[" else None
+        if m:
+            out.append(" "), idx.append(i)
+            i = m.end()
+            continue
+        m = link.match(s, i) if s[i] == "[" else None
+        if m:
+            for j in range(m.start(1), m.end(1)):
+                for c in s[j].casefold():
+                    out.append(c), idx.append(j)
+            i = m.end()
+            continue
+        for c in s[i].casefold():
+            out.append(c), idx.append(i)
+        i += 1
+    rs, ri = [], []
+    for c, j in zip(out, idx):
+        if "a" <= c <= "z" or "0" <= c <= "9":
+            rs.append(c), ri.append(j)
+        elif not rs or rs[-1] != " ":
+            rs.append(" "), ri.append(j)
+    while rs and rs[0] == " ":
+        rs.pop(0), ri.pop(0)
+    while rs and rs[-1] == " ":
+        rs.pop(), ri.pop()
+    return "".join(rs), ri
+
+
+def quote_span(quote: str, source: str) -> tuple[int, int] | None:
+    """[start, end) offsets in source of the quote's normalised text, or None (miss, or too short to locate)."""
+    q = norm(quote)
+    if len(q) < 20:
+        return None
+    t, m = norm_map(source)
+    i = t.find(q)
+    return None if i < 0 else (m[i], m[i + len(q) - 1] + 1)
+
+
 def quote_in_source(quote: str, source: str) -> bool:
     q = norm(quote)
     return len(q) >= 20 and q in norm(source)
@@ -315,7 +358,9 @@ def entity_ok(fid: str, sent: str, source: str, ents: dict[str, set[str]]) -> bo
 
 
 def _uncovered(facets: list[dict], query: str) -> list[str]:
-    """Entities the user typed (countries, capitalized names) that no facet's name/questions/entity mentions."""
+    """Entities the user typed (countries, capitalized names) that no facet's name/questions/entity mentions.
+    Request content words were tried here on 2026-11-14 and dropped: on 33 saved queries 32 flagged words, nearly all generic ("does",
+    "say", "about", Spanish "son"/"sus") or plural mismatches ("pumps" vs a facet's "heat pump"); the real hits were entities already found."""
     text = _fold(" ".join(f"{f['name']} {f.get('entity', '')} {' '.join(f['questions'])}" for f in facets))
     return sorted(e for e in query_entities(query) if not _mentions(text, e))
 
@@ -408,16 +453,17 @@ def search(question: str, k: int, stats: dict | None = None) -> list[str]:
     return urls
 
 
-def fetch(url: str) -> tuple[str | None, str]:
-    """(text, page title): title is the page's own <head> title when declared, else "" (HTML only; PDFs have none)."""
+def fetch(url: str) -> tuple[str | None, str, str | None]:
+    """(text, page title, published YYYY-MM-DD or None): title is the page's own <head> title when declared, else ""."""
     from tools.web import _fetch_raw, _stub_reason
     try:
         data, _, meta = _fetch_raw(url, True)
     except Exception:
-        return None, ""
+        return None, "", None
     if not isinstance(data, str) or _stub_reason(data):
-        return None, ""
-    return data, (meta or {}).get("title", "")
+        return None, "", None
+    m = re.search(r"\d{4}-\d{2}-\d{2}", (meta or {}).get("published") or "")
+    return data, (meta or {}).get("title", ""), m.group(0) if m else None
 
 
 def extract(model: str, facets: list[dict], text: str) -> tuple[list[dict], int, int]:
@@ -530,6 +576,7 @@ def run(query: str, model: str, out: Path, topk: int, extractor: str = "ce", jud
     emitted_total = kept_total = failed_total = 0
     seen: dict[str, str | None] = {}
     titles: dict[str, str] = {}
+    dates: dict[str, str | None] = {}
 
     gstats: dict = {}
 
@@ -538,10 +585,12 @@ def run(query: str, model: str, out: Path, topk: int, extractor: str = "ce", jud
         results = [search(q, topk, gstats) for _, q in qs]
         todo = list(dict.fromkeys(u for r in results for u in r if u not in seen))
         with cf.ThreadPoolExecutor(4) as ex:
-            for u, (txt, title) in zip(todo, ex.map(fetch, todo)):
+            for u, (txt, title, published) in zip(todo, ex.map(fetch, todo)):
                 seen[u] = txt
                 if title:
                     titles[u] = title
+                if published:
+                    dates[u] = published
                 gstats["fetch_ok"] = gstats.get("fetch_ok", 0) + bool(txt)
                 gstats["fetch_fail"] = gstats.get("fetch_fail", 0) + (not txt)
                 if txt:
@@ -615,6 +664,9 @@ def run(query: str, model: str, out: Path, topk: int, extractor: str = "ce", jud
             unanswered = _compute_unanswered(model, query, facets, evidence)  # final: what the re-search round still didn't fill, carried to the writer as a disclosed gap
 
     covered = sum(1 for f in facets if len(evidence[f["id"]]) >= 2)
+    # seen[url] is exactly the text saved as src_<sha1>.md, so spans are offsets into the saved file
+    spans = {fid: {url: {q: quote_span(q, seen[url] or "") for q in qs} for url, qs in by_url.items()} for fid, by_url in evidence.items()}
+    located = [sp for by_url in spans.values() for by_q in by_url.values() for sp in by_q.values()]
     metrics = {
         "query": query, "model": model, "extractor": extractor, "facets": len(facets), "facets_covered_2src": covered,
         "coverage": covered / len(facets), "quotes_emitted": emitted_total, "quotes_kept": kept_total,
@@ -625,9 +677,12 @@ def run(query: str, model: str, out: Path, topk: int, extractor: str = "ce", jud
         # of them answers the facet's own questions -- kept unchanged (other code reads them), these are additive.
         "facets_answered": len(facets) - len(unanswered), "unanswered_facets": unanswered,
         "wall_s": round(time.time() - t0, 1), "funnel": funnel, "gather": gstats,
+        "quotes_located": sum(sp is not None for sp in located), "quotes_total": len(located),
     }
     (out / "evidence.json").write_text(json.dumps(
-        {"facets": facets, "evidence": evidence, "titles": titles, "unanswered_facets": unanswered}, indent=1))
+        {"facets": facets, "evidence": evidence, "titles": titles, "unanswered_facets": unanswered,
+         "uncovered": _uncovered(facets, query), "dates": dates, "spans": spans,
+         "comparison": bool(re.search(r"\b(compare|comparison|versus|vs\.?|against|differ)", query, re.I))}, indent=1))
     (out / "metrics.json").write_text(json.dumps(metrics, indent=1))
     return metrics
 

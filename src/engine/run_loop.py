@@ -327,7 +327,8 @@ async def run_agent_loop(agent, session, current_input, surface: RunLoopSurface)
         if run_state is not None and not surface.skip_completion_check:
             req = config.get_required_artifact()
             if req:
-                n_notes = reader_notes.append_to_artifact(req, run_state.data.get("fetched_urls") or [], run_state.data.get("started_at"))
+                n_notes = reader_notes.append_to_artifact(req, run_state.data.get("fetched_urls") or [], run_state.data.get("started_at"),
+                                                          (run_state.data.get("compiled_writer") or {}).get("check_notes"))
                 if n_notes is not None:
                     surface.notify(f"Reader notes appended to the end of {req}: {n_notes} automatic hint(s) (unverified, may be wrong)." if n_notes
                                    else f"Reader notes appended to the end of {req}: no automatic hints raised (this does not mean the report is error-free).")

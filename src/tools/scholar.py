@@ -97,6 +97,30 @@ def search_openalex(query: str, n: int) -> list[dict]:
     return [_from_openalex(w) for w in _http_get(f"{OPENALEX}/works", p).get("results", [])]
 
 
+def _openalex_params() -> dict:
+    key = os.environ.get("OPENALEX_API_KEY") or _setting("openalex_api_key", "")
+    return {"api_key": key} if key else ({"mailto": _email()} if _email() else {})
+
+
+def resolution_enabled() -> bool:
+    """DOI lookups for references.bib run only when the user configured scholarly access (a contact email or an OpenAlex key)."""
+    return bool(_openalex_params())
+
+
+def resolve_doi(url: str, page_text: str) -> dict:
+    """{doi, year, venue, type, retracted} for a cited page whose URL or first 4000 characters carry a DOI, from OpenAlex; {} on no DOI or any error."""
+    try:
+        m = _DOI_RE.search(url) or _DOI_RE.search((page_text or "")[:4000])
+        if not m:
+            return {}
+        doi = m.group(0).rstrip(".,;)")
+        w = _http_get(f"{OPENALEX}/works/doi:{doi}", _openalex_params())
+        r = _from_openalex(w)
+        return {"doi": r["doi"] or doi, "year": r["year"], "venue": r["journal"], "type": r["type"], "retracted": bool(w.get("is_retracted"))}
+    except Exception:
+        return {}
+
+
 def _jats_to_markdown(xml: bytes) -> str:
     """Europe PMC full-text XML (JATS) -> plain markdown: title, abstract, body sections, table captions. In-text reference
     markers (xref) are dropped; back matter is not included."""

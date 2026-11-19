@@ -1739,7 +1739,7 @@ class BasicTuiAgent(App):
             await run_agent_loop(agent, session, current_input, surface)
 
             run_state.save()
-            _write_bibliography(run_state)
+            _write_verify_view(run_state, _write_bibliography(run_state))
             pdf_path, pdf_err = _export_pdf(run_dir_name)
             if pdf_path:
                 chat.mount(Static(Markdown(f"**System:**\nPDF exported: `{pdf_path}`"), classes="agent-bubble"))
@@ -2057,20 +2057,33 @@ def _slugify_run_dir_name(query: str) -> str:
     return f"{slug}_{query_hash}_{timestamp}"
 
 
-def _write_bibliography(run_state) -> None:
+def _write_bibliography(run_state) -> dict:
     """Write references.bib alongside the final report, once a run has one — best-effort, never
     raises into the caller (this runs after the run's own real work is already done and saved;
     a bibliography-generation bug must not turn a successful run into a reported failure). Shared
     by both run_cli and run_agent (TUI/CLI parity, CLAUDE.md's own rule) since both reach this
-    exact "run finished, artifacts exist" point independently."""
+    exact "run finished, artifacts exist" point independently.
+    Returns the DOI metadata it looked up ({url: tools.scholar.resolve_doi result}; {} when scholarly access is not configured
+    or on any error), which _write_verify_view shows beside each source."""
+    meta: dict = {}
     try:
+        from tools import scholar
         from tools.fs import get_workspace_file_content, write_workspace_file
+        from utils.grounding import extract_cited_urls
         from utils.run_state import build_bibliography
         req_artifact = config.get_required_artifact()
         report_text = get_workspace_file_content(req_artifact)
         if not report_text:
-            return
-        bib = build_bibliography(report_text, run_state.data.get("fetched_urls") or [])
+            return meta
+        fetched = run_state.data.get("fetched_urls") or []
+        if scholar.resolution_enabled():  # sequential, DOI only: a page whose URL or opening text carries no DOI costs no request
+            cited = set(extract_cited_urls(report_text))
+            for e in fetched:
+                if not e.get("stub") and e.get("url") in cited and e.get("filename"):
+                    m = scholar.resolve_doi(e["url"], get_workspace_file_content(e["filename"]) or "")
+                    if m:
+                        meta[e["url"]] = m
+        bib = build_bibliography(report_text, fetched, meta)
         if bib:
             write_workspace_file.func(filename="references.bib", content=bib)
     except Exception as e:
@@ -2078,6 +2091,26 @@ def _write_bibliography(run_state) -> None:
         # either — same convention as RunState.save()'s own except branch just above this
         # function in the same module family (utils/run_state.py).
         sys.stdout.write(f"\033[93m[System] Bibliography export failed: {e}\033[0m\n")
+    return meta
+
+
+def _write_verify_view(run_state, meta: dict | None = None) -> None:
+    """final_report.html beside the report on compiled runs (writer/verify_view.py): each evidence quote links to its highlighted span in the
+    saved source page. Needs the pipeline evidence directory (_compile_pipeline_report records it) and a disk workspace. Same contract as
+    _write_bibliography: best-effort, logs, never raises. Called right after it at all three run ends (run_agent, run_cli, api._run_research)."""
+    try:
+        evidence_dir = (run_state.data.get("compiled_writer") or {}).get("evidence_dir")
+        if not evidence_dir or config.get_workspace_type() != "disk":
+            return
+        from tools.fs import _get_safe_path, get_workspace_file_content
+        from writer.verify_view import render_html
+        from utils import reader_notes
+        report = get_workspace_file_content(config.get_required_artifact())
+        out = _get_safe_path("final_report.html")
+        if report and out:
+            render_html(reader_notes.strip_block(report), Path(evidence_dir), meta or {}, Path(out))
+    except Exception as e:
+        sys.stdout.write(f"\033[93m[System] Verify view export failed: {e}\033[0m\n")
 
 
 PIPELINE_EVIDENCE_PROMPT = (
@@ -2137,6 +2170,7 @@ def _compile_pipeline_report(run_state, evidence_dir: str):
         report = wc.render(c, written)
     write_workspace_file.func(filename="findings.md", content=wc.render_findings(c))
     write_workspace_file.func(filename=config.get_required_artifact() or "final_report.md", content=report)
+    stats["evidence_dir"] = str(Path(evidence_dir).expanduser())  # _write_verify_view reads the saved pages and spans from here
     run_state.data["compiled_writer"] = stats
     run_state.save()
     return stats
@@ -2774,7 +2808,7 @@ async def run_cli(builder, prompt: str = None, prompt_file: str = None, session_
         await run_agent_loop(agent, session, current_input, surface)
 
         run_state.save()
-        _write_bibliography(run_state)
+        _write_verify_view(run_state, _write_bibliography(run_state))
         pdf_path, pdf_err = _export_pdf(run_dir_name)
         if pdf_path:
             sys.stdout.write(f"\033[1;32mPDF:\033[0m {pdf_path}\n")
