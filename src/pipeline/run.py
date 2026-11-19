@@ -33,6 +33,9 @@ PER_SOURCE, PER_JUDGE, POOL = 4, 15, 30
 CE_EN = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 CE_ML = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
 CE_MIN = {CE_EN: 0.0, CE_ML: -4.0}  # ponytail: CE_ML threshold from one probe pair, calibrate on labeled data
+# "for and against X" asks for both sides of one thing, not a comparison of two (h18: the overview asked how congestion pricing and air
+# quality "compare"); whole words only, so "different" no longer matches. Changed vs the old pattern: q25, h09, h18 only (2026-11-18).
+COMPARISON_RE = re.compile(r"\b(compared?|comparing|comparison|versus|vs\.?|differ|differs|differences?)\b|(?<!for and )\bagainst\b", re.I)
 _STOP = set("the a an of and or to in on for with by is are was were be as at from that this it its "
             "how what which who when where why compare comparison key differ".split())
 
@@ -162,14 +165,19 @@ def bm25_top(sents: list[str], query: str, k: int, k1: float = 1.5, b: float = 0
     return sorted(scored, key=lambda z: -z[0])[:k]
 
 
-def judge(model: str, facet: dict, cands: list[tuple[str, str]]) -> list[int] | None:
-    """Kept indexes; [] is a real "nothing relevant" verdict, None means the call failed."""
+def judge(model: str, facet: dict, cands: list[tuple[str, str]], query: str = "") -> list[int] | None:
+    """Kept indexes; [] is a real "nothing relevant" verdict, None means the call failed. With `query`, the judge also sees the request and
+    skips candidates outside its scope (smoke 2026-11-14: a "mild winters" cost quote kept for a cold-climate request). Empty `query` keeps
+    the prompt byte-identical to the unscoped one (eval/judge_cases/ab_relevance.py compares the two)."""
     lst = "\n".join(f"{i}. {t}" for i, (_, t) in enumerate(cands))
-    p = (f"Facet: {facet['name']}\nQuestions: {'; '.join(facet['questions'])}\n\nCandidate sentences:\n{lst}\n\n"
+    p = (f"Request: {query}\n" if query else "") + (f"Facet: {facet['name']}\nQuestions: {'; '.join(facet['questions'])}\n\nCandidate sentences:\n{lst}\n\n"
          f"Return the numbers of candidates that state a specific fact (a date, number, named law, "
          f"mechanism, or comparison) relevant to this facet. Skip vague or off-topic ones. Also skip a candidate "
          f"about a differently-named variant or extension of this facet's subject (e.g. 'Paxos Commit' is not "
          f"'Paxos', 'Multi-Raft' is not 'Raft') unless the facet's own name or questions ask about that variant.")
+    if query:
+        p += (" Also skip a candidate about a different place, period, climate or condition, product, or population than the one the request "
+              "names, unless the request names none. A general statement with no such qualifier is not off-scope.")
     try:
         return [i for i in call_json(model, p, JUDGE_SCHEMA, think="minimal", timeout=120)["keep"] if 0 <= i < len(cands)]
     except Exception:
@@ -530,7 +538,7 @@ def select_ce(query, facets, seen, urls, evidence, owner, funnel, cfg=None):
         ranked = ranked[:JUDGE_N if cfg.get("judge") else PER_JUDGE]
         if cfg.get("judge") and ranked:
             # LLM judge: precision 0.67 / recall 0.68 vs CE-only 0.36 / 1.0 on the hand-labeled Spanish sheet. None on error -> keep all; [] is a real "nothing relevant" verdict.
-            keep = judge(cfg["judge"], f, [(u, t) for _, u, t in ranked])
+            keep = judge(cfg["judge"], f, [(u, t) for _, u, t in ranked], query)
             ranked = [ranked[i] for i in keep] if keep is not None else ranked
         for sc, u, t in ranked[:PER_JUDGE]:
             owner.setdefault(t, f["id"])
@@ -610,7 +618,7 @@ def run(query: str, model: str, out: Path, topk: int, extractor: str = "ce", jud
             cands = sorted(cands, key=lambda z: -z[0])[:PER_JUDGE]
             if not cands:
                 continue
-            keep = judge(model, f, [(u, t) for _, u, t in cands]) or []  # llm extractor: a failed judge call keeps nothing
+            keep = judge(model, f, [(u, t) for _, u, t in cands], query) or []  # bm25 extractor: a failed judge call keeps nothing
             calls += 1
             emitted_total += len(cands)
             kept_total += len(keep)
@@ -682,7 +690,7 @@ def run(query: str, model: str, out: Path, topk: int, extractor: str = "ce", jud
     (out / "evidence.json").write_text(json.dumps(
         {"facets": facets, "evidence": evidence, "titles": titles, "unanswered_facets": unanswered,
          "uncovered": _uncovered(facets, query), "dates": dates, "spans": spans,
-         "comparison": bool(re.search(r"\b(compare|comparison|versus|vs\.?|against|differ)", query, re.I))}, indent=1))
+         "comparison": bool(COMPARISON_RE.search(query))}, indent=1))
     (out / "metrics.json").write_text(json.dumps(metrics, indent=1))
     return metrics
 

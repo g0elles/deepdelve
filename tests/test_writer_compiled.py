@@ -49,10 +49,12 @@ def llm(prompt, schema, temperature, seed):
         return {"sentences": [{"cites": [1], "text": "Traffic fell 99%."}, {"cites": [2], "text": "Air improved 99%."}]}   # never clean
     raise AssertionError(prompt)
 written, stats = wc.compose(c, llm, n_drafts=1)
-assert stats["repairs"] == 2 and stats["fallbacks"] == 1 and stats["units"] == 3
+# the overview's two "99%" sentences cite [1] and [2]: each is swapped for its own cited quote, no whole-unit fallback (design answer_quality rev 2)
+assert stats["repairs"] == 2 and stats.get("fallbacks", 0) == 0 and stats["sentence_fallbacks"] == 2 and stats["units"] == 3 and stats["sentences"] == 4
 assert written["f1"][0]["extractive"] is False
 assert written["f2"][0]["text"] == "NO2 levels dropped by over 20 percent." and not written["f2"][0]["extractive"]
-assert written["overview"] == [{"cites": [1], "text": "Traffic fell 16% in the first eight weeks.", "extractive": True}]
+assert [(x["cites"], x["extractive"]) for x in written["overview"]] == [([1], True), ([2], True)]
+assert written["overview"][0]["text"] == "Traffic fell 16% in the first eight weeks."
 assert "f3" not in written                                                                      # no quotes, no model call
 
 # a model that always raises degrades to quotes, never crashes
@@ -173,6 +175,39 @@ assert "figure_context:57" in wc.check({"cites": [1], "text": "Spending was cut 
 fq = [wc.Quote(1, "Mild winters suit many homes.", "f"), wc.Quote(2, "Heat pumps cost less to run than gas furnaces.", "f")]
 assert wc._most_relevant(fq, "heat pumps versus gas furnaces", "running cost").n == 2
 assert wc._most_relevant(fq[:1], "zzz", "zzz").n == 1                                        # no overlap: plan order
+# (d) overview pool: bridging quotes first, then each facet's two most relevant; sides are facet entities of a comparison request
+EVC = {"facets": [{"id": "a", "name": "heat pump cost", "entity": "heat pump", "questions": []},
+                  {"id": "b", "name": "gas furnace cost", "entity": "gas furnace", "questions": []}],
+       "evidence": {"a": {"https://p.example": ["A heat pump costs $9,000 to install.", "Heat pumps last 15 years."]},
+                    "b": {"https://g.example": ["A gas furnace costs $4,000.", "Electric furnaces and heat pumps differ in cost.",
+                                                "A heat pump and a gas furnace cost about the same over 10 years."]}},
+       "comparison": True}
+cc = wc.build(EVC, "How do heat pumps compare with gas furnaces on cost?")
+assert [e for e, _ in wc._sides(cc)] == ["heat pump", "gas furnace"] and dict(wc._sides(cc))["gas furnace"] == {"gas", "furnace"}
+assert not wc._bridging(cc.facets[1].quotes[1], wc._sides(cc))                     # "electric furnaces" is not the gas-furnace side
+pool, question = wc._overview_pool(cc)
+assert pool[0].text.startswith("A heat pump and a gas furnace") and "heat pump and gas furnace compare" in question
+assert {q.facet for q in pool} == {"a", "b"} and len(pool) == len({q.text for q in pool})
+nc = wc.build({**EVC, "comparison": False}, "heat pump and gas furnace costs")
+pool2, q2 = wc._overview_pool(nc)
+assert q2 == wc.OVERVIEW_QUESTION and len(pool2) == 4 and wc._sides(nc) == []
+# (f) sentence-level fallback: clean sentences stay, a failing one becomes its own cited quote, in quotation marks
+UQ = [wc.Quote(1, "Heat pumps cost $9,000 to install.", "a"), wc.Quote(2, "Gas furnaces cost $4,000 to install.", "a")]
+LONG = " ".join(["word"] * 50)
+one_bad = lambda *a: {"sentences": [{"cites": [1], "text": "Heat pumps cost $9,000 to install."}, {"cites": [2], "text": LONG}]}
+st = {}
+out = wc.write_unit(one_bad, "heat pumps vs gas furnaces", "cost", "cost", UQ, 1, 3, 1, st)
+assert [(x["cites"], x["extractive"]) for x in out] == [([1], False), ([2], True)] and out[1]["text"] == UQ[1].text
+assert st["sentence_fallbacks"] == 1 and "fallbacks" not in st
+assert "\u201cGas furnaces cost $4,000 to install.\u201d[2]" in wc._sentences(out)
+dup_bad = lambda *a: {"sentences": [{"cites": [1], "text": "Heat pumps cost $9,000 to install."}, {"cites": [1], "text": LONG}]}
+st = {}
+out = wc.write_unit(dup_bad, "q", "cost", "cost", UQ, 1, 3, 1, st)   # its only source is cited by the kept sentence: dropped
+assert len(out) == 1 and st["dropped_sentences"] == 1
+all_bad = lambda *a: {"sentences": [{"cites": [7], "text": LONG}]}  # no valid cite, nothing survives: whole-unit fallback
+st = {}
+out = wc.write_unit(all_bad, "q", "cost", "cost", UQ, 1, 3, 1, st)
+assert st["fallbacks"] == 1 and len(out) == 1 and out[0]["extractive"]
 print("test_writer_compiled: ok")
 
 if __name__ == "__main__":

@@ -37,7 +37,10 @@ def main():
                 d = det[(mdir, r["arm"])]            # mdir is the model tag the blind map also uses
                 d["reports"] += 1; d["invalid_ids"] += r.get("invalid_ids", 0); d["reports_with_absent_figure"] += bool(r.get("figures_absent"))
                 if r.get("units"):
-                    d["fallback_share"].append(r.get("extractive_units", 0) / r["units"])
+                    # whole-unit fallbacks (run_arms rows carry compose() stats flat). Rows written before sentence-level fallback have
+                    # no "sentences" key and one extractive sentence per fallen-back unit, so extractive_units is their unit count.
+                    fb = r.get("fallbacks", 0) if "sentences" in r else r.get("extractive_units", 0)
+                    d["fallback_share"].append(fb / r["units"])
     print(f"{'model':16s} {'arm':4s} {'units':>6s} {'defect%':>8s} {'95% interval':>14s} {'sev3/rep':>9s} {'invalid ids':>11s} {'rep w/ absent fig':>18s} {'fallback':>9s}")
     for (m, a), c in sorted(cell.items()):
         lo, hi = wilson(c["defects"], c["units"])

@@ -59,7 +59,7 @@ class Seams:
         txt = TEXT.get(url)
         return (txt, "Title of " + url.split("/")[2], "2024-03-05") if txt else (None, "", None)
 
-    def judge(self, model, facet, cands):
+    def judge(self, model, facet, cands, query=""):
         self.judges.append((facet["id"], len(cands)))
         return list(range(len(cands))) if self.judge_keep_all else []
 
@@ -183,7 +183,7 @@ def test_still_unanswered_after_re_search_is_disclosed():
 
 def test_failed_judge_keeps_nothing_on_bm25_path():
     s = Seams()
-    s.judge = lambda model, facet, cands: None
+    s.judge = lambda model, facet, cands, query="": None
     with tempfile.TemporaryDirectory() as td, patched(s, judge=s.judge):
         m = pr.run(QUERY, "fake-model", Path(td) / "run", 2, "bm25", True)
     assert m["quotes_kept"] == 0 and m["facets_covered_2src"] == 0 and m["quote_match_rate"] == 0.0

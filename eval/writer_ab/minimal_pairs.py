@@ -15,7 +15,7 @@ _FIG = re.compile(r"\b(to|by) (\$?\d[\d,.]*\d%?)")
 
 
 def units(md):
-    """[(unit name, qmap, [(text, cites), ...])] for one compiled report: the overview reads the first two quotes, as compose() does."""
+    """[(unit name, qmap, [(text, cites), ...])] for one compiled report: the overview reads the first two sources' quotes, as the stage-1 compose() did (these reports predate the bridging-first pool)."""
     sections = re.split(r"^## ", md, flags=re.M)[1:]
     qmap = {}
     for m in re.finditer(r'^- "(.*)" \[(\d+)\]', md, flags=re.M):

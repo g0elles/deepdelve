@@ -52,6 +52,15 @@ def test_fetch_date_normalisation():
             web._fetch_raw, web._stub_reason = old
 
 
+
+def test_comparison_flag_is_whole_word_and_not_for_and_against():
+    from pipeline.run import COMPARISON_RE
+    assert COMPARISON_RE.search("Compare Norway's and the Netherlands' EV incentives")
+    assert COMPARISON_RE.search("How do Raft and Paxos differ in leader election?")
+    assert COMPARISON_RE.search("heat pumps versus gas furnaces") and COMPARISON_RE.search("Team A against Team B")
+    assert not COMPARISON_RE.search("What does the evidence say for and against congestion pricing?")   # h18
+    assert not COMPARISON_RE.search("different approaches to pensions")
+
 if __name__ == "__main__":
     _tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]
     assert _tests, "no tests found"

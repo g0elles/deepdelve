@@ -416,6 +416,33 @@ def test_drop_years_strips_only_years_the_request_did_not_contain():
     assert R.drop_years("population 1999", "x") == "population 1999"  # only 2000-2039 are treated as planner-added years
 
 
+def test_judge_scope_prompt():
+    """Empty query: the prompt is byte-identical to the unscoped judge (literal captured before the 2026-11-18 change). With a query: the
+    request leads and the scope rule is appended. select_ce forwards its query."""
+    import pipeline.run as R
+    seen_p = []
+    real = R.call_json
+    try:
+        R.call_json = lambda m, p, *a, **k: (seen_p.append(p), {"keep": []})[1]
+        facet = {"name": "f", "questions": ["q1", "q2"]}
+        R.judge("m", facet, [("u", "t0"), ("u", "t1")])
+        assert seen_p[-1] == "Facet: f\nQuestions: q1; q2\n\nCandidate sentences:\n0. t0\n1. t1\n\nReturn the numbers of candidates that state a specific fact (a date, number, named law, mechanism, or comparison) relevant to this facet. Skip vague or off-topic ones. Also skip a candidate about a differently-named variant or extension of this facet's subject (e.g. 'Paxos Commit' is not 'Paxos', 'Multi-Raft' is not 'Raft') unless the facet's own name or questions ask about that variant."
+        R.judge("m", facet, [("u", "t0")], "heat pumps in cold climates")
+        assert seen_p[-1].startswith("Request: heat pumps in cold climates\nFacet: f") and "different place, period, climate" in seen_p[-1]
+    finally:
+        R.call_json = real
+    got = []
+    real_judge = R.judge
+    try:
+        R.judge = lambda model, f, cands, query="": (got.append(query), None)[1]
+        facets = [{"id": "f1", "name": "heat pump cost", "entity": "", "questions": ["heat pump cost"]}]
+        seen = {"https://a.example": "Heat pumps cost $9,000 to install in cold climates. They last fifteen years."}
+        R.select_ce("heat pump cost in cold climates", facets, seen, list(seen), {"f1": {}}, {}, {}, cfg={"judge": "m"})
+    finally:
+        R.judge = real_judge
+    assert got == ["heat pump cost in cold climates"], got
+
+
 if __name__ == "__main__":
     # This file is pytest-style (module-level test_ functions) and pytest is not installed: without this block `python test_pipeline_quotes.py`
     # ran NOTHING and exited 0. Run every test_ function, fail loudly on the first error.

@@ -8,6 +8,7 @@ import glob, json, os, re, sys
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 sys.path.insert(0, ROOT + "/src")
 from writer import compiled as wc                                    # noqa: E402
+from pipeline.run import COMPARISON_RE                               # noqa: E402
 from pipeline.bridge import source_filename                          # noqa: E402
 from utils import grounding, run_state                               # noqa: E402
 from engine import completion_checks_grounding as cg, completion_checks_structural as cs  # noqa: E402
@@ -39,7 +40,7 @@ def run_one(evpath: str) -> dict:
     query = json.load(open(mp))["query"] if os.path.exists(mp) else "research request"
     from pipeline.run import quote_span, _uncovered
     ev.setdefault("uncovered", _uncovered(ev["facets"], query))  # pre-2026-11-14 runs: backfill the keys pipeline.run now writes
-    ev.setdefault("comparison", bool(re.search(r"\b(compare|comparison|versus|vs\.?|against|differ)", query, re.I)))
+    ev["comparison"] = bool(COMPARISON_RE.search(query))  # recomputed, not setdefault: folders saved before 2026-11-18 carry the old pattern's flag
     ev.setdefault("dates", {u: "2024-01-01" for by in ev["evidence"].values() for u in by})  # placeholder date: exercises the source-line shape
     if "spans" not in ev:  # pre-2026-11-14 runs: fill spans as pipeline.run now does, so the span comments are part of what the checks see
         ev["spans"] = {fid: {u: {q: quote_span(q, files.get(source_filename(u), "")) for q in ql} for u, ql in by.items()} for fid, by in ev["evidence"].items()}
@@ -71,7 +72,9 @@ def run_one(evpath: str) -> dict:
     # located share, computed on the saved files (runs before 2026-11-14 have no "spans")
     qs = [(q, files.get(source_filename(u), "")) for by in ev["evidence"].values() for u, ql in by.items() for q in ql]
     located = sum(quote_span(q, t) is not None for q, t in qs)
-    return {"quotes_located": located, "quotes_total": len(qs), "query": query[:70], "facets": len(c.facets), "sources": len(c.sources), "words": len(report.split()), "gaps": len(gaps), "fired": fired, "stats": stats, "extractive_units": sum(1 for u in written.values() for x in u if x.get("extractive")), "units": len(written)}
+    return {"quotes_located": located, "quotes_total": len(qs), "query": query[:70], "facets": len(c.facets), "sources": len(c.sources), "words": len(report.split()), "gaps": len(gaps), "fired": fired, "stats": stats,
+            # extractive_units counts extractive SENTENCES (name kept for old result files); whole-unit fallbacks are stats["fallbacks"]
+            "extractive_units": sum(1 for u in written.values() for x in u if x.get("extractive")), "units": len(written), "sentences": stats.get("sentences")}
 
 
 def main():
@@ -95,7 +98,10 @@ def main():
     tag = "replay_" + re.sub(r"\W+", "_", MODEL) if MODEL else "skeleton_matrix"
     json.dump(out, open(ROOT + f"/eval/writer_ab/{tag}.json", "w"), indent=1)
     if MODEL:
-        print("units", sum(r["units"] for r in ok), "fallbacks to verbatim", sum(r["extractive_units"] for r in ok), "repairs", sum(r["stats"].get("repairs", 0) for r in ok))
+        units, sents = sum(r["units"] for r in ok), sum(r["sentences"] or 0 for r in ok)
+        unit_fb, ext = sum(r["stats"].get("fallbacks", 0) for r in ok), sum(r["extractive_units"] for r in ok)
+        print("units", units, "whole-unit fallbacks", unit_fb, f"({unit_fb / max(units, 1):.0%})", "| sentences", sents, "extractive", ext,
+              f"({ext / max(sents, 1):.0%})", "| repairs", sum(r["stats"].get("repairs", 0) for r in ok))
 
 
 if __name__ == "__main__":

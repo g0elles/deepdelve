@@ -6,7 +6,8 @@ evidence.json (pipeline/run.py) -> build() -> compose() -> render(). Nothing her
 
 What the model may NOT do, and the verifier enforces per sentence: cite a source outside the unit's quotes, state a number
 (two or more digits) that none of its cited quotes contains, or introduce an abbreviation absent from the cited quotes and the
-request, or a capitalised name (an expansion, a coined term) that they do not contain. A unit that still fails after best-of-N and one repair falls back to its most request-relevant quote verbatim, so a report can be
+request, or a capitalised name (an expansion, a coined term) that they do not contain. After best-of-N and one repair, each sentence that still fails is replaced by the most request-relevant quote it cited, verbatim and in
+quotation marks (clean sentences stay); a unit with nothing left falls back to its most request-relevant quote. So a report can be
 unverified-fluent at worst, never unsupported."""
 import re
 from dataclasses import dataclass, field
@@ -20,6 +21,7 @@ LABELS = {"en": {
     "no_evidence": "No usable evidence was found for this topic.",
     "not_covered": "Not covered", "not_covered_words": "No facet covered these words of the request: {words}.",
     "comparison_line": "Comparison asked for: figures are listed per side; no like-for-like comparison was verified.",
+    "quote_open": "\u201c", "quote_close": "\u201d",
 }}
 MAX_SENTENCE_WORDS = 45
 MAX_QUOTE_CHARS = 14000   # per call: ~3.5k tokens, so the prompt always fits num_ctx (Ollama silently drops the TOP of an overflowing prompt, i.e. the instructions)
@@ -51,6 +53,7 @@ class Facet:
     name: str
     quotes: list[Quote] = field(default_factory=list)
     unanswered: list[str] = field(default_factory=list)
+    entity: str = ""  # planner's named entity; LAST: run_arms.py and tests build Facet positionally
 
 
 @dataclass
@@ -71,7 +74,7 @@ def build(evidence: dict, query: str) -> Compiled:
     spans = evidence.get("spans") or {}
     facets = []
     for f in evidence["facets"]:
-        fc = Facet(f["id"], f["name"], unanswered=list((evidence.get("unanswered_facets") or {}).get(f["id"], [])))
+        fc = Facet(f["id"], f["name"], unanswered=list((evidence.get("unanswered_facets") or {}).get(f["id"], [])), entity=f.get("entity") or "")
         for url, quotes in (evidence["evidence"].get(f["id"]) or {}).items():
             n = nums.setdefault(url, len(nums) + 1)
             sp = (spans.get(f["id"]) or {}).get(url) or {}
@@ -117,11 +120,50 @@ def _terms(t: str) -> set[str]:
     return {w for w in _fold(t).split() if len(w) >= 4}
 
 
+def _score(q: Quote, want: set[str]) -> int:
+    return len(_terms(q.text) & want)
+
+
 def _most_relevant(quotes: list[Quote], query: str, question: str) -> Quote:
     """The quote sharing the most words of four or more letters with the request and the unit question; ties keep plan order.
     ponytail: word overlap, no stemming or embeddings; a reranker score when the evidence starts carrying one."""
     want = _terms(query + " " + question)
-    return max(quotes, key=lambda q: len(_terms(q.text) & want))
+    return max(quotes, key=lambda q: _score(q, want))
+
+
+def _sides(c: "Compiled") -> list[tuple[str, set[str]]]:
+    """Comparison sides: distinct facet entities in plan order, each with the folded tokens (any length, so "gas" counts) no other side has.
+    ponytail: exact tokens, so "heat pump" and "heat pumps" are two sides and paraphrases never match; a lemmatiser if that bites."""
+    if not c.comparison:
+        return []
+    ents = list(dict.fromkeys(_fold(f.entity) for f in c.facets if _fold(f.entity)))
+    toks = {e: set(e.split()) for e in ents}
+    sides = [(e, toks[e] - set().union(*(toks[o] for o in ents if o != e))) for e in ents]
+    sides = [(e, w) for e, w in sides if w]
+    return sides if len(sides) >= 2 else []
+
+
+def _bridging(q: Quote, sides: list[tuple[str, set[str]]]) -> bool:
+    """The quote names at least two sides (every side word of each). A word match, not a verified like-for-like comparison."""
+    toks = set(_fold(q.text).split())
+    return sum(1 for _, w in sides if w <= toks) >= 2
+
+
+OVERVIEW_QUESTION = "What are the main findings that bear on the request?"
+
+
+def _overview_pool(c: "Compiled") -> tuple[list[Quote], str]:
+    """Overview quotes and question: up to 4 bridging quotes first (comparison requests), then each facet's two most relevant quotes."""
+    sides = _sides(c)
+    question = (f"How do {', '.join(e for e, _ in sides[:-1])} and {sides[-1][0]} compare on what the request asks? "
+                "Prefer quotes that compare them directly.") if sides else OVERVIEW_QUESTION
+    want = _terms(c.query + " " + question)
+    rank = lambda qs: sorted(qs, key=lambda q: -_score(q, want))  # stable: ties keep plan order
+    pool = rank([q for f in c.facets for q in f.quotes if sides and _bridging(q, sides)])[:4]
+    for f in c.facets:
+        pool += rank(f.quotes)[:2]
+    seen: set[str] = set()
+    return [q for q in pool if not (q.text in seen or seen.add(q.text))], question
 
 
 def names(text: str) -> list[str]:
@@ -283,30 +325,58 @@ def write_unit(llm, query: str, topic: str, question: str, quotes: list[Quote], 
             d2 = [d for s in again for d in check(s, qmap, query)]
             if len(d2) < len(best_defects):
                 best, best_defects = again, d2
-    if best is None or best_defects:
+    if best is not None and best_defects:
+        best = _replace_failing(best, quotes, qmap, query, question, stats)
+    if not best:  # every call failed, or no sentence survived
         stats["fallbacks"] = stats.get("fallbacks", 0) + 1
         q = _most_relevant(quotes, query, question)
         return [{"cites": [q.n], "text": q.text, "extractive": True}]
-    return [{**s, "extractive": False} for s in best]
+    return [{"extractive": False, **s} for s in best]
+
+
+def _replace_failing(draft: list[dict], quotes: list[Quote], qmap: dict[int, str], query: str, question: str, stats: dict) -> list[dict]:
+    """Keep the clean sentences; swap each failing one for the most relevant quote among its cited sources that no kept sentence cites and no
+    earlier swap used; drop it when there is none. A kept sentence can lose its referent ("This figure ...") when the one before it was
+    swapped: a coherence cost accepted because every shown text is verified or verbatim (design answer_quality rev 2, Alternative D)."""
+    bad = [bool(check(s, qmap, query)) for s in draft]
+    cited_by_kept = {n for s, b in zip(draft, bad) if not b for n in s.get("cites") or []}
+    used: set[str] = set()
+    out = []
+    for s, b in zip(draft, bad):
+        if not b:
+            out.append({**s, "extractive": False})
+            continue
+        cand = [q for q in quotes if q.n in (s.get("cites") or []) and q.n in qmap and q.n not in cited_by_kept and q.text not in used]
+        if cand:
+            q = _most_relevant(cand, query, question)
+            used.add(q.text)
+            out.append({"cites": [q.n], "text": q.text, "extractive": True})
+            stats["sentence_fallbacks"] = stats.get("sentence_fallbacks", 0) + 1
+        else:
+            stats["dropped_sentences"] = stats.get("dropped_sentences", 0) + 1
+    return out
 
 
 def compose(c: Compiled, llm, n_drafts: int = 1, lang: str = "en") -> tuple[dict, dict]:
     """Written sentences per unit ("overview" and each facet id) and run statistics."""
     stats = {"units": 0}
     written = {}
-    ov_quotes = [q for f in c.facets for q in f.quotes[:2]]
+    ov_quotes, ov_question = _overview_pool(c)
     if ov_quotes:
-        written["overview"] = write_unit(llm, c.query, "the whole request", "What are the main findings that bear on the request?", ov_quotes, 2, 4, n_drafts, stats)
+        written["overview"] = write_unit(llm, c.query, "the whole request", ov_question, ov_quotes, 2, 4, n_drafts, stats)
         stats["units"] += 1
     for f in c.facets:
         if f.quotes:
             written[f.id] = write_unit(llm, c.query, f.name, f.name, f.quotes, 1, 3, n_drafts, stats)
             stats["units"] += 1
+    stats["sentences"] = sum(len(v) for v in written.values())
     return written, stats
 
 
-def _sentences(items: list[dict]) -> str:
-    return " ".join(s["text"].rstrip() + "".join(f"[{n}]" for n in sorted(set(s["cites"]))) for s in items)
+def _sentences(items: list[dict], lang: str = "en") -> str:
+    o, c = LABELS[lang]["quote_open"], LABELS[lang]["quote_close"]
+    return " ".join((o + s["text"].strip() + c if s.get("extractive") else s["text"].rstrip()) + "".join(f"[{n}]" for n in sorted(set(s["cites"])))
+                    for s in items)
 
 
 def render(c: Compiled, written: dict, lang: str = "en") -> str:
@@ -314,11 +384,11 @@ def render(c: Compiled, written: dict, lang: str = "en") -> str:
     L = LABELS[lang]
     out = [f"# {c.query}", ""]
     if "overview" in written:
-        out += [f"## {L['overview']}", "", _sentences(written["overview"]), ""]
+        out += [f"## {L['overview']}", "", _sentences(written["overview"], lang), ""]
     for f in c.facets:
         out += [f"## {f.name}", ""]
         if f.id in written:
-            out += [_sentences(written[f.id]), "", f"**{L['evidence']}**", ""]
+            out += [_sentences(written[f.id], lang), "", f"**{L['evidence']}**", ""]
             # no span marker in the report: digits in it read as claim terms to the grounding checks (skeleton replay 2026-11-14, 4 of 33
             # reports); writer/verify_view.py maps each bullet back to Quote.span through evidence.json instead
             out += [f"- \"{q.text.strip()}\" [{q.n}]" for q in f.quotes]
