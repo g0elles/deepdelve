@@ -429,15 +429,17 @@ def test_judge_prompt():
         assert seen_p[-1] == "Facet: f\nQuestions: q1; q2\n\nCandidate sentences:\n0. t0\n1. t1\n\nReturn the numbers of candidates that state a specific fact (a date, number, named law, mechanism, or comparison) relevant to this facet. Skip vague or off-topic ones. Also skip a candidate about a differently-named variant or extension of this facet's subject (e.g. 'Paxos Commit' is not 'Paxos', 'Multi-Raft' is not 'Raft') unless the facet's own name or questions ask about that variant."
     finally:
         R.call_json = real
+    import pipeline.tune as tune
     got = []
-    real_judge = R.judge
+    real_judge, real_ce = R.judge, tune.ce_score
     try:
+        tune.ce_score = lambda q, t, m: 1.0  # no cross-encoder download (CI has no HF cache)
         R.judge = lambda model, f, cands: (got.append([t for _, t in cands]), None)[1]
         facets = [{"id": "f1", "name": "heat pump cost", "entity": "", "questions": ["heat pump cost"]}]
         seen = {"https://a.example": "Heat pumps cost $9,000 to install in cold climates. They last fifteen years."}
         R.select_ce("heat pump cost in cold climates", facets, seen, list(seen), {"f1": {}}, {}, {}, cfg={"judge": "m"})
     finally:
-        R.judge = real_judge
+        R.judge, tune.ce_score = real_judge, real_ce
     assert len(got) == 1 and got[0], got
 
 if __name__ == "__main__":
