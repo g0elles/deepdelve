@@ -29,7 +29,7 @@ def dump(folder: str) -> list[dict]:
         seen = {"file://" + os.path.basename(p): open(p, errors="ignore").read() for p in sorted(glob.glob(os.path.join(folder, "src_*.md")))}
     rec = []
     real = R.judge
-    R.judge = lambda model, facet, cands, query="": (rec.append((facet, [t for _, t in cands])), None)[1]
+    R.judge = lambda model, facet, cands: (rec.append((facet, [t for _, t in cands])), None)[1]
     try:
         R.select_ce(query, ev["facets"], seen, list(seen), {f["id"]: {} for f in ev["facets"]}, {}, {}, cfg={"judge": "recorder"})
     finally:

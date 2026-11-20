@@ -165,19 +165,15 @@ def bm25_top(sents: list[str], query: str, k: int, k1: float = 1.5, b: float = 0
     return sorted(scored, key=lambda z: -z[0])[:k]
 
 
-def judge(model: str, facet: dict, cands: list[tuple[str, str]], query: str = "") -> list[int] | None:
-    """Kept indexes; [] is a real "nothing relevant" verdict, None means the call failed. With `query`, the judge also sees the request and
-    skips candidates outside its scope. EXPERIMENTAL: no production caller passes it (its A/B failed 2026-11-18, see select_ce); empty
-    `query` is the shipped prompt. eval/judge_cases/ab_relevance.py compares the two."""
+def judge(model: str, facet: dict, cands: list[tuple[str, str]]) -> list[int] | None:
+    """Kept indexes; [] is a real "nothing relevant" verdict, None means the call failed. A request-aware scope rule was A/B-tested and
+    removed (2026-11-18 A/B, 2026-11-19 probe eval/judge_scope/probe_scope.py: fails on ornith-1.5:9b and gemma4, see select_ce)."""
     lst = "\n".join(f"{i}. {t}" for i, (_, t) in enumerate(cands))
-    p = (f"Request: {query}\n" if query else "") + (f"Facet: {facet['name']}\nQuestions: {'; '.join(facet['questions'])}\n\nCandidate sentences:\n{lst}\n\n"
+    p = (f"Facet: {facet['name']}\nQuestions: {'; '.join(facet['questions'])}\n\nCandidate sentences:\n{lst}\n\n"
          f"Return the numbers of candidates that state a specific fact (a date, number, named law, "
          f"mechanism, or comparison) relevant to this facet. Skip vague or off-topic ones. Also skip a candidate "
          f"about a differently-named variant or extension of this facet's subject (e.g. 'Paxos Commit' is not "
          f"'Paxos', 'Multi-Raft' is not 'Raft') unless the facet's own name or questions ask about that variant.")
-    if query:
-        p += (" Also skip a candidate about a different place, period, climate or condition, product, or population than the one the request "
-              "names, unless the request names none. A general statement with no such qualifier is not off-scope.")
     try:
         return [i for i in call_json(model, p, JUDGE_SCHEMA, think="minimal", timeout=120)["keep"] if 0 <= i < len(cands)]
     except Exception:
@@ -539,7 +535,7 @@ def select_ce(query, facets, seen, urls, evidence, owner, funnel, cfg=None):
         if cfg.get("judge") and ranked:
             # LLM judge: precision 0.67 / recall 0.68 vs CE-only 0.36 / 1.0 on the hand-labeled Spanish sheet. None on error -> keep all; [] is a real "nothing relevant" verdict.
             # no query: the scoped prompt failed its A/B (2026-11-18, ornith-1.5:9b: out-of-scope kept 32 -> 28 of 44, bar <= 16;
-            # in-scope kept 267 -> 225). judge(query=...) stays for eval/judge_cases/ab_relevance.py only.
+            # in-scope kept 267 -> 225). Scope parameter removed 2026-11-19.
             keep = judge(cfg["judge"], f, [(u, t) for _, u, t in ranked])
             ranked = [ranked[i] for i in keep] if keep is not None else ranked
         for sc, u, t in ranked[:PER_JUDGE]:
