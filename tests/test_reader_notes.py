@@ -18,6 +18,9 @@ assert len(notes) == 1 and "98.9" in notes[0] and "may be wrong" in notes[0], no
 # 2. 'by' where the source says 'to' (the backwards $57 billion), and the supported 'to' wording is silent
 assert any("57" in n and "'to'" in n for n in rn.figure_context("- Optimal congestion pricing could lower the costs of achieving the same performance by $57 billion [2].", SRC, ALL))
 assert rn.figure_context("- Optimal congestion pricing would lower the costs of achieving the same performance to $57 billion [2].", SRC, ALL) == []
+# 2b. thousands separator: the cited source's "$1,815" holds the claim's "$1,815" (2026-11-19 smoke false note), another page's "$1815" does not make it "wrong"
+S4 = {4: "In zone 4 the heat pump uses 10,084 kWh, so the mixed-climate home costs about $1,815 a year to run at 18 cents."}
+assert rn.figure_context("- A zone 4 heat pump home costs about $1,815 a year to run at 18 cents [4].", S4, dict(S4, o="The mixed-climate home costs $1815 a year.")) == []
 # 3. no inline citations; with citations, silent
 rep = "# T\n" + pad + "\n\n## Sources\n1. **[a](https://a.org/x)**\n2. **[b](https://b.org/y)**\n"
 assert len(rn.no_inline_citations(rep)) == 1

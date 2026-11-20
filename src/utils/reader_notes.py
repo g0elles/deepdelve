@@ -42,6 +42,12 @@ def norm(t: str) -> str:
     return re.sub(r"(\d)·(\d)", r"\1.\2", t.replace(" ", " ").replace("‑", "-").replace("‐", "-"))
 
 
+def _nocomma(t: str) -> str:
+    """Thousands separators out, as the report figure already is (`fig.replace(",", "")`): a source's "$1,815" must match a claim's "$1,815"
+    (2026-11-19 smoke: the cited source held it with the comma, another page without, so the note wrongly called the citation number wrong)."""
+    return re.sub(r"(?<=\d),(?=\d{3}(?!\d))", "", t)
+
+
 def _toks(s: str) -> set:
     return {w[:5] for w in re.findall(r"[a-z]{4,}", s.lower()) if w not in _STOP}
 
@@ -129,7 +135,7 @@ def figure_context(body: str, n2text: dict, all_sources: dict, radius: int = 160
                 txt = n2text.get(n)
                 if txt is None:
                     continue
-                src = norm(txt)
+                src = _nocomma(norm(txt))
                 low = src.lower()
                 pos = [m.start() for m in re.finditer(r"(?<![\d.])" + re.escape(fig) + r"(?![\d])", src)]
                 if not pos:
@@ -150,7 +156,7 @@ def figure_context(body: str, n2text: dict, all_sources: dict, radius: int = 160
             short = " ".join(claim.split())[:90]
             if not found_any:
                 if norm_all is None:
-                    norm_all = [norm(s) for s in all_sources.values()]
+                    norm_all = [_nocomma(norm(s)) for s in all_sources.values()]
                 elsewhere = sum(1 for s in norm_all if re.search(r"(?<![\d.])" + re.escape(fig) + r"(?![\d])", s))
                 if not elsewhere:
                     continue
