@@ -1,0 +1,678 @@
+{
+ "eval/heldout3_runs/h10": {
+  "f1": [
+   "**Current VAT Policy Structure**: Norway's VAT exemption for qualifying battery electric passenger vehicles (BEPVs) applies up to NOK 500,000 (approximately $43,000-45,000).",
+   "Last updated: August 4, 2025 Norway continues to refine its electricity subsidy framework to ensure affordability and predictability for households\u2014especially relevant for those investing in EV charging infrastructure.",
+   "The trailblazer for EV transition, Norway has been gradually introducing zero-emission vehicle incentives since the early 1990s, with a national goal that all new cars sold by 2025 should be zero-emission (electric or hydrogen)."
+  ],
+  "f2": [
+   "This exemption provides one of the most structurally significant incentives for EV purchase in the Netherlands, particularly for higher-priced vehicles where BPM would otherwise be substantial.",
+   "The Netherlands has subsidies for both public and private ZE-MHDV charging infrastructure planned for 2024; The Netherlands MIA program allows companies to receive an investment deduction of up to 45% of the amount invested in a charging point; The Netherlands also collaborates between CPOs, grid operators etc.",
+   "Introduction of Purchase Subsidy Scheme The Netherlands launched the Subsidy Scheme for Electric Passenger Cars (SEPP) for individuals and the Subsidy Scheme for Electric Vans (SEBA)."
+  ],
+  "f3": [
+   "Battery-electric cars took 54.3% of new passenger car registrations in Norway in 2020, 64.5% in 2021, 79.3% in 2022, 82.4% in 2023, 88.9% in 2024 and 95.9% in 2025, according to OFV, the Norwegian Road Information Authority.",
+   "Updated 5 Sep 2026 Norway\u2019s EV share reached 98.7% of new-car registrations in August 2026, and 95.9% across the whole of 2025: 172,233 of the 179,550 new passenger cars registered that year."
+  ],
+  "f4": [
+   "The Netherlands was the sixth-largest electric vehicle market in Europe in 2023, based on new registration volumes, with electric vehicles representing over 43 percent of the total car sales in the country that year.",
+   "Currently, the Netherlands has an EV sales penetration rate of 37% \u2013 more than double the global average of 18%."
+  ]
+ },
+ "eval/heldout3_runs/h11": {
+  "f1": [
+   "Updated 8 August 2026 Maternity leave in Germany combines three frameworks: Mutterschutz (14 weeks of statutory protection with full pay), Elternzeit (up to 3 years of parental leave with job protection), and Elterngeld (state allowance of 65-67 percent of pre-birth net income).",
+   "Updated 8 August 2026 Parental leave in Germany, called Elternzeit, gives each parent up to 3 years of job-protected leave per child, funded by the Elterngeld allowance at around 65 percent of net income."
+  ],
+  "f2": [
+   "**Parental leave in Sweden gives the two parents of a child 480 days of paid leave to share, one of the most generous systems in the world.** The pay comes from the state as parental benefit, or foraldrapenning, not from the employer, and the leave itself is a legal right protected by law.",
+   "Updated 12 August 2026 Parental leave in Sweden gives two parents 480 shared days per child, one of the world\u2019s most generous systems.",
+   "Sweden offers the longest paid maternity leave at 69 weeks or 480 days."
+  ],
+  "f3": [
+   "**The combined trajectory**: A typical Japanese family using the full statutory framework can expect approximately **14 weeks of maternity leave + 12 to 24 months of childcare leave** for the mother, plus up to **4 weeks of postpartum paternity leave + 12 months of childcare leave** for the father.",
+   "The duration extends to **1 year and 6 months**, then to **2 years**, in cases where the child cannot be enrolled in a licensed nursery or similar childcare facility (a documented condition that is common in Japanese metropolitan areas with high daycare demand).",
+   "Maternity leave in Japan is a system most foreign employers find more generous in practice than the headline 67% rate suggests, because the combination of tax exemption and waived social insurance means effective replacement income often reaches 80% of net pre-leave pay."
+  ]
+ },
+ "eval/heldout3_runs/h12": {
+  "f1": [
+   "This means that if Raft group is missing the leader, a leader election is initiated approximately after the time interval of `raft-base-tick-interval` \\* `raft-election-timeout-ticks`.",
+   "Raft uses the election process to prevent a candidate from winning an election unless its log is at least as up-to-date as a majority of peers in the cluster ."
+  ],
+  "f2": [
+   "Paxos alone does not specify how to choose a leader\u2014without a distinguished proposer, multiple nodes may try to propose simultaneously, leading to livelock.",
+   "**Multi-Paxos** optimizes this by electing a distinguished proposer (leader) who can skip Phase 1 for subsequent proposals.",
+   "Flexible Paxos generalises Paxos's \"majority quorum\" to two intersecting quorum sets `Q1` (used in phase 1, leader election) and `Q2` (used in phase 2, accepting writes); the only requirement is `Q1 \u2229 Q2 \u2260 \u2205`."
+  ],
+  "f3": [
+   "(3) We show that the original Raft protocol is indeed In short, log replication is in four steps: sending requests a special case of our NB-Raft with window size zero.",
+   "* Raft performs a consistency check with the AppendEntries RPC to guarantee the second property above."
+  ],
+  "f4": [
+   "Agreement for each \"slot\" in the log is reached separately by a different instance of Paxos, and servers can then play the log forward in order, executing commands on their own local copy of the application, as long as each command they execute is \"stable\" (i.e., agreement has been reached for that command and all preceding commands)."
+  ],
+  "f5": [
+   "The proposed NB-Raft is implemented as Tostudytheresponsetimeandavailability,Raftismodeled the consensus protocol of Apache IoTDB, a commodity time with Stochastic Activity Networks [26] in the context of series database management system, and deployed in Alibaba an SDN controller cluster [14].",
+   "**If you're choosing a consensus algorithm for a new system, pick Raft.** With ~100 open source implementations and a track record in CockroachDB, TiDB, and Consul, it's the safe bet.",
+   "// - etcd (Raft): Kubernetes, distributed config // - ZooKeeper (Zab/Paxos): Kafka, HBase, Hadoop // - Consul (Raft): Service mesh, service discovery ``` For system design interviews, you rarely need to implement consensus yourself."
+  ],
+  "f6": [
+   "Several prominent systems use Paxos: Google's Chubby (lock service), Google Spanner (distributed database), CockroachDB, TiKV, and etcd all use consensus protocols derived from or inspired by Paxos.",
+   "Chubby (Google\u2019s lock service) and many distributed databases use variants of Paxos, but most production implementations differ from the textbook algorithm in subtle ways."
+  ]
+ },
+ "eval/heldout3_runs/h13": {
+  "f1": [
+   "Psilocybin activates serotonin 2A receptors directly and intensely, triggering a rapid plasticity cascade that includes glutamate release, BDNF expression, and dendritic spine growth.",
+   "Psilocybin exerts its effects primarily through activation of the 5-HT2A serotonin receptor, which is densely expressed in the neocortex.",
+   "Psilocybin induces rapid and sustained growth of dendritic spines in the frontal cortex, primarily through activation of serotonin 5-HT2A receptors (Zhou et al., 2025; Shao et al., 2021)."
+  ],
+  "f2": [
+   "For severe or treatment-resistant cases, the robust clinical evidence from the **COMPASS Pathways Phase 2b trial** (NCT03775200) demonstrates that a single 25mg dose of COMP360 psilocybin can lead to significant and lasting reductions in depression symptoms, with 30% of patients achieving remission at week 3 [4].",
+   "The **COMPASS Pathways Phase 2b trial**, the largest of its kind for treatment-resistant depression (TRD), involved 233 patients and demonstrated that a single 25mg dose of COMP360 psilocybin led to significant antidepressant effects [4] [7].",
+   "Initial phase 2 clinical trials of psilocybin given alongside psychological support for major depression and treatment-resistant depression (TRD) demonstrated encouraging signs of basic safety, further confirmed by a large study in groups of healthy volunteers."
+  ],
+  "f3": [
+   "Recent Phase 3 data for its lead compound, COMP360 (synthetic psilocybin), demonstrated a \u201chighly statistically significant\u201d antidepressant effect in patients with treatment-resistant depression (TRD).",
+   "In the Phase 3 COMP006 trial, 39% of patients with TRD who received two fixed doses of COMP360 achieved a clinically meaningful reduction in depression severity by week six, according to Compass\u2019 Tuesday release.",
+   "(2024) provided the most comprehensive and methodologically sound assessment of adverse events across both Phase 2 and Phase 3 trials [24]."
+  ],
+  "f4": [
+   "A single psilocybin administration dosing day occurs in a hospital setting, with preparatory psychological support sessions in the weeks before dosing and psychological integration sessions in the weeks after.",
+   "Most psilocybin studies for depression utilized moderate to high doses, typically in the range of 10\u201330 mg."
+  ],
+  "f5": [
+   "According to the study (24) conducted by Goodwin et al., 8 out of 154 participants (5.2%) experienced serious adverse events within a timeframe ranging from 2 days to 3 weeks after consuming moderate doses (10-30mg) of psilocybin, including suicidal ideation (2.6%), intentional self-harm (1.9%), and hospitalization (0.6%).",
+   "From 3 to 12 weeks after taking psilocybin, 7 out of 154 subjects (4.5%) in the psilocybin group (10-30mg) had serious adverse events, while only 1 out of 79 subjects (1.3%) in the low-dose psilocybin group (1mg) had such events."
+  ]
+ },
+ "eval/heldout3_runs/h14": {
+  "f1": [
+   "The proximate cause of the Great Irish Famine (1846-52) was the fungus phythophtera infestans (or potato blight), which reached Ireland in the fall of 1845.",
+   "The effect of Phytophthora infestans was most pronounced in Ireland between 1845 and 1857, killing most of the potato crop and causing over one million people to starve to death.",
+   "When the blight struck in 1845, it quickly spread throughout Ireland, devastating the potato harvest for several years in a row."
+  ],
+  "f2": [
+   "Mass starvation and emigration in Ireland, 1845-1852, following failure of the potato crop \u2014 cited by Henry George as evidence that famine amid an exporting economy was a land-tenure artifact, not a Malthusian population problem."
+  ],
+  "f3": [
+   "\"Great Famine (Ireland),\" Wikipedia, retrieved 2026-07-11 \u2014 used for the dates (1845\u20131852), the potato blight cause, death toll (~1 million) and emigration (1\u20132 million) estimates, the population decline from ~8.5 million to ~4.4 million, and the continuation of food exports during the famine.",
+   "In 2016, the population of Ireland for the first time exceeded the population recorded in the Census of 1851, the first census immediately after the Great Famine, when the population of the island was recorded at 6,575,000.",
+   "Ireland's population fell from 8.2 million (1841) to roughly 6 million (1851) - close to 3 million lost to death and emigration."
+  ],
+  "f4": [
+   "Altogether, about a million people in Ireland are reliably estimated to have died of starvation and epidemic disease between 1846 and 1851, and some two million emigrated in a period of a little more than a decade (1845-55).",
+   "But during the worst of the famine, emigration reached somewhere around 250,000 in one year alone, with western Ireland seeing the most emigrants."
+  ],
+  "f5": [
+   "In the case of the 1846\u00e2\u20ac\u201c1849 Irish Famine, the response of Tory government head Sir Robert Peel was to purchase some foreign maize for delivery to Ireland, and to repeal the Corn Laws, which prohibited imports of the much cheaper foreign grain to Ireland.",
+   "In March, Peel set up a programme of public works in Ireland, but the famine situation worsened during 1846, and the repeal of the Corn Laws in that year did little to help the starving Irish; the measure split the Conservative Party, leading to the fall of Peel's ministry."
+  ]
+ },
+ "eval/heldout3_runs/h15": {
+  "f1": [
+   "**International negotiations for a global treaty to end plastic pollution, held from August 5 to 14, 2025, in Geneva, ended in failure."
+  ],
+  "f2": [
+   "In particular, Angola, Cook Islands, Fiji, Maldives, Mauritius, New Zealand, Nigeria, Panama, Palau, Rwanda, Samoa, Senegal, Tuvalu, and Uruguay demonstrated their commitment to leading the world towards a strong plastics treaty that centers human rights and environmental justice, and many specifically called for plastic production cuts.",
+   "Negotiations were influenced by blocs, including the High Ambition Coalition to End Plastic Pollution and a similar group of producers; the latter was active on the floor (e.g., Kuwait speaking for the group; supported by Russia, Malaysia, Iran, Morocco, India, Cuba, and Kazakhstan)."
+  ],
+  "f3": [
+   "The current treaty draft text, shared with delegates on Friday, excludes key civil society demands, such as a clear and binding limit on plastic production and a ban or phaseout of the most dangerous plastics and chemicals."
+  ],
+  "f5": [
+   "* Negotiators have until the end of 2024 to agree to a UN Plastics Treaty that will end plastic pollution.",
+   "The next informal meeting of heads of delegation on a global plastics treaty will take place in Bangkok, Thailand, from 27 to 30 September."
+  ],
+  "f6": [
+   "A key tension point in the negotiations thus far is over including ambitious and binding plastic production cuts in the final treaty.",
+   "Negotiators also faced obstacles that continue to threaten the integrity of the agreement: Experts emphasized that plastic, petrochemical, and fossil fuel industry presence and influences on the negotiations and during INC-3 are a primary concern."
+  ]
+ },
+ "eval/heldout3_runs/h16": {
+  "f1": [
+   "* The current population of Poland is 37,712,161 as of Saturday, July 25, 2026, based on Worldometer's elaboration of the latest United Nations data1.",
+   "* Poland 2026 population is estimated at 37,843,188 people at mid-year."
+  ],
+  "f2": [
+   "Rank #125 of 217 countries Urban Population (% of Total) in Poland stood at 60.1% in 2025, ranking #125 of 217 countries.",
+   "Poland recorded 60.1% in 2025 (source: World Bank)."
+  ],
+  "f3": [
+   "In 2024 the **life expectancy in Poland** increased to 78.5 years."
+  ],
+  "f4": [
+   "Real Time Statistics 19,965,519 Current Population 60,789 Net population growth so far this year 124,992 Births so far this year 99,754 Deaths so far this year 395 Births so far today 315 Deaths so far today As of July 1, 2025, Chile's population was 19,859,921, representing approximately 0.24% of the total world population.",
+   "According to the 2024 Census, the population of Chile was 18,480,432, meaning a growth of 5.2% since the 2017 Census, however, since the 2024 was a de jure census, growth between 2017 and 2024 can differ, according to the Chilean National Institute of Statistics, comparing both census by de jure results, the population growth between both censuses was 6.7%."
+  ],
+  "f5": [
+   "Chile recorded 89.2% in 2025 (source: World Bank).",
+   "Currently, 85.1% of the population of Chile is urban (16,974,156 people in 2026)"
+  ],
+  "f6": [
+   "Santiago \u00b7 Americas \u00b7 South America Population 20.2M World Bank, 2025 Area 756,102 km\u00b2 GDP $330.3B World Bank, 2025 GDP Per Capita $16,709.889 World Bank, 2025 Life Expectancy 81.2 yrs World Bank, 2025 Capital Santiago Chile is a country located in South America, with its capital in Santiago.",
+   "Life expectancy in Chile is 81.2 years, 9.2 years above the global average of 72 years (World Bank, 2025).",
+   "In 2024 the **life expectancy in Chile** increased to 81.36 years."
+  ]
+ },
+ "eval/heldout3_runs/h17": {
+  "f1": [
+   "El sistema de transporte de Medell\u00edn se caracteriza por un alto grado de integraci\u00f3n f\u00edsica, operacional y tarifaria bajo el Sistema Integrado de Transporte del Valle de Aburr\u00e1 (SITVA), que conecta a los diez municipios del \u00e1rea metropolitana.",
+   "La red est\u00e1 conformada por modos de transporte masivo, como el Metro de Medell\u00edn, el Tranv\u00eda de Ayacucho, las l\u00edneas de Metrocable\") y el sistema de buses de tr\u00e1nsito r\u00e1pido Metropl\u00fas, adem\u00e1s de buses urbanos e intermunicipales, taxis, transporte a\u00e9reo y servicios complementarios."
+  ],
+  "f2": [
+   "The C\u00edvica card is the contactless tap card that works across all Metro de Medell\u00edn modes \u2014 Line A, Line B, all Metrocable lines, the Tranv\u00eda, and the integrated electric buses.",
+   "En Medell\u00edn hay dos tipos de buses que debes distinguir: los **integrados**, que pertenecen al sistema del metro, y los **convencionales**, operados por empresas particulares."
+  ],
+  "f3": [
+   "Se espera movilizar, seg\u00fan dijo el alcalde de Medell\u00edn, hasta 30.000 pasajeros todos los d\u00edas en ambas direcciones y unos 2.700 cada hora por sentido."
+  ],
+  "f4": [
+   "Since starting operations in 2004, it carries 30,000 people daily and is operationally integrated into the rest of Medell\u00edn's mass transit system (SITVA), which includes the overground Metro, the bus rapid transit system (BRT), and a tramway line (opened in 2016).",
+   "As of 2021, the Medell\u00edn Metrocable system has six lines: Line H, Line J, Line K, Line L (Cable Arvi), Line M, and Line P.",
+   "Se espera movilizar, seg\u00fan dijo el alcalde de Medell\u00edn, hasta 30.000 pasajeros todos los d\u00edas en ambas direcciones y unos 2.700 cada hora por sentido."
+  ],
+  "f5": [
+   "Se espera movilizar, seg\u00fan dijo el alcalde de Medell\u00edn, hasta 30.000 pasajeros todos los d\u00edas en ambas direcciones y unos 2.700 cada hora por sentido."
+  ]
+ },
+ "eval/heldout3_runs/h18": {
+  "f1": [
+   "The idea has been rejected in the United States and elsewhere, despite widely reported successes in cities like London and Stockholm, where implementation of congestion pricing has produced reductions in car traffic of up to 30 percent, not to mention other successful case studies in Singapore and Milan.",
+   "Though initially intended only to raise revenues to finance road infrastructure, the urban toll ring at Oslo created an unintended congestion pricing effect, as traffic decreased by around 5%."
+  ],
+  "f2": [
+   "They looked at anonymized, aggregated data from trips taken with Google Maps and found that average traffic speeds inside the zone increased by 15 percent in the first two months of congestion pricing.",
+   "The environmental assessment also found that, as a result of congestion pricing, traffic may increase in other parts of the city, like the Bronx, where neighborhoods like the South Bronx already suffer from disproportionately high rates of asthma."
+  ],
+  "f3": [
+   "NEW YORK \u2014 Friday, the New York City Health Department released its first comprehensive evaluation of the Congestion Relief Zone Tolling Program\u2019s impact on neighborhood air quality, determining that the city\u2019s air quality remained stable or improved slightly in the first year of congestion pricing, continuing a 20-year trend of improving air quality and declining pollution.",
+   "Effects of Congestion Pricing on Emissions and Health Reductions in vehicle emissions after the introduction of priced lanes have been observed in San Diego, Minneapolis (Burt, Sowell, Crawford and Carlson 2010), London, Stockholm, and Singapore (Percoco 2015).",
+   "Here we show that New York City\u2019s congestion pricing policy significantly reduced ambient air pollution across the broader New York metropolitan area, with especially pronounced effects inside the new Congestion Relief Zone (CRZ)."
+  ],
+  "f4": [
+   "A 2019 study of congestion pricing in Stockholm between 2006 and 2010 found that in the absence of congestion pricing that Stockholm's air would have been 5 to 15 percent more polluted between 2006 and 2010\", and that young children would have suffered substantially more asthma attacks."
+  ]
+ },
+ "eval/heldout4_runs/h19": {
+  "f1": [
+   "Unlike access to other digital public services, where Finland scores among the best in the EU (90.6 out of 100 for the digitalisation of public services for citizens against 79.4 out of 100 in the EU), the accessibility of e-health records (82.6 out of 100) is only slightly above the EU average (79.1 out of 100).",
+   "In Finland, Digital IDs are issued by trusted service providers, including banks (e.g., Finnish Bank IDs), mobile operators, and the government."
+  ],
+  "f2": [
+   "Estonia Component 3 'Digital state' Estonia is a front-runner in eGovernment, with all central government services being accessible online via the X-road system, a digital information infrastructure that securely connects hundreds of organisations and provides over 3 000 e-services.",
+   "**Estonia\u2019s Digital Agenda 2030 was adopted by the Estonian Ministry of Economic Affairs and Communications in 2021.** It includes a vision and action plan to develop the Estonian economy, state and society with digital technology over the next decade."
+  ],
+  "f3": [
+   "93.7% of the population in Finland used the internet in 2024, according to World Bank World Development Indicators data."
+  ]
+ },
+ "eval/heldout4_runs/h19_gate": {
+  "f1": [
+   "**Comprehensive Digital Services:** Finland has developed extensive digital platforms for services like tax filing, healthcare, social security, business registration, and education.",
+   "The Government is also building customer-centric cross-sectoral service models for people and companies arriving in Finland."
+  ],
+  "f2": [
+   "Estonia\u2019s new digital strategy for the period 2030 will be the cornerstone of future digital developments in the country.",
+   "Estonia Component 3 'Digital state' Estonia is a front-runner in eGovernment, with all central government services being accessible online via the X-road system, a digital information infrastructure that securely connects hundreds of organisations and provides over 3 000 e-services.",
+   "air defence and ammunition production) before shifting focus to more advanced capabilities and emerging disruptive technologies.48 Lessons from the Estonian case Estonia has invested heavily in digital capabilities for its civilian population and government, recently making 100% of government services digital."
+  ],
+  "f3": [
+   "E-government and electronic identification Statistics Explained Data extracted in March 2026 Planned article update: March 2027 Highlights In 2025, 72% of EU citizens interacted with public authorities online in the preceding 12 months, with top users in Denmark (98%), the Netherlands, Finland and Sweden (all 96%).",
+   "Unlike access to other digital public services, where Finland scores among the best in the EU (90.6 out of 100 for the digitalisation of public services for citizens against 79.4 out of 100 in the EU), the accessibility of e-health records (82.6 out of 100) is only slightly above the EU average (79.1 out of 100)."
+  ],
+  "f4": [
+   "* Internet use was 92% in 2024, giving Estonia near-universal digital reach.",
+   "The 2022 Digital Economy and Society Index (DESI) by the European Commission ranks Estonia first in Digital Public Services among 27 European Union (EU) countries."
+  ]
+ },
+ "eval/heldout4_runs/h19_gate2": {
+  "f1": [
+   "PDF generated on 22/10/2026 from Finland's 2026 Digital Decade Country Report (https://digital-strategy.ec.europa.eu/en/factpages/\ufb01nlands-2026-digital-decade-country-report)",
+   "Finland\u2019s collaboration with the Estonian government involves the integration of the data exchange layer, meaning that Finnish and Estonian citizens can mutually access digital services in either nation (this can be seen in figure 2, where service consumers and service providers can communicate across borders).",
+   "2.3.2 eID and Trust Services Government Programme of Prime Minister Marin As part of the Government Programme of Prime Minister Marin, Finland initiated a National Digital Identification Development Programme aiming to build a national solution for digital identification of Finnish citizens and foreigners using Finnish digital services."
+  ],
+  "f2": [
+   "Looking ahead to 2026, the **Digital Society Estonia 2026 with full e-Residency** presents itself as a sophisticated ecosystem where **digital identity**, data exchange, cybersecurity, and innovation form a coherent whole.",
+   "Launched in 2001 in the aftermath of Estonia\u2019s post-Soviet reconstruction, X-Road now facilitates over 2.2 billion transactions annually and powers more than 3,000 digital services ranging from e-health and taxation to e-voting.",
+   "Estonia\u2019s became the world\u2019s first \u201cdigital by default\u201d government, with 100% of public services available online (and fully paperless)."
+  ],
+  "f3": [
+   "* There were **5.52 million** individuals using the internet in Finland at the start of 2025, when online penetration stood at **98.2 percent**."
+  ],
+  "f4": [
+   "* There were **1.26 million** individuals using the internet in Estonia at the start of 2025, when online penetration stood at **93.2 percent**."
+  ]
+ },
+ "eval/heldout4_runs/h19_gate3": {
+  "f1": [
+   "\u201cFinland will gradually shift to making digital services the primary channel for accessing the services of public authorities."
+  ],
+  "f2": [
+   "Estonia\u2019s new digital strategy for the period 2030 will be the cornerstone of future digital developments in the country.",
+   "More than 2,300 public and private services use x-road, and the digital signature has been used almost 350 million times by Estonia\u2019s population of 1.3 million.",
+   "The e-Estonia ecosystem includes over 3,000 government services available digitally, including healthcare records (99% digitized), tax filing (95% filed electronically in under 5 minutes), and digital voting (46% of voters used e-voting in 2019 elections)."
+  ],
+  "f3": [
+   "Electronic ID (eID) usage varies in the EU, with 52% of citizens using it to access services \u2013 ranging from over 90% in Denmark, Finland, the Netherlands, Sweden and Estonia, to 15% or less in Germany, Slovakia, Bulgaria and Romania."
+  ],
+  "f4": [
+   "At the forefront of such adoption is Estonia running its system since 2002 with 99% citizen adoption.",
+   "Estonia claims to lead the world in e-Governance, with over 99% of government services available online."
+  ]
+ },
+ "eval/heldout4_runs/h20": {
+  "f1": [
+   "The regulations regarding paid leave in France are set in the Labor code as a minimum of five weeks\u2019 (25 working days) paid holiday per year, following completion of one months\u2019 probation, in addition to public holidays.",
+   "Employees in France benefit from a statutory minimum of 25 days annual leave, which exceeds the requirements in many other countries and reflects the nation's commitment to work-life balance."
+  ],
+  "f2": [
+   "* **Immediate Accrual:** In France, paid leave starts accruing almost immediately after the employee is hired, at a rate of 2.5 days per month."
+  ],
+  "f3": [
+   "* 30 calendar days of paid annual leave, a mandatory one-third vacation bonus, and double-pay penalties for missed leave windows make Brazil\u2019s vacation laws exceptionally employer-sensitive.",
+   "Under the CLT, the baseline annual leave entitlement in Brazil is 30 calendar days for every 12-month acquisition period of service."
+  ],
+  "f4": [
+   "Thirty calendar days of leave, paid at normal remuneration plus a one-third supplement, is the Brazilian benefit that reshapes a budget built elsewhere.",
+   "Vacation pay in Brazil therefore comprises two components: (1) full monthly salary for the vacation period, and (2) an additional payment equal to one-third of that salary."
+  ],
+  "f5": [
+   "Employees in South Korea benefit from a statutory minimum of 15 days annual leave, which exceeds the requirements in many other countries and reflects the nation's commitment to work-life balance.",
+   "South Korea requires a minimum of 15 days of paid annual leave per year."
+  ]
+ },
+ "eval/heldout4_runs/h21": {
+  "f1": [
+   "LSM trees append writes sequentially to memory and flush immutable SSTables to disk; repeated background merge-sorting of overlapping files creates high Write Amplification Factors (WAF) that can trigger write stalls.",
+   "* **Write amplification**: B\u2011Trees incur modest amplification (1\u20132\u00d7) regardless of RAM; LSM Trees can amplify writes 5\u201310\u00d7, but larger MemTables and smarter compaction can mitigate the effect."
+  ],
+  "f2": [
+   "For example, if a B+-tree modifies a 32 B record within one 8 KB page and then flushes this dirty page from memory to storage, the write amplification will be 8 KB/32 B=256.",
+   "In comparison, the write amplification of B--tree is 28 under 8 KB page size (which is only 73.7% of RocksDB\u2019s write amplification) and 36 under 1 6KB page size (which is almost the same as RocksDB)."
+  ],
+  "f3": [
+   "LSM trees, while excellent for write bursts, must merge several on\u2011disk components during reads, adding latency that hurts read\u2011heavy workloads.",
+   "* **Latency\u2011critical workloads**: Empirical data from production systems (e.g., Uber, Stripe) show B\u2011trees delivering sub\u2011millisecond read latencies where LSM trees incur higher tails.",
+   "In comparison, RocksDB has noticeably worse range scan throughput performance than the other two, because range scan invokes reads over all the levels in LSM-tree, leading to a high read amplification."
+  ],
+  "f4": [
+   "* **Read latency** favors B\u2011trees; LSM reads may involve multiple level scans unless Bloom filters and caching are aggressively tuned.",
+   "7(a), normal B+-tree (i.e., WiredTiger) has the best point read TPS (transactions per second) performance, while RocksDB and B--tree achieve almost the same random point read TPS performance."
+  ],
+  "f5": [
+   "+ **LSM-tree databases (Cassandra, ScyllaDB, RocksDB):** Excellent for write-heavy, append-only workloads, but be mindful of WA during heavy updates and deletions which trigger more compactions.",
+   "Log\u2011Structured Merge (LSM) trees are the backbone of many production\u2011grade storage engines\u2014Cassandra, ScyllaDB, RocksDB, LevelDB, and even Google Cloud Spanner\u2019s underlying storage.",
+   "Learn the internals of how an LSM creates and manages SSTs A log-structured merge-tree (LSM tree)\") is a data structure and storage architecture used by RocksDB, the underlying key-value store of DocDB."
+  ],
+  "f6": [
+   "B-trees were invented in 1972 (Bayer and McCreight at Boeing) for exactly this problem; almost every relational database uses one \u2014 Postgres, MySQL/InnoDB, SQLite, SQL Server \u2014 for its primary storage."
+  ]
+ },
+ "eval/heldout4_runs/h22": {
+  "f1": [
+   "The fundamental concept is elegant in its simplicity: GLP-1 receptor agonism reduces energy intake through centrally mediated appetite suppression and delayed gastric emptying, while glucagon receptor agonism increases energy expenditure through enhanced hepatic fat oxidation, thermogenesis, and systemic metabolic rate.",
+   "Pure GLP-1 receptor agonists like semaglutide drive weight loss primarily through appetite suppression, with relatively modest effects on energy expenditure.",
+   "In humans, GLP-1 receptor agonists, such as semaglutide, improve glycemic control through increased glucose-dependent insulin secretion, suppression of glucagon release, delayed gastric emptying, and promotion of satiety and weight loss."
+  ],
+  "f2": [
+   "The doses studied in clinical trials range from 1mg to 12mg, with 12mg being the highest dose tested and producing the greatest weight loss (-24.2% at 48 weeks in Phase 2, -28.7% at 68 weeks in Phase 3)."
+  ],
+  "f3": [
+   "GLP-1 cardiovascular trials report MACE as the primary endpoint: SELECT (semaglutide in obesity) showed 20% relative risk reduction, SUSTAIN-6 (semaglutide T2D) 26%, LEADER (liraglutide) 13%.",
+   "The primary objective of the trial was to demonstrate that Mounjaro provided a non-inferior reduction in the risk of major adverse cardiovascular events (MACE-3)\u2014a composite of cardiovascular death, heart attack or stroke\u2014compared to Trulicity.",
+   "Safety data from the trial indicated that the adverse event profile was consistent with known effects of GLP-1 receptor agonists, mostly gastrointestinal in nature and ranging from mild to moderate severity."
+  ],
+  "f4": [
+   "In the survodutide Phase 2 program, isolated cases of pancreatitis were reported, but the incidence was low and comparable to background rates observed with other GLP-1 receptor agonists."
+  ],
+  "f5": [
+   "The trial design incorporated a 20-week dose-escalation phase with biweekly dose increments, followed by a 26-week dose-maintenance phase at the assigned target dose.",
+   "Based on this finding, all Phase 3 TRIUMPH trials use 2 mg as the universal starting dose, with the first escalation to 4 mg occurring at week 5.",
+   "The best survodutide dosage for glp-1/glucagon research in Phase 3 MASH trials used this schedule: 2.4mg weekly for four weeks, 4.8mg for four weeks, then 6.0mg or 9.6mg as the maintenance dose depending on study arm."
+  ]
+ },
+ "eval/heldout4_runs/h23": {
+  "f1": [
+   "The **1918\u20131920 flu pandemic**, also known as the **Great Influenza epidemic** or by the misleading name **Spanish flu**, was an exceptionally deadly global influenza pandemic caused by the H1N1 subtype of the influenza A virus.",
+   "The 1918 flu pandemic, commonly referred to as the Spanish flu, was a category 5 influenza pandemic caused by an unusually severe and deadly Influenza A virus strain\") of subtype H1N1.",
+   "These sequence data also suggested that the 1918 pandemic virus likely derived from a wild waterfowl influenza A virus that had somehow directly or indirectly switched hosts to become a human- adapted virus."
+  ],
+  "f3": [
+   "A 2009 study in *Influenza and Other Respiratory Viruses* based on data from fourteen European countries estimated a total of 2.64 million excess deaths in Europe attributable to the Spanish flu during the 1918\u20131919 phase of the pandemic.",
+   "In Europe, the excess mortality rate associated with the 1918\u201319 influenza pandemic has been estimated at 1.1%, representing an 86% elevation of all-cause mortality relative to background death rate in non-pandemic periods [18]."
+  ],
+  "f4": [
+   "population, we calculate that the pandemic was responsible for 615,000 American deaths, similar to previous estimates of pandemic severity (Crosby, 1989, p.",
+   "The 1918 flu pandemic ultimately claimed the lives of an estimated 675,000 Americans, making it one of the deadliest events in U.S."
+  ],
+  "f5": [
+   "The 2016 study found that the low flu mortality rate (an estimated one in a thousand) recorded among the Chinese and Southeast Asian workers in Europe suggests that the Asian units were not different from other Allied military units in France at the end of 1918 and, thus not a likely source of a new lethal virus."
+  ],
+  "f6": [
+   "For example, Murray and colleagues used vital registry data across the world to estimate potential global pandemic influenza mortality but deliberatively excluded African mortality data from the global estimates.[3]Moreover, they still maintained that one third of the global 1918 influenza pandemic deaths occurred within sub-Saharan Africa."
+  ]
+ },
+ "eval/heldout4_runs/h24": {
+  "f2": [
+   "Sitting inside the European Commission, the AI Office is the Act\u2019s central implementation and enforcement body.",
+   "The enforcement of the AI Act is shared between the European Commission\u2019s AI Office, the European Data Protection Supervisor, and national competent authorities designated by the Member States."
+  ],
+  "f3": [
+   "High-risk Annex III standalone systems now face a December 2, 2027 deadline (moved from August 2, 2026).",
+   "**2 December 2027 \u2014 High-risk AI, Annex III standalone systems.** Providers must have completed conformity assessments, implemented a QMS, compiled technical documentation, registered in the EU AI database, and affixed CE marking."
+  ],
+  "f4": [
+   "**As of August 24, 2026 \u2014 22 days into the enforcement era \u2014 no fine, formal investigation, or enforcement decision under the EU AI Act has been publicly confirmed by the European AI Office or any national competent authority.** The AI Office has stated that technical compliance dialogues are its preferred initial tool.",
+   "It is the central coordinating body for AI Act implementation at EU level, while national market surveillance authorities enforce obligations on providers and deployers of non-GPAI systems.",
+   "What are the maximum fines under the EU AI Act?+ Up to \u20ac35 million or 7 percent of global turnover (higher of the two) for prohibition violations; \u20ac15 million or 3 percent for other violations; \u20ac7.5 million or 1 percent for misleading-information offences."
+  ],
+  "f5": [
+   "The AI Act applies to any organization whose AI systems are used in the EU or produce outputs affecting EU residents \u2014 regardless of where the company is headquartered.",
+   "The EU AI Act delay pushes Annex III high-risk compliance to December 2027, deferring \u20ac800K to \u20ac2M in compliance spend for Series A AI startups."
+  ],
+  "f6": [
+   "!EU AI Act Enforcement 2026: The Post-Omnibus Guide The May 7 Omnibus deal changed the August 2026 timeline.",
+   "The European Commission published its final Guidelines on the transparency obligations under Article 50 of the EU AI Act on July 20, 2026, replacing the draft version published in May 2026.",
+   "Complete EU AI Act compliance timeline updated for the 2026 Digital Omnibus amendments."
+  ]
+ },
+ "eval/heldout4_runs/h25": {
+  "f1": [
+   "GDP per Capita in Portugal averaged 14314.16 USD from 1960 until 2025, reaching an all time high of 22851.12 USD in 2025 and a record low of 4066.97 USD in 1960.",
+   "According to the IMF World Economic Outlook (October 2024), Portugal's nominal GDP per capita in 2024 is projected to be around $29,341 at current prices."
+  ],
+  "f2": [
+   "* There were **9.27 million** individuals using the internet in Portugal at the start of 2025, when online penetration stood at **89.0 percent**."
+  ],
+  "f3": [
+   "Portugal's fertility rate is currently 1.41 children per woman, which is significantly below the replacement level."
+  ],
+  "f4": [
+   "GDP per Capita in Vietnam averaged 1819.28 USD from 1984 until 2025, reaching an all time high of 4308.21 USD in 2025 and a record low of 595.49 USD in 1984."
+  ],
+  "f5": [
+   "What is Vietnam's internet penetration rate (%) in 2024?\u25be Vietnam's internet penetration rate (%) is 84.15 % in 2024, according to Individuals using the Internet (% of population), World Bank (WB)."
+  ],
+  "f6": [
+   ": Vietnam's total fertility rate is 1.9 live births per woman as of 2024."
+  ]
+ },
+ "eval/heldout4_runs/h26": {
+  "f1": [
+   "El sistema de salud colombiano es uno de los m\u00e1s complejos y avanzados de Am\u00e9rica Latina, basado en la Ley 100 de 1993, que introdujo un sistema de aseguramiento de salud universal, buscando garantizar el acceso a los servicios de salud a todos los colombianos, sin importar su capacidad econ\u00f3mica.",
+   "La forma **como est\u00e1 conformado el sistema de salud en Colombia** cuenta con tres tipos de organizaciones: las Entidades Promotoras de Salud (EPS), la Administradora de los recursos del sistema de salud (ADRES), la Superintendencia de Salud y las Instituciones Prestadoras de Servicios de Salud (IPS).",
+   "La salud en Colombia es proporcionada mayormente por servicios privados o instituciones de asistencia privada, que est\u00e1n afiliadas a Entidades Promotoras de la Salud (EPS) que recaban las aportaciones obligatorias de cada persona y se ocupan de pagar los gastos."
+  ],
+  "f2": [
+   "> \"La composici\u00f3n del financiamiento en Colombia se asemeja actualmente a la de los pa\u00edses integrantes de la Organizaci\u00f3n para la Cooperaci\u00f3n y el Desarrollo Econ\u00f3mico (OCDE); el gasto p\u00fablico, que incluye seguridad social, representa m\u00e1s del 80% del gasto total en salud, mientras que la proporci\u00f3n de desembolsos directos es una de las m\u00e1s bajas mundo.",
+   "Las principales fuentes de financiaci\u00f3n del sistema de salud en Colombia son las cotizaciones de los afiliados al r\u00e9gimen contributivo y los recursos fiscales provenientes de los aportes del PGN, incluyendo las transferencias por el SGP."
+  ],
+  "f3": [
+   "La Superintendencia Nacional de Salud, tambi\u00e9n conocida como Supersalud, es una entidad p\u00fablica encargada de la regulaci\u00f3n y supervisi\u00f3n del sistema de salud en Colombia.",
+   "El Ministerio de Salud y Protecci\u00f3n Social es la m\u00e1xima instituci\u00f3n gubernamental encargada de formular, dirigir y coordinar las pol\u00edticas, acciones, planes, programas y proyectos sobre salud y protecci\u00f3n social en salud, con el fin de contribuir al bienestar de los habitantes del territorio colombiano.",
+   "La C\u00e1mara act\u00faa como un espacio t\u00e9cnico de an\u00e1lisis, coordinaci\u00f3n y vocer\u00eda frente a actores p\u00fablicos y privados del sector de salud en Colombia."
+  ],
+  "f4": [
+   "Es importante destacar que, seg\u00fan la Superintendencia Nacional de Salud, el Plan de Beneficios en Salud cubre m\u00e1s del 95% de las patolog\u00edas que afectan a la poblaci\u00f3n colombiana, garantizando una amplia cobertura para los afiliados de ambos reg\u00edmenes.",
+   "Seg\u00fan datos del Ministerio de Salud y Protecci\u00f3n Social, para 2023, aproximadamente el 97,8% de la poblaci\u00f3n colombiana est\u00e1 cubierta por alguno de estos dos reg\u00edmenes, lo que representa un avance significativo en la cobertura universal de salud.",
+   "En 2026, la cobertura del sistema de salud en Colombia alcanza el 98,23% de la poblaci\u00f3n, lo que significa que m\u00e1s de un mill\u00f3n de personas a\u00fan no est\u00e1n afiliadas, pese a que en 2015 se hab\u00eda logrado el 100%."
+  ],
+  "f5": [
+   "Las Entidades Promotoras de Salud (EPS) son uno de los actores clave en el sistema de salud de Colombia.",
+   "El monitor Merco Salud Colombia present\u00f3 los resultados de su segundo estudio de reputaci\u00f3n corporativa de Instituciones Prestadoras de Servicios de Salud (IPS), Entidades Prestadoras de Servicios de Salud (EPS), laboratorios farmac\u00e9uticos y fabricantes de dispositivos m\u00e9dicos que han logrado un mayor reconocimiento entre los diferentes agentes sanitarios en el \u00faltimo a\u00f1o en el pa\u00eds.",
+   "Empresas Medianas de SEGUROS-SALUD en Colombia Listado de empresas Medianas de SEGUROS-SALUD en Colombia."
+  ]
+ },
+ "eval/heldout4_runs/h27": {
+  "f1": [
+   "A 2015 case study by Nicholas Bloom, a professor of economics at Stanford University, and others found that when one Chinese travel agency assigned a random group of employees to work remotely for nine months, their productivity went up by 13 percent, generating an increase of roughly $2,000 in annual profits per employee.",
+   "For those who chose to work remotely, productivity rose by 4.4 percent, according to a study last fall by Prithwiraj Choudhury, a professor at Harvard Business School, and two colleagues.",
+   "In 2022, Great Place To Work's two-year study of more than 800,000 employees found stable or improved productivity after transitioning to remote work."
+  ],
+  "f3": [
+   "From research showing that remote workers are putting in longer hours at their desk, to data suggesting that up to 80% of UK workers feel that working from home has negatively impacted their mental health, an increasingly complicated picture is emerging when it comes to the wellbeing of home-workers."
+  ],
+  "f4": [
+   "But new research into remote work and wellbeing has shown mixed results \u2013 in Microsoft\u2019s 2022 New Future of Work Report, researchers found that although remote work can improve job satisfaction, it can also lead to employees feeling \u201csocially isolated, guilty and trying to overcompensate\u201d.",
+   "Gallup\u2019s 2025 \u201cRemote Work Paradox\u201d research found that fully remote employees are actually less likely to be thriving in their lives overall than hybrid or on-site remote-capable workers, and more likely to report high daily stress, loneliness, sadness, and anger."
+  ]
+ },
+ "eval/heldout4_runs/rerun2/h20": {
+  "f1": [
+   "5 weeks on a five-day working week Required payout of unused leave when employment ends Not permitted cash instead of leave while employed Annual leave entitlement in France France guarantees a statutory minimum of 25 paid annual leave days per year (5 weeks on a five-day week) under Code du travail, Art.",
+   "In France, employees accrue paid leave (cong\u00e9s pay\u00e9s) at the rate of 2.5 working days per month worked, giving a statutory entitlement of 30 working days \u2014 equivalent to five weeks \u2014 per reference year.",
+   "Annual leave in France is governed by Article L3141-1 of the Code du travail (Labour Code)."
+  ],
+  "f2": [
+   "Employers in Brazil must provide a defined set of statutory benefits to all CLT employees, including the 13th-month salary, 30 days of paid annual leave with a one-third bonus, transportation vouchers, FGTS contributions, INSS enrolment, maternity and paternity leave, and overtime pay at the legally required rates.",
+   "Vacation pay in Brazil therefore comprises two components: (1) full monthly salary for the vacation period, and (2) an additional payment equal to one-third of that salary.",
+   "After you complete one year of employment in Brazil, you can take 30 paid calendar days (20 business days) of paid annual leave."
+  ],
+  "f3": [
+   "* \u25cf Article 60 of South Korea's Labor Standards Act provides 15 days of paid annual leave for workers with at least 80% attendance during one year, with additional days by service period and a 25-day cap.",
+   "Paid leave in South Korea is outlined in the employment contract as a minimum of 11 days paid leave a year, following the completion of one-year of service, in addition to public holidays."
+  ]
+ },
+ "eval/heldout4_runs/rerun2/h21": {
+  "f1": [
+   "Log\u2011Structured Merge (LSM) trees, first described in the 1990s and popularized by modern key\u2011value stores, were engineered precisely to solve the write\u2011amplification problem.",
+   "The most common mistake when operating an LSM database is failing to watch write amplification: every compaction rewrites data that was already on disk, so a key can end up being physically written several times before reaching its final level.",
+   "P50 latency: 0.3ms P99 latency: 2.1ms Write amplification: 3.8x Disk writes: 380 GB ``` The results speak for themselves: LSM-Trees delivered **7x higher throughput** with **11x lower write amplification**."
+  ],
+  "f2": [
+   "For example, if a B+-tree modifies a 32 B record within one 8 KB page and then flushes this dirty page from memory to storage, the write amplification will be 8 KB/32 B=256.",
+   "Traditional B-Tree based systems would experience write amplification of 10-100x, which would be terrible for our SSD lifespan.",
+   "Through comparing various kinds of amplification between B+ tree and Level-based LSM-tree, we can come to a conclusion that Level-based LSM-tree has a better write performance than B+ tree while its read performance is not as good as B+ tree."
+  ],
+  "f3": [
+   "Both structures originated in the 1970s, yet they have diverged into distinct design philosophies: B\u2011trees prioritize low\u2011latency reads by maintaining a balanced, multi\u2011level index; LSM trees batch writes into immutable segments and defer compaction, which boosts write throughput at the cost of read complexity.",
+   "Benchmarks from Facebook\u2019s RocksDB paper show B\u2011tree (using InnoDB) achieving 2\u20113\u00d7 lower latency on 1 M\u2011row range scans compared to RocksDB\u2019s LSM implementation under identical hardware."
+  ],
+  "f4": [
+   "7(a), normal B+-tree (i.e., WiredTiger) has the best point read TPS (transactions per second) performance, while RocksDB and B--tree achieve almost the same random point read TPS performance.",
+   "* **Read latency** favors B\u2011trees; LSM reads may involve multiple level scans unless Bloom filters and caching are aggressively tuned."
+  ],
+  "f5": [
+   "+ **LSM-tree databases (Cassandra, ScyllaDB, RocksDB):** Excellent for write-heavy, append-only workloads, but be mindful of WA during heavy updates and deletions which trigger more compactions.",
+   "This is a YugabyteDB specific implementation detail: we use an IntentDB rocksdb (LSM-tree) database that holds locks and intermediate data, and a regularDB rocksdb (LSM-tree) database that will eventually hold the actual table data.",
+   "Log\u2011Structured Merge (LSM) trees are the backbone of many production\u2011grade storage engines\u2014Cassandra, ScyllaDB, RocksDB, LevelDB, and even Google Cloud Spanner\u2019s underlying storage."
+  ],
+  "f6": [
+   "MySQL, Postgres, MongoDB, Dynamo, and many others rely on B-trees to perform efficient data lookups via **indexes**.",
+   "* **System design** matters: distributed databases that prioritize linear scalability and high ingest rates (Cassandra, TiDB) usually adopt LSM, while OLTP\u2011focused systems (PostgreSQL, MySQL InnoDB) stick with B\u2011trees.",
+   "MySQL InnoDB, PostgreSQL, SQLite, Oracle Database, and Microsoft SQL Server all rely on B+ trees (commonly called B-trees in documentation) for their primary indexing structure."
+  ]
+ },
+ "eval/heldout4_runs/rerun2/h22": {
+  "f1": [
+   "Single GLP-1 receptor agonists primarily promote weight loss through appetite suppression and delayed gastric emptying, leading to reduced caloric intake.",
+   "This combined effect of curbing hunger and enhancing fullness makes GLP-1 receptor agonists a powerful tool for controlling appetite and aiding in long-term weight management.",
+   "In the brain, GLP-1 agonists reduce weight by crossing the blood\u2013brain barrier, via passive diffusion or receptor mediated transcytosis, and directly activating the satiety hormones in the hypothalamus."
+  ],
+  "f2": [
+   "Semaglutide 2.4 mg demonstrated 14.9% mean body weight loss at 68 weeks in the STEP 1 Phase 3 trial, establishing the efficacy standard for GLP-1 receptor mono-agonism."
+  ],
+  "f4": [
+   "On the safety side, orforglipron had an overall profile consistent with that of the already established GLP-1 receptor agonist class, with the most common adverse events (AEs) being gastrointestinal-related.",
+   "CONCLUSIONS In adults with obesity, 72-week treatment with orforglipron led to significantly greater reductions in body weight than placebo; the adverse-event profile was consistent with that of other GLP-1 receptor agonists."
+  ],
+  "f5": [
+   "was started at a dose of 1 mg, which was esca- 2 n engl j med nejm.org Orforglipron, a GLP-1 Receptor Agonist for Obesity lated every 4 weeks until the assigned dose was treatments (consistent with the intention-to- reached (6 mg at 8 weeks, 12 mg at 12 weeks, treat analysis).",
+   "Advertisement Retatrutide, an investigational, first-in-class triple hormone receptor agonist (RA), demonstrated positive topline results in the phase 3 TRIUMPH-1 clinical trial (NCT05929066), according to an announcement made by Eli Lilly.1 The 80-week trial evaluated the once-weekly medication in adults with obesity or overweight and at least 1 weight-related comorbidity, but without diabetes."
+  ],
+  "f6": [
+   "Saxenda (liraglutide 3 mg, Novo Nordisk, NDA 206321, DailyMed SetID 3946d389-0926-4f77-a708-0acb8153b143) is the original injectable GLP-1 receptor agonist FDA-approved for chronic weight management \u2014 first approved December 23, 2014 and expanded to adolescents 12-17 in December 2020.",
+   "The watershed news: on August 27, 2025, Teva Pharmaceuticals received FDA approval for generic liraglutide 3 mg referencing Saxenda \u2014 the FIRST FDA-approved generic GLP-1 receptor agonist for chronic weight management in the United States.",
+   "Semaglutide (marketed as Ozempic for type 2 diabetes and Wegovy for obesity) is the most widely prescribed GLP-1 receptor agonist globally and represents the primary competitive benchmark for all emerging anti-obesity agents."
+  ]
+ },
+ "eval/heldout4_runs/rerun2/h23": {
+  "f1": [
+   "The extensive influenza pandemic of 1918\u20131920, known as the \u2018Spanish influenza\u2019, was provoked by an extremely virulent virus that had three fundamental characteristics: it provoked large mortality, deaths occurred rapidly after the appearance of the first symptoms and the majority of victims were young adults.",
+   "The 1918 pandemic was caused by an influenza A virus, which originated from natural reservoirs of birds, specifically waterfowls and shorebirds (Taubenberger et al., 2019), as shown schematically in Figure 3B.",
+   "In these last cases, lack of pre-existing virus-specific and/or cross-reactive antibodies and cellular immunity probably contributed to the high attack rate and rapid spread of the 1918 H1N1 virus, and to that \u201ccytokine storm\u201d which ultimately destroyed the lungs."
+  ],
+  "f2": [
+   "The hypothesis is based author found that cohorts in utero during the on a simple economic model of the labor 1918 pandemic had reduced educational attain- market: A decrease in the supply of manufac- ment, higher rates of physical disability and turing workers that resulted from influenza lower income.",
+   "The 1918 Influenza Pandemic, often referred to as the Spanish flu, had a profound impact on public health infrastructure worldwide."
+  ],
+  "f3": [
+   "A 2009 study in *Influenza and Other Respiratory Viruses* based on data from fourteen European countries estimated a total of 2.64 million excess deaths in Europe attributable to the Spanish flu during the major 1918\u20131919 phase of the pandemic, in line with the three prior studies from 1991, 2002, and 2006 that calculated a European death toll of between 2 million and 2.3 million."
+  ],
+  "f4": [
+   "In 1918, the worst pandemic in recorded history was associated with approximately 675,000 total deaths in the United States (United States Department of Commerce 1976), and killed an estimated 40 million people worldwide (Crosby 1989; Johnson and Mueller 2002; Patterson and Pyle 1991)."
+  ],
+  "f5": [
+   "Japanese women wear white gauze face masks during the Spanish flu pandemic in Tokyo, Japan, 1919 Estimates for the death toll in China have varied widely, a range which reflects the lack of centralized collection of health data at the time due to the Warlord period.",
+   "The focal point of the epidemic in terms of mortality was India, with an estimated death toll range of 10\u201320 million, and a point estimate of population loss of 13.8 million for the British-controlled provinces [8, 20, 21]."
+  ]
+ },
+ "eval/heldout4_runs/rerun2/h24": {
+  "f1": [
+   "The EU AI Act establishes legal requirements for AI systems operating within the European Union, with provisions that began phasing in during 2024.",
+   "This week\u2019s EU AI Act radar is dominated by the Commission\u2019s Article 50 transparency package, with new guidance, Q&A, and code-signing details arriving just before the 2 August 2026 go-live date.",
+   "The EU AI Act enters into force in phases from August 1, 2024, through August 2, 2027."
+  ],
+  "f2": [
+   "First, per Wilson Sonsini\u2019s client alert, the Commission \u2014 acting through the EU AI Office \u2014 became formally entitled to exercise investigative and enforcement powers over general-purpose AI model providers and the prohibited-practices rules.",
+   "National authorities within the EU are afforded enforcement authority under the Act, which sets fines for non-compliance up to 7% of global annual turnover or \u20ac35 million, whichever is greater.",
+   "National market surveillance and supervisory authorities carry out checks and enforce the rules on high-risk AI systems and other regulated uses, while EU-level bodies such as the AI Office and the European Artificial Intelligence Board support implementation of the Act and help ensure consistent application, in particular for general-purpose AI models."
+  ],
+  "f3": [
+   "Organizations placing AI systems on the EU market or deploying AI systems within the EU need to assess whether their systems fall under the regulation\u2019s high-risk categories and, if so, document compliance with specific technical and organizational requirements.",
+   "The QMS, technical documentation, risk management and monitoring templates that make up most of the fixed cost are in the EU AI Act Toolkit (60 templates), or start with the free templates.",
+   "Unlike the voluntary badges of conformity found in most other standards, the EU AI Act's conformity assessment is a legal requirement for placing a high-risk system on the market, and may be achieved by internal control or require external notified body involvement depending on the category."
+  ],
+  "f4": [
+   "The twin challenges of tightening regulations and a lack of growth-stage investments are casting a long shadow over European artificial intelligence and deep tech companies, prompting many founders to relocate or shift their focus to non-EU regions with more flexible AI regulations.",
+   "For a medium-sized company that develops a single high-risk AI system, the EU Commission puts the initial compliance costs at up to 600,000 euros.",
+   "Stringent regulations such as the proposed EU Artificial Intelligence Act could potentially undermine the global competitiveness of European AI startups, likely pushing more companies to shift to place like the United States \u2014a seismic blow to Europe\u2019s tech ecosystem, ET has learnt after speaking with multiple industry executives, global founders, and investors at the Slush 2024 event in Helsinki."
+  ],
+  "f5": [
+   "Instrument : Regulation (EU) 2024/1689, the AI Act Event : General application opened with no market surveillance authority notified for Austria Event date : August 2, 2026 Designation deadline missed : August 2, 2025, under Article 70 as applied by Article 113(b)",
+   "The EU AI Act's high-risk deadlines were relocated from the Digital Omnibus, which came into effect on 27th July 2026, to December 2027 and August 2028.",
+   "\u25be The EU AI Act (Regulation (EU) 2024/1689) entered into force on 1 August 2024, 20 days after publication in the Official Journal on 12 July 2024."
+  ],
+  "f6": [
+   "The Commission published a report, prepared by the Centre for European Policy Studies (CEPS) for the EU AI Office, analysing stakeholder feedback from two recent public consultations.",
+   "BEUC, together with a broad range of stakeholders from civil society to lawmakers10 and industry11,12 has opposed this proposal to pause the AI Act\u2019s implementation from the start, as simply pausing the implementation could lead to serious consequences for consumer rights, protection of fundamental rights and the overall integrity of the EU digital legal framework."
+  ]
+ },
+ "eval/heldout4_runs/rerun2/h25": {
+  "f1": [
+   "**Portugal's GDP per capita (PPP) is estimated to be $50,884 for 2025.** This figure is derived from a GDP (PPP) of $529 billion, which accounts for the informal economy and any base year effects, and a population of 10.4 million.",
+   "What is Portugal's internet penetration rate (%) in 2024?\u25be Portugal's internet penetration rate (%) is 88.49 % in 2024, according to Individuals using the Internet (% of population), World Bank (WB).",
+   "According to the latest birth rate data available, the fertility rate in Portugal was 1.41 in 2024 and has been below the replacement level of 2.1 children per woman since 1982."
+  ],
+  "f2": [
+   "**Vietnam's GDP per capita (PPP) is estimated to be $22,149 for 2025.** This figure is derived from a GDP (PPP) of $2,245 billion, which accounts for the informal economy and any base year effects, and a population of 101.3 million.",
+   "Vietnam has a birth rate of 13.4 (annual births per 1,000 people) and a fertility rate of 1.9 (the average number of children a woman is expected to have over her lifetime based on current age-specific birth rates)."
+  ],
+  "f3": [
+   "**Ghana's GDP per capita (PPP) is estimated to be $11,873 for 2025.** This figure is derived from a GDP (PPP) of $415 billion, which accounts for the informal economy and any base year effects, and a population of 35.0 million.",
+   "Ghana has a birth rate of 25.9 (annual births per 1,000 people) and a fertility rate of 3.34 (the average number of children a woman is expected to have over her lifetime based on current age-specific birth rates)."
+  ]
+ },
+ "eval/heldout4_runs/rerun2/h26": {
+  "f1": [
+   "53, suplemento 2 de 2011 Sistema de salud de Colombia Art\u00edculo de revisi\u00f3n se hace a trav\u00e9s de las entidades promotoras de salud (EPS), p\u00fablicas o privadas, que reciben las cotizaciones y, a trav\u00e9s de las instituciones prestadoras de servicios (IPS), ofrecen el Plan Obligatorio de Salud (POS) o el POS-S para los afiliados al r\u00e9gimen subsidiado (RS).",
+   "**El sistema de salud colombiano funciona como un modelo mixto de aseguramiento social donde intervienen el Estado, aseguradoras p\u00fablicas y privadas, adem\u00e1s de los prestadores de servicios, con la finalidad de asegurar el acceso a un conjunto integral de prestaciones (el Plan de Beneficios en Salud, previamente denominado POS) para la mayor\u00eda de la poblaci\u00f3n."
+  ],
+  "f2": [
+   "Las principales fuentes de financiaci\u00f3n del sistema de salud en Colombia son las cotizaciones de los afiliados al r\u00e9gimen contributivo y los recursos fiscales provenientes de los aportes del PGN, incluyendo las transferencias por el SGP.",
+   "**Los aportes parafiscales en Colombia son contribuciones obligatorias a cargo del empleador equivalentes al 9% de la n\u00f3mina salarial.** Se distribuyen en un 2% para el SENA, 3% para el ICBF y 4% para las Cajas de Compensaci\u00f3n Familiar.",
+   "De acuerdo con datos de la Administradora de los Recursos del Sistema General de Seguridad Social en Salud (ADRES), **el presupuesto administrado por la entidad pasar\u00e1 de 71,6 billones de pesos en 2022 a m\u00e1s de 115 billones de pesos al cierre de 2026**, lo que representa un incremento cercano al 60% en apenas cuatro a\u00f1os."
+  ],
+  "f3": [
+   "La OPS se\u00f1ala que Colombia ha logrado una cobertura de seguro casi universal (~97,9% de la poblaci\u00f3n en el SGSSS a diciembre de 2020), pero advierte de brechas persistentes en el acceso a atenci\u00f3n de alta calidad, especialmente en zonas rurales y en la periferia de los grandes centros urbanos."
+  ],
+  "f4": [
+   "El Ministerio de Salud y Protecci\u00f3n Social es la m\u00e1xima instituci\u00f3n gubernamental encargada de formular, dirigir y coordinar las pol\u00edticas, acciones, planes, programas y proyectos sobre salud y protecci\u00f3n social en salud, con el fin de contribuir al bienestar de los habitantes del territorio colombiano.",
+   "A partir de 2009, el Consejo Nacional de Seguridad Social en Salud (CNSSS) ha sido reemplazado en su papel como regulador general del sistema de salud a nivel nacional por la Comisi\u00f3n de Regulaci\u00f3n en Sa-lud (CRES), quedando s\u00f3lo como un \u00f3rgano asesor y consultor."
+  ],
+  "f5": [
+   "1 Ministerio de la Protecci\u00f3n Social Rep\u00fablica de Colombia Direcci\u00f3n General de Calidad de Servicios SISTEMA DE INFORMACI\u00d3N PARA LA CALIDAD 2006-2009 PRIMER INFORME NACIONAL DE CALIDAD En la versi\u00f3n impresa del n\u00famero especial, \u00e9ste bolet\u00edn corresponde a las p\u00e1ginas 45-72.",
+   "Cumplimiento de indicadores nacionales de desempe\u00f1o del subsistema de informaci\u00f3n, Colombia, 2018 y preliminar 2024 y primer trimestre 2025."
+  ],
+  "f6": [
+   "REFORMA A LA SALUD EN COLOMBIA Proyecto de Ley 339 de 2023 C\u00e1mara, 216 de 2024 Senado y acumulados, aprobado en segundo debate en la Plenaria de la C\u00e1mara de Representantes.",
+   "Actualizado: 10 de oct, 2025 El sistema de salud colombiano enfrenta una crisis marcada por demoras en la atenci\u00f3n, deudas crecientes de las EPS y desigualdades regionales.",
+   "NECESIDAD DE LA REFORMA El SGSSS luego de 30 a\u00f1os de vigencia, debates, reformas y ajustes antes anotados, continua presentando graves problemas de acceso real, sobre todo en zonas apartadas con poblaci\u00f3n dispersa, negaci\u00f3n de servicios o falta de oportunidad o continuidad en la atenci\u00f3n."
+  ]
+ },
+ "eval/heldout4_runs/rerun2/h27": {
+  "f1": [
+   "In a survey conducted by Owl Labs, it was found that companies that prioritize employee wellbeing in remote work environments report a 22% increase in productivity (State of Remote Work Report, 2021).",
+   "The authors write that fully remote work \u201cis associated with about 10% lower productivity than fully in-person work.\u201d Hybrid work, they add, \u201cappears to have no impact on productivity.\u201d",
+   "Remote work has shown to increase productivity by 47% compared to traditional office settings, with remote workers spending 10 minutes less each day being unproductive."
+  ],
+  "f2": [
+   "\uf0b7 Causal links between remote working and wellbeing: given that research findings to date are inconclusive around whether remote working is positive or negative for wellbeing and mental health, longitudinal research could help to evaluate the connection.",
+   "Several studies showed the preventive role of teleworking for employees\u2019 health, reporting that being a remote worker decreases employee\u2019s levels of stress [26,44,46], negative emotions [31], strain [32], depression [22], and alcohol abuse [22].",
+   "Prior research suggests that while voluntary remote working is associated with reduced stress and higher job satisfaction, involuntary remote working, where employees have less control over their remote working arrangements, is associated with worse mental health outcomes including reported exhaustion, stress and emotional distress (Kaduk et al, 2019)."
+  ]
+ },
+ "research_output/cmp_gemma_c1": {
+  "f1": [
+   "**Installed cost** for a cold climate heat pump usually falls between **$9,000 and $24,000** depending on scope, with whole\u2011home multi\u2011zone or major ductwork projects reaching higher.",
+   "**Heat pumps cost more upfront but save over time\u2014in 2026, a typical installed heat pump runs $5,500-$12,000, while a gas boiler costs $4,000-$8,000, yet after IRA rebates, many households pay less for the heat pump.** The lifetime cost comparison, covering 15 years with maintenance and energy, often favors the heat pump, especially with incentives."
+  ],
+  "f2": [
+   "Upgrading from an 80% AFUE furnace to a 96% AFUE model saves roughly $200\u2013$400 per year on gas bills in cold climates, based on average U.S.",
+   "**Upfront Cost:** Gas furnaces typically run $3,800 to $8,000 installed."
+  ],
+  "f3": [
+   "In some very cold places, the emission reductions are huge: The median house in Minnesota could emit around five fewer tons of carbon each year by switching to a high-efficiency heat pump, according to modeled data from the National Renewable Energy Laboratory.",
+   "The emissions avoided by efficient, increasingly-clean heating vastly outweigh the one-time manufacturing footprint, giving heat pumps a favorable lifecycle carbon balance \u2014 the same logic that applies to solar panels and EVs."
+  ],
+  "f4": [
+   "Over this lifespan, the gas furnace typically produces 60-120 tons of CO2, dwarfing its manufacturing emissions."
+  ]
+ },
+ "research_output/cmp_ornith_c1": {
+  "f1": [
+   "Analysis from the Canadian Climate Institute found that the lifetime cost of a standard heat pump with electric backup runs approximately 13% less than a gas furnace paired with air conditioning."
+  ],
+  "f3": [
+   "**Emissions from heat pumps** are determined by different factors: (1) the amount of electricity required to run the heat pump, (2) the carbon intensity of local electricity, and (3) leaks of the refrigerants used to run the heat pump.",
+   "Switching from gas to a heat pump saves approximately 56 tonnes of CO2-equivalent over 25 years.",
+   "16 tonnes CO2e Heat pump + solar 7 tonnes CO2e Estimates assume declining grid carbon intensity through 2050."
+  ],
+  "f4": [
+   "A typical gas furnace burning natural gas emits approximately 11.7 pounds of CO2 per therm consumed."
+  ]
+ },
+ "research_output/pipeline_gemma12b_congestion": {
+  "f1": [
+   "The result of congestion pricing (Scenario A) in relative to the \"no action\" alternative is a 7.1% to 9.2% reduction in daily vehicle miles traveled, a 15.4% to 19.9% reduction in the number of vehicles entering congestion zone, and would have an estimated $1.02 to $1.48 billion net revenue for the program.",
+   "Using crowd-sourced vehicle count and speed data in the toll zone and an EPA emissions model, a 2026 *Nature* study estimated that eight weeks after the implementation of the congestion pricing, vehicular emissions had declined by 16-22%, driven by a 10-14% reduction in vehicle trips and a 12% increase in traffic speed."
+  ],
+  "f2": [
+   "After congestion pricing was implemented in central London, the overall traffic emissions of Nitrogen Oxides (NOx) fell by 13.4 percent, particulate matter less than 10 microns in diameter (PM10) fell by 15.5 percent, and CO2 fell by 16.4 percent (Burt, Sowell, Crawford and Carlson 2010)."
+  ],
+  "f3": [
+   "\u200b \u200b A study of Stockholm\u2019s congestion pricing program found that \u201cmen, high-income groups and residents in the central parts of the city\u201d would bear the greatest financial burden from the introduction of congestion pricing (Eliasson and Mattsson 2006).",
+   "4.4.2 Local Business Congestion pricing has a wide effect on local businesses, including commercial activity, businesses in the areas, and changes in the level of local employment (Glen & Nellis, 2011)."
+  ]
+ },
+ "research_output/pipeline_ornith15_congestion": {
+  "f1": [
+   "AI What reduction in traffic volume and emissions was observed in Stockholm's congestion pricing?add Stockholm's congestion pricing scheme resulted in a 20% reduction in traffic volume and a 14% decrease in air pollutant concentrations since its implementation in 2006.",
+   "* **Case studies from London, Stockholm, and Singapore demonstrate the effectiveness of congestion pricing** in reducing traffic by 20%-30% while generating funds for urban improvements."
+  ],
+  "f2": [
+   "19, 2026 PUBLISHED August 19, 2026 @5:50 AM SHARE A recent study by the city\u2019s Health Department shows that congestion pricing has had little impact on air quality following its implementation."
+  ],
+  "f3": [
+   "NYC congestion pricing has brought modest traffic reductions in its first week, according to preliminary data released by the MTA.",
+   "Introducing congestion pricing increased speeds both inside and outside the price region, with most of the benefit to the drivers across the city who never paid the toll.",
+   "16 Congestion pricing impacts on travel speed and total delay, on the tolled system, the adjacent network, and the entire network ......................................."
+  ],
+  "f4": [
+   "How has London\u2019s congestion charge affected traffic flow and air quality metrics?add The congestion charge in London led to a 15% reduction in traffic volume and significantly improved air quality, reducing nitrogen oxides and particulate matter emissions.",
+   "As a result of the reduced traffic volume and increased mobility, air quality has improved, showing a 12 percent reduction in emissions of nitrogen oxides and particulate matter from vehicles in the zone, according to London officials."
+  ]
+ }
+}
