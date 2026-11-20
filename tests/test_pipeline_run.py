@@ -224,6 +224,27 @@ def test_ce_extractor_runs_with_stub_scorer_and_records_funnel():
         assert st["kept"] <= st["juris"] <= st["entity"] <= st["ce_pos"] <= st["cands"] or st["kept"] <= st["cands"], (fid, st)
 
 
+def test_plan_covered_replans_for_dropped_entity_and_writer_discloses_the_rest():
+    """h25 class: a named entity with no facet triggers one re-plan; a plan that still misses it reaches the report as a Not covered line."""
+    import pipeline.run as R
+    from writer import compiled as wc
+    q = "What were Portugal's, Vietnam's and Ghana's fertility rates?"
+    f = lambda *cs: [{"id": f"f{i}", "name": f"{c} fertility rate", "entity": c, "questions": [f"{c} fertility rate"]} for i, c in enumerate(cs)]
+    calls, real = [], R._plan
+    try:
+        R._plan = lambda m, qq, extra="": (calls.append(extra), f("Portugal", "Vietnam") if len(calls) == 1 else f("Portugal", "Vietnam", "Ghana"))[1]
+        assert [x["entity"] for x in R._plan_covered("m", q)] == ["Portugal", "Vietnam", "Ghana"] and "ghana" in calls[1], calls
+        calls.clear()
+        R._plan = lambda m, qq, extra="": (calls.append(extra), f("Portugal", "Vietnam"))[1]
+        facets = R._plan_covered("m", q)
+        assert len(calls) == 2 and R._uncovered(facets, q) == ["ghana"]
+    finally:
+        R._plan = real
+    c = wc.Compiled(q, [wc.Facet("f0", "Portugal fertility rate", [wc.Quote(1, "Portugal's fertility rate is 1.41.", "f0")])], [(1, "https://a.example", "A")],
+                    uncovered=R._uncovered(facets, q))
+    assert "No facet covered these words of the request: ghana." in wc.render(c, {})
+
+
 if __name__ == "__main__":
     _tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]
     assert _tests, "no tests found"
