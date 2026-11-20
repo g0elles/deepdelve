@@ -328,7 +328,11 @@ def extract_salient_terms(text: str) -> set:
     # no trailing boundary after the digits it captures). No trailing \b needed here at all -- the
     # literal "%" character is itself non-word, so `\d+%` can never accidentally swallow a
     # following word character into the same match.
-    terms = set(re.findall(r'\b\d+(?:\.\d+)+\b|\b\d{4}\b|\b\d+%', text))
+    # Number forms (2026-11-19, two claim_unsupported false alarms on supported claims): a decimal ends at the last digit, not at a word
+    # boundary, so the source's "1.5x" yields "1.5" like the claim's "1.5×"; a percent may carry a decimal comma and a (no-break) space
+    # before "%", normalised away, so "13,7 %" and "13,7%" are both "13,7%" (it used to yield nothing, or a bogus "7%").
+    terms = {re.sub(r'[   ]', '', t)
+             for t in re.findall(r'\b\d+(?:\.\d+)+(?!\d)|\b\d{4}\b|\b\d+(?:,\d+)?[   ]?%', text)}
     for m in _PROPER_NOUN_PHRASE_RE.finditer(text):
         normalized = _normalize_proper_noun_phrase(m.group(0))
         if normalized:

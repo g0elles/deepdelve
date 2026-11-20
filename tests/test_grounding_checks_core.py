@@ -410,6 +410,9 @@ def main():
     # trailing \b -- the literal "%" is itself non-word, so `\d+%` can never accidentally swallow
     # a following word character into the same match, no boundary assertion needed. ---
     from utils.grounding import extract_salient_terms
+    # Number forms (2026-11-19 replay false alarms): multiplier suffix and Spanish decimal-comma percent must match across claim/source.
+    assert extract_salient_terms("a 1.5x speedup") == extract_salient_terms("a 1.5× speedup") == {"1.5"}
+    assert extract_salient_terms("tasa de 13,7 % anual") == extract_salient_terms("tasa de 13,7 % anual") == extract_salient_terms("tasa de 13,7% anual") == {"13,7%"}
     assert "12%" in extract_salient_terms("improved by 12% overall"), (
         "a bare-integer percentage followed by whitespace must be captured as a salient term")
     assert "8%" in extract_salient_terms("grew 8%, according to the report"), (
