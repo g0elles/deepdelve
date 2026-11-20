@@ -1,0 +1,148 @@
+{
+ "research_output/cmp_ornith_c1|0": {
+  "answers": [
+   1,
+   6
+  ],
+  "none_exists": false
+ },
+ "research_output/cmp_ornith_c1|1": {
+  "answers": [
+   58,
+   39
+  ],
+  "none_exists": false
+ },
+ "research_output/cmp_ornith_c1|2": {
+  "answers": [
+   0,
+   2
+  ],
+  "none_exists": false
+ },
+ "eval/heldout3_runs/h11|0": {
+  "answers": [
+   0,
+   6
+  ],
+  "none_exists": false
+ },
+ "eval/heldout3_runs/h11|1": {
+  "answers": [
+   12
+  ],
+  "none_exists": false
+ },
+ "eval/heldout3_runs/h11|2": {
+  "answers": [
+   27,
+   24
+  ],
+  "none_exists": false
+ },
+ "eval/heldout3_runs/h12|0": {
+  "answers": [
+   39,
+   12,
+   19,
+   16
+  ],
+  "none_exists": false
+ },
+ "eval/heldout3_runs/h12|1": {
+  "answers": [
+   19
+  ],
+  "none_exists": false
+ },
+ "eval/heldout3_runs/h12|2": {
+  "answers": [
+   0
+  ],
+  "none_exists": false
+ },
+ "eval/heldout3_runs/h12|3": {
+  "answers": [],
+  "none_exists": false
+ },
+ "eval/heldout4_runs/h21|0": {
+  "answers": [
+   0,
+   2
+  ],
+  "none_exists": false
+ },
+ "eval/heldout4_runs/h21|1": {
+  "answers": [
+   10,
+   16,
+   0
+  ],
+  "none_exists": false
+ },
+ "eval/heldout4_runs/h21|2": {
+  "answers": [
+   3,
+   37,
+   34
+  ],
+  "none_exists": false
+ },
+ "eval/heldout4_runs/h21|3": {
+  "answers": [
+   42,
+   12
+  ],
+  "none_exists": false
+ },
+ "eval/heldout4_runs/h25|0": {
+  "answers": [
+   3
+  ],
+  "none_exists": false
+ },
+ "eval/heldout4_runs/h25|1": {
+  "answers": [
+   10
+  ],
+  "none_exists": false
+ },
+ "eval/heldout4_runs/h25|2": {
+  "answers": [
+   19
+  ],
+  "none_exists": false
+ },
+ "eval/heldout4_runs/h25|3": {
+  "answers": [
+   34
+  ],
+  "none_exists": false
+ },
+ "eval/heldout4_runs/h25|4": {
+  "answers": [
+   40,
+   38
+  ],
+  "none_exists": false
+ },
+ "eval/heldout4_runs/h25|5": {
+  "answers": [
+   43,
+   45
+  ],
+  "none_exists": false
+ },
+ "eval/heldout4_runs/h25|6": {
+  "answers": [],
+  "none_exists": true
+ },
+ "eval/heldout4_runs/h25|7": {
+  "answers": [],
+  "none_exists": true
+ },
+ "eval/heldout4_runs/h25|8": {
+  "answers": [],
+  "none_exists": true
+ }
+}

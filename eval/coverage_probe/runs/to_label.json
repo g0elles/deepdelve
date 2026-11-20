@@ -1,0 +1,435 @@
+[
+ {
+  "key": "research_output/cmp_ornith_c1|0",
+  "part": "What is the lifetime cost of heat pumps compared with gas furnaces?",
+  "any_arm_abstained": false,
+  "cands": [
+   {
+    "i": 1,
+    "text": "For most Ontario homeowners heating with natural gas, the 10-year cost difference between a heat pump and a gas furnace is relatively small, within $3,000-$5,000 either way depending on rebate eligibility and energy rate assumptions."
+   },
+   {
+    "i": 34,
+    "text": "Analyses based on older, less efficient heat pumps will overestimate the amount of electricity required, and hence overestimate emissions, particularly in cold climates [11]."
+   },
+   {
+    "i": 6,
+    "text": "Analysis from the Canadian Climate Institute found that the lifetime cost of a standard heat pump with electric backup runs approximately 13% less than a gas furnace paired with air conditioning."
+   }
+  ]
+ },
+ {
+  "key": "research_output/cmp_ornith_c1|1",
+  "part": "What are the carbon emissions of heat pumps compared with gas furnaces?",
+  "any_arm_abstained": false,
+  "cands": [
+   {
+    "i": 58,
+    "text": "Unlike **oil**, gas, or **propane** **furnaces** that burn fuel and emit **carbon** dioxide directly, **heat pumps** transfer heat using electricity, resulting in minimal on-site emissions."
+   },
+   {
+    "i": 39,
+    "text": "Today, a heat pump produces approximately 72% less greenhouse gas emissions than a gas boiler for the same amount of heat."
+   },
+   {
+    "i": 34,
+    "text": "Analyses based on older, less efficient heat pumps will overestimate the amount of electricity required, and hence overestimate emissions, particularly in cold climates [11]."
+   }
+  ]
+ },
+ {
+  "key": "research_output/cmp_ornith_c1|2",
+  "part": "How do heat pumps perform in cold climates?",
+  "any_arm_abstained": false,
+  "cands": [
+   {
+    "i": 0,
+    "text": "+ Geothermal (ground-source) heat pumps deliver higher COP at extreme cold (3.5+ at 5°F vs 2.1–2.3 for air-source), but the loop installation runs $20,000–$45,000 on top of the equipment cost, which the **Mass Save** rebate doesn't fully offset."
+   },
+   {
+    "i": 2,
+    "text": "At current Ontario rates (roughly $0.10-$0.17/kWh for electricity and $0.30-$0.35/m3 for gas), a cold-climate heat pump with a COP of 2.5-3.0 costs roughly the same to operate as a high-efficiency gas furnace in the GTA."
+   },
+   {
+    "i": 34,
+    "text": "Analyses based on older, less efficient heat pumps will overestimate the amount of electricity required, and hence overestimate emissions, particularly in cold climates [11]."
+   }
+  ]
+ },
+ {
+  "key": "eval/heldout3_runs/h11|0",
+  "part": "What are the legal parental leave duration and pay in Germany?",
+  "any_arm_abstained": false,
+  "cands": [
+   {
+    "i": 0,
+    "text": "Updated 8 August 2026 Maternity leave in Germany combines three frameworks: Mutterschutz (14 weeks of statutory protection with full pay), Elternzeit (up to 3 years of parental leave with job protection), and Elterngeld (state allowance of 65-67 percent of pre-birth net income)."
+   },
+   {
+    "i": 12,
+    "text": "**Parental leave in Sweden gives the two parents of a child 480 days of paid leave to share, one of the most generous systems in the world.** The pay comes from the state as parental benefit, or foraldrapenning, not from the employer, and the leave itself is a legal right protected by law."
+   },
+   {
+    "i": 6,
+    "text": "Updated 8 August 2026 Parental leave in Germany, called Elternzeit, gives each parent up to 3 years of job-protected leave per child, funded by the Elterngeld allowance at around 65 percent of net income."
+   }
+  ]
+ },
+ {
+  "key": "eval/heldout3_runs/h11|1",
+  "part": "What are the legal parental leave duration and pay in Sweden?",
+  "any_arm_abstained": false,
+  "cands": [
+   {
+    "i": 12,
+    "text": "**Parental leave in Sweden gives the two parents of a child 480 days of paid leave to share, one of the most generous systems in the world.** The pay comes from the state as parental benefit, or foraldrapenning, not from the employer, and the leave itself is a legal right protected by law."
+   }
+  ]
+ },
+ {
+  "key": "eval/heldout3_runs/h11|2",
+  "part": "What are the legal parental leave duration and pay in Japan?",
+  "any_arm_abstained": false,
+  "cands": [
+   {
+    "i": 12,
+    "text": "**Parental leave in Sweden gives the two parents of a child 480 days of paid leave to share, one of the most generous systems in the world.** The pay comes from the state as parental benefit, or foraldrapenning, not from the employer, and the leave itself is a legal right protected by law."
+   },
+   {
+    "i": 27,
+    "text": "The **Maternity Allowance (出産手当金, shussan teate kin)** is paid through Japan’s Employee Health Insurance system (健康保険, kenko hoken) and replaces income during the 14-week statutory leave period."
+   },
+   {
+    "i": 24,
+    "text": "**The combined trajectory**: A typical Japanese family using the full statutory framework can expect approximately **14 weeks of maternity leave + 12 to 24 months of childcare leave** for the mother, plus up to **4 weeks of postpartum paternity leave + 12 months of childcare leave** for the father."
+   }
+  ]
+ },
+ {
+  "key": "eval/heldout3_runs/h12|0",
+  "part": "How do Raft and Paxos differ in leader election?",
+  "any_arm_abstained": true,
+  "cands": [
+   {
+    "i": 39,
+    "text": "**From the trenches:** The Google Chubby team, who successfully implemented Paxos in production, noted that \"there are significant gaps between the description of the Paxos algorithm and the needs of a real-world system.\" They had to extend Paxos for leader election, reconfiguration, and failure detection—concerns that Raft addresses directly in its design."
+   },
+   {
+    "i": 12,
+    "text": "That's why production systems use **Multi Paxos**, which elects a stable leader Proposer so Phase 1 only runs once."
+   },
+   {
+    "i": 19,
+    "text": "paxos paper only describe consensus on single log entry, which is equivalent the leader election part of the raft algorithm."
+   },
+   {
+    "i": 16,
+    "text": "Paxos alone does not specify how to choose a leader—without a distinguished proposer, multiple nodes may try to propose simultaneously, leading to livelock."
+   }
+  ]
+ },
+ {
+  "key": "eval/heldout3_runs/h12|1",
+  "part": "How do Raft and Paxos differ in log replication?",
+  "any_arm_abstained": true,
+  "cands": [
+   {
+    "i": 19,
+    "text": "paxos paper only describe consensus on single log entry, which is equivalent the leader election part of the raft algorithm."
+   },
+   {
+    "i": 12,
+    "text": "That's why production systems use **Multi Paxos**, which elects a stable leader Proposer so Phase 1 only runs once."
+   },
+   {
+    "i": 0,
+    "text": "MongoDB’s leader election in a Replica Set became Raft-based since v3.4 but data replication remains asynchronous (secondary members periodically pull from the primary member of the Replica Set)."
+   },
+   {
+    "i": 4,
+    "text": "Raft makes understandability an explicit design goal and decomposes consensus into three subproblems: leader election, log replication and safety."
+   },
+   {
+    "i": 10,
+    "text": "**Multi-Paxos** optimizes this by electing a distinguished proposer (leader) who can skip Phase 1 for subsequent proposals."
+   }
+  ]
+ },
+ {
+  "key": "eval/heldout3_runs/h12|2",
+  "part": "Which production systems use Raft?",
+  "any_arm_abstained": false,
+  "cands": [
+   {
+    "i": 12,
+    "text": "That's why production systems use **Multi Paxos**, which elects a stable leader Proposer so Phase 1 only runs once."
+   },
+   {
+    "i": 0,
+    "text": "MongoDB’s leader election in a Replica Set became Raft-based since v3.4 but data replication remains asynchronous (secondary members periodically pull from the primary member of the Replica Set)."
+   },
+   {
+    "i": 47,
+    "text": "For example, Bitcoin’s proof-of-work prevents double-spending in its blockchain, while RAFT ensures nodes agree on a sequence of commands in systems like distributed databases."
+   }
+  ]
+ },
+ {
+  "key": "eval/heldout3_runs/h12|3",
+  "part": "Which production systems use Paxos?",
+  "any_arm_abstained": false,
+  "cands": [
+   {
+    "i": 12,
+    "text": "That's why production systems use **Multi Paxos**, which elects a stable leader Proposer so Phase 1 only runs once."
+   }
+  ]
+ },
+ {
+  "key": "eval/heldout4_runs/h21|0",
+  "part": "How do LSM trees and B-trees differ in write amplification?",
+  "any_arm_abstained": false,
+  "cands": [
+   {
+    "i": 0,
+    "text": "B-trees pay one disk write per logical write but read in *O(log n)*; LSM trees pay 10–30× write amplification (each key gets rewritten by background compaction) but absorb writes at sequential-IO speed and serve reads with bloom filters that almost always hit the right file."
+   },
+   {
+    "i": 2,
+    "text": "* **Write amplification**: B‑Trees incur modest amplification (1–2×) regardless of RAM; LSM Trees can amplify writes 5–10×, but larger MemTables and smarter compaction can mitigate the effect."
+   }
+  ]
+ },
+ {
+  "key": "eval/heldout4_runs/h21|1",
+  "part": "How do LSM trees and B-trees differ in read performance?",
+  "any_arm_abstained": false,
+  "cands": [
+   {
+    "i": 10,
+    "text": "Through comparing various kinds of amplification between B+ tree and Level-based LSM-tree, we can come to a conclusion that Level-based LSM-tree has a better write performance than B+ tree while its read performance is not as good as B+ tree."
+   },
+   {
+    "i": 16,
+    "text": "**The 10x Rule**: LSM trees often provide 10x better write performance than B-trees, while B-trees typically provide 1.5x better read performance."
+   },
+   {
+    "i": 0,
+    "text": "B-trees pay one disk write per logical write but read in *O(log n)*; LSM trees pay 10–30× write amplification (each key gets rewritten by background compaction) but absorb writes at sequential-IO speed and serve reads with bloom filters that almost always hit the right file."
+   }
+  ]
+ },
+ {
+  "key": "eval/heldout4_runs/h21|2",
+  "part": "Which production databases use LSM trees?",
+  "any_arm_abstained": false,
+  "cands": [
+   {
+    "i": 3,
+    "text": "RocksDB’s introduction of “universal compaction” in 2017 optimized the LSM-Tree model for flash storage, reducing write amplification by 30% in production workloads at Meta."
+   },
+   {
+    "i": 0,
+    "text": "B-trees pay one disk write per logical write but read in *O(log n)*; LSM trees pay 10–30× write amplification (each key gets rewritten by background compaction) but absorb writes at sequential-IO speed and serve reads with bloom filters that almost always hit the right file."
+   },
+   {
+    "i": 37,
+    "text": "+ **LSM-tree databases (Cassandra, ScyllaDB, RocksDB):** Excellent for write-heavy, append-only workloads, but be mindful of WA during heavy updates and deletions which trigger more compactions."
+   },
+   {
+    "i": 34,
+    "text": "Even in specialized databases like TimescaleDB, which extends PostgreSQL for time-series data, the underlying storage engine adopts LSM-Tree-inspired compaction strategies to handle high-ingestion workloads while maintaining query performance."
+   },
+   {
+    "i": 13,
+    "text": "* **Latency‑critical workloads**: Empirical data from production systems (e.g., Uber, Stripe) show B‑trees delivering sub‑millisecond read latencies where LSM trees incur higher tails."
+   }
+  ]
+ },
+ {
+  "key": "eval/heldout4_runs/h21|3",
+  "part": "Which production databases use B-trees?",
+  "any_arm_abstained": false,
+  "cands": [
+   {
+    "i": 0,
+    "text": "B-trees pay one disk write per logical write but read in *O(log n)*; LSM trees pay 10–30× write amplification (each key gets rewritten by background compaction) but absorb writes at sequential-IO speed and serve reads with bloom filters that almost always hit the right file."
+   },
+   {
+    "i": 42,
+    "text": "* **System design** matters: distributed databases that prioritize linear scalability and high ingest rates (Cassandra, TiDB) usually adopt LSM, while OLTP‑focused systems (PostgreSQL, MySQL InnoDB) stick with B‑trees."
+   },
+   {
+    "i": 12,
+    "text": "Benchmarks from Facebook’s RocksDB paper show B‑tree (using InnoDB) achieving 2‑3× lower latency on 1 M‑row range scans compared to RocksDB’s LSM implementation under identical hardware."
+   },
+   {
+    "i": 13,
+    "text": "* **Latency‑critical workloads**: Empirical data from production systems (e.g., Uber, Stripe) show B‑trees delivering sub‑millisecond read latencies where LSM trees incur higher tails."
+   }
+  ]
+ },
+ {
+  "key": "eval/heldout4_runs/h25|0",
+  "part": "What was Portugal's GDP per capita in the most recent reported year?",
+  "any_arm_abstained": true,
+  "cands": [
+   {
+    "i": 3,
+    "text": "According to the IMF World Economic Outlook (October 2024), Portugal's nominal GDP per capita in 2024 is projected to be around $29,341 at current prices."
+   },
+   {
+    "i": 2,
+    "text": "**Portugal has a quarterly GDP per capita**, of €7,034$7,034, less than the same period last year, when it was €7,064 $7,064 ."
+   },
+   {
+    "i": 40,
+    "text": "What is Vietnam's internet penetration rate (%) in 2024?▾ Vietnam's internet penetration rate (%) is 84.15 % in 2024, according to Individuals using the Internet (% of population), World Bank (WB)."
+   }
+  ]
+ },
+ {
+  "key": "eval/heldout4_runs/h25|1",
+  "part": "What was Portugal's internet penetration in the most recent reported year?",
+  "any_arm_abstained": true,
+  "cands": [
+   {
+    "i": 2,
+    "text": "**Portugal has a quarterly GDP per capita**, of €7,034$7,034, less than the same period last year, when it was €7,064 $7,064 ."
+   },
+   {
+    "i": 10,
+    "text": "* There were **9.27 million** individuals using the internet in Portugal at the start of 2025, when online penetration stood at **89.0 percent**."
+   },
+   {
+    "i": 40,
+    "text": "What is Vietnam's internet penetration rate (%) in 2024?▾ Vietnam's internet penetration rate (%) is 84.15 % in 2024, according to Individuals using the Internet (% of population), World Bank (WB)."
+   }
+  ]
+ },
+ {
+  "key": "eval/heldout4_runs/h25|2",
+  "part": "What was Portugal's fertility rate in the most recent reported year?",
+  "any_arm_abstained": true,
+  "cands": [
+   {
+    "i": 19,
+    "text": "According to the latest birth rate data available, the fertility rate in Portugal was 1.41 in 2024 and has been below the replacement level of 2.1 children per woman since 1982."
+   },
+   {
+    "i": 40,
+    "text": "What is Vietnam's internet penetration rate (%) in 2024?▾ Vietnam's internet penetration rate (%) is 84.15 % in 2024, according to Individuals using the Internet (% of population), World Bank (WB)."
+   }
+  ]
+ },
+ {
+  "key": "eval/heldout4_runs/h25|3",
+  "part": "What was Vietnam's GDP per capita in the most recent reported year?",
+  "any_arm_abstained": true,
+  "cands": [
+   {
+    "i": 2,
+    "text": "**Portugal has a quarterly GDP per capita**, of €7,034$7,034, less than the same period last year, when it was €7,064 $7,064 ."
+   },
+   {
+    "i": 40,
+    "text": "What is Vietnam's internet penetration rate (%) in 2024?▾ Vietnam's internet penetration rate (%) is 84.15 % in 2024, according to Individuals using the Internet (% of population), World Bank (WB)."
+   },
+   {
+    "i": 0,
+    "text": "GDP per Capita in Portugal averaged 14314.16 USD from 1960 until 2025, reaching an all time high of 22851.12 USD in 2025 and a record low of 4066.97 USD in 1960."
+   },
+   {
+    "i": 34,
+    "text": "GDP per Capita in Vietnam averaged 1819.28 USD from 1984 until 2025, reaching an all time high of 4308.21 USD in 2025 and a record low of 595.49 USD in 1984."
+   }
+  ]
+ },
+ {
+  "key": "eval/heldout4_runs/h25|4",
+  "part": "What was Vietnam's internet penetration in the most recent reported year?",
+  "any_arm_abstained": true,
+  "cands": [
+   {
+    "i": 40,
+    "text": "What is Vietnam's internet penetration rate (%) in 2024?▾ Vietnam's internet penetration rate (%) is 84.15 % in 2024, according to Individuals using the Internet (% of population), World Bank (WB)."
+   },
+   {
+    "i": 38,
+    "text": "Vietnam has achieved significant internet penetration, with 78% of the population (77+ million people) now online."
+   },
+   {
+    "i": 2,
+    "text": "**Portugal has a quarterly GDP per capita**, of €7,034$7,034, less than the same period last year, when it was €7,064 $7,064 ."
+   }
+  ]
+ },
+ {
+  "key": "eval/heldout4_runs/h25|5",
+  "part": "What was Vietnam's fertility rate in the most recent reported year?",
+  "any_arm_abstained": true,
+  "cands": [
+   {
+    "i": 43,
+    "text": "Vietnam’s total fertility rate (TFR) fell from 2.11 children per woman in 2021 to 1.91 in 2024, the third consecutive year below the replacement level of 2.1."
+   },
+   {
+    "i": 40,
+    "text": "What is Vietnam's internet penetration rate (%) in 2024?▾ Vietnam's internet penetration rate (%) is 84.15 % in 2024, according to Individuals using the Internet (% of population), World Bank (WB)."
+   },
+   {
+    "i": 45,
+    "text": ": Vietnam's total fertility rate is 1.9 live births per woman as of 2024."
+   }
+  ]
+ },
+ {
+  "key": "eval/heldout4_runs/h25|6",
+  "part": "What was Ghana's GDP per capita in the most recent reported year?",
+  "any_arm_abstained": true,
+  "cands": [
+   {
+    "i": 2,
+    "text": "**Portugal has a quarterly GDP per capita**, of €7,034$7,034, less than the same period last year, when it was €7,064 $7,064 ."
+   },
+   {
+    "i": 40,
+    "text": "What is Vietnam's internet penetration rate (%) in 2024?▾ Vietnam's internet penetration rate (%) is 84.15 % in 2024, according to Individuals using the Internet (% of population), World Bank (WB)."
+   }
+  ]
+ },
+ {
+  "key": "eval/heldout4_runs/h25|7",
+  "part": "What was Ghana's internet penetration in the most recent reported year?",
+  "any_arm_abstained": true,
+  "cands": [
+   {
+    "i": 2,
+    "text": "**Portugal has a quarterly GDP per capita**, of €7,034$7,034, less than the same period last year, when it was €7,064 $7,064 ."
+   },
+   {
+    "i": 40,
+    "text": "What is Vietnam's internet penetration rate (%) in 2024?▾ Vietnam's internet penetration rate (%) is 84.15 % in 2024, according to Individuals using the Internet (% of population), World Bank (WB)."
+   }
+  ]
+ },
+ {
+  "key": "eval/heldout4_runs/h25|8",
+  "part": "What was Ghana's fertility rate in the most recent reported year?",
+  "any_arm_abstained": true,
+  "cands": [
+   {
+    "i": 43,
+    "text": "Vietnam’s total fertility rate (TFR) fell from 2.11 children per woman in 2021 to 1.91 in 2024, the third consecutive year below the replacement level of 2.1."
+   },
+   {
+    "i": 40,
+    "text": "What is Vietnam's internet penetration rate (%) in 2024?▾ Vietnam's internet penetration rate (%) is 84.15 % in 2024, according to Individuals using the Internet (% of population), World Bank (WB)."
+   },
+   {
+    "i": 19,
+    "text": "According to the latest birth rate data available, the fertility rate in Portugal was 1.41 in 2024 and has been below the replacement level of 2.1 children per woman since 1982."
+   }
+  ]
+ }
+]
