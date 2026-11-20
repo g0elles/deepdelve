@@ -26,6 +26,15 @@ api:
   # toggle from orchestrator.py's _HOSTED_PROVIDER_THINKING_EXTRA_BODY, keyed by openai_base_url.
   backend: openai
 settings:
+  # model_options (backend: ollama, pipeline + compiled writer via pipeline/llm.py:call_json): per-model Ollama options.
+  # Each model runs at its card's sampling and the largest num_ctx that loads 100% on GPU (measured with rocm-smi, 16 GB card,
+  # flash attention + q8_0 KV cache). A listed model's values replace call_json's defaults (num_ctx 16384, temperature 0).
+  # Sources and VRAM: wiki Model-Candidates-Survey-2026-11. Matches with or without ":latest".
+  model_options:
+    ornith-1.5:9b: {num_ctx: 262144, temperature: 1.0, top_p: 0.95, top_k: 20, min_p: 0.0, presence_penalty: 1.5, repeat_penalty: 1.0}
+    gemma4:12b: {num_ctx: 262144, temperature: 1.0, top_p: 0.95, top_k: 64}
+    qwen2.5-14b-agent:latest: {num_ctx: 32768, temperature: 0.7, top_p: 0.8, top_k: 20, repeat_penalty: 1.05}
+    qwen2.5-14b-agent-jsonfix:latest: {num_ctx: 32768, temperature: 0.7, top_p: 0.8, top_k: 20, repeat_penalty: 1.05}
   enable_thinking: false
   # thinking_effort (backend: ollama only): low | medium | high, or null/unset to use enable_thinking's boolean.
   # Level-based models such as gpt-oss have NO off mode and ignore boolean false (it just sends no reasoning

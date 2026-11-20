@@ -41,6 +41,17 @@ th._cache.clear(); th._cache[("http://localhost:11434", "m")] = ("bool", [])
 llm.call_json("m", "p", {}, think="minimal"); assert sent[-1]["think"] is False
 llm.call_json("m", "p", {}, think="high"); assert sent[-1]["think"] == "high"
 llm.call_json("m", "p", {}); assert "think" not in sent[-1]
+# settings.model_options: a listed model runs at its own options (with or without ":latest"), an unlisted one at the call's defaults
+import config
+_saved = config.cfg.get("settings", {}).get("model_options")
+config.cfg.setdefault("settings", {})["model_options"] = {"m:latest": {"num_ctx": 262144, "temperature": 1.0, "top_k": 64}}
+try:
+    llm.call_json("m", "p", {}, temperature=0, seed=3); o = sent[-1]["options"]
+    assert (o["num_ctx"], o["temperature"], o["top_k"], o["seed"]) == (262144, 1.0, 64, 3), o
+    th._cache[("http://localhost:11434", "other")] = ("bool", [])
+    llm.call_json("other", "p", {}); assert sent[-1]["options"] == {"temperature": 0, "num_ctx": 16384}, sent[-1]["options"]
+finally:
+    config.cfg["settings"]["model_options"] = _saved
 print("test_thinking: ok")
 
 if __name__ == "__main__":
