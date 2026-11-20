@@ -1,0 +1,56 @@
+[
+ {
+  "dir": "research_output/cmp_ornith_c1",
+  "quote": "For example, a heat pump with COP 3 on a grid with 0.8 kg CO2e/kWh electricity will emit 0.267 kg CO2e per kWh heat, while a 90% efficient gas boiler emits 0.203 kg CO2e per kWh heat (using 0.183 kg CO2e/kWh gas).",
+  "fig": "0.267 kg CO2e per kWh",
+  "others": [
+   "src_b7f5026f.md: 0.030 kg CO₂e per kWh | Extracting, processing and piping the gas also emit: DEFRA puts these upstream ([well-to-tank](/glossary/well-to-tank/)) emissions at 0.030 kg CO₂e per kWh, about 17% on top of combustion."
+  ]
+ },
+ {
+  "dir": "research_output/cmp_ornith_c1",
+  "quote": "For example, a heat pump with COP 3 on a grid with 0.8 kg CO2e/kWh electricity will emit 0.267 kg CO2e per kWh heat, while a 90% efficient gas boiler emits 0.203 kg CO2e per kWh heat (using 0.183 kg CO2e/kWh gas).",
+  "fig": "0.203 kg CO2e per kWh",
+  "others": [
+   "src_b7f5026f.md: 0.030 kg CO₂e per kWh | Extracting, processing and piping the gas also emit: DEFRA puts these upstream ([well-to-tank](/glossary/well-to-tank/)) emissions at 0.030 kg CO₂e per kWh, about 17% on top of combustion."
+  ]
+ },
+ {
+  "dir": "research_output/cmp_ornith_c1",
+  "quote": "A heat pump running on grid electricity produces roughly 0.92 pounds of CO2 per kWh, but because of its high efficiency (COP of 3.0), the net emissions per unit of heat delivered are much lower.",
+  "fig": "0.92 pounds of CO2 per kWh",
+  "others": [
+   "src_b7f5026f.md: 0.030 kg CO₂e per kWh | Extracting, processing and piping the gas also emit: DEFRA puts these upstream ([well-to-tank](/glossary/well-to-tank/)) emissions at 0.030 kg CO₂e per kWh, about 17% on top of combustion."
+  ]
+ },
+ {
+  "dir": "research_output/smoke_overview_slots_20261119",
+  "quote": "* **Gas Furnace:** A standard modern high-efficiency natural gas furnace emits approximately **230 kg CO2e per MWh**.",
+  "fig": "230 kg CO2e per MWh",
+  "others": [
+   "src_b49bb4db.md: 117 pounds of CO2 per therm | Gas furnaces produce direct carbon emissions from combustion—approximately 117 pounds of CO2 per therm of natural gas burned.",
+   "src_b7f5026f.md: 13 g CO2e per kWh | * [Guide](https://greencalculus.com/guides/)[What is the carbon footprint of nuclear power?](https://greencalculus.com/guides/carbon-footprint-of-nuclear-power/)Nuclear power emits about 5 to 13 g CO2e per kWh over its life cycle (UNECE, IPCC, NREL), about the same as…→"
+  ]
+ },
+ {
+  "dir": "research_output/smoke_overview_slots_20261119",
+  "quote": "390kg CO₂e per MWh of heat produced Gas furnace (central heating)",
+  "fig": "390kg CO₂e per MWh",
+  "others": [
+   "src_b7f5026f.md: 0.030 kg CO₂e per kWh | Extracting, processing and piping the gas also emit: DEFRA puts these upstream ([well-to-tank](/glossary/well-to-tank/)) emissions at 0.030 kg CO₂e per kWh, or 0.42 kg per kilogram of gas, about 17% on top of combustion."
+  ]
+ },
+ {
+  "dir": "research_output/smoke_overview_slots_20261119",
+  "quote": "Gas furnaces produce direct carbon emissions from combustion—approximately 117 pounds of CO2 per therm of natural gas burned.",
+  "fig": "117 pounds of CO2 per therm",
+  "others": [
+   "src_482c08de.md: 26.13 kilograms carbon per mmbtu | The average carbon coefficient of coal combusted for electricity generation in 2022 was 26.13 kilograms carbon per mmbtu (EPA 2024).",
+   "src_51a8414c.md: 5.3 kg CO₂ per therm | The EPA emission factor for natural gas combustion is 5.3 kg CO₂ per therm.",
+   "src_911ecab7.md: 230 kg CO2e per MWh | * **Gas Furnace:** A standard modern high-efficiency natural gas furnace emits approximately **230 kg CO2e per MWh**.",
+   "src_b7f5026f.md: 0.030 kg CO₂e per kWh | Extracting, processing and piping the gas also emit: DEFRA puts these upstream ([well-to-tank](/glossary/well-to-tank/)) emissions at 0.030 kg CO₂e per kWh, or 0.42 kg per kilogram of gas, about 17% on top of combustion.",
+   "src_b7f5026f.md: 0.182 kg per kWh | About 53.1 kg of CO₂e per million Btu when burned, or 5.31 kg per therm, 5.45 kg per 100 cubic feet, 0.182 kg per kWh and 2.03 kg per cubic metre, according to the US EPA and the UK government.",
+   "src_b7f5026f.md: 0.182 kg per kWh | Burning [natural gas](https://greencalculus.com/glossary/natural-gas/) releases about 53.1 kg of [CO₂e](https://greencalculus.com/glossary/co2e-carbon-dioxide-equivalent/) per million Btu, which is 5.31 kg per therm, 5.45 kg per 100 cubic feet, 0.182 kg per kWh or 2.03 kg per cubic metre (US EPA; UK"
+  ]
+ }
+]

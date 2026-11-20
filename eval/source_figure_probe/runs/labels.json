@@ -1,0 +1,6 @@
+{"0": {"true": false, "why": "heat delivered via grid vs DEFRA upstream well-to-tank gas, different quantity"},
+ "1": {"true": false, "why": "boiler combustion per kWh heat vs upstream well-to-tank, different quantity"},
+ "2": {"true": false, "why": "grid electricity per kWh vs upstream gas, different quantity"},
+ "3": {"true": true, "why": "230 kg/MWh furnace vs 117 lb/therm (= 503 kg/MWh) same quantity; the 117 side is the wrong one"},
+ "4": {"true": false, "why": "only conflicting figure listed is upstream 0.030 kg/kWh, different quantity"},
+ "5": {"true": true, "why": "117 lb/therm vs EPA 5.3 kg/therm, same quantity, 10x source error"}}
