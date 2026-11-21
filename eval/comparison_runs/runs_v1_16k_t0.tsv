@@ -1,0 +1,12 @@
+c2	ornith-1.5:9b	1	research_output/cmp_ornith_c2_r1	pipe_exit=0 105s	app_exit=0 36s	research_output/does_semaglutide_reduce_alcohol_consumpt_579dac_20261120_171132/
+c2	gemma4:12b	1	research_output/cmp_gemma4_c2_r1	pipe_exit=0 102s	app_exit=0 25s	research_output/does_semaglutide_reduce_alcohol_consumpt_579dac_20261120_171350/
+c3	ornith-1.5:9b	1	research_output/cmp_ornith_c3_r1	pipe_exit=0 170s	app_exit=0 45s	research_output/how_did_iceland_s_recovery_from_the_2008_83aa2c_20261120_171706/
+c3	gemma4:12b	1	research_output/cmp_gemma4_c3_r1	pipe_exit=0 193s	app_exit=0 26s	research_output/how_did_iceland_s_recovery_from_the_2008_83aa2c_20261120_172104/
+c4	ornith-1.5:9b	1	research_output/cmp_ornith_c4_r1	pipe_exit=0 96s	app_exit=0 48s	research_output/c_mo_se_compara_el_efecto_del_impuesto_a_d962b1_20261120_172305/
+c4	gemma4:12b	1	research_output/cmp_gemma4_c4_r1	pipe_exit=0 88s	app_exit=0 21s	research_output/c_mo_se_compara_el_efecto_del_impuesto_a_d962b1_20261120_172521/
+c2	ornith-1.5:9b	2	research_output/cmp_ornith_c2_r2	pipe_exit=0 97s	app_exit=0 29s	research_output/does_semaglutide_reduce_alcohol_consumpt_579dac_20261120_172721/
+c2	gemma4:12b	2	research_output/cmp_gemma4_c2_r2	pipe_exit=0 101s	app_exit=0 31s	research_output/does_semaglutide_reduce_alcohol_consumpt_579dac_20261120_172931/
+c3	ornith-1.5:9b	2	research_output/cmp_ornith_c3_r2	pipe_exit=0 161s	app_exit=0 36s	research_output/how_did_iceland_s_recovery_from_the_2008_83aa2c_20261120_173243/
+c3	gemma4:12b	2	research_output/cmp_gemma4_c3_r2	pipe_exit=0 220s	app_exit=0 22s	research_output/how_did_iceland_s_recovery_from_the_2008_83aa2c_20261120_173659/
+c4	ornith-1.5:9b	2	research_output/cmp_ornith_c4_r2	pipe_exit=0 115s	app_exit=0 35s	research_output/c_mo_se_compara_el_efecto_del_impuesto_a_d962b1_20261120_173916/
+c4	gemma4:12b	2	research_output/cmp_gemma4_c4_r2	pipe_exit=0 78s	app_exit=0 16s	research_output/c_mo_se_compara_el_efecto_del_impuesto_a_d962b1_20261120_174108/
