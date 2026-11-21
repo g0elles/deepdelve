@@ -1,0 +1,10 @@
+Round 1-2 exploratory cut-off sweep (post hoc, not a pass), 2026-11-20. Per file: pre-registered 0.5 result is in probe.py --score;
+here: first cut-off meeting the bar, and for S the not-out rate at the highest cut-off that flags >= 30/44 out rows.
+clef-flash_A.jsonl: passing cut-off 0.395 -> 0.869 / 0.802
+clef-flash_S.jsonl: passing cut-off none | S at >=30/44: cut-off 0.174, out 30/44, not-out 84/498 = 0.169
+d3_4b-q8_0_A.jsonl: passing cut-off 0.614 -> 0.856 / 0.802
+d3_4b-q8_0_S.jsonl: passing cut-off none | S at >=30/44: cut-off 0.218, out 30/44, not-out 140/498 = 0.281
+d3_9b-q8_0_A.jsonl: passing cut-off none
+d3_9b-q8_0_S.jsonl: passing cut-off none | S at >=30/44: cut-off 0.407, out 30/44, not-out 77/498 = 0.155
+nimble-v3_9b-q8_0_A.jsonl: passing cut-off 0.414 -> 0.883 / 0.802
+nimble-v3_9b-q8_0_S.jsonl: passing cut-off none | S at >=30/44: cut-off 0.376, out 30/44, not-out 179/498 = 0.359
