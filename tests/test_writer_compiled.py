@@ -158,7 +158,7 @@ assert "1. [Study A](https://a.example/x), 2024-03-05" in md2 and "2. [https://b
 assert md2.index("## Evidence gaps") < md2.index("## Not covered") < md2.index("## Sources")
 assert "No facet covered these words of the request: emissions." in md2 and "Comparison asked for" in md2
 crossed = wc.render(c2, {"overview": [{"cites": [1, 2], "text": "Traffic and air both improved."}]})
-assert "Comparison asked for" not in crossed                                                  # a sentence cites sources from two facets
+assert "Comparison asked for" in crossed   # citing two facets is not a verified comparison (W4: 17 of 18 reports "compared" by that rule, 0 graded)
 assert "## Not covered" not in wc.render(c, {})
 # smoke 2026-11-14 regressions: abbreviation dots and hyphens fold away; of/at are not meaning prepositions; fallback picks the relevant quote
 assert wc.check({"cites": [1], "text": "Population-weighted U.S. averages show reductions."}, {1: "the population weighted US averages show reductions"}, "q") == []

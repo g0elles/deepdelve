@@ -405,14 +405,8 @@ def render(c: Compiled, written: dict, lang: str = "en") -> str:
         out += [f"- **{heads[f.id]}:** {gap_disclosure_sentence({'facet': heads[f.id], 'questions': f.unanswered})}" for f in gaps]  # the engine's own wording and shape
         out.append("")
     words = [L["not_covered_words"].format(words=", ".join(c.uncovered))] if c.uncovered else []
-    if c.comparison:
-        fac: dict[int, set[str]] = {}
-        for f in c.facets:
-            for q in f.quotes:
-                fac.setdefault(q.n, set()).add(f.id)
-        crossed = any(len(set().union(*(fac.get(n, set()) for n in s["cites"]))) >= 2 for items in written.values() for s in items if s["cites"])
-        if not crossed:
-            words.append(L["comparison_line"])
+    if c.comparison:  # always: no code verifies a like-for-like comparison; "a sentence cites two facets" called 17 of 18 reports compared
+        words.append(L["comparison_line"])  # when grading found 0 (eval/writer_defects/PLAN_W4.md)
     if words:
         out += [f"## {L['not_covered']}", ""] + words + [""]
     out += [f"## {L['sources']}", ""]
