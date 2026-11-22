@@ -143,3 +143,17 @@ form rule (figure vs direction) was not enforced, and quarterly GDP growth was p
   bar uses the last attempt per query x arm x run.
 - Before the first run: this plan's sha256 goes into CURRENT.md (frozen); `DEEPDELVE_FORCE_VIRTUAL_DISPLAY=1` is asserted by the runner.
 - Per-row output: the tsv, the search log, each run's metrics.json and evidence.json.
+
+## B-retrieval result (2026-11-22; 8 runs, ornith-1.5:9b, Ollama local; `w4_ret_runs.tsv`, `w4_ret_search.jsonl`, labels `w4_labels_ret.py`)
+- All 8 runs completed; 0 empty searches (no redo); searches per run: c2 current 11/11, new 13/11; c4 current 6/6, new 6/10.
+- Bar (strict): FAIL for both queries. No set in either arm holds a PAIR (lenient also 0).
+- c2: the new arm retrieved naltrexone figures on a listed sub-measure for the first time (injectable naltrexone vs placebo, WMD -4.7 in
+  % heavy drinking days, meta-analysis; new r1), and semaglutide's Lancet 13.7-point heavy-drinking-days difference (new r2), but never in
+  the same run; the semaglutide figure in r1 was a model coefficient (beta 0.84), which the rubric does not pair with a % difference. Current
+  arm: naltrexone again only NNTs, abstention/relapse rates, or "modest". Web noise seen: a page claiming head-to-head trials with semaglutide
+  -70% binge episodes "outpacing naltrexone" (no such trial).
+- c4: both arms, both runs: Mexico drink-volume figures in every set; no UK drink-volume, sugar-from-drinks or total-sugar change attributed
+  to the levy in any set (obesity -8% in girls, reformulation, levy rates). The Spanish keyword questions, with or without measure and
+  period, did not reach a UK evaluation. Language (Spanish vs English for the UK side) was not tested.
+- Conclusion for W4: on these queries, targeted questions alone do not produce comparable pairs; c2 moved closer (both halves exist on the
+  web and were found, in different runs), c4 did not move. No planner build follows from this probe.

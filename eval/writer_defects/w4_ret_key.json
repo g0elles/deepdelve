@@ -1,0 +1,50 @@
+{
+ "d790ace8": {
+  "query": "c2",
+  "model": "current",
+  "run": "1",
+  "evidence": "research_output/w4ret_c2_current_r1"
+ },
+ "eaa7c371": {
+  "query": "c2",
+  "model": "new",
+  "run": "1",
+  "evidence": "research_output/w4ret_c2_new_r1"
+ },
+ "5c8ecc19": {
+  "query": "c4",
+  "model": "current",
+  "run": "1",
+  "evidence": "research_output/w4ret_c4_current_r1"
+ },
+ "60d1a554": {
+  "query": "c4",
+  "model": "new",
+  "run": "1",
+  "evidence": "research_output/w4ret_c4_new_r1"
+ },
+ "2f750b83": {
+  "query": "c4",
+  "model": "new",
+  "run": "2",
+  "evidence": "research_output/w4ret_c4_new_r2"
+ },
+ "ab35fc9f": {
+  "query": "c4",
+  "model": "current",
+  "run": "2",
+  "evidence": "research_output/w4ret_c4_current_r2"
+ },
+ "e7b4afd8": {
+  "query": "c2",
+  "model": "new",
+  "run": "2",
+  "evidence": "research_output/w4ret_c2_new_r2"
+ },
+ "cf90daa8": {
+  "query": "c2",
+  "model": "current",
+  "run": "2",
+  "evidence": "research_output/w4ret_c2_current_r2"
+ }
+}

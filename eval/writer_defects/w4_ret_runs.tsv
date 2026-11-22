@@ -1,0 +1,8 @@
+c2	current	1	research_output/w4ret_c2_current_r1	122s attempt=1	searches=11 empty=0	research_output/w4ret_c2_current_r1
+c2	new	1	research_output/w4ret_c2_new_r1	146s attempt=1	searches=13 empty=0	research_output/w4ret_c2_new_r1
+c4	current	1	research_output/w4ret_c4_current_r1	67s attempt=1	searches=6 empty=0	research_output/w4ret_c4_current_r1
+c4	new	1	research_output/w4ret_c4_new_r1	292s attempt=1	searches=6 empty=0	research_output/w4ret_c4_new_r1
+c4	new	2	research_output/w4ret_c4_new_r2	105s attempt=1	searches=10 empty=0	research_output/w4ret_c4_new_r2
+c4	current	2	research_output/w4ret_c4_current_r2	50s attempt=1	searches=6 empty=0	research_output/w4ret_c4_current_r2
+c2	new	2	research_output/w4ret_c2_new_r2	102s attempt=1	searches=11 empty=0	research_output/w4ret_c2_new_r2
+c2	current	2	research_output/w4ret_c2_current_r2	91s attempt=1	searches=11 empty=0	research_output/w4ret_c2_current_r2
