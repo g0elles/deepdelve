@@ -1,0 +1,110 @@
+{
+ "f2d8796c": {
+  "query": "c2",
+  "model": "gemma4:12b",
+  "run": "1",
+  "evidence": "research_output/cmp2_gemma4_c2_r1"
+ },
+ "c03500f0": {
+  "query": "c2",
+  "model": "qwen2.5-14b-agent:latest",
+  "run": "1",
+  "evidence": "research_output/cmp2_qwen2.5_c2_r1"
+ },
+ "0b01db12": {
+  "query": "c3",
+  "model": "gemma4:12b",
+  "run": "1",
+  "evidence": "research_output/cmp2_gemma4_c3_r1"
+ },
+ "9542472c": {
+  "query": "c3",
+  "model": "qwen2.5-14b-agent:latest",
+  "run": "1",
+  "evidence": "research_output/cmp2_qwen2.5_c3_r1"
+ },
+ "c070ee8f": {
+  "query": "c4",
+  "model": "gemma4:12b",
+  "run": "1",
+  "evidence": "research_output/cmp2_gemma4_c4_r1"
+ },
+ "572b32e9": {
+  "query": "c4",
+  "model": "qwen2.5-14b-agent:latest",
+  "run": "1",
+  "evidence": "research_output/cmp2_qwen2.5_c4_r1"
+ },
+ "e664f07a": {
+  "query": "c2",
+  "model": "gemma4:12b",
+  "run": "2",
+  "evidence": "research_output/cmp2_gemma4_c2_r2"
+ },
+ "7986de75": {
+  "query": "c2",
+  "model": "qwen2.5-14b-agent:latest",
+  "run": "2",
+  "evidence": "research_output/cmp2_qwen2.5_c2_r2"
+ },
+ "358ed7fd": {
+  "query": "c3",
+  "model": "gemma4:12b",
+  "run": "2",
+  "evidence": "research_output/cmp2_gemma4_c3_r2"
+ },
+ "73b6fceb": {
+  "query": "c3",
+  "model": "qwen2.5-14b-agent:latest",
+  "run": "2",
+  "evidence": "research_output/cmp2_qwen2.5_c3_r2"
+ },
+ "ae8b21c0": {
+  "query": "c4",
+  "model": "gemma4:12b",
+  "run": "2",
+  "evidence": "research_output/cmp2_gemma4_c4_r2"
+ },
+ "daf066c7": {
+  "query": "c4",
+  "model": "qwen2.5-14b-agent:latest",
+  "run": "2",
+  "evidence": "research_output/cmp2_qwen2.5_c4_r2"
+ },
+ "b74d2f98": {
+  "query": "c2",
+  "model": "ornith-1.5:9b",
+  "run": "1",
+  "evidence": "research_output/cmp2_ornith_c2_r1"
+ },
+ "b467d1e4": {
+  "query": "c3",
+  "model": "ornith-1.5:9b",
+  "run": "1",
+  "evidence": "research_output/cmp2_ornith_c3_r1"
+ },
+ "b529205b": {
+  "query": "c4",
+  "model": "ornith-1.5:9b",
+  "run": "1",
+  "evidence": "research_output/cmp2_ornith_c4_r1"
+ },
+ "08d42833": {
+  "query": "c2",
+  "model": "ornith-1.5:9b",
+  "run": "2",
+  "evidence": "research_output/cmp2_ornith_c2_r2"
+ },
+ "4de6c41e": {
+  "query": "c3",
+  "model": "ornith-1.5:9b",
+  "run": "2",
+  "evidence": "research_output/cmp2_ornith_c3_r2"
+ },
+ "3bb4d580": {
+  "query": "c4",
+  "model": "ornith-1.5:9b",
+  "run": "2",
+  "evidence": "research_output/cmp2_ornith_c4_r2"
+ }
+}
