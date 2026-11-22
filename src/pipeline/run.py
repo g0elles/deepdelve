@@ -3,6 +3,7 @@ Usage (from src/): python -m pipeline.run "<query>" [--model M] [--out DIR] [--t
 import argparse
 import concurrent.futures as cf
 import hashlib
+import functools
 import json
 import math
 import re
@@ -366,10 +367,34 @@ def facet_entities(facets: list[dict], query: str = "") -> dict[str, set[str]]:
     return out
 
 
+@functools.lru_cache(maxsize=4096)
+def _page_counts(source: str) -> dict[str, int]:
+    """Country mentions in the page TEXT only: no ccTLD credit, no capital "US" ("CONTACT US" menus), unlike source_off_jurisdiction."""
+    f = _fold(source)
+    return {k: len(r.findall(f)) for k, r in _COUNTRIES.items()}
+
+
+def _country_key(ent: str) -> str | None:
+    """The `_COUNTRIES` key when the WHOLE folded entity is a country name ("reino unido", "mexico"); None for "mexico city", "lima, peru"."""
+    if ent in ("us", "usa"):
+        return "us"
+    return next((k for k, r in _COUNTRIES.items() if re.fullmatch(rf"(?:{r.pattern})\w*", ent)), None)
+
+
 def entity_ok(fid: str, sent: str, source: str, ents: dict[str, set[str]]) -> bool:
-    """An entity-specific facet only takes sentences that name its entity (else Europe-wide stats fill the Lima facet)."""
+    """An entity-specific facet only takes sentences that name its entity (else Europe-wide stats fill the Lima facet).
+    W7 (eval/writer_defects/PLAN_W7.md): a single-country facet also takes a sentence naming no country, region or other facet's entity
+    when its page is about that country (>= 3 text mentions and >= 2x any other): pages say "UK" once, then "we bought 46,400 tonnes less"."""
     mine = ents[fid]
-    return not mine or any(_mentions(sent, e) for e in mine)
+    if not mine or any(_mentions(sent, e) for e in mine):
+        return True
+    k = _country_key(next(iter(mine))) if len(mine) == 1 and source else None
+    if not k or countries(sent) or any(_mentions(sent, r) for r in _REGIONS):
+        return False
+    if any(_mentions(sent, e) for f, v in ents.items() if f != fid for e in v):
+        return False
+    c = _page_counts(source)
+    return c[k] >= 3 and all(c[k] >= 2 * v for j, v in c.items() if j != k)
 
 
 def _uncovered(facets: list[dict], query: str) -> list[str]:

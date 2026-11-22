@@ -232,6 +232,28 @@ def test_us_pronoun_is_not_the_united_states():
     assert "us" in query_entities("US and UK solar subsidies compared")
 
 
+def test_entity_silent_sentence_on_country_page():
+    # W7 (eval/writer_defects/PLAN_W7.md): a UK page says "UK" once in a heading, then "we bought ... less sugar"
+    from pipeline.run import entity_ok
+    uk = {"f1": {"mexico"}, "f2": {"reino unido"}}
+    page = "UK " * 6 + "EU " * 3
+    sugar = "We bought 46,400 tonnes less sugar through soft drinks in 2020 compared to 2015, a decrease of 34.3%."
+    assert entity_ok("f2", sugar, page, uk)                                          # 6 vs 3: exactly the 2x boundary
+    assert not entity_ok("f2", sugar, "", uk)                                        # no page text: sentence rule only
+    # guards (pass on the old rule too)
+    assert not entity_ok("f2", "In France consumption fell 5%.", page, uk)
+    assert not entity_ok("f2", sugar, "UK " * 3 + "France " * 3, uk)                 # not dominant
+    assert not entity_ok("f2", "Consumption in Europe fell.", page, uk)              # region named
+    assert not entity_ok("f2", "Sales in Mexico fell.", page, uk)                    # other facet's entity
+    assert not entity_ok("l", sugar, "Lima " * 10, {"l": {"lima"}})                  # city: sentence rule only
+    assert not entity_ok("l", sugar, "Peru " * 10, {"l": {"lima, peru"}})
+    assert not entity_ok("m", sugar, "Mexico " * 10, {"m": {"mexico city"}})
+    assert not entity_ok("u", sugar, "ABOUT US CONTACT US FOLLOW US", {"u": {"us"}})  # menus are not the US
+    assert not entity_ok("c", sugar, "Nothing here.", {"c": {"colombia"}})           # page text only, no ccTLD credit
+    assert not entity_ok("t", sugar, page, {"t": {"reino unido", "mexico"}})         # two entities: sentence rule only
+    assert entity_ok("u", sugar, "United States " * 4, {"u": {"us"}})                # W6 "us" entity fallback
+
+
 def test_hard_wrapped_sentences_rejoined():
     from pipeline.run import sentences
     src = "This aligns with earlier studies, which\n\nreported commuting durations in Santiago typically ranging between 40 and 60 minutes, the longest in\n\nChile.\n\n# Heading\n\nNext sentence here is long enough to be kept as a sentence of its own."

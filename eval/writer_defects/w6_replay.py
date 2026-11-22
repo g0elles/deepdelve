@@ -31,13 +31,15 @@ def snapshot(tag):
         evidence, funnel = {f["id"]: {} for f in ev["facets"]}, {}
         pr.select_ce(query, ev["facets"], seen, list(seen), evidence, {}, funnel, {"judge": "stub"})
         for fid, by in evidence.items():
-            out["pools"][rel + " " + fid] = sorted(t for ts in by.values() for t in ts)
-    json.dump(out, open(os.path.join(HERE, f"w6_{tag}.json"), "w"), ensure_ascii=False)
+            out["pools"][rel + " " + fid] = sorted([u, t] for u, ts in by.items() for t in ts)  # W7: [url, text]
+        for f in ev["facets"]:
+            out.setdefault("facets", {})[rel + " " + f["id"]] = {"name": f["name"], "questions": f["questions"], "query": query}
+    json.dump(out, open(os.path.join(HERE, f"{tag}.json" if tag.startswith("w7") else f"w6_{tag}.json"), "w"), ensure_ascii=False)
     print(tag, "sheet", len(out["sheet"]), "pages", len(out["pages"]), "facet pools", len(out["pools"]))
 
 
-def diff():
-    a, b = (json.load(open(os.path.join(HERE, f"w6_{t}.json"))) for t in ("before", "after"))
+def diff(ta="w6_before", tb="w6_after"):
+    a, b = (json.load(open(os.path.join(HERE, f"{t}.json"))) for t in (ta, tb))
     flips = [(k, a["sheet"][k], b["sheet"][k]) for k in a["sheet"] if a["sheet"][k][1] != b["sheet"][k][1]]
     print("sheet flips:", len(flips), "| positives newly dropped:", sum(1 for _, x, y in flips if x[0] == 1 and x[1] and not y[1]),
           "| positives newly kept:", sum(1 for _, x, y in flips if x[0] == 1 and y[1] and not x[1]),
@@ -50,16 +52,23 @@ def diff():
     print("pages changed (off-jurisdiction verdict):", len(pages))
     for k in pages:
         print("  ", "dropped->kept" if a["pages"][k] else "kept->dropped", k)
-    ch = [k for k in a["pools"] if set(a["pools"][k]) != set(b["pools"].get(k, []))]
+    def rows(p, k):
+        return {tuple(x) if isinstance(x, list) else ("", x) for x in p["pools"].get(k, [])}
+    ch = [k for k in a["pools"] if rows(a, k) != rows(b, k)]
     print("facet pools changed:", len(ch), "of", len(a["pools"]))
+    out = []
     for k in ch:
-        add, rem = set(b["pools"][k]) - set(a["pools"][k]), set(a["pools"][k]) - set(b["pools"][k])
+        add, rem = rows(b, k) - rows(a, k), rows(a, k) - rows(b, k)
+        out += [{"pool": k, "change": c, "url": u, "text": t, **b.get("facets", {}).get(k, {})} for c, xs in (("added", add), ("removed", rem)) for u, t in xs]
         print(f"  {k}: +{len(add)} -{len(rem)}")
-        for t in sorted(add)[:3]:
+        for u, t in sorted(add, key=lambda x: x[1]):
             print("     +", t[:150])
-        for t in sorted(rem)[:3]:
+        for u, t in sorted(rem, key=lambda x: x[1]):
             print("     -", t[:150])
+    if ta.startswith("w7"):
+        with open(os.path.join(HERE, "w7_rows.jsonl"), "w") as fh:
+            fh.writelines(json.dumps(r, ensure_ascii=False) + "\n" for r in out)
 
 
 if __name__ == "__main__":
-    diff() if sys.argv[1] == "--diff" else snapshot(sys.argv[1])
+    diff(*sys.argv[2:4]) if sys.argv[1] == "--diff" else snapshot(sys.argv[1])
