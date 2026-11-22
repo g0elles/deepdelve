@@ -1486,6 +1486,8 @@ def _is_doi_figure(figure: str) -> bool:
 
 def cross_source_hits(report: str) -> list[dict]:
     """Structured form of find_cross_source_contradictions: one dict per hit (subject, figure, other_figure, cited_files, other_file).
+    Offline detector only: retired as a completion check and as the compiled "Where sources differ" section 2026-11-22 (0 real of 47 hits
+    on 54 saved reports, eval/writer_defects/PLAN_W5.md); used by eval/audit_runs/replay_checks.py and eval/writer_defects/credit.py.
     ROADMAP Phase 2 (FEVER-style cross-source disagreement detection, Thorne et al., NAACL
     2018) — depends on Phase 1's claim segmentation (decompose_claim_segments). Distinct from
     every other check in this file: those verify a claim against ITS OWN cited source; this asks
@@ -1571,7 +1573,7 @@ def cross_source_hits(report: str) -> list[dict]:
 
 
 def find_cross_source_contradictions(report: str) -> list[str]:
-    """String form of cross_source_hits (see its docstring for the rule), as the completion check and the audit scripts consume it."""
+    """String form of cross_source_hits (see its docstring for the rule), as the offline audit scripts consume it."""
     return [f"'{h['subject']}': report states {h['figure']!r} but a DIFFERENT fetched "
             f"source ({h['other_file']}) states {h['other_figure']!r} for the same subject, "
             f"unmentioned in the report" for h in cross_source_hits(report)]

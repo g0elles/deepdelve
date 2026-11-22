@@ -384,29 +384,16 @@ def main():
                                f"## Sector Agritech\n- el sector agritech crecio de forma notable segun analistas [gov]({_SRC})\n")},
          "excluded_topic_present", "explicitly excluded",
          "Do a market research of Colombia, excluding Agritech."),
-        # Live-motivated case (ROADMAP Phase 2, FEVER-style): the report's own citation genuinely
-        # supports its claim (12%, from fintech_a), but a DIFFERENT fetched source (fintech_b,
-        # never cited on this line) reports a conflicting figure (18%) for the SAME subject, and
-        # the report never surfaces that disagreement anywhere.
-        ("cross_source_contradiction", True, {"findings.md": _FINDINGS_OK,
+        # cross_source_contradiction retired 2026-11-22 (eval/writer_defects/PLAN_W5.md, 0 real of 47 hits): its designed case must no
+        # longer fire any check.
+        ("cross_source_retired", True, {"findings.md": _FINDINGS_OK,
           "final_report.md": "- Sector Fintech grew 12% in 2024 [gov](https://gov.example.co/fintech-a)"},
-         "cross_source_contradiction", "a DIFFERENT fetched source",
+         None, None,
          "", [
              ("https://gov.example.co/fintech-a", "sources/fintech_a.md",
               "Source-URL: https://gov.example.co/fintech-a\n\nSector Fintech grew 12% in 2024 according to official figures."),
              ("https://gov.example.co/fintech-b", "sources/fintech_b.md",
               "Source-URL: https://gov.example.co/fintech-b\n\nSector Fintech grew 18% in 2024 according to a different analysis."),
-         ]),
-        # W3 rule (a), 2026-11-20 (eval/writer_defects/PLAN.md): the same number with different separators ("11.400" Spanish style vs
-        # "11,400") is no disagreement; before the rule this fired cross_source_contradiction (live: "Reino unido" in a c4 report).
-        ("cross_source_same_number_separators", True, {"findings.md": _FINDINGS_OK,
-          "final_report.md": "- Sector Fintech employed 11.400 workers in 2024 [gov](https://gov.example.co/fintech-a)"},
-         None, None,
-         "", [
-             ("https://gov.example.co/fintech-a", "sources/fintech_a.md",
-              "Source-URL: https://gov.example.co/fintech-a\n\nSector Fintech employed 11.400 workers in 2024 according to official figures."),
-             ("https://gov.example.co/fintech-b", "sources/fintech_b.md",
-              "Source-URL: https://gov.example.co/fintech-b\n\nSector Fintech employed 11,400 workers in 2024 according to a different analysis."),
          ]),
         # Clean pass: grounded findings, report cites the fetched source, no checkable claim
         # contradicting it -> no problem recorded, no retry.

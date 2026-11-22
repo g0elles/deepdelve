@@ -120,14 +120,6 @@ ev3 = {"facets": [{"id": "f1", "name": "T", "entity": "", "questions": ["q"]}], 
 assert wc.build(ev3, "q").facets[0].quotes[0].text == "Remission in 30% of patients at week 3."
 assert g._normalize_for_quote_match("remission at week 3 [4].") == g._normalize_for_quote_match("remission at week 3.")
 assert g._normalize_for_quote_match("see [a link](https://x.example) now") == "see a link now"          # [text](url) is not a numeric marker
-# deterministic fix for a cross-source disagreement: both figures and both source numbers appear, in code
-from pipeline.bridge import source_filename
-cd = wc.build(EV, QUERY)
-hit = {"subject": "inflation reduction act", "figure": "30%", "other_figure": "100%", "cited_files": [source_filename("https://a.example/x")], "other_file": source_filename("https://b.example/y")}
-assert wc.add_disagreements(cd, [hit, {**hit, "other_file": "src_unknown.md"}]) == 1                # a hit whose file is not a numbered source is skipped
-mdd = wc.render(cd, {})
-assert "## Where sources differ" in mdd and "- **Inflation reduction act:** 30% [1] but 100% [2]; the sources may be measuring different quantities." in mdd
-assert wc.render(wc.build(EV, QUERY), {}).count("Where sources differ") == 0
 # names: expansions and coined Title-Case terms must be in the cited quotes (replay with gemma/ornith, 2026-10-26)
 assert wc.names("Las Entidades Promotoras de Salud (EPS) son clave, junto con Instituciones Prestadoras de Servicios de Salud (IPS).") == ["Las Entidades Promotoras de Salud EPS", "Instituciones Prestadoras de Servicios de Salud IPS"]
 assert wc.names("The compaction strategy keeps the Write Amplification Factor under 5.") == ["Write Amplification Factor"]

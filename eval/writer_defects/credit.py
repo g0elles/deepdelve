@@ -1,6 +1,7 @@
 """W3 offline credit (eval/writer_defects/PLAN.md): old vs new cross_source_hits on 54 saved reports, no model, no GPU, saved files never written.
 Repo root: ~/.venvs/deepdelve/bin/python eval/writer_defects/credit.py   -> hits.jsonl, hits_to_label.jsonl, summary on stdout.
-After labelling (labels.jsonl): add --score."""
+After labelling (labels.jsonl): add --score.
+Frozen: needs writer.compiled.add_disagreements, removed by W5 (PLAN_W5.md); reproduce at commit 8502167."""
 import glob, json, os, re, sys
 HERE = os.path.dirname(os.path.abspath(__file__)); ROOT = os.path.abspath(HERE + "/../..")
 sys.path.insert(0, ROOT + "/src"); sys.path.insert(0, ROOT + "/eval/audit_runs")

@@ -51,16 +51,12 @@ def run_one(evpath: str) -> dict:
     titles = ev.get("titles") or {}
     fetched = [{"url": u, "filename": source_filename(u), "title": titles.get(u, "")} for _, u, _ in c.sources]
     run_state.fetched_urls_ctx.set(fetched)
-    if wc.add_disagreements(c, grounding.cross_source_hits(report)):
-        report = wc.render(c, written)
     if os.environ.get("DD_SAVE"):
         os.makedirs(os.environ["DD_SAVE"], exist_ok=True)
         open(os.path.join(os.environ["DD_SAVE"], os.path.relpath(d, ROOT).replace("/", "__") + ".md"), "w").write(report)
     fired = {}
     for p in grounding.cheap_grounding_problems(report, {}, fetched):
         fired[p.split(":")[0]] = p[:160]
-    if grounding.find_cross_source_contradictions(report):
-        fired["cross_source_contradiction"] = grounding.find_cross_source_contradictions(report)[0][:160]
     if cg.find_duplicate_report_sections(report) or cg.find_duplicate_heading_text(report):
         fired["duplicate_report_sections"] = "yes"
     m = cs._REPORT_META_RE.search(report)

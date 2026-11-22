@@ -62,7 +62,7 @@ from engine.completion_checks_grounding import (  # noqa: F401 — re-exported f
     check_regulation_unsupported, check_specific_figure_unsupported, check_quote_paraphrased,
     check_non_url_citation, check_stub_source, check_nli_unsupported, check_topical_mismatch,
     check_editorializing_content,
-    check_uncited_claims, check_excluded_topic, check_cross_source_contradiction,
+    check_uncited_claims, check_excluded_topic,
     check_propagated_ungrounded_content, check_not_grounded,
     find_duplicate_report_sections, find_duplicate_heading_text, _facet_coverage,
 )
@@ -183,7 +183,8 @@ _CHECK_SPECS = [
     _check_spec(check_editorializing_content, "editorializing", "grounding", builder_fixable=True),
     _check_spec(check_uncited_claims, "uncited_claims", "grounding", builder_fixable=True),
     _check_spec(check_excluded_topic, "excluded_topic_present", "grounding", builder_fixable=True),
-    _check_spec(check_cross_source_contradiction, "cross_source_contradiction", "grounding", builder_fixable=True),
+    # cross_source_contradiction retired 2026-11-22: 47 hits on 54 saved reports, 0 real (eval/writer_defects/PLAN_W5.md);
+    # the detector (utils.grounding.cross_source_hits) stays for offline replays.
     # Added 2026-08-29, live incident: previously had no fix path at all (nagged the Planner's
     # own conversation, no writer dispatch) -- exhausted a run's retry budget 5+ times before
     # falling back to a stale, off-topic salvage. See check_propagated_ungrounded_content's own

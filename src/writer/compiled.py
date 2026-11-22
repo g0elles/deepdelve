@@ -16,8 +16,7 @@ from utils.grounding import gap_disclosure_sentence
 
 # One string table per language: the only language-dependent text the code itself writes. Quotes stay in their source language.
 LABELS = {"en": {
-    "overview": "Answer in brief", "evidence": "Evidence", "gaps": "Evidence gaps", "sources": "Sources", "differ": "Where sources differ",
-    "differ_line": "{figure} [{n}] but {other_figure} [{m}]; the sources may be measuring different quantities.",
+    "overview": "Answer in brief", "evidence": "Evidence", "gaps": "Evidence gaps", "sources": "Sources",
     "no_evidence": "No usable evidence was found for this topic.",
     "not_covered": "Not covered", "not_covered_words": "No facet covered these words of the request: {words}.",
     "comparison_line": "Comparison asked for: figures are listed per side; no like-for-like comparison was verified.",
@@ -61,7 +60,6 @@ class Compiled:
     query: str
     facets: list[Facet]
     sources: list[tuple[int, str, str]]  # (n, url, title)
-    disagreements: list[dict] = field(default_factory=list)  # filled by add_disagreements
     uncovered: list[str] = field(default_factory=list)       # request words no facet covers (pipeline _uncovered)
     comparison: bool = False                                  # the request asks for a comparison
     dates: dict[str, str] = field(default_factory=dict)       # url -> published YYYY-MM-DD
@@ -84,22 +82,6 @@ def build(evidence: dict, query: str) -> Compiled:
     sources = [(n, url, url if _BOTWALL_TITLE.search(titles.get(url) or "") else (titles.get(url) or url)) for url, n in nums.items()]
     return Compiled(query, facets, sources, uncovered=list(evidence.get("uncovered") or []),
                     comparison=bool(evidence.get("comparison")), dates=dict(evidence.get("dates") or {}))
-
-
-def add_disagreements(c: Compiled, hits: list[dict]) -> int:
-    """Record the cross-source figure disagreements (utils.grounding.cross_source_hits) that the report would otherwise hide, with the source
-    numbers of both sides. The check clears as soon as the other figure appears in the report, so naming both figures with both citations is
-    the whole fix, and it is code: no agent has to be asked to "surface the conflict". Hits whose files are not numbered sources are skipped."""
-    from pipeline.bridge import source_filename
-    num = {source_filename(u): n for n, u, _ in c.sources}
-    out = []
-    for h in hits:
-        n = next((num[f] for f in h["cited_files"] if f in num), None)
-        m = num.get(h["other_file"])
-        if n and m:
-            out.append({"subject": h["subject"], "figure": h["figure"], "other_figure": h["other_figure"], "n": n, "m": m})
-    c.disagreements = out
-    return len(out)
 
 
 def _digits(token: str) -> str:
@@ -417,18 +399,13 @@ def render(c: Compiled, written: dict, lang: str = "en") -> str:
         else:
             out.append(L["no_evidence"])
         out.append("")
-    if c.disagreements:
-        out += [f"## {L['differ']}", ""]
-        out += [f"- **{d['subject'][:1].upper() + d['subject'][1:]}:** " + L["differ_line"].format(figure=d["figure"], other_figure=d["other_figure"], n=d["n"], m=d["m"])
-                for d in c.disagreements]
-        out.append("")
     gaps = [f for f in c.facets if f.unanswered]
     if gaps:
         out += [f"## {L['gaps']}", ""]
         out += [f"- **{heads[f.id]}:** {gap_disclosure_sentence({'facet': heads[f.id], 'questions': f.unanswered})}" for f in gaps]  # the engine's own wording and shape
         out.append("")
     words = [L["not_covered_words"].format(words=", ".join(c.uncovered))] if c.uncovered else []
-    if c.comparison and not c.disagreements:
+    if c.comparison:
         fac: dict[int, set[str]] = {}
         for f in c.facets:
             for q in f.quotes:

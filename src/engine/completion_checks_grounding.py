@@ -25,7 +25,7 @@ import config
 from tools import get_workspace_file_content
 from utils.run_state import get_fetched_urls
 from utils.grounding import (
-    split_into_heading_sections, find_cross_source_contradictions,
+    split_into_heading_sections,
     excluded_topic_semantic_hit, _NAMED_REGULATION_RE, _REGULATION_ID_RE,
     normalize_dashes, find_acronym_regulation_matches,
 )
@@ -1017,28 +1017,6 @@ def check_excluded_topic(ctx: Ctx) -> Optional[Verdict]:
                 f"SYSTEM WARNING: {ctx.last_chance_prefix}'{ctx.req_artifact}' has a section covering {hit!r} — the original query explicitly excluded this topic from the research. Remove that entire section and any content specific to it, keeping the rest of the report intact.",
             )
     return None
-
-
-def check_cross_source_contradiction(ctx: Ctx) -> Optional[Verdict]:
-    """ROADMAP Phase 2 (cross-source contradiction detection, FEVER-style — depends on Phase 1's
-    claim segmentation). A claim's own citation can pass claim_grounding_problem's term-overlap
-    check (the cited source really does say what's claimed) while a DIFFERENT fetched source
-    disagrees on the same named subject's figure — and the report never surfaces that
-    disagreement anywhere. Distinct from claim_unsupported: this isn't fabrication, it's a real
-    disagreement between two real fetched sources that got silently resolved by picking one side.
-    See utils.grounding.find_cross_source_contradictions for the conservative
-    same-subject-phrase + differing-figure detection (exact 2+-word proper-noun match required,
-    the conflicting figure must not already appear anywhere else in the report)."""
-    if not ctx.content:
-        return None
-    hits = find_cross_source_contradictions(ctx.content)
-    if not hits:
-        return None
-    return Verdict(
-        "cross_source_contradiction",
-        f"`{ctx.req_artifact}` states a figure that a DIFFERENT fetched source disagrees with, unacknowledged ({hits[0]}). Pushing agent to surface the conflict.",
-        f"SYSTEM WARNING: {ctx.last_chance_prefix}'{ctx.req_artifact}' states a figure for a subject where a DIFFERENT source you actually fetched this run reports a conflicting number, and the report never mentions the disagreement: {hits[0]}. Do not silently pick a side — rewrite that claim to surface BOTH figures (e.g. \"Source A reports X, while Source B reports Y\") rather than stating only one as fact.",
-    )
 
 
 def check_propagated_ungrounded_content(ctx: Ctx) -> Optional[Verdict]:

@@ -2164,10 +2164,6 @@ def _compile_pipeline_report(run_state, evidence_dir: str):
     llm = lambda prompt, schema, temperature, seed: call_json(model, prompt, schema, think="minimal", timeout=180, temperature=temperature, seed=seed)
     written, stats = wc.compose(c, llm, int(config.get_setting("writer_drafts", 1)))
     report = wc.render(c, written)
-    from utils.grounding import cross_source_hits
-    if wc.add_disagreements(c, cross_source_hits(report)):  # sources that disagree on a figure: name both in code instead of asking an agent to
-        stats["disagreements"] = len(c.disagreements)
-        report = wc.render(c, written)
     write_workspace_file.func(filename="findings.md", content=wc.render_findings(c))
     write_workspace_file.func(filename=config.get_required_artifact() or "final_report.md", content=report)
     stats["evidence_dir"] = str(Path(evidence_dir).expanduser())  # _write_verify_view reads the saved pages and spans from here
