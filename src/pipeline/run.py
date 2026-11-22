@@ -506,6 +506,42 @@ def fetch(url: str) -> tuple[str | None, str, str | None]:
     return data, (meta or {}).get("title", ""), m.group(0) if m else None
 
 
+def scholar_search(question: str, k: int) -> list[dict]:
+    """Scholarly records (W8, eval/writer_defects/PLAN_W8.md): Europe PMC, then OpenAlex if it has < 2 hits (the agent tool's fallback,
+    tools/scholar.py:scholar_search). The pipeline's web search alone found 1 peer-reviewed source of 5 on an academic query."""
+    from tools.scholar import search_europepmc, search_openalex
+    recs = search_europepmc(question, k)
+    if len(recs) < 2:
+        recs = recs + search_openalex(question, k)
+    return recs
+
+
+def scholar_text(rec: dict) -> tuple[str, str, str, str] | None:
+    """(url, source text, reference title, year) for one record, or None. Open-access full text at its PMC URL, else the abstract at its
+    DOI (or PMC) URL. Header lines end without sentence punctuation and the title is a `#` heading, so sentences() never quotes them."""
+    from tools.scholar import _full_text_epmc, _pmc_url
+    doi, pmcid = rec.get("doi") or "", rec.get("pmcid") or ""
+    full = _full_text_epmc(pmcid) if pmcid and rec.get("oa") else None
+    if full:
+        url, head, body = _pmc_url(pmcid), "Content-Level: FULL TEXT", full
+    elif rec.get("abstract") and (doi or pmcid):
+        url = f"https://doi.org/{doi}" if doi else _pmc_url(pmcid)
+        head, body = "Content-Level: ABSTRACT ONLY", f"# {rec.get('title') or 'Untitled'}\n\n{rec['abstract']}"
+    else:
+        return None
+    authors = [a.strip() for a in (rec.get("authors") or "").split(",") if a.strip()]
+    who = ", ".join(authors[:3]) + (" et al." if len(authors) > 3 else "")
+    title = ". ".join(x.rstrip(".") for x in (who, rec.get("title") or "", rec.get("journal") or "") if x)  # "et al." loses its dot to the join
+    return url, f"{head}\nDOI: {doi or 'n/a'}\n\n{body}", title, str(rec.get("year") or "")
+
+
+def _scholar_text_safe(rec: dict):
+    try:
+        return scholar_text(rec)
+    except Exception:
+        return None
+
+
 def extract(model: str, facets: list[dict], text: str) -> tuple[list[dict], int, int]:
     fl = "\n".join(f"{f['id']}: {f['name']}" for f in facets)
     emitted, kept, failed = 0, [], 0
@@ -622,8 +658,9 @@ def run(query: str, model: str, out: Path, topk: int, extractor: str = "ce", jud
 
     gstats: dict = {}
 
-    def gather_round(qs: list[tuple[str, str]]):
-        """Per question keep the first `topk` URLs that actually fetch (a fetch failure no longer costs a slot)."""
+    def gather_round(qs: list[tuple[str, str]], scholar_qs: list[str] = ()):
+        """Per question keep the first `topk` URLs that actually fetch (a fetch failure no longer costs a slot).
+        `scholar_qs` (round 1 only, W8): one scholarly search each; its records become sources like fetched pages."""
         results = [search(q, topk, gstats) for _, q in qs]
         todo = list(dict.fromkeys(u for r in results for u in r if u not in seen))
         with cf.ThreadPoolExecutor(4) as ex:
@@ -640,6 +677,26 @@ def run(query: str, model: str, out: Path, topk: int, extractor: str = "ce", jud
         picked = []
         for r in results:
             picked += [u for u in [u for u in r if seen.get(u)][:topk] if u in todo]
+        recs = []
+        for q in scholar_qs:
+            gstats["scholar_searches"] = gstats.get("scholar_searches", 0) + 1
+            try:
+                recs += scholar_search(q, topk)
+            except Exception:  # a scholarly API outage must never fail the run
+                gstats["scholar_fail"] = gstats.get("scholar_fail", 0) + 1
+        if recs:
+            with cf.ThreadPoolExecutor(4) as ex:
+                got = [g for g in ex.map(_scholar_text_safe, recs) if g]
+            for u, txt, title, year in got:
+                if seen.get(u):  # already have it (web fetch or another facet's record); a failed web fetch (None) is replaced
+                    continue
+                seen[u], titles[u] = txt, title
+                if year:
+                    dates[u] = year
+                gstats["scholar_sources"] = gstats.get("scholar_sources", 0) + 1
+                gstats["scholar_fulltext"] = gstats.get("scholar_fulltext", 0) + txt.startswith("Content-Level: FULL TEXT")
+                (out / f"src_{hashlib.sha1(u.encode()).hexdigest()[:8]}.md").write_text(txt)
+                picked.append(u)
         return list(dict.fromkeys(picked))
 
     def process_bm25(urls: list[str]):
@@ -681,7 +738,8 @@ def run(query: str, model: str, out: Path, topk: int, extractor: str = "ce", jud
                     evidence[s["facet_id"]].setdefault(u, []).append(s["quote"])
 
     process = {"ce": process_ce, "bm25": process_bm25, "llm": process_llm}[extractor]
-    process(gather_round([(f["id"], q) for f in facets for q in f["questions"] + [f"{f['questions'][0]} {f['name']}"]]))  # question+name doubled good pages vs question alone (n=6 facets, noisy)
+    process(gather_round([(f["id"], q) for f in facets for q in f["questions"] + [f"{f['questions'][0]} {f['name']}"]],
+                         [f"{f['questions'][0]} {f['name']}" for f in facets]))  # question+name doubled good pages vs question alone (n=6 facets, noisy)
     for _ in range(2):  # gap rounds
         gaps = [f for f in facets if len(evidence[f["id"]]) < 2]
         if not gaps:

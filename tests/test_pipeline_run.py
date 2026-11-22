@@ -68,6 +68,12 @@ class Seams:
         self.unans_seen[facet["id"]] = n + 1
         return self.unanswered_first.get(facet["id"], []) if n == 0 else []
 
+    def scholar_search(self, question, k):  # W8 seam: off by default so no test reaches Europe PMC / OpenAlex
+        return []
+
+    def scholar_text(self, rec):
+        return None
+
     def reformulate(self, model, facet_name, question):
         self.reformulated.append(question)
         return ["alt: " + question]
@@ -76,7 +82,8 @@ class Seams:
 @contextlib.contextmanager
 def patched(seams, **extra):
     names = {"plan": seams.plan, "search": seams.search, "fetch": seams.fetch, "judge": seams.judge,
-             "facet_unanswered": seams.facet_unanswered, "reformulate_question": seams.reformulate, **extra}
+             "facet_unanswered": seams.facet_unanswered, "reformulate_question": seams.reformulate,
+             "scholar_search": seams.scholar_search, "scholar_text": seams.scholar_text, **extra}
     old = {k: getattr(pr, k) for k in names}
     try:
         for k, v in names.items():
@@ -243,6 +250,44 @@ def test_plan_covered_replans_for_dropped_entity_and_writer_discloses_the_rest()
     c = wc.Compiled(q, [wc.Facet("f0", "Portugal fertility rate", [wc.Quote(1, "Portugal's fertility rate is 1.41.", "f0")])], [(1, "https://a.example", "A")],
                     uncovered=R._uncovered(facets, q))
     assert "No facet covered these words of the request: ghana." in wc.render(c, {})
+
+
+def test_scholar_round_one_only_and_sources():
+    # W8 (eval/writer_defects/PLAN_W8.md): one scholarly search per facet in round 1, records become sources, failures never stop the run
+    calls = []
+    rec_oa = {"doi": "10.1/oa", "pmcid": "PMC1", "oa": True, "abstract": "x", "title": "Open paper", "authors": "A, B, C, D", "journal": "J", "year": 2020}
+    rec_abs = {"doi": "10.1/abs", "pmcid": "", "oa": False, "abstract": "Finland digital service adoption reached 82 percent of citizens in 2023 according to the survey.",
+               "title": "Paywalled paper", "authors": "E", "journal": "K", "year": 2021}
+    rec_none = {"doi": "", "pmcid": "", "oa": False, "abstract": "orphan abstract text", "title": "No id"}
+
+    def ss(q, k):
+        calls.append(q)
+        return [rec_oa, rec_abs, rec_none]
+    real_text = pr.scholar_text
+    import tools.scholar as ts
+    old_full = ts._full_text_epmc
+    ts._full_text_epmc = lambda pmcid: "# Open paper\n\nEstonia eresidency permits issued to foreign applicants reached 100,000 by 2024 in the register."
+    try:
+        m, ev, disk, srcs = run_once(Seams(), "bm25", scholar_search=ss, scholar_text=real_text)
+        assert real_text(rec_oa)[2].startswith("A, B, C et al. Open paper. J")
+        t = real_text(rec_abs)[1]
+        assert real_text(rec_none) is None
+    finally:
+        ts._full_text_epmc = old_full
+    assert len(calls) == 2, calls                                         # round 1 only, one per facet (2 facets)
+    g = m["gather"]
+    assert g["scholar_searches"] == 2 and g["scholar_sources"] == 2 and g["scholar_fulltext"] == 1, g  # no-id record skipped, dup URLs once
+    assert "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC1/" in ev["titles"] or any("PMC1" in u for u in ev["titles"]), ev["titles"].keys()
+    assert "https://doi.org/10.1/abs" in ev["titles"] and ev["titles"]["https://doi.org/10.1/abs"] == "E. Paywalled paper. K"
+    assert t.startswith("Content-Level: ABSTRACT ONLY\nDOI: 10.1/abs")
+    assert all("Content-Level" not in x and "Paywalled paper" not in x for x in pr.sentences(t)), pr.sentences(t)  # header/title never quoted
+
+
+def test_scholar_failure_keeps_run():
+    def boom(q, k):
+        raise RuntimeError("api down")
+    m, ev, disk, srcs = run_once(Seams(), "bm25", scholar_search=boom)
+    assert m["gather"]["scholar_fail"] == 2 and m["gather"]["scholar_searches"] == 2 and m["sources_fetched"] == 3, m["gather"]
 
 
 if __name__ == "__main__":
