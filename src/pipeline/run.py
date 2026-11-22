@@ -244,18 +244,20 @@ _COUNTRIES = {k: re.compile(v) for k, v in {
     "mx": r"\bmexic", "co": r"\bcolomb", "cl": r"\bchile", "ar": r"\bargentin", "pe": r"\bperu\b|\bperuan", "ec": r"\becuador",
     "ve": r"\bvenezuel", "bo": r"\bbolivia", "uy": r"\buruguay", "py": r"\bparaguay", "br": r"\bbrasil|\bbrazil",
     "es": r"\bespana|\bspain|\bspanish law", "fr": r"\bfrance|\bfrancia", "de": r"\balemania|\bgermany", "it": r"\bitaly|\bitalia",
-    "pt": r"\bportugal", "us": r"\bunited states|\bestados unidos|\bu\.s\.|\bus\b", "uk": r"\bunited kingdom|\breino unido|\buk\b",
+    "pt": r"\bportugal", "us": r"\bunited states|\bestados unidos|\bu\.s\.|\beeuu\b|\bee\.\s?uu\b", "uk": r"\bunited kingdom|\breino unido|\buk\b",
     "cn": r"\bchina\b", "jp": r"\bjapan|\bjapon", "in": r"\bindia\b", "ca": r"\bcanada", "ng": r"\bnigeria", "ke": r"\bkenya",
     "za": r"\bsouth africa", "au": r"\baustralia", "kr": r"\bsouth korea|\bcorea del sur", "tw": r"\btaiwan", "dk": r"\bdenmark|\bdinamarca",
     "no": r"\bnorway|\bnoruega", "se": r"\bsweden|\bsuecia", "nl": r"\bnetherlands|\bpaises bajos", "ru": r"\brussia|\brusia",
     "gt": r"\bguatemala", "cr": r"\bcosta rica", "pa": r"\bpanama", "cu": r"\bcuba\b", "do": r"\bdominican|\brepublica dominicana",
     "eg": r"\begypt", "tr": r"\bturkey|\bturquia", "ie": r"\bireland|\birlanda", "eu": r"\beuropean union|\bunion europea|\beu\b",
 }.items()}
+# "US"/"USA" only in capitals on the raw text: folded `\bus\b` matched the pronoun ("resulted in us buying", W6 PLAN_W6.md); not "US$".
+_US_ABBR = re.compile(r"\bUS(?:A)?\b(?!\$)")  # ponytail: ALL-CAPS headings ("CONTACT US") still read as US
 
 
 def countries(text: str) -> set[str]:
     f = _fold(text)
-    return {k for k, r in _COUNTRIES.items() if r.search(f)}
+    return {k for k, r in _COUNTRIES.items() if r.search(f)} | ({"us"} if _US_ABBR.search(text) else set())
 
 
 def jurisdiction_ok(sent: str, qkeys: set[str]) -> bool:
@@ -274,6 +276,7 @@ def source_off_jurisdiction(url: str, source: str, qkeys: set[str]) -> bool:
         return False
     f = _fold(source)
     c = {k: len(r.findall(f)) for k, r in _COUNTRIES.items()}
+    c["us"] += len(_US_ABBR.findall(source))
     host = urllib.parse.urlparse(url).netloc.lower()
     tld = host.rsplit(".", 1)[-1] if "." in host else ""
     if tld in c and tld not in ("us", "uk", "eu"):
@@ -308,12 +311,14 @@ _REGIONS = {  # UN M49 (unstats.un.org/unsd/methodology/m49/overview, checked 20
     "americas": {"us", "ca", "mx", "co", "cl", "ar", "pe", "ec", "ve", "bo", "uy", "py", "br", "gt", "cr", "pa", "cu", "do"}}
 
 
-def _mentions(text_folded: str, ent: str) -> bool:
-    if ent in _REGIONS and countries(text_folded) & _REGIONS[ent]:
+def _mentions(text: str, ent: str) -> bool:
+    """`text` raw (folded also works, minus the capital "US"); `ent` folded."""
+    got, text_folded = countries(text), _fold(text)
+    if ent in _REGIONS and got & _REGIONS[ent]:
         return True
-    ck = countries(ent)
+    ck = countries(ent) or ({"us"} if ent in ("us", "usa") else set())  # a folded "US" entity is the country, never the word "us"
     if ck:  # aliases: "United Kingdom" facet, "UK" in the sentence
-        return bool(countries(text_folded) & ck)
+        return bool(got & ck)
     if " " in ent or "-" in ent:  # descriptive planner entities ("Mercosur-EU trade agreement", "EU Parliament") never appear verbatim
         toks = [t for t in re.findall(r"[a-z0-9]+", ent) if len(t) >= 4]
         if not toks:
@@ -341,6 +346,8 @@ def query_entities(query: str) -> set[str]:
         m = r.search(f)
         if m:
             out.add(m.group())
+    if _US_ABBR.search(query):
+        out.add("us")
     return out - _STOP
 
 
@@ -354,7 +361,7 @@ def facet_entities(facets: list[dict], query: str = "") -> dict[str, set[str]]:
         if own:
             out[f["id"]] = {own}
             continue
-        got = {e for e in qe if _mentions(_fold(f["name"] + " " + " ".join(f["questions"])), e)}
+        got = {e for e in qe if _mentions(f["name"] + " " + " ".join(f["questions"]), e)}
         out[f["id"]] = got if got != qe else set()
     return out
 
@@ -362,14 +369,14 @@ def facet_entities(facets: list[dict], query: str = "") -> dict[str, set[str]]:
 def entity_ok(fid: str, sent: str, source: str, ents: dict[str, set[str]]) -> bool:
     """An entity-specific facet only takes sentences that name its entity (else Europe-wide stats fill the Lima facet)."""
     mine = ents[fid]
-    return not mine or any(_mentions(_fold(sent), e) for e in mine)
+    return not mine or any(_mentions(sent, e) for e in mine)
 
 
 def _uncovered(facets: list[dict], query: str) -> list[str]:
     """Entities the user typed (countries, capitalized names) that no facet's name/questions/entity mentions.
     Request content words were tried here on 2026-11-14 and dropped: on 33 saved queries 32 flagged words, nearly all generic ("does",
     "say", "about", Spanish "son"/"sus") or plural mismatches ("pumps" vs a facet's "heat pump"); the real hits were entities already found."""
-    text = _fold(" ".join(f"{f['name']} {f.get('entity', '')} {' '.join(f['questions'])}" for f in facets))
+    text = " ".join(f"{f['name']} {f.get('entity', '')} {' '.join(f['questions'])}" for f in facets)
     return sorted(e for e in query_entities(query) if not _mentions(text, e))
 
 

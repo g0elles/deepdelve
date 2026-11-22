@@ -216,6 +216,22 @@ def test_source_off_jurisdiction():
     assert not source_off_jurisdiction("https://www.ccss.sa.cr", "CCSS colones.", {"cr"})  # own ccTLD: unaffected
 
 
+def test_us_pronoun_is_not_the_united_states():
+    # W6 (eval/writer_defects/PLAN_W6.md): folded \bus\b read "resulted in us buying" as US and dropped a UK levy figure
+    from pipeline.run import countries, entity_ok, jurisdiction_ok, query_entities, source_off_jurisdiction
+    sugar = "We bought 46,400 tonnes less sugar; it has resulted in us buying less sugar."
+    assert countries("It has resulted in us buying less sugar") == set() and countries("Let us look at Mexico") == {"mx"}
+    assert countries("US$ 1.200 millones") == set()
+    for t in ("EE.UU.", "USA", "The US levy", "Estados Unidos", "the U.S. market"):
+        assert countries(t) == {"us"}, t
+    assert jurisdiction_ok(sugar, {"mx", "uk"})
+    assert not source_off_jurisdiction("https://x.org", "Let us see what we found for us. " * 5 + "UK UK", {"uk"})
+    ents = {"f": {"us"}}
+    assert not entity_ok("f", "Tell us more about it.", "", ents)
+    assert entity_ok("f", "United States exports rose.", "", ents) and entity_ok("f", "US exports rose.", "", ents)
+    assert "us" in query_entities("US and UK solar subsidies compared")
+
+
 def test_hard_wrapped_sentences_rejoined():
     from pipeline.run import sentences
     src = "This aligns with earlier studies, which\n\nreported commuting durations in Santiago typically ranging between 40 and 60 minutes, the longest in\n\nChile.\n\n# Heading\n\nNext sentence here is long enough to be kept as a sentence of its own."
