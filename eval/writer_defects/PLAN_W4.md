@@ -109,3 +109,37 @@ form rule (figure vs direction) was not enforced, and quarterly GDP growth was p
 - B-retrieval (c2, c4): selected. Needs EGM review with these numbers, then the user's OK (GPU + fetching).
 - Spot-check for the user: every PAIR set (c3: 0b01db12, 358ed7fd, b467d1e4, 4de6c41e, 9542472c) and c2 (one set from its threshold under
   the lenient count).
+
+## Amendment 1 (2026-11-22, after Step A, before any B-retrieval run): B-retrieval specifics
+- Queries: c2, c4 (Step A). Facets: unchanged from the first saved ornith set (c2 `cmp2_ornith_c2_r1`, incl. its "versus" facet f3; c4
+  `cmp2_ornith_c4_r1`). 2 questions per facet in both arms, as saved.
+- Rounds: CHANGED from "round 1 only" to the full production `pipeline.run.run()` with `plan` patched to return the fixed facets (runner
+  `eval/writer_defects/w4_retrieval.py`). Gap and answer-gap rounds are part of production retrieval, start from each arm's own questions, and
+  apply identically to both arms; round 1 only would test a retrieval path production never uses. Model calls inside: CE-stage judge,
+  `facet_unanswered`, `reformulate_question`, all ornith-1.5:9b at `settings.model_options` (loaded on import, as in the batch), topk 3, ce
+  extractor, judge on (the `run_all.sh` invocation).
+- New-arm questions, keyword style (4-10 words), naming side + Step A sub-measure (+ period for c4), same language as the saved questions
+  (Spanish for c4: language is a separate variable, not tested here):
+  - c2 f1: "semaglutide heavy drinking days percent reduction placebo randomized trial"; "semaglutide drinks per drinking day reduction placebo trial"
+  - c2 f2: "naltrexone heavy drinking days percent reduction placebo meta-analysis"; "naltrexone drinks per drinking day reduction placebo trial"
+  - c2 f3: "semaglutide naltrexone heavy drinking days effect size placebo"; "naltrexone semaglutide drinks per drinking day placebo trials"
+  - c4 f1: "reducción compras bebidas azucaradas México impuesto 2014 2015 porcentaje" (a); "reducción azúcar consumida bebidas azucaradas México tras impuesto 2014" (b)
+  - c4 f2: "reducción compras bebidas azucaradas Reino Unido impuesto 2018 2019 porcentaje" (a); "reducción azúcar consumida bebidas azucaradas Reino Unido tras impuesto 2018" (b)
+  Parallel per side: q1 targets sub-measure (a), q2 (b). c2 design words are deliberately asymmetric (meta-analysis for naltrexone,
+  randomized trial for semaglutide), matching where each drug's evidence lives.
+- Order: run 1 = c2 current, c2 new, c4 current, c4 new; run 2 reversed. Out dirs `research_output/w4ret_<q>_<arm>_r<k>`, log
+  `eval/writer_defects/w4_ret_runs.tsv`. `DEEPDELVE_FORCE_VIRTUAL_DISPLAY=1`; `rocm-smi` before; `ollama stop` after. ~8 runs x 2-4 min.
+- Labelling: `w4_pairs.py <tsv> <prefix>` dumps the 8 sets blind (arm and run behind the set hash); Step A rubric unchanged; labels and the
+  decision in `w4_labels_ret.py`. Bar unchanged: the new arm has a PAIR in both runs for a query where the current arm has none in either run,
+  for >= 1 of the 2 queries, counted STRICT (the frozen rubric; the NNT borderline does not count).
+- Tested variable, stated exactly (review 3): rubric-targeted keyword questions (side + sub-measure, period for c4, design words) vs the
+  saved planner questions (partly natural-language). A pass supports "targeted questions retrieve pairs", not measure+period alone. The
+  questions also reach the CE judge and `facet_unanswered`, so they change which sentences are kept, as they would in production.
+- The extra rounds depend on what each arm finds (gap rounds for facets with < 2 sources, answer-gap reformulation of unanswered
+  questions, which keeps only years present in the question, `run.py:223`), so search counts differ by arm: reported per arm
+  (`gather.searches`). Every search is logged (`w4_ret_search.jsonl`: run, question, origin = original / q0+name / other, urls).
+  Diagnostic, pre-registered, not the bar: the strict pair count using only quotes whose URL came from an original or q0+name search.
+- Throttling: a run with empty searches > 25% of its searches is redone once (runner, automatic, `_redo` dir); both attempts logged, the
+  bar uses the last attempt per query x arm x run.
+- Before the first run: this plan's sha256 goes into CURRENT.md (frozen); `DEEPDELVE_FORCE_VIRTUAL_DISPLAY=1` is asserted by the runner.
+- Per-row output: the tsv, the search log, each run's metrics.json and evidence.json.
