@@ -61,6 +61,16 @@ def test_comparison_flag_is_whole_word_and_not_for_and_against():
     assert not COMPARISON_RE.search("What does the evidence say for and against congestion pricing?")   # h18
     assert not COMPARISON_RE.search("different approaches to pensions")
 
+
+def test_comparison_re_spanish_and_english():
+    from pipeline.run import COMPARISON_RE
+    assert COMPARISON_RE.search("¿Qué efecto tuvo el impuesto a las bebidas azucaradas en México y cómo se compara con el Reino Unido?")  # c4
+    assert COMPARISON_RE.search("en comparación con Chile") and COMPARISON_RE.search("¿Qué diferencias hay entre A y B?")
+    assert COMPARISON_RE.search("¿En qué difieren A y B?") and COMPARISON_RE.search("comparación de costos")
+    assert not COMPARISON_RE.search("¿Cómo fue la recuperación frente a la crisis de 2008?")
+    assert not COMPARISON_RE.search("ventajas y desventajas de la energía solar")
+    assert COMPARISON_RE.search("heat pumps versus gas furnaces") and not COMPARISON_RE.search("different approaches to pensions")
+
 if __name__ == "__main__":
     _tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]
     assert _tests, "no tests found"

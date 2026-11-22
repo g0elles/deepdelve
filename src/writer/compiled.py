@@ -379,14 +379,36 @@ def _sentences(items: list[dict], lang: str = "en") -> str:
                     for s in items)
 
 
+_HEAD_NORM = re.compile(r"^[0-9A-Za-z][.)]\s*")  # same normalisation as engine find_duplicate_heading_text (completion_checks_grounding.py:360)
+
+
+def facet_headings(facets: list[Facet]) -> dict[str, str]:
+    """Facet id -> section heading. Colliding names (two sides of a comparison planned as "Alcohol Use Disorder") get " (<entity>)",
+    or " (<id>)" when the entities do not tell them apart. Never merged. compose() still passes the plain f.name to write_unit."""
+    key = lambda name: _HEAD_NORM.sub("", name).strip().lower()
+    count: dict[str, int] = {}
+    for f in facets:
+        count[key(f.name)] = count.get(key(f.name), 0) + 1
+    out = {}
+    for f in facets:
+        if count[key(f.name)] < 2:
+            out[f.id] = f.name
+            continue
+        ents = [g.entity.strip().lower() for g in facets if key(g.name) == key(f.name)]
+        tag = f.entity.strip() if f.entity.strip() and ents.count(f.entity.strip().lower()) == 1 else f.id
+        out[f.id] = f"{f.name} ({tag})"
+    return out
+
+
 def render(c: Compiled, written: dict, lang: str = "en") -> str:
     """The report. Headings, evidence quotes, gap lines and the source list are code; only the written sentences are model text."""
     L = LABELS[lang]
     out = [f"# {c.query}", ""]
     if "overview" in written:
         out += [f"## {L['overview']}", "", _sentences(written["overview"], lang), ""]
+    heads = facet_headings(c.facets)
     for f in c.facets:
-        out += [f"## {f.name}", ""]
+        out += [f"## {heads[f.id]}", ""]
         if f.id in written:
             out += [_sentences(written[f.id], lang), "", f"**{L['evidence']}**", ""]
             # no span marker in the report: digits in it read as claim terms to the grounding checks (skeleton replay 2026-11-14, 4 of 33
@@ -403,7 +425,7 @@ def render(c: Compiled, written: dict, lang: str = "en") -> str:
     gaps = [f for f in c.facets if f.unanswered]
     if gaps:
         out += [f"## {L['gaps']}", ""]
-        out += [f"- **{f.name}:** {gap_disclosure_sentence({'facet': f.name, 'questions': f.unanswered})}" for f in gaps]  # the engine's own wording and shape
+        out += [f"- **{heads[f.id]}:** {gap_disclosure_sentence({'facet': heads[f.id], 'questions': f.unanswered})}" for f in gaps]  # the engine's own wording and shape
         out.append("")
     words = [L["not_covered_words"].format(words=", ".join(c.uncovered))] if c.uncovered else []
     if c.comparison and not c.disagreements:

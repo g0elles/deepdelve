@@ -208,6 +208,16 @@ all_bad = lambda *a: {"sentences": [{"cites": [7], "text": LONG}]}  # no valid c
 st = {}
 out = wc.write_unit(all_bad, "q", "cost", "cost", UQ, 1, 3, 1, st)
 assert st["fallbacks"] == 1 and len(out) == 1 and out[0]["extractive"]
+# W2 (eval/writer_defects/PLAN.md): colliding facet names get the entity, then the id; unique names unchanged; never merged
+from writer.compiled import Facet as _F, facet_headings as _fh  # noqa: E402
+_hs = _fh([_F("f1", "Alcohol Use Disorder", entity="semaglutide"), _F("f2", "Alcohol use disorder", entity="naltrexone"),
+           _F("f3", "Cost"), _F("f4", "1. Safety", entity="x"), _F("f5", "Safety", entity="x")])
+assert _hs == {"f1": "Alcohol Use Disorder (semaglutide)", "f2": "Alcohol use disorder (naltrexone)", "f3": "Cost",
+               "f4": "1. Safety (f4)", "f5": "Safety (f5)"}, _hs
+_c2 = wc.Compiled(query="q", facets=[_F("f1", "AUD", [wc.Quote(1, "a", "f1")], entity="semaglutide"),
+                                            _F("f2", "AUD", [wc.Quote(2, "b", "f2")], entity="naltrexone")], sources=[])
+_rep = wc.render(_c2, {})
+assert "## AUD (semaglutide)" in _rep and "## AUD (naltrexone)" in _rep and _rep.count("## AUD\n") == 0
 print("test_writer_compiled: ok")
 
 if __name__ == "__main__":

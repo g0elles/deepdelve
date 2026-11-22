@@ -35,7 +35,11 @@ CE_ML = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
 CE_MIN = {CE_EN: 0.0, CE_ML: -4.0}  # ponytail: CE_ML threshold from one probe pair, calibrate on labeled data
 # "for and against X" asks for both sides of one thing, not a comparison of two (h18: the overview asked how congestion pricing and air
 # quality "compare"); whole words only, so "different" no longer matches. Changed vs the old pattern: q25, h09, h18 only (2026-11-18).
-COMPARISON_RE = re.compile(r"\b(compared?|comparing|comparison|versus|vs\.?|differ|differs|differences?)\b|(?<!for and )\bagainst\b", re.I)
+# Spanish forms added 2026-11-20 (eval/writer_defects/PLAN.md W1): the c4 query "compara" left comparison=false, switching off the
+# writer's comparison handling. A word list like the English one; Spanish is the only other language in the eval set. Not "frente a"
+# ("la recuperación frente a la crisis" = facing). Not matched: enclitic "compararlos", "comparativo".
+COMPARISON_RE = re.compile(r"\b(compared?|comparing|comparison|versus|vs\.?|differ|differs|differences?)\b|(?<!for and )\bagainst\b"
+                           r"|\b(compar(?:a|an|ar|ado|ada|ados|adas|ativa|aci[oó]n)|diferencias?|difieren?)\b", re.I)
 _STOP = set("the a an of and or to in on for with by is are was were be as at from that this it its "
             "how what which who when where why compare comparison key differ".split())
 

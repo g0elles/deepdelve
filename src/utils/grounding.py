@@ -1438,6 +1438,52 @@ def _extract_figure_claims(text: str) -> list[tuple[str, str]]:
     return [(s, f) for s, f, _ in _extract_figure_claims_ctx(text)]
 
 
+# eval/writer_defects/PLAN.md W3 (2026-11-20): three false-positive rules, each only removes hits. Read at call time so credit scripts and tests
+# can switch single rules off (always restore it in a finally).
+#   a: same number written with different separators ("11.400" vs "11,400")    b: subject equals a cited/compared source's host label
+#   c: a DOI prefix read as a figure ("10.1176")
+_XSRC_RULES = frozenset("abc")
+_XSRC_SUFFIX2 = frozenset("gov gob gouv govt com co org net ac edu or ne".split())
+
+
+def _figure_value(figure: str) -> float | None:
+    """A figure token as a number, or None when it cannot be read unambiguously (currency, or more than one decimal point after separator
+    reading, e.g. the date "20.11.2026"). A "." or "," followed by exactly 3 digits and then the end of a group is a thousands separator,
+    unless the integer part is "0"; any other is a decimal point.
+    ponytail: "1.500" equals "1,500" and "11.400" reads as 11400 (Spanish style); a real 11.400 with a trailing zero is misread."""
+    if _figure_kind(figure) == "currency":
+        return None
+    t = "".join(figure.split()).rstrip("%")
+    if not re.fullmatch(r"\d+(?:[.,]\d+)*", t):
+        return None
+    groups = re.split(r"[.,]", t)
+    whole, frac = groups[0], None
+    for i, g in enumerate(groups[1:], 1):
+        if len(g) == 3 and frac is None and not (i == 1 and groups[0] == "0"):
+            whole += g
+        elif frac is None:
+            frac = g
+        else:
+            return None
+    return float(whole + ("." + frac if frac is not None else ""))
+
+
+def _host_label(url: str) -> str:
+    """Registrable host label, normalised: https://data.worldbank.org/x -> "worldbank", www.ons.gov.uk -> "ons"."""
+    from urllib.parse import urlparse
+    labels = (urlparse(url).hostname or "").lower().removeprefix("www.").split(".")
+    if len(labels) >= 3 and labels[-2] in _XSRC_SUFFIX2:
+        labels = labels[:-2]
+    elif len(labels) >= 2:
+        labels = labels[:-1]
+    return re.sub(r"[^a-z0-9]", "", labels[-1] if labels else "")
+
+
+def _is_doi_figure(figure: str) -> bool:
+    """ponytail: a real 10.xxxx value with 4+ decimals (some exchange rates) is dropped too."""
+    return _figure_kind(figure) == "decimal" and bool(re.fullmatch(r"10\.\d{4,}", "".join(figure.split())))
+
+
 def cross_source_hits(report: str) -> list[dict]:
     """Structured form of find_cross_source_contradictions: one dict per hit (subject, figure, other_figure, cited_files, other_file).
     ROADMAP Phase 2 (FEVER-style cross-source disagreement detection, Thorne et al., NAACL
@@ -1460,12 +1506,17 @@ def cross_source_hits(report: str) -> list[dict]:
     prose = split_prose_from_sources(report)
     ref_map = _resolve_citation_map(report)
 
+    rules = _XSRC_RULES
     per_file_claims: dict[str, list[tuple[str, str, frozenset]]] = {}
-    for fn in set(fetched.values()):
+    per_file_lines: dict[str, list[str]] = {}
+    for fn in sorted(set(fetched.values())):  # sorted: which other source a hit names must not depend on hash order
         content = _source_body(get_workspace_file_content(fn) or "")
         if len(content.strip()) < 50:
             continue
         per_file_claims[fn] = _extract_figure_claims_ctx(content)
+        per_file_lines[fn] = content.splitlines()
+    host = {fn: _host_label(url) for url, fn in fetched.items()}
+    prose_values = {(_figure_kind(m.group(0)), _figure_value(m.group(0))) for m in _XSRC_FIGURE_RE.finditer(prose)} if "a" in rules else set()
 
     hits = []
     seen = set()
@@ -1482,25 +1533,40 @@ def cross_source_hits(report: str) -> list[dict]:
                     # years from adjacent text (ISO/IEC 42001:2023 near "EU AI Act"). Live 2026-09-30: 12 of 13 hits, never
                     # converging. FEVER (arXiv:1803.05355) refutes only single-valued attributes ("Multiple citizenships can exist").
                     continue
+                if "c" in rules and _is_doi_figure(figure):
+                    continue
+                subj_norm = re.sub(r"[^a-z0-9]", "", subject)
                 for other_fn, other_claims in per_file_claims.items():
                     if other_fn in cited_files:
                         continue  # comparing a source against itself proves nothing
+                    if "b" in rules and any(host.get(f) == subj_norm for f in (*cited_files, other_fn)):
+                        continue  # the "subject" is a source's own name ("Trading economics" on tradingeconomics.com)
                     for other_subject, other_figure, other_ctx in other_claims:
                         # "".join(split()) drops every Unicode space: "7\u202f%" (narrow no-break) is the figure "7%"
                         if other_subject != subject or "".join(other_figure.split()) == "".join(figure.split()):
                             continue
                         if _figure_kind(other_figure) != _figure_kind(figure):
                             continue  # never compare a year against a percentage, etc.
+                        if "c" in rules and _is_doi_figure(other_figure):
+                            continue
+                        other_value = _figure_value(other_figure) if "a" in rules else None
+                        if other_value is not None and other_value == _figure_value(figure):
+                            continue  # same number, different separators ("11.400" vs "11,400")
                         if not (ctx_words & other_ctx):
                             continue  # same subject and kind, but about a different quantity (no shared attribute word)
                         if "".join(other_figure.split()) in report_nospace:
                             continue  # already surfaced elsewhere ("3 %" in the report is the source's "3%") -- not silent
+                        if other_value is not None and (_figure_kind(other_figure), other_value) in prose_values:
+                            continue  # surfaced in the prose with other separators
                         key = (subject, figure, other_figure)
                         if key in seen:
                             continue
                         seen.add(key)
+                        other_line = next((ln.strip() for ln in per_file_lines[other_fn]
+                                           if other_figure in ln and subject in ln.lower()), "")
                         hits.append({"subject": subject, "figure": figure, "other_figure": other_figure,
-                                     "cited_files": sorted(cited_files), "other_file": other_fn})
+                                     "cited_files": sorted(cited_files), "other_file": other_fn,
+                                     "segment": segment.strip(), "other_line": other_line[:400]})
     return hits
 
 

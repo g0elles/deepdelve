@@ -1,0 +1,29 @@
+{"key": ["unemployment rate", "2.90", "4.80"], "other_file": "src_6304e8d7.md", "label": "JUNK", "reason": "Iceland average vs Ireland latest: different country"}
+{"key": ["unemployment rate", "9.78", "5.70"], "other_file": "src_52893bd0.md", "label": "JUNK", "reason": "Ireland average vs Iceland latest: different country"}
+{"key": ["reino unido", "1.000", "11,400"], "other_file": "src_f7a1d338.md", "label": "JUNK", "reason": "tax revenue 1.000M vs obesity cost 11,400M: different quantity"}
+{"key": ["reino unido", "9.000", "11,400"], "other_file": "src_f7a1d338.md", "label": "JUNK", "reason": "different quantity (9.000 vs obesity cost)"}
+{"key": ["unemployment rate", "2.90", "4.80"], "other_file": "src_6304e8d7.md", "label": "JUNK", "reason": "different country"}
+{"key": ["international monetary fund", "85.7", "22.5"], "other_file": "src_bce09af2.md", "label": "JUNK", "reason": "85.7bn request vs 22.5 (IMF share): different quantity"}
+{"key": ["reino unido", "11.400", "11,400"], "other_file": "src_f7a1d338.md", "label": "JUNK", "reason": "same number, different separators"}
+{"key": ["cu anschutz", "10.1176", "1,2"], "other_file": "src_4e898ec1.md", "label": "JUNK", "reason": "DOI prefix, not a figure"}
+{"key": ["international monetary fund", "85.7", "22.5"], "other_file": "src_bce09af2.md", "label": "JUNK", "reason": "different quantity"}
+{"key": ["international monetary fund", "85.7", "22.5"], "other_file": "src_bce09af2.md", "label": "JUNK", "reason": "different quantity"}
+{"key": ["international monetary fund", "85.7", "2.1"], "other_file": "src_ea9b85ba.md", "label": "JUNK", "reason": "Ireland request vs Iceland 2.1bn bailout: different country"}
+{"key": ["international monetary fund", "85.7", "22.5"], "other_file": "src_bce09af2.md", "label": "JUNK", "reason": "different quantity"}
+{"key": ["trading economics", "0.50", "5.90"], "other_file": "src_52893bd0.md", "label": "JUNK", "reason": "Ireland GDP forecast vs Iceland unemployment forecast"}
+{"key": ["trading economics", "0.50", "8.00"], "other_file": "src_8c95781f.md", "label": "JUNK", "reason": "Ireland GDP forecast vs Iceland interest rate"}
+{"key": ["reino unido", "8 %", "75%"], "other_file": "src_1ec2cc5b.md", "label": "JUNK", "reason": "obesity drop vs dairy figure: different quantity"}
+{"key": ["reino unido", "50%", "75%"], "other_file": "src_1ec2cc5b.md", "label": "JUNK", "reason": "reformulation share vs dairy figure: different quantity"}
+{"key": ["international monetary fund", "67.5", "22.5"], "other_file": "src_bce09af2.md", "label": "JUNK", "reason": "67.5bn vs 22.5: different quantity"}
+{"key": ["gdp growth rate", "1.47", "5.50"], "other_file": "src_d2bc934c.md", "label": "JUNK", "reason": "long-run average vs latest value: different quantity"}
+{"key": ["international monetary fund", "85.7", "22.5"], "other_file": "src_bce09af2.md", "label": "JUNK", "reason": "different quantity"}
+{"key": ["gdp growth rate", "0.50", "5.50"], "other_file": "src_d2bc934c.md", "label": "JUNK", "reason": "forecast vs latest actual: different time"}
+{"key": ["trading economics", "0.50", "2.50"], "other_file": "src_d2bc934c.md", "label": "JUNK", "reason": "quarterly vs annual growth forecast: different quantity"}
+{"key": ["unemployment rate", "2.90", "4.80"], "other_file": "src_6304e8d7.md", "label": "JUNK", "reason": "different country"}
+{"key": ["unemployment rate", "5.90", "4.80"], "other_file": "src_6304e8d7.md", "label": "JUNK", "reason": "Iceland vs Ireland"}
+{"key": ["trading economics", "5.90", "1.20"], "other_file": "src_1de0f8c9.md", "label": "JUNK", "reason": "unemployment vs GDP, different country"}
+{"key": ["gdp growth rate", "1.47", "3.00"], "other_file": "src_1de0f8c9.md", "label": "JUNK", "reason": "Ireland vs Iceland"}
+{"key": ["gdp growth rate", "0.50", "3.00"], "other_file": "src_1de0f8c9.md", "label": "JUNK", "reason": "Ireland vs Iceland"}
+{"key": ["trading economics", "0.50", "1.20"], "other_file": "src_1de0f8c9.md", "label": "JUNK", "reason": "Ireland GDP vs Iceland GDP"}
+{"key": ["unemployment rate", "5.10", "5.70"], "other_file": "src_52893bd0.md", "label": "JUNK", "reason": "Ireland vs Iceland"}
+{"key": ["trading economics", "5.10", "1.20"], "other_file": "src_1de0f8c9.md", "label": "JUNK", "reason": "unemployment vs GDP, different country"}

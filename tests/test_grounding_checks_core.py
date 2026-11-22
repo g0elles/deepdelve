@@ -129,9 +129,9 @@ def main():
             try:
                 _IN_MEMORY_FS.clear()
                 reset_fetched_urls()
-                for url, body in sources:
+                for url, body, *title in sources:   # (url, body[, title])
                     fn = "sources/" + url.rsplit("/", 1)[-1] + ".md"
-                    record_fetched_url(url, filename=fn)
+                    record_fetched_url(url, filename=fn, title=title[0] if title else None)
                     # the check ignores source bodies under 50 chars, so pad short fixtures
                     _IN_MEMORY_FS[fn] = f"Source-URL: {url}\n\n{body} This page is a short fixture used only by this test."
                 return find_cross_source_contradictions(report)
@@ -176,6 +176,48 @@ def main():
         assert _run("- The EU AI Act sets fines of up to 7%% of worldwide turnover, lower fines of 3\u202f%% of turnover for lesser breaches [a](%s)" % a,
                     [(a, "The EU AI Act sets fines of up to 7% of worldwide turnover."),
                      (b, "The EU AI Act sets fines of up to 3% of worldwide turnover for lesser breaches.")]) == []
+
+        # --- W3 false-positive rules (eval/writer_defects/PLAN.md, 2026-11-20). Each "no hit" case first proves the hit exists with the rules
+        # off. A verb sits between subject and figure: _PROPER_NOUN_PHRASE_RE swallows a dotted number right after a subject. ---
+        import utils.grounding as _g
+        orig_rules = _g._XSRC_RULES
+
+        def _with(rules, report, sources):
+            _g._XSRC_RULES = frozenset(rules)
+            try:
+                return _run(report, sources)
+            finally:
+                _g._XSRC_RULES = orig_rules
+
+        def _pair(fig, other_fig, other_url=b, title=None, subject="Sector Fintech", cited=a):
+            rep = f"- {subject} grew {fig} in total [a]({cited})"
+            src = [(cited, f"{subject} grew {fig} in total."), (other_url, f"{subject} grew {other_fig} in total.") + ((title,) if title else ())]
+            return rep, src
+
+        def _off_on(fig, other_fig, want_on, **kw):
+            rep, src = _pair(fig, other_fig, **kw)
+            assert len(_with("", rep, src)) == 1, (fig, other_fig, "rules off must hit")
+            got = _with("abc", rep, src)
+            assert len(got) == want_on, (fig, other_fig, got)
+
+        try:
+            # (a) separators
+            _off_on("11.400", "11,400", 0)
+            _off_on("1.5%", "15%", 1)
+            _off_on("11,4", "11.400", 1)
+            _off_on("0.125%", "125.0%", 1)
+            _off_on("20.11.2026", "20.11.2025", 1)          # unparseable: falls back to string comparison, no crash
+            assert [_g._figure_value(t) for t in ("11.400", "11,400", "11,4", "0.125%", "20.11.2026", "USD 3")] == [11400.0, 11400.0, 11.4, 0.125, None, None]
+            # (b) source-name subject, host label only
+            _off_on("12%", "18%", 0, subject="Trading Economics", other_url="https://tradingeconomics.com/ireland-gdp")
+            _off_on("12%", "18%", 1, subject="New York", other_url="https://www.nytimes.com/rents", title="Rents rise - The New York Times")
+            _off_on("12%", "18%", 1, subject="United Kingdom", other_url="https://www.ons.gov.uk/profile", title="Country profile - United Kingdom")
+            assert _g._host_label("https://data.worldbank.org/x") == "worldbank" and _g._host_label("https://www.ons.gov.uk/a") == "ons"
+            # (c) DOI prefix read as a figure (the real semaglutide case 10.1176 vs 1,2)
+            _off_on("10.1176", "1,2", 0)
+            _off_on("110.12345", "1,2", 1)
+        finally:
+            _g._XSRC_RULES = orig_rules
 
     _orig_ws_ys = _config.cfg.get("settings", {}).get("workspace")
     _config.cfg["settings"]["workspace"] = {"type": "memory", "required_artifact": "final_report.md"}

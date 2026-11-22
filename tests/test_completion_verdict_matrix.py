@@ -397,6 +397,17 @@ def main():
              ("https://gov.example.co/fintech-b", "sources/fintech_b.md",
               "Source-URL: https://gov.example.co/fintech-b\n\nSector Fintech grew 18% in 2024 according to a different analysis."),
          ]),
+        # W3 rule (a), 2026-11-20 (eval/writer_defects/PLAN.md): the same number with different separators ("11.400" Spanish style vs
+        # "11,400") is no disagreement; before the rule this fired cross_source_contradiction (live: "Reino unido" in a c4 report).
+        ("cross_source_same_number_separators", True, {"findings.md": _FINDINGS_OK,
+          "final_report.md": "- Sector Fintech employed 11.400 workers in 2024 [gov](https://gov.example.co/fintech-a)"},
+         None, None,
+         "", [
+             ("https://gov.example.co/fintech-a", "sources/fintech_a.md",
+              "Source-URL: https://gov.example.co/fintech-a\n\nSector Fintech employed 11.400 workers in 2024 according to official figures."),
+             ("https://gov.example.co/fintech-b", "sources/fintech_b.md",
+              "Source-URL: https://gov.example.co/fintech-b\n\nSector Fintech employed 11,400 workers in 2024 according to a different analysis."),
+         ]),
         # Clean pass: grounded findings, report cites the fetched source, no checkable claim
         # contradicting it -> no problem recorded, no retry.
         ("clean_pass", True, {"findings.md": _FINDINGS_OK,
