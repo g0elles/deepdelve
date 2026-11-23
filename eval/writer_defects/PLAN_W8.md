@@ -89,3 +89,14 @@ FROZEN before any A/B run: sha256 6b2fe88749d1f141fbb491020cec91fea5aaf45fe7ac76
 - Reading: the premise did not reproduce. The motivating run cited 1 peer-reviewed source of 5, but OFF acad runs here cite 4-5
   (PLOS, Cambridge, Springer via web search), so there was little room. c2 gains in both pairs (ON cites 5-7 PMC/DOI papers, OFF 2-3;
   c2 ON r1 got 5 open-access full texts). Acad scholarly records were abstracts only (full=0): the Chile/Mexico hits are paywalled or not OA.
+
+## Why it failed (diagnosis, 2026-11-22, user asked before any revert)
+- Distinct peer-reviewed papers cited (DOI-deduplicated): acad ON 3 vs OFF 4 (pair 1), ON 4 vs OFF 5 (pair 2); c2 ON 7 vs OFF 2, ON 8
+  vs OFF 3. So on acad ON is lower in BOTH pairs by papers; the URL share hid this in pair 1.
+- Cause 1, duplicates: on acad, Europe PMC returned the papers web search already reaches (Taillie 2020 PLOS, Contreras-Manzano 2026 PCD
+  = PMC13262067, IJBNPA 2024 = PMC11177525). The scholarly copy is stored at its doi.org URL, the web copy at the publisher URL, so the
+  same paper is cited twice (every acad ON report cites Taillie twice). The plan's "dedupe by DOI" ponytail bit. No new acad paper.
+- Cause 2, planner variance, not displacement: OFF r2's extra peer pages (2 Cambridge, 2 Springer) were never FETCHED in ON r2; each run's
+  planner wrote different questions, so web search reached different pages. Scholarly sources did not push them out.
+- c2 (clinical): Europe PMC adds 5 distinct papers per run (PMC full texts) that web search does not reach.
+- Metric lesson: count distinct papers (DOI), not cited URLs; n=2 pairs cannot separate a 1-paper effect from planner variance.
