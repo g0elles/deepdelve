@@ -283,6 +283,22 @@ def test_scholar_round_one_only_and_sources():
     assert all("Content-Level" not in x and "Paywalled paper" not in x for x in pr.sentences(t)), pr.sentences(t)  # header/title never quoted
 
 
+def test_scholar_same_paper_kept_once():
+    # the 2026-11-22 A/B: Taillie 2020 cited twice (doi.org abstract + journals.plos.org page). Same paper by DOI or PMCID in the URL -> once.
+    assert pr.same_paper("https://journals.plos.org/plosmedicine/article?id=10.1371/journal.pmed.1003015", {"10.1371/journal.pmed.1003015"})
+    assert pr.same_paper("https://pmc.ncbi.nlm.nih.gov/articles/PMC13262067/", {"10.5888/pcd23.250422", "pmc13262067"})
+    assert pr.same_paper("https://link.springer.com/article/10.1186%2Fs12966-024-01609-3", {"10.1186/s12966-024-01609-3"})
+    assert not pr.same_paper("https://news.example/story-about-10-1371", {"10.1371/journal.pmed.1003015"})
+    rec = {"doi": "10.1/web", "pmcid": "", "oa": False, "abstract": "x", "title": "T", "authors": "A", "journal": "J", "year": 2020}
+    s = Seams()
+    web = "https://journal.example/article/10.1/web"
+    s.search = lambda q, k, stats=None: [web]
+    s.fetch = lambda u: ("Finland digital service adoption reached 82 percent of citizens in 2023 according to the survey.", "Web copy", None)
+    m, ev, disk, srcs = run_once(s, "bm25", scholar_search=lambda q, k: [rec], scholar_text=pr.scholar_text)
+    assert m["gather"].get("scholar_sources", 0) == 0 and m["gather"]["scholar_dup"] >= 1, m["gather"]   # web copy kept, abstract skipped
+    assert "https://doi.org/10.1/web" not in ev["titles"], ev["titles"].keys()
+
+
 def test_scholar_failure_keeps_run():
     def boom(q, k):
         raise RuntimeError("api down")

@@ -100,3 +100,8 @@ FROZEN before any A/B run: sha256 6b2fe88749d1f141fbb491020cec91fea5aaf45fe7ac76
   planner wrote different questions, so web search reached different pages. Scholarly sources did not push them out.
 - c2 (clinical): Europe PMC adds 5 distinct papers per run (PMC full texts) that web search does not reach.
 - Metric lesson: count distinct papers (DOI), not cited URLs; n=2 pairs cannot separate a 1-paper effect from planner variance.
+
+## Fix: same paper kept once (2026-11-22, should never have been deferred)
+`run.py:paper_ids`/`same_paper` (DOI or PMCID in the URL, never page text) + `held_ids` in `run()`: round 1 skips a scholarly record whose
+paper was already fetched from the web; later rounds skip a web URL naming a held paper; `metrics.gather.scholar_dup`. Test
+`test_scholar_same_paper_kept_once`. Offline on the 6 ON runs: removes the Taillie double in both acad runs and 2 doubles in leave r2.

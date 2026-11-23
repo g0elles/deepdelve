@@ -535,6 +535,18 @@ def scholar_text(rec: dict) -> tuple[str, str, str, str] | None:
     return url, f"{head}\nDOI: {doi or 'n/a'}\n\n{body}", title, str(rec.get("year") or "")
 
 
+def paper_ids(rec: dict) -> set[str]:
+    """Lowercased DOI and PMCID of a scholarly record: the keys that find the same paper behind a different URL."""
+    return {x.strip().lower() for x in (rec.get("doi"), rec.get("pmcid")) if x and x.strip()}
+
+
+def same_paper(url: str, ids) -> bool:
+    """The URL names one of `ids` (publisher URLs carry the DOI, PMC URLs the PMCID): doi.org/10.1371/x and
+    journals.plos.org/...?id=10.1371/x are one paper. URL only, never page text: a news page citing a DOI is not the paper."""
+    u = urllib.parse.unquote(url).lower()
+    return any(i in u for i in ids)
+
+
 def _scholar_text_safe(rec: dict):
     try:
         return scholar_text(rec)
@@ -653,6 +665,7 @@ def run(query: str, model: str, out: Path, topk: int, extractor: str = "ce", jud
     evidence = {f["id"]: {} for f in facets}  # facet -> url -> [quotes]
     emitted_total = kept_total = failed_total = 0
     seen: dict[str, str | None] = {}
+    held_ids: set[str] = set()  # DOIs/PMCIDs of scholarly sources taken (W8 dedupe)
     titles: dict[str, str] = {}
     dates: dict[str, str | None] = {}
 
@@ -663,6 +676,9 @@ def run(query: str, model: str, out: Path, topk: int, extractor: str = "ce", jud
         `scholar_qs` (round 1 only, W8): one scholarly search each; its records become sources like fetched pages."""
         results = [search(q, topk, gstats) for _, q in qs]
         todo = list(dict.fromkeys(u for r in results for u in r if u not in seen))
+        dup = [u for u in todo if same_paper(u, held_ids)]  # a later round's web copy of a paper already held as a scholarly source
+        gstats["scholar_dup"] = gstats.get("scholar_dup", 0) + len(dup)
+        todo = [u for u in todo if u not in dup]
         with cf.ThreadPoolExecutor(4) as ex:
             for u, (txt, title, published) in zip(todo, ex.map(fetch, todo)):
                 seen[u] = txt
@@ -686,10 +702,15 @@ def run(query: str, model: str, out: Path, topk: int, extractor: str = "ce", jud
                 gstats["scholar_fail"] = gstats.get("scholar_fail", 0) + 1
         if recs:
             with cf.ThreadPoolExecutor(4) as ex:
-                got = [g for g in ex.map(_scholar_text_safe, recs) if g]
-            for u, txt, title, year in got:
+                got = [(r, g) for r, g in zip(recs, ex.map(_scholar_text_safe, recs)) if g]
+            for rec, (u, txt, title, year) in got:
                 if seen.get(u):  # already have it (web fetch or another facet's record); a failed web fetch (None) is replaced
                     continue
+                ids = paper_ids(rec)
+                if ids & held_ids or any(t and same_paper(w, ids) for w, t in seen.items()):  # same paper already fetched from the web
+                    gstats["scholar_dup"] = gstats.get("scholar_dup", 0) + 1                # (publisher/PMC URL): keep that copy, once
+                    continue
+                held_ids.update(ids)
                 seen[u], titles[u] = txt, title
                 if year:
                     dates[u] = year
