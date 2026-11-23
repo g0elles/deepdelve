@@ -64,3 +64,13 @@ their own plans (W9, W10) and are fixed BEFORE the A/B, so the 12 runs are done 
   parts as OFF in both pairs and no scholarly source is cited in either ON leave report (probe shows the hits are off-topic); (c) = 0 in
   every ON report; ON wall time <= OFF + 60 s median.
 - Fail -> revert; record why here. Full test suite + ruff before commit.
+
+## Before the A/B (2026-11-22)
+- Batch status: W9 done (9d8b8f2, numbered academic style: Q-acad reports are headed References, [n] kept); W10 dropped (PLAN_W10.md).
+- Runner `eval/writer_defects/w8_ab.py <config copy naming ornith>`: in-process `pr.run(query, ornith, out, 3, "ce", True)` (= CLI
+  defaults), then `app.py --pipeline-evidence <ev> --writer-mode compiled --auto-approve` (+ `--style academic` for Q-acad only), as the
+  2026-11-22 academic run. Order per pair: k=1 ON then OFF, k=2 OFF then ON, queries acad, c2, leave. Evidence `research_output/w8_<q>_<arm>_r<k>`,
+  log `eval/writer_defects/w8_runs.tsv` (report dir, pipeline seconds, gather + scholar counters). Resumable.
+- Labelling: blind sheet built after all 12 runs (body only, `eval/writer_ab/blind.py` cut of the list; markers stripped), shuffled seed 7.
+
+FROZEN before any A/B run: sha256 6b2fe88749d1f141fbb491020cec91fea5aaf45fe7ac76cf3447cfe82a9b47dd (of the file above this line).
