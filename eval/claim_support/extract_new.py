@@ -16,7 +16,7 @@ for tag in sys.argv[1:]:
     d=glob.glob(f"research_output/*_{tag}")[0]
     fm=open(d+"/findings.md").read(); u2t={}
     for m in re.finditer(r"\((https?://[^)\s]+)\) \(saved as (src_\w+\.md)\)",fm): u2t[m.group(1).rstrip('/')]=(m.group(2),body(open(f"{d}/{m.group(2)}").read()))
-    rep=open(d+"/final_report.md").read(); prose,_,srcs=rep.partition("\n## Sources")
+    rep=open(d+"/final_report.md").read().replace("\n## References","\n## Sources"); prose,_,srcs=rep.partition("\n## Sources")  # W9 academic heading
     nm={}
     for l in srcs.splitlines():
         m=re.match(r"\s*(\d+)\.\s.*?\((https?://[^)\s]+)\)",l)

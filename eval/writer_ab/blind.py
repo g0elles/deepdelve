@@ -27,7 +27,7 @@ for i, it in enumerate(items, 1):
     it["id"] = f"{tag}{i:03d}"
     key = json.load(open(f"{ra.KEYS}/{it['paper']}.json"))
     body = open(it["file"]).read()
-    body = re.split(r"^#+\s*Sources\b.*$", body, flags=re.M | re.I)[0]    # the source list is not labelled (units.py cuts it for every arm)
+    body = re.split(r"^#+\s*(?:Sources|References)\b.*$", body, flags=re.M | re.I)[0]    # the source list is not labelled (units.py cuts it for every arm)
     if it["arm"] in ("A3", "A4", "A3b", "A4b"):                        # only the compiled arms have code-rendered bullets; a free-text arm's bullets are the model's
         body = re.sub(r'^- (?:"|\*\*).*$\n?', "", body, flags=re.M)
     fs = "\n".join(f"[{n}] {t}" for n, t, _ in ra.findings_of(key))

@@ -75,7 +75,7 @@ def score(d):
     gaps = s.get("evidence_gaps") or s.get("unanswered_facets") or []
     gap_facets = [g for g in (s.get("evidence_gaps") or []) if isinstance(g, dict) and g.get("facet")]
     # Sources heading at any level 1-3 (a report with "# Sources" was parsed as having no list); body = everything before it.
-    m_src = re.search(r"^#{1,3} Sources\b", rep, re.M)
+    m_src = re.search(r"^#{1,3} (?:Sources|References)\b", rep, re.M)  # References: compiled academic style (W9)
     src_block = rep[m_src.end():] if m_src else ""
     # A Sources-list entry no [N] in the body points at: "cites 12/12" counted list entries, so an uncited source passed (verify run 2026-10-23).
     body_text = rep[:m_src.start()] if m_src else rep

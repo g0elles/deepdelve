@@ -6,7 +6,7 @@ ROOT = os.path.abspath(os.path.dirname(os.path.abspath(__file__)) + "/../..")
 _STOP = frozenset("that this with from were been have will their there which about into over under more than also such only when what while where being each other these those they them then onto upon between during after before since most both many much some very would could should does done using used based include including report reports study studies results result".split())
 GAP_MIN_COVER = 1.0  # fraction of a gap phrase's terms one numeric body paragraph must contain (0.75 gave 7 false hits on one report, replay 2026-10-24)
 _GAP_HEAD = re.compile(r"^#{1,4} .*(evidence gaps?|data limitations?|limitations)", re.I | re.M)
-_SRC_HEAD = re.compile(r"^#{1,3} Sources\b", re.M)
+_SRC_HEAD = re.compile(r"^#{1,3} (?:Sources|References)\b", re.M)
 
 
 def split_report(rep):

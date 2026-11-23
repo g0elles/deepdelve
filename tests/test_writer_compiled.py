@@ -68,6 +68,9 @@ assert md.startswith("# " + QUERY) and "## Answer in brief" in md and "## Eviden
 assert "- **Cost:** No source in the available evidence directly states: What does it cost?." in md
 assert '- "Speeds rose by 12% downtown." [2]' in md and "1. [Study A](https://a.example/x)" in md
 assert "No usable evidence was found for this topic." in md                                    # facet f3
+# W9: academic style = numbered: same report, list headed References; standard unchanged
+acad = wc.render(c, written, style="academic")
+assert acad == md.replace("\n## Sources\n", "\n## References\n") and "## Sources" not in acad and wc.render(c, written, style="standard") == md
 # every number in the report is a number in some quote (the property the whole design is for)
 allq = " ".join(q.text for f in c.facets for q in f.quotes)
 assert wc.numbers(md.split("## Sources")[0]) <= wc.numbers(allq) | wc.numbers(QUERY)

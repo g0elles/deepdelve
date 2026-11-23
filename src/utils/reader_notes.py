@@ -22,7 +22,7 @@ INTRO = ("These notes come from simple automatic checks run after the report was
 MAX_NOTES = 5
 
 _BLOCK_RE = re.compile(r"\n*" + re.escape(BEGIN) + r".*?" + re.escape(END) + r"\n*", re.S)
-_SRC_HEAD = re.compile(r"^#{1,3} Sources\b", re.M)
+_SRC_HEAD = re.compile(r"^#{1,3} (?:Sources|References)\b", re.M)  # References: compiled academic style (W9)
 _GAP_HEAD = re.compile(r"^#{1,4} .*(evidence gaps?|data limitations?|limitations)", re.I | re.M)
 _STOP = frozenset("that this with from were been have will their there which about into over under more than also such only when what while where being each other these "
                   "those they them then onto upon between during after before since most both many much some very would could should does done using used based include "

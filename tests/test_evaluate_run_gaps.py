@@ -56,6 +56,8 @@ assert any("[3]" in f and "never cited" in f for f in verdict(_r)), verdict(_r)
 _r = _score(pad + "\n## Sources\n1. **[Page A](https://a.org/x)**\n2. **[Page B](https://b.org/y)**\n3. **[Page C](https://c.org/z)**\n")
 assert _r["cited"] == 0 and _r["inline_cites"] == 0, _r  # listed is not cited: used to score 3 of 3
 assert any("no inline citations" in f for f in verdict(_r)), verdict(_r)
+_r = _score(pad + " Claim one [1].\n\n## References\n1. [Page A](https://a.org/x)\n2. [Page B](https://b.org/y)\n")
+assert _r["cited"] == 1 and _r["listed_n"] == 2, _r  # W9: compiled academic list heading is found
 _r = _score(pad + " See [Page A](https://a.org/x) and [Page B](https://b.org/y).\n")
 assert _r["cited"] == 2, _r  # inline markdown links keep working
 assert not any("no inline citations" in f for f in verdict(_r))

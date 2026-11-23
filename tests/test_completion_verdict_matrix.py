@@ -434,6 +434,11 @@ def main():
           "final_report.md": f"- dato uno [gov]({_SRC})"},
          "report_style_violation", "silently reverted to standard-style URL links",
          "", [], [], {}, "academic"),
+        # W9 (eval/writer_defects/PLAN_W9.md): a COMPILED academic report is numbered ([n] + a References list) -> clean. The agent row
+        # above still fires. compiled_writer must be non-empty (both gates test truthiness).
+        ("compiled_academic_numbered", True, {"findings.md": _FINDINGS_OK,
+          "final_report.md": f"- el pais avanza de forma sostenida segun cifras oficiales [1]\n\n## References\n\n1. [gov]({_SRC})\n"},
+         None, None, "", [], [], {"compiled_writer": {"evidence_dir": "x"}}, "academic"),
         # check_undisclosed_evidence_gap (2026-10-17, h19 live incident): a --pipeline-evidence run's dedicated re-search round
         # couldn't find a direct answer for "citizen adoption rate", and the report cites a real, grounded figure (internet
         # penetration) without ever saying the adoption-rate question itself went unanswered -- fires on run_state.data["evidence_gaps"].

@@ -25,6 +25,7 @@ assert rn.figure_context("- A zone 4 heat pump home costs about $1,815 a year to
 rep = "# T\n" + pad + "\n\n## Sources\n1. **[a](https://a.org/x)**\n2. **[b](https://b.org/y)**\n"
 assert len(rn.no_inline_citations(rep)) == 1
 assert rn.no_inline_citations(rep.replace("word word", "word [1] word", 1)) == []
+assert len(rn.no_inline_citations(rep.replace("## Sources", "## References"))) == 1  # W9: compiled academic list heading
 # 4. dated expectation: passed -> note; future or current -> silent
 t_2026_10 = 1790900000
 assert len(rn.stale_status("Topline data are expected in summer 2024.", t_2026_10)) == 1

@@ -22,7 +22,7 @@ from typing import Optional
 import config
 from tools import get_workspace_file_content
 from utils.run_state import get_fetched_urls
-from utils.grounding import fully_ungrounded, partially_ungrounded, extract_cited_urls, parse_academic_references
+from utils.grounding import fully_ungrounded, partially_ungrounded, extract_cited_urls, parse_academic_references, parse_numbered_sources
 from engine.orchestrator import _extract_required_facets, _instruction_entities, _EXCLUSION_CUE_RE
 from engine.completion_checks import Ctx, Verdict
 
@@ -1034,6 +1034,9 @@ def check_academic_citation_style_abandoned(ctx: Ctx) -> Optional[Verdict]:
         return None
     if parse_academic_references(ctx.content):
         return None  # a real, resolvable References section exists somewhere
+    if (ctx.run_state.data.get("compiled_writer") and re.search(r"^#{1,3} References\b", ctx.content, re.M)
+            and parse_numbered_sources(ctx.content)):
+        return None  # compiled academic style is NUMBERED (W9, eval/writer_defects/PLAN_W9.md): [n] markers + a References list
     if not extract_cited_urls(ctx.content):
         return None  # no citations of ANY kind yet — check_missing_findings/check_no_urls own this
     return Verdict(

@@ -16,7 +16,7 @@ from utils.grounding import gap_disclosure_sentence
 
 # One string table per language: the only language-dependent text the code itself writes. Quotes stay in their source language.
 LABELS = {"en": {
-    "overview": "Answer in brief", "evidence": "Evidence", "gaps": "Evidence gaps", "sources": "Sources",
+    "overview": "Answer in brief", "evidence": "Evidence", "gaps": "Evidence gaps", "sources": "Sources", "references": "References",
     "no_evidence": "No usable evidence was found for this topic.",
     "not_covered": "Not covered", "not_covered_words": "No facet covered these words of the request: {words}.",
     "comparison_line": "Comparison asked for: figures are listed per side; no like-for-like comparison was verified.",
@@ -382,8 +382,9 @@ def facet_headings(facets: list[Facet]) -> dict[str, str]:
     return out
 
 
-def render(c: Compiled, written: dict, lang: str = "en") -> str:
-    """The report. Headings, evidence quotes, gap lines and the source list are code; only the written sentences are model text."""
+def render(c: Compiled, written: dict, lang: str = "en", style: str = "standard") -> str:
+    """The report. Headings, evidence quotes, gap lines and the source list are code; only the written sentences are model text.
+    style "academic": numbered academic style (W9, eval/writer_defects/PLAN_W9.md): same [n] markers, the list is headed References."""
     L = LABELS[lang]
     out = [f"# {c.query}", ""]
     if "overview" in written:
@@ -409,7 +410,7 @@ def render(c: Compiled, written: dict, lang: str = "en") -> str:
         words.append(L["comparison_line"])  # when grading found 0 (eval/writer_defects/PLAN_W4.md)
     if words:
         out += [f"## {L['not_covered']}", ""] + words + [""]
-    out += [f"## {L['sources']}", ""]
+    out += [f"## {L['references' if style == 'academic' else 'sources']}", ""]
     out += [f"{n}. [{title}]({url})" + (f", {c.dates[url]}" if c.dates.get(url) else "") for n, url, title in c.sources]
     return "\n".join(out) + "\n"
 

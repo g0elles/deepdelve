@@ -53,7 +53,7 @@ def hits_with(rules, text):
 
 def sanity(report, old):
     """Old-code hits through add_disagreements must give the saved differ lines, compared on (subject, figure, other_figure, n)."""
-    sec = strip_block(report).split("\n## Sources", 1)[-1].split("\n## ", 1)[0].split("\n<!--", 1)[0]
+    sec = strip_block(report).replace("\n## References", "\n## Sources").split("\n## Sources", 1)[-1].split("\n## ", 1)[0].split("\n<!--", 1)[0]
     items = re.split(r"\n(?=\d+\. \[)", "\n" + sec.strip())          # a title can wrap onto the next line
     srcs = []
     for it in (x.strip() for x in items if x.strip()):

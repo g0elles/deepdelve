@@ -2163,7 +2163,7 @@ def _compile_pipeline_report(run_state, evidence_dir: str):
     c = wc.build(ev, run_state.data.get("query") or "")
     llm = lambda prompt, schema, temperature, seed: call_json(model, prompt, schema, think="minimal", timeout=180, temperature=temperature, seed=seed)
     written, stats = wc.compose(c, llm, int(config.get_setting("writer_drafts", 1)))
-    report = wc.render(c, written)
+    report = wc.render(c, written, style=config.get_setting("report_style", "standard") or "standard")  # W9: numbered academic style
     write_workspace_file.func(filename="findings.md", content=wc.render_findings(c))
     write_workspace_file.func(filename=config.get_required_artifact() or "final_report.md", content=report)
     stats["evidence_dir"] = str(Path(evidence_dir).expanduser())  # _write_verify_view reads the saved pages and spans from here
