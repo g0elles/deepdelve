@@ -74,3 +74,18 @@ their own plans (W9, W10) and are fixed BEFORE the A/B, so the 12 runs are done 
 - Labelling: blind sheet built after all 12 runs (body only, `eval/writer_ab/blind.py` cut of the list; markers stripped), shuffled seed 7.
 
 FROZEN before any A/B run: sha256 6b2fe88749d1f141fbb491020cec91fea5aaf45fe7ac76cf3447cfe82a9b47dd (of the file above this line).
+
+## Result (2026-11-22, 12 runs 19:15-19:52, HEAD 0717572; `w8_runs.tsv`, `w8_score.py`, `w8_ab.log`)
+| query | pair | peer/cited ON | peer/cited OFF | (a) raised |
+|---|---|---|---|---|
+| acad | 1 | 4/8 (0.50) | 4/11 (0.36) | yes |
+| acad | 2 | 5/11 (0.45) | 5/9 (0.56) | **no** |
+| c2 | 1 | 8/14 (0.57) | 3/8 (0.38) | yes |
+| c2 | 2 | 10/23 (0.43) | 4/12 (0.33) | yes |
+- Leave guard: 0 scholarly sources cited in either ON report (7 and 15 reached evidence, none survived to the report). PASS.
+- (c) figures not in any saved source: 0 in all 12 reports. PASS. (d) pipeline median ON 124.5 s vs OFF 97 s (+27.5 s). PASS.
+  Leave ON r1 318 s is planner variance (6 facets vs 3 in OFF r1), not the scholarly calls.
+- **Bar: FAIL** on (a), acad pair 2. (b) parts answered was not labelled: the bar fails regardless of it.
+- Reading: the premise did not reproduce. The motivating run cited 1 peer-reviewed source of 5, but OFF acad runs here cite 4-5
+  (PLOS, Cambridge, Springer via web search), so there was little room. c2 gains in both pairs (ON cites 5-7 PMC/DOI papers, OFF 2-3;
+  c2 ON r1 got 5 open-access full texts). Acad scholarly records were abstracts only (full=0): the Chile/Mexico hits are paywalled or not OA.
