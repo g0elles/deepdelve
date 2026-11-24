@@ -198,7 +198,7 @@ Three tabs: **Research** (submit, watch a per-agent timeline, cancel, view the r
 - `settings.search_mode: heavy`: search deeper and auto-fetch more top results per call.
 - `settings.search_backend`: `auto` rotates across ddgs's engines; a pinned single engine is a single point of failure.
 - `settings.concurrency.max_concurrent_tasks`: how many sub-agent dispatches run in parallel per batch.
-- `settings.report_style` (`standard`/`academic`/`answer`, also `--style`): report shape, orthogonal to `--depth`.
+- `settings.report_style` (`standard`/`academic`/`answer`, also `--style`): report shape, orthogonal to `--depth`. The compiled writer (`--writer-mode compiled`) honours `academic` by keeping numbered `[n]` markers and heading the list "References" (author-year in-text citations are agent-writer only).
 - `settings.human_in_the_loop`: require approval on the Planner's plan before research proceeds.
 - `settings.permissions`: per-tool approval gate, defaults to gating `remove_workspace_file`.
 - `settings.enable_conversational_memory` / `settings.enable_session_persistence`: follow-up context reuse and restart survival.
