@@ -49,3 +49,19 @@ Fail -> revert W8 code (scholar_search, scholar_text, dedupe; W9 stays), record 
 change. No retuning after results are read.
 
 FROZEN before any W8b run: sha256 d9fd65800aa32c8a9ecfb35f7d1e8f2bc899f07881e025fe08f73fad098b6ee0 (of the file above this line).
+
+## Result (2026-11-22, 36 runs 20:2x-22:2x, HEAD 8ea16f4; `w8b_runs.tsv`, `w8b_score.py`, `w8b_ab.log`)
+- (a) distinct peer-reviewed papers, S pairs (ON/OFF): acad 6/4, 3/2; c2 6/3, 7/4; vitd 5/7, 5/1; cbti 11/8, 4/2; pm25 16/8, 12/12;
+  minwage 1/1, 2/1. Untied 10, ON wins 9: sign test p = 0.011 (passes). Median diff +2.0, but A/A |diff| max 6 (pm25 9 vs 15; c2 3 vs 2):
+  bar 1 = **inconclusive** (effect not separable from run noise on pm25-sized pools).
+- (c) 0 unsupported figures in every report. PASS. G: 0 scholarly sources cited in any leave/heat ON report. PASS.
+- (d) median pipeline seconds ON 185.5 vs OFF 101.5 (+84 > +60): bar 5 **FAIL**.
+- (b) parts answered not labelled: the bar fails on (d) regardless.
+- **Bar: FAIL** (bar 5), bar 1 inconclusive.
+- Why (d) failed (measured offline, no GPU, saved r1 plans of c2/acad/cbti): scholarly text costs 12-23 s per facet, search ~1 s.
+  Cause found: Europe PMC `fullTextXML` (`tools/scholar.py:_full_text_epmc`, httpx timeout 25 s) often answers slowly and then yields
+  no usable text (PMC13724920: 12.4 s, no full text). All facets' records share one 4-worker pool (`run.py:704`) that starts only after the web
+  fetch, and a paper returned by two facets is fetched twice. That accounts for ~30-40 s of a 3-facet run; the rest of the +84 s is not
+  measured (likely downstream work on more sources: CE pool, judge calls; needs GPU to confirm).
+- `evaluate_run` on all 36 reports: completion problems were left unresolved in 3 reports (vitd ON r2 findings_ungrounded; leave OFF r2 and ON r2 untracked_delegation), and cbti OFF r2 cites 1 blog source (weak_sources). They fall in both arms, so there is no arm pattern. Compiled-run check failures are advisory.
+- **Reverted 2026-11-23 (user OK)**: `run.py` and `test_pipeline_run.py` restored to before a6523d8 (scholar_search, scholar_text, same-paper dedupe removed); W9 kept. Full suite and ruff pass. Possible later W8c, needing a new plan and A/B: full-text fetch run alongside the web fetch with a short timeout and one fetch per paper, plus more pairs to beat the A/A noise.

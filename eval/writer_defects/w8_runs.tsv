@@ -1,0 +1,12 @@
+acad	on	1	research_output/w8_acad_on_r1	research_output/what_does_peer_reviewed_research_report_13cd6a_20261122_191715	107	app_rc=0	searches=10 empty=0 scholar=4/2 full=0 fail=0
+acad	off	1	research_output/w8_acad_off_r1	research_output/what_does_peer_reviewed_research_report_13cd6a_20261122_191959	128	app_rc=0	searches=14 empty=0 scholar=0/2 full=0 fail=0
+c2	on	1	research_output/w8_c2_on_r1	research_output/does_semaglutide_reduce_alcohol_consumpt_579dac_20261122_192159	88	app_rc=0	searches=6 empty=0 scholar=6/2 full=5 fail=0
+c2	off	1	research_output/w8_c2_off_r1	research_output/does_semaglutide_reduce_alcohol_consumpt_579dac_20261122_192340	75	app_rc=0	searches=6 empty=0 scholar=0/2 full=0 fail=0
+leave	on	1	research_output/w8_leave_on_r1	research_output/what_are_the_legal_requirements_for_mini_db1ebb_20261122_192927	318	app_rc=0	searches=28 empty=0 scholar=7/6 full=0 fail=0
+leave	off	1	research_output/w8_leave_off_r1	research_output/what_are_the_legal_requirements_for_mini_db1ebb_20261122_193202	113	app_rc=0	searches=14 empty=0 scholar=0/3 full=0 fail=0
+acad	off	2	research_output/w8_acad_off_r2	research_output/what_does_peer_reviewed_research_report_13cd6a_20261122_193358	81	app_rc=0	searches=8 empty=0 scholar=0/2 full=0 fail=0
+acad	on	2	research_output/w8_acad_on_r2	research_output/what_does_peer_reviewed_research_report_13cd6a_20261122_193620	112	app_rc=0	searches=10 empty=0 scholar=3/2 full=0 fail=0
+c2	off	2	research_output/w8_c2_off_r2	research_output/does_semaglutide_reduce_alcohol_consumpt_579dac_20261122_193809	76	app_rc=0	searches=9 empty=0 scholar=0/3 full=0 fail=0
+c2	on	2	research_output/w8_c2_on_r2	research_output/does_semaglutide_reduce_alcohol_consumpt_579dac_20261122_194059	137	app_rc=0	searches=12 empty=0 scholar=9/4 full=0 fail=0
+leave	off	2	research_output/w8_leave_off_r2	research_output/what_are_the_legal_requirements_for_mini_db1ebb_20261122_194612	244	app_rc=0	searches=30 empty=0 scholar=0/6 full=0 fail=0
+leave	on	2	research_output/w8_leave_on_r2	research_output/what_are_the_legal_requirements_for_mini_db1ebb_20261122_195119	255	app_rc=0	searches=24 empty=0 scholar=15/6 full=4 fail=0
