@@ -190,5 +190,63 @@ def phase0():
           f"{len({p for _, p in gold if '.cmp' in p})} distinct comparison parts)")
 
 
+
+def gold_html():
+    """Local, self-contained page for the user's gold labels (no network). Grouped by report; saves in the browser and exports JSONL."""
+    import html
+    priv = PRIV
+    items = json.loads((priv / "phase0_gold_items.json").read_text())
+    text = "".join(p.read_text() for p in sorted(priv.glob("phase0_batch*.txt")))
+    pk = dict(re.findall(r"=== REPORT (P\d+) ===\n(.*?)=== END \1 ===", text, re.S))
+    by_r = {}
+    for it in items:
+        by_r.setdefault(it["report_id"], []).append(it["part_id"])
+    sec = []
+    for rid in sorted(by_r):
+        body = pk[rid]
+        head, rest = body.split("--- REPORT TEXT ---", 1)
+        rep, ex = rest.split("--- CITED SOURCE EXCERPTS ---", 1)
+        q = head.split("\n", 1)[0].removeprefix("QUERY: ")
+        blocks = re.split(r"\n(?=- part_id: )", head.split("PARTS TO GRADE:\n", 1)[1])
+        parts = []
+        for b in blocks:
+            pid = re.match(r"- part_id: (\S+)", b).group(1)
+            if pid in by_r[rid]:
+                key = f"{rid}|{pid}"
+                btns = "".join(f'<label><input type="radio" name="{key}" value="{v}"> {v}</label>' for v in ("ANSWERED", "WRONG", "MISSING"))
+                parts.append(f'<div class="part"><pre>{html.escape(b.strip())}</pre><div class="btns">{btns}</div>'
+                             f'<input class="note" data-k="{key}" placeholder="optional note / evidence quote"></div>')
+        sec.append(f'<section><h2>{rid}</h2><p class="q">{html.escape(q)}</p>{"".join(parts)}'
+                   f'<details open><summary>Report</summary><pre class="rep">{html.escape(rep.strip())}</pre></details>'
+                   f'<details><summary>Cited source excerpts</summary><pre class="rep">{html.escape(ex.strip())}</pre></details></section>')
+    page = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Gold Labels</title><style>
+:root{--bg:#fafaf8;--fg:#1d1d1b;--mut:#666;--card:#fff;--line:#ddd;--acc:#2b5fd9}
+@media (prefers-color-scheme:dark){:root{--bg:#161616;--fg:#e8e8e6;--mut:#999;--card:#202020;--line:#333;--acc:#7aa2ff}}
+body{background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,sans-serif;margin:0 auto;max-width:980px;padding:16px}
+section{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 16px;margin:18px 0}
+pre{white-space:pre-wrap;word-wrap:break-word;font:13px/1.45 ui-monospace,monospace;margin:6px 0}
+.rep{max-height:60vh;overflow:auto;border-top:1px solid var(--line);padding-top:6px}.q{color:var(--mut)}
+.part{border-left:3px solid var(--acc);padding-left:10px;margin:10px 0}.btns label{margin-right:16px;cursor:pointer}
+.note{width:100%;box-sizing:border-box;margin-top:6px;padding:4px;background:var(--bg);color:var(--fg);border:1px solid var(--line)}
+#bar{position:sticky;top:0;background:var(--bg);padding:8px 0;border-bottom:1px solid var(--line);z-index:1}
+button{padding:6px 12px}</style></head><body>
+<div id="bar"><b>Gold labels</b> &middot; <span id="n"></span> &middot; <button id="dl">Download labels (JSONL)</button>
+<p class="q">Grade each highlighted part by rubric.md: ANSWERED / WRONG / MISSING. Grade before seeing any model labels. Progress is saved in this browser.</p></div>
+""" + "".join(sec) + """<script>
+const K="e1_gold_v1";let st={};try{st=JSON.parse(localStorage.getItem(K)||"{}")}catch(e){}
+function save(){try{localStorage.setItem(K,JSON.stringify(st))}catch(e){}count()}
+function count(){const all=document.querySelectorAll('.part').length;const done=Object.values(st).filter(v=>v.label).length;document.getElementById('n').textContent=done+" / "+all+" graded"}
+document.querySelectorAll('input[type=radio]').forEach(r=>{const s=st[r.name];if(s&&s.label===r.value)r.checked=true;
+ r.addEventListener('change',()=>{st[r.name]=Object.assign(st[r.name]||{},{label:r.value});save()})});
+document.querySelectorAll('.note').forEach(n=>{const s=st[n.dataset.k];if(s&&s.note)n.value=s.note;
+ n.addEventListener('input',()=>{st[n.dataset.k]=Object.assign(st[n.dataset.k]||{},{note:n.value});save()})});
+document.getElementById('dl').onclick=()=>{const lines=Object.entries(st).filter(([k,v])=>v.label).map(([k,v])=>{const[r,p]=k.split('|');
+ return JSON.stringify({report_id:r,part_id:p,label:v.label,evidence_quote:v.note||"",pass:"gold"})});
+ const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([lines.join("\\n")+"\\n"],{type:"application/json"}));a.download="phase0_gold_labels.jsonl";a.click()};
+count();</script></body></html>"""
+    (priv / "gold.html").write_text(page)
+    print(priv / "gold.html", len(by_r), "reports", len(items), "items")
+
 if __name__ == "__main__":
-    {"phase0": phase0}[sys.argv[1]]()
+    {"phase0": phase0, "gold_html": gold_html}[sys.argv[1]]()
