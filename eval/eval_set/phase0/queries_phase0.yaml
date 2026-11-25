@@ -1,0 +1,362 @@
+# E1 Phase 0 parts and references (PLAN.md "Phase 0"). Written 2026-11-24/25 from web search and Europe PMC abstracts,
+# WITHOUT opening any saved report. Burned queries: not time-anchored, so `period` is stated in each ref where it matters.
+# verified_by: "abstract" = quote copied from the Europe PMC / publisher abstract; "page" = fetched page; "snippet" = search
+# snippet only (weakest; flagged for the user's reference check).
+# Fallback frame (rubric redo): the 12 W8 reports in eval/writer_defects/w8_runs.tsv column 5 (queries acad, c2, leave).
+
+- id: acad
+  cat: comparison
+  q: "What does peer-reviewed research report about the effects of Chile's 2016 food labelling and advertising law and Mexico's 2020 front-of-package warning labels on purchases of sugary drinks, and how do the two effects compare?"
+  parts:
+    - id: acad.chile
+      type: figure
+      text: "Effect of Chile's 2016 law on purchases of sugary (high-in) drinks, from peer-reviewed research"
+      ref:
+        statement: "Household purchases of high-in beverages fell by 22.8 mL per capita per day after the law, about 23.7% vs the pre-law trend counterfactual (Taillie et al. 2020, PLoS Med, Kantar panel 2015-2017)."
+        value: "-22.8 mL/capita/day (-23.7%)"
+        alt_values: ["about -24% volume", "-27.5% calories from high-in beverages", "about a quarter fewer high-in beverage purchases"]
+        url: "https://doi.org/10.1371/journal.pmed.1003015"
+        quote: "Compared to the counterfactual, the volume of high-in beverage purchases decreased 22.8 mL/capita/day, postregulation"
+        accessed: "2026-11-25"
+        source_class: peer_reviewed
+        verified_by: abstract
+    - id: acad.mexico
+      type: figure
+      text: "Effect of Mexico's 2020 warning labels on purchases of sugary drinks, from peer-reviewed research"
+      ref:
+        statement: "Peer-reviewed evidence is mainly self-reported: in the 2020-2021 International Food Policy Study, 44.8% of adults said the labels made them buy less unhealthy food, with sugary drinks (cola, regular and diet soda) the largest category (about half of adults). A sales-based study (Social Science & Medicine) found reductions in calories (-15%) and added sugars (-25%) across all packaged foods and beverages combined, with no beverage-only figure. Any of these, correctly attributed, answers the part."
+        value: null
+        alt_values: ["44.8% of adults reported buying less unhealthy food", "about 50% of adults reported buying fewer sugary drinks", "-15% calories / -25% added sugars sold (all packaged foods and beverages)"]
+        url: "https://doi.org/10.1186/s12966-024-01609-3"
+        quote: "Overall, 44.8% of adults and 38.7% of youth reported buying less of unhealthy food categories due to the implementation of WL, with the largest proportion reporting decreased purchases of cola, regular and diet soda."
+        accessed: "2026-11-25"
+        source_class: peer_reviewed
+        verified_by: abstract
+    - id: acad.cmp
+      type: comparison
+      text: "Chile vs Mexico on the size of the effect on sugary-drink purchases, or a reasoned not-comparable statement"
+      sides: ["Chile 2016 law", "Mexico 2020 warning labels"]
+      measure: "effect on sugary-drink purchases"
+      ref:
+        statement: "Not directly comparable: Chile's estimate is a measured purchase change (about -24% volume of high-in beverages), while Mexico's peer-reviewed evidence is self-reported purchase reduction or sales of all packaged products combined; different designs and measures. A report that states both figures and says Chile's measured effect is the larger/better-evidenced one, while noting the design difference, also answers."
+        value: null
+        alt_values: []
+        url: "https://doi.org/10.1371/journal.pmed.1003015"
+        quote: "Purchases of high-in beverages significantly declined following implementation of Chile's Law of Food Labeling and Advertising"
+        accessed: "2026-11-25"
+        source_class: peer_reviewed
+        verified_by: abstract
+
+- id: c2
+  cat: comparison
+  q: "Does semaglutide reduce alcohol consumption in people with alcohol use disorder, and how does the evidence compare with naltrexone?"
+  parts:
+    - id: c2.sema
+      type: fact
+      text: "Whether semaglutide reduces alcohol consumption in people with alcohol use disorder (trial evidence)"
+      ref:
+        statement: "One phase 2 RCT (Hendershot et al. 2025, JAMA Psychiatry, n=48, 9 weeks): semaglutide reduced alcohol consumed in a lab self-administration task (primary) and drinks per drinking day (beta -0.41), but not drinks per calendar day or number of drinking days. Early, small evidence."
+        value: null
+        alt_values: ["reduced grams of alcohol in lab task (beta -0.48)", "reduced drinks per drinking day (beta -0.41)"]
+        url: "https://doi.org/10.1001/jamapsychiatry.2024.4789"
+        quote: "Semaglutide treatment did not affect average drinks per calendar day or number of drinking days, but significantly reduced drinks per drinking day"
+        accessed: "2026-11-25"
+        source_class: peer_reviewed
+        verified_by: abstract
+    - id: c2.naltrexone
+      type: figure
+      text: "Effect of naltrexone on drinking in alcohol use disorder (trial/meta-analytic evidence)"
+      ref:
+        statement: "Meta-analysis of RCTs (Jonas et al. 2014, JAMA; 53 naltrexone studies): oral naltrexone 50 mg/d NNT 12 to prevent return to heavy drinking and NNT 20 for return to any drinking."
+        value: "NNT 12 (heavy drinking); NNT 20 (any drinking)"
+        alt_values: ["NNT 11 for return to heavy drinking (McPheeters et al. 2023 update)", "risk difference -0.09 for heavy drinking"]
+        url: "https://doi.org/10.1001/jama.2014.3628"
+        quote: "The NNT to prevent return to heavy drinking was 12 (95% CI, 8 to 26; RD -0.09; 95% CI, -0.13 to -0.04) for oral naltrexone (50 mg/d)."
+        accessed: "2026-11-25"
+        source_class: peer_reviewed
+        verified_by: abstract
+    - id: c2.cmp
+      type: comparison
+      text: "Semaglutide vs naltrexone on strength of evidence for reducing drinking, or a reasoned not-comparable statement"
+      sides: ["semaglutide", "naltrexone"]
+      measure: "strength of evidence for reducing drinking"
+      ref:
+        statement: "Naltrexone's evidence is much stronger and established (dozens of RCTs, meta-analyses, approved treatment); semaglutide rests on one small phase 2 trial with mixed outcomes; no head-to-head trial exists, so effect sizes are not directly comparable."
+        value: null
+        alt_values: []
+        url: "https://doi.org/10.1001/jama.2014.3628"
+        quote: "Most assessed acamprosate (27 studies, n = 7519), naltrexone (53 studies, n = 9140), or both."
+        accessed: "2026-11-25"
+        source_class: peer_reviewed
+        verified_by: abstract
+
+- id: c3
+  cat: comparison
+  q: "How did Iceland's recovery from the 2008 banking crisis compare with Ireland's on unemployment and GDP growth?"
+  parts:
+    - id: c3.is_unemp
+      type: figure
+      text: "Iceland's peak unemployment rate after the 2008 crisis"
+      ref:
+        statement: "About 7.5% (annual, 2010, OECD harmonised); monthly/registered series peak near 9%."
+        value: "7.5% (2010)"
+        alt_values: ["7.2-7.7% annual 2009-2010", "about 8-9% (monthly or registered unemployment, 2009-2010)", "7.6%"]
+        url: "https://fred.stlouisfed.org/data/LRUNTTTTISA156S"
+        quote: "| 2010-01-01 | 7.548411 |"
+        accessed: "2026-11-25"
+        source_class: official_statistics
+        verified_by: page
+    - id: c3.ie_unemp
+      type: figure
+      text: "Ireland's peak unemployment rate after the 2008 crisis"
+      ref:
+        statement: "About 15.4% (annual, 2012, OECD harmonised); monthly peak about 16%."
+        value: "15.4% (2012)"
+        alt_values: ["14.5-15.5% annual 2010-2012", "about 15-16% (monthly, 2011-2012)", "15.1%", "16.1%"]
+        url: "https://fred.stlouisfed.org/data/LRUNTTTTIEA156S"
+        quote: "| 2012-01-01 | 15.449740 |"
+        accessed: "2026-11-25"
+        source_class: official_statistics
+        verified_by: page
+    - id: c3.cmp_unemp
+      type: comparison
+      text: "Iceland vs Ireland on unemployment after the crisis, or a reasoned not-comparable statement"
+      sides: ["Iceland", "Ireland"]
+      measure: "unemployment rate (peak and recovery)"
+      ref:
+        statement: "Ireland's unemployment rose much higher (about double Iceland's peak: ~15% vs ~7.5%) and stayed high longer; Iceland's peaked in 2010 and fell from 2011."
+        value: null
+        alt_values: []
+        url: "https://fred.stlouisfed.org/data/LRUNTTTTIEA156S"
+        quote: "| 2012-01-01 | 15.449740 |"
+        accessed: "2026-11-25"
+        source_class: official_statistics
+        verified_by: page
+    - id: c3.cmp_gdp
+      type: comparison
+      text: "Iceland vs Ireland on GDP growth after the crisis, or a reasoned not-comparable statement"
+      sides: ["Iceland", "Ireland"]
+      measure: "real GDP growth (contraction and recovery)"
+      ref:
+        statement: "Both contracted sharply in 2009 by a broadly similar amount (Iceland about -6.5 to -7.7%, Ireland about -5 to -7.6%, depending on source and data vintage) and returned to growth around 2011. Any stated relation (e.g. which fell more, which recovered faster) counts only if backed by figures for both countries in the cited saved source; Irish GDP after 2015 is distorted by multinational accounting (a report noting this is correct)."
+        value: null
+        alt_values: ["Iceland 2009 -6.5% (Statistics Iceland provisional)", "Iceland 2009 -6.8%, Ireland 2009 -7.6% (CIA World Factbook estimates)"]
+        url: "https://www.rte.ie/news/business/2010/0305/128406-iceland-business"
+        quote: "GDP decreased by 6.5% in real terms"
+        accessed: "2026-11-25"
+        source_class: news_citing_official
+        verified_by: snippet
+
+- id: vitd
+  cat: scientific
+  q: "Does vitamin D supplementation reduce the risk of acute respiratory infections, and how strong is the evidence?"
+  parts:
+    - id: vitd.effect
+      type: figure
+      text: "Effect of vitamin D supplementation on risk of acute respiratory infection (meta-analytic estimate)"
+      ref:
+        statement: "Small protective effect: OR 0.92 (95% CI 0.86-0.99; 37 studies) in Jolliffe et al. 2021; the 2025 update gives OR 0.94 (0.88-1.00), no longer significant. Daily dosing subgroup OR 0.78 (2021)."
+        value: "OR 0.92 (0.86-0.99)"
+        alt_values: ["OR 0.94 (0.88-1.00) (2025 update)", "OR 0.88 (Martineau et al. 2017, BMJ)", "OR 0.78 daily dosing"]
+        url: "https://doi.org/10.1016/s2213-8587(21)00051-6"
+        quote: "with an OR of 0·92 (95% CI 0·86-0·99; 37 studies; I 2 =35·6%, p heterogeneity =0·018)"
+        accessed: "2026-11-25"
+        source_class: peer_reviewed
+        verified_by: abstract
+    - id: vitd.strength
+      type: fact
+      text: "How strong the evidence is"
+      ref:
+        statement: "Modest: the overall effect is small and heterogeneous, benefit appears mainly with daily dosing, and the most recent meta-analysis (2025) CI includes 1.00 (not statistically significant)."
+        value: null
+        alt_values: []
+        url: "https://researchonline.lshtm.ac.uk/id/eprint/4677068"
+        quote: "the 95% CI for this effect estimate now includes 1·00"
+        accessed: "2026-11-25"
+        source_class: peer_reviewed
+        verified_by: page
+
+- id: cbti
+  cat: comparison
+  q: "How effective is cognitive behavioural therapy for insomnia compared with sleep medication, according to clinical trials?"
+  parts:
+    - id: cbti.cbt
+      type: fact
+      text: "Effectiveness of CBT for insomnia (CBT-I) per trials or guidelines"
+      ref:
+        statement: "Effective; recommended as initial treatment for chronic insomnia (ACP 2016 guideline: strong recommendation, moderate-quality evidence)."
+        value: null
+        alt_values: []
+        url: "https://doi.org/10.7326/m15-2175"
+        quote: "ACP recommends that all adult patients receive cognitive behavioral therapy for insomnia (CBT-I) as the initial treatment for chronic insomnia disorder. (Grade: strong recommendation, moderate-quality evidence)."
+        accessed: "2026-11-25"
+        source_class: guideline
+        verified_by: abstract
+    - id: cbti.meds
+      type: fact
+      text: "Effectiveness of sleep medication per trials"
+      ref:
+        statement: "Medications work in the short term (very low grade evidence that benzodiazepines are more effective than CBT-I short term), with less durable effects; guidelines reserve them as an add-on (weak recommendation, low-quality evidence)."
+        value: null
+        alt_values: []
+        url: "https://doi.org/10.1186/1471-2296-13-40"
+        quote: "very low grade evidence suggests benzodiazepines are more effective in the short term"
+        accessed: "2026-11-25"
+        source_class: peer_reviewed
+        verified_by: abstract
+    - id: cbti.cmp
+      type: comparison
+      text: "CBT-I vs sleep medication on effectiveness, or a reasoned not-comparable statement"
+      sides: ["CBT-I", "sleep medication"]
+      measure: "effectiveness (short and long term)"
+      ref:
+        statement: "CBT-I is more effective in the long term (remission OR 1.82, 95% CI 1.15-2.87, high certainty; Furukawa et al. 2024) and at least comparable short term (medication may act faster); effects more durable."
+        value: null
+        alt_values: ["long-term remission 41% CBT-I vs 28% pharmacotherapy"]
+        url: "https://doi.org/10.1111/pcn.13730"
+        quote: "CBT-I was more beneficial than pharmacotherapy in the long term (median duration, 24 weeks [range, 12 to 48 weeks]; remission odds ratio, 1.82"
+        accessed: "2026-11-25"
+        source_class: peer_reviewed
+        verified_by: abstract
+
+- id: pm25
+  cat: scientific
+  q: "What does epidemiological research report about long-term air pollution exposure and dementia risk?"
+  parts:
+    - id: pm25.assoc
+      type: figure
+      text: "Reported association between long-term air pollution (e.g. PM2.5) exposure and dementia risk"
+      ref:
+        statement: "Positive but modest association: overall HR 1.04 (0.99-1.09) per 2 ug/m3 PM2.5; 1.42 (1.00-2.02) in studies with active case ascertainment (Wilker et al. 2023, BMJ). Other meta-analyses report similar positive HRs (e.g. 1.08 per 5 ug/m3)."
+        value: "HR 1.04 per 2 ug/m3"
+        alt_values: ["HR 1.42 active ascertainment", "HR 1.08 per 5 ug/m3 (Sharp et al. 2025)", "air pollution listed as a modifiable dementia risk factor (Lancet Commission)"]
+        url: "https://doi.org/10.1136/bmj-2022-071620"
+        quote: "The overall hazard ratio per 2 μg/m 3  PM 2.5  was 1.04 (95% confidence interval 0.99 to 1.09)."
+        accessed: "2026-11-25"
+        source_class: peer_reviewed
+        verified_by: abstract
+    - id: pm25.caveats
+      type: fact
+      text: "Strength/limitations of that evidence"
+      ref:
+        statement: "Limited and heterogeneous: most studies at high risk of bias; estimates depend on case ascertainment method; association plausible but not established as causal."
+        value: null
+        alt_values: []
+        url: "https://doi.org/10.1136/bmj-2022-071620"
+        quote: "Most studies were at high risk of bias, although in many cases bias was towards the null."
+        accessed: "2026-11-25"
+        source_class: peer_reviewed
+        verified_by: abstract
+
+- id: minwage
+  cat: contested
+  q: "What does economic research find about the effect of minimum wage increases on employment?"
+  parts:
+    - id: minwage.small
+      type: fact
+      text: "Research finding little or no employment loss"
+      ref:
+        statement: "Many modern studies find small or no job losses, e.g. Cengiz et al. (2019, QJE): across 138 state increases the number of low-wage jobs stayed essentially unchanged over five years."
+        value: null
+        alt_values: ["Card and Krueger (1994) New Jersey fast food: no employment decline"]
+        url: "https://www.nber.org/papers/w25434"
+        quote: "the overall number of low-wage jobs remained essentially unchanged over five years following the increase"
+        accessed: "2026-11-25"
+        source_class: peer_reviewed
+        verified_by: page
+    - id: minwage.negative
+      type: fact
+      text: "Research finding job losses / the disagreement"
+      ref:
+        statement: "Other reviews find a preponderance of negative estimates, stronger for teens, young adults and less-educated workers (Neumark and Shirley 2022); the literature remains contested."
+        value: null
+        alt_values: ["CBO 2019: $15 federal minimum would cost about 1.3 million jobs (median estimate)"]
+        url: "https://www.nber.org/papers/w28388"
+        quote: "there is a clear preponderance of negative estimates in the literature"
+        accessed: "2026-11-25"
+        source_class: peer_reviewed
+        verified_by: page
+
+- id: leave
+  cat: legal
+  q: "What are the legal requirements for minimum paid annual leave in France, Brazil and South Korea, including how many days and how pay is calculated?"
+  parts:
+    - id: leave.fr
+      type: fact
+      text: "France: minimum days and how leave pay is calculated"
+      ref:
+        statement: "2.5 working days (jours ouvrables) per month worked = 30 working days (5 weeks) a year; pay is the more favourable of 1/10 of total gross pay in the reference period or salary maintenance."
+        value: "30 working days (5 weeks)"
+        alt_values: ["25 jours ouvrés", "5 weeks"]
+        url: "https://www.service-public.gouv.fr/particuliers/vosdroits/F33359"
+        quote: "soit par la règle du 1/10e de la rémunération brute totale, soit par la règle du maintien de salaire"
+        accessed: "2026-11-25"
+        source_class: government
+        verified_by: page
+    - id: leave.br
+      type: fact
+      text: "Brazil: minimum days and how leave pay is calculated"
+      ref:
+        statement: "30 calendar days after each 12-month period (reduced to 24/18/12 days with more than 5 unjustified absences); pay is normal salary plus at least one third (constitutional 1/3 bonus)."
+        value: "30 days + 1/3 bonus"
+        alt_values: []
+        url: "https://www.planalto.gov.br/ccivil_03/constituicao/constituicao.htm"
+        quote: "gozo de férias anuais remuneradas com, pelo menos, um terço a mais do que o salário normal"
+        accessed: "2026-11-25"
+        source_class: government
+        verified_by: page
+    - id: leave.kr
+      type: fact
+      text: "South Korea: minimum days and how leave pay is calculated"
+      ref:
+        statement: "15 days after one year with at least 80% attendance; 1 day per month worked before that; +1 day per 2 years of service after the first year (from the 3rd year), capped at 25 days; paid at ordinary wages or average wages (Labor Standards Act Art. 60)."
+        value: "15 days (max 25)"
+        alt_values: ["11 days in the first year (1 per month)"]
+        url: "https://www.crowe.com/kr/en-us/news/news20180601_en"
+        quote: "15 days of paid annual leave if the employees fulfilled at least 80% attendance during one (1) year"
+        accessed: "2026-11-25"
+        source_class: professional_secondary
+        verified_by: snippet
+
+- id: heat
+  cat: comparison
+  q: "How much does it cost to run a heat pump compared with a gas boiler in the UK?"
+  parts:
+    - id: heat.drivers
+      type: fact
+      text: "What determines heat pump running cost relative to gas (electricity-to-gas price ratio, heat pump efficiency)"
+      ref:
+        statement: "Depends on the electricity-to-gas unit price ratio (about 3.3-4 under recent UK price caps) and the heat pump's seasonal efficiency (SCOP ~2.9-3.5) vs a boiler's ~85-92%; tariff choice matters."
+        value: null
+        alt_values: []
+        url: "https://www.nesta.org.uk/report/how-the-energy-crisis-affects-the-case-for-heat-pumps/"
+        quote: "the ratio of electricity to gas prices is due to be around 3.3 from October 2022"
+        accessed: "2026-11-25"
+        source_class: research_org
+        verified_by: page
+    - id: heat.annual
+      type: figure
+      text: "An annual running-cost figure for a heat pump and for a gas boiler (stated period)"
+      ref:
+        statement: "Any dated annual figure for both technologies from a cited saved source (e.g. at the July 2025 cap: about £630 gas boiler vs about £735 air-source heat pump for a typical home). Grade by the source-backed rule; numbers vary by cap period."
+        value: null
+        alt_values: ["£630 boiler vs £735 heat pump (July 2025 cap example)"]
+        url: "https://www.granddesignsmagazine.com/advice/how-much-does-a-heat-pump-cost-to-run"
+        quote: "£630.20"
+        accessed: "2026-11-25"
+        source_class: press
+        verified_by: snippet
+    - id: heat.cmp
+      type: comparison
+      text: "Heat pump vs gas boiler on annual running cost in the UK, or a reasoned not-comparable statement"
+      sides: ["heat pump", "gas boiler"]
+      measure: "annual running cost"
+      ref:
+        statement: "Broadly similar at standard capped tariffs: an efficient heat pump (SCOP about 2.9-3.1 or higher) matches or beats a gas boiler; a less efficient one costs somewhat more; heat-pump/time-of-use tariffs make it cheaper."
+        value: null
+        alt_values: []
+        url: "https://www.which.co.uk/news/article/a-heat-pump-might-be-a-lot-cheaper-than-you-think-heres-how-aSx7P0B2hOHW"
+        quote: "the running costs for a heat pump can match or beat the costs for a gas boiler"
+        accessed: "2026-11-25"
+        source_class: consumer_org
+        verified_by: page
