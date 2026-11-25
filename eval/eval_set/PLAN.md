@@ -80,8 +80,9 @@ tag `evalset-v2`. Dev is for calibration and iteration only, never for decisions
   lines stripped, regexes listed in score.py; "Sources"/"References" heading normalised; [N] markers, source list, evidence quote
   bullets and the "Not covered" section kept), and source excerpts. Excerpts: URL taken verbatim from the report's `N. [title](url)`
   line (parsed to the last `)`) -> `pipeline.bridge.source_filename(url)` in the report dir (evidence dir only if missing there);
-  each quote rendered under [N] located with `pipeline.run.quote_span`; +-1,500-character windows merged, capped at 6,000 characters
-  per source; first 6,000 characters if no quote is found. Shuffled with `random.Random(<blind seed>)`. Blindness fails if an arm
+  each quote rendered under [N] located with `pipeline.run.quote_span`; +-500-character windows merged, capped at 3,000 characters
+  per source; first 1,500 characters if no quote is found (Amendment 1, 2026-11-25, before any labelling: the +-1,500/6,000 rule
+  gave ~70k-character packets, 43 contexts per pass vs ~20 planned; now 23). Shuffled with `random.Random(<blind seed>)`. Blindness fails if an arm
   changes the report format (state it in that A/B).
 - All runs of one A/B (both arms) are labelled in one shuffled batch, one rubric version; each subagent context capped at 150,000
   characters of packets (~3 reports); a report is never split, one over the cap goes alone. Decisions use pass 1; pass 2 only in
