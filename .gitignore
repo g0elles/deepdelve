@@ -30,3 +30,4 @@ eval/audit_runs/pairs_sample.jsonl
 eval/audit_runs/*.log
 eval/comprehension/papers/
 eval/comprehension/results/
+eval/eval_set/_private/
